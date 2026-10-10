@@ -199,8 +199,6 @@ jobs:
           path: |
             proof-receipts/candidate-runtime-costs.json
             proof-receipts/evidence/candidate-runtime-costs/
-            logs/benchmarks/l7_numeric_attestation/custody/
-            logs/benchmarks/sequence_container_attestation/custody/
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT }}/tmp/harness_memory_guard/
           include-hidden-files: true
           if-no-files-found: error

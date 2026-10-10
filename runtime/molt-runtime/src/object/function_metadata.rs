@@ -156,11 +156,9 @@ pub(crate) struct MetadataRetirement<'a, 'py> {
 
 impl Drop for MetadataRetirement<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            if self.bits != 0 {
-                dec_ref_bits(self.py, self.bits);
-            }
-        });
+        if self.bits != 0 {
+            dec_ref_bits(self.py, self.bits);
+        }
     }
 }
 

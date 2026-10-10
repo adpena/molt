@@ -32,19 +32,20 @@ fn init() -> support::AbiTestThreadStateTransaction {
     unsafe extern "C" fn clear() {
         EMERGENCY.with(|state| state.set(false));
     }
-    unsafe extern "C" fn preserve(
-        callback: unsafe extern "C" fn(*mut std::ffi::c_void),
+    unsafe extern "C" fn save_pending(
+        callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int,
         context: *mut std::ffi::c_void,
     ) {
         let saved = EMERGENCY.with(|state| state.replace(false));
-        unsafe { callback(context) };
-        EMERGENCY.with(|state| state.set(saved));
+        if unsafe { callback(context) } == 0 {
+            EMERGENCY.with(|state| state.set(saved));
+        }
     }
     let mut hooks = support::stub_runtime_hooks();
     hooks.exception_pending = pending;
     hooks.pending_exception_class = pending_class;
     hooks.clear_pending_exception = clear;
-    hooks.with_preserved_pending_exception = preserve;
+    hooks.with_saved_pending_exception = save_pending;
     hooks.alloc_str = Some(text_without_class_authority);
     support::enter_abi_test(hooks)
 }
@@ -652,4 +653,707 @@ fn set_from_errno_reports_memoryerror_without_string_allocator() {
         1
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+// Python/errors.c publishes a new raised instance before decrefing the old
+// instance. The three legacy normalization entry points deliberately differ
+// in when they detach a constructor failure. Observe those phases through real
+// native deallocators, without replacing the exception they are observing.
+mod native_retirement {
+    use super::*;
+    use molt_cpython_abi::abi_types::{
+        Py_TPFLAGS_BASE_EXC_SUBCLASS, Py_TPFLAGS_READY, PyBaseObject_Type, PyTraceBack_Type,
+        PyType_Type, PyTypeObject,
+    };
+    use molt_cpython_abi::api::{errors, object, refcount};
+    use std::cell::{Cell, RefCell};
+
+    const OLD: usize = 1;
+    const INPUT: usize = 2;
+    const INVALID_RESULT: usize = 3;
+    const CONSTRUCTOR: usize = 4;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Observation {
+        role: usize,
+        exception: usize,
+        traceback: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ConstructorResult {
+        Exception,
+        OtherException,
+        Failure,
+        Invalid,
+    }
+
+    thread_local! {
+        static OBSERVATIONS: RefCell<Vec<Observation>> = const { RefCell::new(Vec::new()) };
+        static RESULT: Cell<ConstructorResult> = const { Cell::new(ConstructorResult::Exception) };
+        static FAILURE: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        static INPUT_TYPE: Cell<*mut PyTypeObject> = const { Cell::new(ptr::null_mut()) };
+        static INPUT_OWNER: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        static INPUT_OBSERVED_ERROR: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+    }
+
+    #[repr(C)]
+    struct NativeException {
+        base: PyBaseExceptionObject,
+        role: usize,
+    }
+
+    #[repr(C)]
+    struct NativeInput {
+        base: PyObject,
+        role: usize,
+    }
+
+    unsafe fn observe(role: usize) {
+        if role == 0 {
+            return;
+        }
+        let exception = unsafe { errors::PyErr_GetRaisedException() };
+        let traceback = if exception.is_null() {
+            ptr::null_mut()
+        } else {
+            unsafe { errors::PyException_GetTraceback(exception) }
+        };
+        if role == INPUT {
+            let retained = if exception.is_null() {
+                ptr::null_mut()
+            } else {
+                unsafe { object::Py_NewRef(exception) }
+            };
+            let previous = INPUT_OBSERVED_ERROR.with(|slot| slot.replace(retained));
+            unsafe { refcount::Py_XDECREF(previous) };
+        }
+        OBSERVATIONS.with(|events| {
+            events.borrow_mut().push(Observation {
+                role,
+                exception: exception as usize,
+                traceback: traceback as usize,
+            });
+        });
+        unsafe {
+            refcount::Py_XDECREF(traceback);
+            errors::PyErr_SetRaisedException(exception);
+        }
+    }
+
+    unsafe extern "C" fn exception_drop(value: *mut PyObject) {
+        let value = unsafe { Box::from_raw(value.cast::<NativeException>()) };
+        unsafe { observe(value.role) };
+        for field in [
+            value.base.dict,
+            value.base.args,
+            value.base.notes,
+            value.base.traceback,
+            value.base.context,
+            value.base.cause,
+        ] {
+            unsafe { refcount::Py_XDECREF(field) };
+        }
+    }
+
+    unsafe extern "C" fn input_drop(value: *mut PyObject) {
+        let value = unsafe { Box::from_raw(value.cast::<NativeInput>()) };
+        unsafe { observe(value.role) };
+    }
+
+    unsafe fn exception(class: *mut PyTypeObject, role: usize) -> refcount::OwnedPyObject {
+        let mut base: PyBaseExceptionObject = unsafe { std::mem::zeroed() };
+        base.ob_base.ob_refcnt = 1;
+        base.ob_base.ob_type = class;
+        unsafe {
+            refcount::OwnedPyObject::from_owned(
+                Box::into_raw(Box::new(NativeException { base, role })).cast(),
+            )
+        }
+    }
+
+    unsafe fn input(class: *mut PyTypeObject, role: usize) -> refcount::OwnedPyObject {
+        unsafe {
+            refcount::OwnedPyObject::from_owned(
+                Box::into_raw(Box::new(NativeInput {
+                    base: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: class,
+                    },
+                    role,
+                }))
+                .cast(),
+            )
+        }
+    }
+
+    unsafe extern "C" fn construct(
+        class: *mut PyTypeObject,
+        _args: *mut PyObject,
+        _kwargs: *mut PyObject,
+    ) -> *mut PyObject {
+        unsafe { observe(CONSTRUCTOR) };
+        // SetObject borrows the input. Its owner is a removable external edge:
+        // release that edge during the callback so the API's pin is the last
+        // owner after the call-argument tuple has retired.
+        let external = INPUT_OWNER.with(|owner| owner.replace(ptr::null_mut()));
+        unsafe { refcount::Py_XDECREF(external) };
+        match RESULT.with(Cell::get) {
+            ConstructorResult::Exception => unsafe { exception(class, 0).into_ptr() },
+            ConstructorResult::OtherException => unsafe {
+                object::Py_NewRef(FAILURE.with(Cell::get))
+            },
+            ConstructorResult::Failure => {
+                let failure = FAILURE.with(Cell::get);
+                unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(failure)) };
+                ptr::null_mut()
+            }
+            ConstructorResult::Invalid => unsafe {
+                input(INPUT_TYPE.with(Cell::get), INVALID_RESULT).into_ptr()
+            },
+        }
+    }
+
+    fn classes() -> (support::StaticType, support::StaticType) {
+        let mut exception_class = support::StaticType::new();
+        exception_class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        exception_class.tp_name = c"NativePhaseError".as_ptr();
+        exception_class.tp_base = &raw mut PyExc_ValueError;
+        exception_class.tp_flags = Py_TPFLAGS_READY | Py_TPFLAGS_BASE_EXC_SUBCLASS;
+        exception_class.tp_basicsize = std::mem::size_of::<NativeException>() as isize;
+        exception_class.tp_dealloc = Some(exception_drop);
+        exception_class.tp_new = Some(construct);
+        let mut input_class = support::StaticType::new();
+        input_class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        input_class.tp_name = c"NativePhaseInput".as_ptr();
+        input_class.tp_base = &raw mut PyBaseObject_Type;
+        input_class.tp_flags = Py_TPFLAGS_READY;
+        input_class.tp_basicsize = std::mem::size_of::<NativeInput>() as isize;
+        input_class.tp_dealloc = Some(input_drop);
+        (exception_class, input_class)
+    }
+
+    struct PendingReset;
+    impl Drop for PendingReset {
+        fn drop(&mut self) {
+            unsafe { errors::PyErr_Clear() };
+        }
+    }
+
+    struct ConstructorControl;
+    impl Drop for ConstructorControl {
+        fn drop(&mut self) {
+            FAILURE.with(|value| value.set(ptr::null_mut()));
+            INPUT_TYPE.with(|value| value.set(ptr::null_mut()));
+            let external = INPUT_OWNER.with(|value| value.replace(ptr::null_mut()));
+            let observed = INPUT_OBSERVED_ERROR.with(|value| value.replace(ptr::null_mut()));
+            // Explicit fixture rollback after an assertion failure. Semantic
+            // callback retirement above is ordinary and is what the tests see.
+            errors::with_preserved_error(|| unsafe {
+                refcount::Py_XDECREF(external);
+                refcount::Py_XDECREF(observed);
+            });
+        }
+    }
+
+    fn observations() -> Vec<Observation> {
+        OBSERVATIONS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+    }
+
+    #[test]
+    fn saved_error_scope_distinguishes_success_failure_unwind_and_cleanup() {
+        let _abi_test = init();
+        let (class, _input_class) = classes();
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyTraceBack_Type,
+        };
+        let prior = unsafe { exception(class.as_ptr(), 0) };
+        let next = unsafe { exception(class.as_ptr(), 0) };
+        let _pending = PendingReset;
+        unsafe {
+            assert_eq!(
+                errors::PyException_SetTraceback(prior.as_ptr(), &raw mut traceback),
+                0
+            );
+            assert_eq!(
+                errors::PyException_SetTraceback(next.as_ptr(), &raw mut traceback),
+                0
+            );
+            errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+            EMERGENCY.with(|state| state.set(true));
+            let result = errors::with_saved_error(|| {
+                assert!(!errors::raised_error_pending());
+                Ok(37)
+            });
+            assert_eq!(result.unwrap(), 37);
+            assert!(
+                EMERGENCY.with(Cell::get),
+                "success restores allocation-free runtime state"
+            );
+            let restored = errors::take_current_error().expect("incoming C state restored");
+            assert_eq!(restored.value, prior.as_ptr());
+            assert_eq!(restored.traceback, &raw mut traceback);
+            drop(restored);
+            errors::PyErr_Clear();
+
+            errors::PyErr_SetRaisedException(exception(class.as_ptr(), OLD).into_ptr());
+            observations();
+            let failed: Result<(), _> = errors::with_saved_error(|| {
+                errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr()));
+                Err(molt_cpython_abi::ErrorIndicatorSet)
+            });
+            assert!(failed.is_err());
+            assert_eq!(
+                observations(),
+                [Observation {
+                    role: OLD,
+                    exception: next.as_ptr() as usize,
+                    traceback: (&raw mut traceback) as usize,
+                }],
+                "failure retires old state under the selected exact error"
+            );
+            let selected = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(selected.as_ptr(), next.as_ptr());
+            drop(selected);
+
+            for protected_cleanup in [false, true] {
+                errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                EMERGENCY.with(|state| state.set(true));
+                if protected_cleanup {
+                    assert_eq!(
+                        errors::with_preserved_error(|| {
+                            assert!(!errors::raised_error_pending());
+                            errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr()));
+                            EMERGENCY.with(|state| state.set(true));
+                            53
+                        }),
+                        53
+                    );
+                } else {
+                    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _: Result<(), _> = errors::with_saved_error(|| {
+                            assert!(!errors::raised_error_pending());
+                            errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr()));
+                            EMERGENCY.with(|state| state.set(true));
+                            panic!("preparation unwind oracle");
+                        });
+                    }));
+                    assert!(
+                        unwind.is_err(),
+                        "unwind resumes only after the C callback returns"
+                    );
+                }
+                assert!(EMERGENCY.with(Cell::get));
+                let restored = errors::take_current_error().expect("incoming C state restored");
+                assert_eq!(restored.value, prior.as_ptr());
+                assert_eq!(restored.traceback, &raw mut traceback);
+                drop(restored);
+                errors::PyErr_Clear();
+            }
+        }
+    }
+
+    #[test]
+    fn failed_saved_error_scope_keeps_unprojectable_emergency_selected() {
+        let _abi_test = init();
+        let (class, _input_class) = classes();
+        let _pending = PendingReset;
+        for incoming_runtime in [false, true] {
+            unsafe {
+                errors::PyErr_SetRaisedException(exception(class.as_ptr(), 0).into_ptr());
+            }
+            EMERGENCY.with(|state| state.set(incoming_runtime));
+            let allocations = UNADMITTED_TEXT_ALLOCATIONS.with(Cell::get);
+            let result: Result<(), _> = errors::with_saved_error(|| {
+                assert!(!errors::raised_error_pending());
+                EMERGENCY.with(|state| state.set(true));
+                Err(molt_cpython_abi::ErrorIndicatorSet)
+            });
+            assert!(result.is_err());
+            assert!(errors::take_current_error().is_none());
+            assert!(EMERGENCY.with(Cell::get));
+            assert_eq!(UNADMITTED_TEXT_ALLOCATIONS.with(Cell::get), allocations);
+            unsafe {
+                assert_eq!(
+                    errors::PyErr_Occurred(),
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                );
+                assert!(errors::PyErr_GetRaisedException().is_null());
+                assert!(
+                    EMERGENCY.with(Cell::get),
+                    "failed projection does not consume the emergency"
+                );
+                errors::PyErr_Clear();
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_publishes_exact_next_before_native_old_owner_retirement() {
+        let _abi_test = init();
+        let (class, _input_class) = classes();
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyTraceBack_Type,
+        };
+        let next = unsafe { exception(class.as_ptr(), 0) };
+        let _pending = PendingReset;
+        unsafe {
+            assert_eq!(
+                errors::PyException_SetTraceback(next.as_ptr(), &raw mut traceback),
+                0
+            );
+            for operation in ["raised", "setobject", "restore", "clear", "raised-null"] {
+                errors::PyErr_SetRaisedException(exception(class.as_ptr(), OLD).into_ptr());
+                observations();
+                match operation {
+                    "raised" => errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr())),
+                    "setobject" => errors::PyErr_SetObject(class.as_ptr().cast(), next.as_ptr()),
+                    "restore" => errors::PyErr_Restore(
+                        object::Py_NewRef(class.as_ptr().cast()),
+                        object::Py_NewRef(next.as_ptr()),
+                        object::Py_NewRef(&raw mut traceback),
+                    ),
+                    "clear" => errors::PyErr_Clear(),
+                    "raised-null" => errors::PyErr_SetRaisedException(ptr::null_mut()),
+                    _ => unreachable!(),
+                }
+                let expected = if matches!(operation, "clear" | "raised-null") {
+                    ptr::null_mut()
+                } else {
+                    next.as_ptr()
+                };
+                assert_eq!(
+                    observations(),
+                    [Observation {
+                        role: OLD,
+                        exception: expected as usize,
+                        traceback: if expected.is_null() {
+                            0
+                        } else {
+                            (&raw mut traceback) as usize
+                        },
+                    }],
+                    "{operation} must publish before the old native destructor runs",
+                );
+                let selected =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(selected.as_ptr(), expected, "{operation}");
+                drop(selected);
+                assert!(errors::PyErr_Occurred().is_null());
+                assert_eq!((*next.as_ptr()).ob_refcnt, 1);
+            }
+            drop(next);
+            assert_eq!(traceback.ob_refcnt, 1);
+        }
+    }
+
+    #[test]
+    fn constructor_entry_clears_prior_only_when_setobject_requires_construction() {
+        let _abi_test = init();
+        let (class, _input_class) = classes();
+        let _pending = PendingReset;
+        let _control = ConstructorControl;
+        RESULT.with(|result| result.set(ConstructorResult::Exception));
+        unsafe {
+            for operation in ["setnone", "setstring"] {
+                errors::PyErr_SetRaisedException(exception(class.as_ptr(), OLD).into_ptr());
+                observations();
+                match operation {
+                    "setnone" => errors::PyErr_SetNone(class.as_ptr().cast()),
+                    "setstring" => {
+                        errors::PyErr_SetString(class.as_ptr().cast(), c"input".as_ptr())
+                    }
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    observations(),
+                    [
+                        Observation {
+                            role: OLD,
+                            exception: 0,
+                            traceback: 0
+                        },
+                        Observation {
+                            role: CONSTRUCTOR,
+                            exception: 0,
+                            traceback: 0
+                        },
+                    ],
+                    "{operation}",
+                );
+                let selected =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!selected.as_ptr().is_null(), "{operation}");
+                assert_eq!((*selected.as_ptr()).ob_type, class.as_ptr(), "{operation}");
+                drop(selected);
+            }
+        }
+    }
+
+    #[test]
+    fn constructor_failure_and_invalid_result_retire_inputs_in_ingress_order() {
+        let _abi_test = init();
+        let (class, input_class) = classes();
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyTraceBack_Type,
+        };
+        let failure = unsafe { exception(class.as_ptr(), 0) };
+        let _pending = PendingReset;
+        let _control = ConstructorControl;
+        FAILURE.with(|value| value.set(failure.as_ptr()));
+        INPUT_TYPE.with(|value| value.set(input_class.as_ptr()));
+        unsafe {
+            assert_eq!(
+                errors::PyException_SetTraceback(failure.as_ptr(), &raw mut traceback),
+                0
+            );
+            for invalid in [false, true] {
+                RESULT.with(|result| {
+                    result.set(if invalid {
+                        ConstructorResult::Invalid
+                    } else {
+                        ConstructorResult::Failure
+                    })
+                });
+                for ingress in ["setobject", "restore", "normalize"] {
+                    observations();
+                    let argument = input(input_class.as_ptr(), INPUT);
+                    let selected = match ingress {
+                        "setobject" => {
+                            let argument = argument.into_ptr();
+                            INPUT_OWNER.with(|owner| owner.set(argument));
+                            errors::PyErr_SetObject(class.as_ptr().cast(), argument);
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException())
+                        }
+                        "restore" => {
+                            errors::PyErr_Restore(
+                                object::Py_NewRef(class.as_ptr().cast()),
+                                argument.into_ptr(),
+                                ptr::null_mut(),
+                            );
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException())
+                        }
+                        "normalize" => {
+                            let mut triple = errors::OwnedCError {
+                                exc_type: object::Py_NewRef(class.as_ptr().cast()),
+                                value: argument.into_ptr(),
+                                traceback: ptr::null_mut(),
+                            };
+                            errors::PyErr_NormalizeException(
+                                &raw mut triple.exc_type,
+                                &raw mut triple.value,
+                                &raw mut triple.traceback,
+                            );
+                            assert!(errors::PyErr_Occurred().is_null());
+                            refcount::OwnedPyObject::from_owned(std::mem::replace(
+                                &mut triple.value,
+                                ptr::null_mut(),
+                            ))
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert!(!selected.as_ptr().is_null(), "{ingress}, invalid={invalid}");
+                    if invalid {
+                        assert_eq!((*selected.as_ptr()).ob_type, &raw mut PyExc_TypeError);
+                    } else {
+                        assert_eq!(selected.as_ptr(), failure.as_ptr(), "{ingress}");
+                    }
+                    let input_error = refcount::OwnedPyObject::from_owned(
+                        INPUT_OBSERVED_ERROR.with(|slot| slot.replace(ptr::null_mut())),
+                    );
+                    assert!(!input_error.as_ptr().is_null());
+                    if ingress == "setobject" {
+                        // This binary deliberately has no text-class authority.
+                        // All three note text attempts fail, so CPython's final
+                        // type-only note allocation leaves MemoryError visible
+                        // while the input retires. The original constructor
+                        // failure is restored only after that retirement.
+                        assert_eq!(
+                            (*input_error.as_ptr()).ob_type,
+                            &raw mut molt_cpython_abi::abi_types::PyExc_MemoryError
+                        );
+                        assert_ne!(input_error.as_ptr(), selected.as_ptr());
+                    } else {
+                        assert_eq!(input_error.as_ptr(), selected.as_ptr());
+                    }
+                    let expected_tb = if invalid {
+                        0
+                    } else {
+                        (&raw mut traceback) as usize
+                    };
+                    let mut expected = vec![Observation {
+                        role: CONSTRUCTOR,
+                        exception: 0,
+                        traceback: 0,
+                    }];
+                    if invalid {
+                        expected.push(Observation {
+                            role: INVALID_RESULT,
+                            exception: selected.as_ptr() as usize,
+                            traceback: expected_tb,
+                        });
+                    }
+                    expected.push(Observation {
+                        role: INPUT,
+                        exception: input_error.as_ptr() as usize,
+                        traceback: if ingress == "setobject" {
+                            0
+                        } else {
+                            expected_tb
+                        },
+                    });
+                    assert_eq!(observations(), expected, "{ingress}, invalid={invalid}");
+                    assert!(INPUT_OWNER.with(Cell::get).is_null());
+                    drop(selected);
+                    assert!(errors::PyErr_Occurred().is_null());
+                }
+            }
+            drop(failure);
+            assert_eq!(traceback.ob_refcnt, 1);
+        }
+    }
+
+    #[test]
+    fn normalize_retains_requested_type_only_for_a_constructor_created_value() {
+        let _abi_test = init();
+        let (requested, _input_class) = classes();
+        let (other_class, _other_input_class) = classes();
+        let other = unsafe { exception(other_class.as_ptr(), 0) };
+        let _pending = PendingReset;
+        let _control = ConstructorControl;
+        FAILURE.with(|value| value.set(other.as_ptr()));
+        RESULT.with(|result| result.set(ConstructorResult::OtherException));
+        unsafe {
+            for ingress in ["setobject", "restore", "normalize"] {
+                observations();
+                let mut triple = errors::OwnedCError {
+                    exc_type: object::Py_NewRef(requested.as_ptr().cast()),
+                    value: ptr::null_mut(),
+                    traceback: ptr::null_mut(),
+                };
+                match ingress {
+                    "normalize" => errors::PyErr_NormalizeException(
+                        &raw mut triple.exc_type,
+                        &raw mut triple.value,
+                        &raw mut triple.traceback,
+                    ),
+                    "restore" => {
+                        errors::PyErr_Restore(
+                            std::mem::replace(&mut triple.exc_type, ptr::null_mut()),
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                        );
+                        errors::PyErr_Fetch(
+                            &raw mut triple.exc_type,
+                            &raw mut triple.value,
+                            &raw mut triple.traceback,
+                        );
+                    }
+                    "setobject" => {
+                        errors::PyErr_SetObject(requested.as_ptr().cast(), ptr::null_mut());
+                        refcount::Py_DECREF(std::mem::replace(
+                            &mut triple.exc_type,
+                            ptr::null_mut(),
+                        ));
+                        errors::PyErr_Fetch(
+                            &raw mut triple.exc_type,
+                            &raw mut triple.value,
+                            &raw mut triple.traceback,
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                assert_eq!(triple.value, other.as_ptr(), "{ingress}");
+                assert_eq!(
+                    triple.exc_type,
+                    if ingress == "normalize" {
+                        requested.as_ptr().cast()
+                    } else {
+                        other_class.as_ptr().cast()
+                    },
+                    "{ingress} has its own legacy type contract",
+                );
+                assert_eq!(
+                    observations(),
+                    [Observation {
+                        role: CONSTRUCTOR,
+                        exception: 0,
+                        traceback: 0
+                    }]
+                );
+                drop(triple);
+                assert!(errors::PyErr_Occurred().is_null());
+                assert_eq!((*other.as_ptr()).ob_refcnt, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn restore_retires_requested_type_after_the_actual_value_is_published() {
+        const REQUESTED_TYPE: usize = 5;
+        unsafe extern "C" fn observe_type_drop(_value: *mut PyObject) {
+            unsafe { observe(REQUESTED_TYPE) };
+            // StaticType retains physical storage custody, independently of
+            // this last semantic reference to the requested class.
+        }
+
+        let _abi_test = init();
+        let mut metaclass = support::StaticType::new();
+        metaclass.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        metaclass.tp_name = c"NativePhaseMeta".as_ptr();
+        metaclass.tp_base = &raw mut PyType_Type;
+        metaclass.tp_flags =
+            Py_TPFLAGS_READY | molt_cpython_abi::abi_types::Py_TPFLAGS_TYPE_SUBCLASS;
+        metaclass.tp_basicsize = std::mem::size_of::<PyTypeObject>() as isize;
+        metaclass.tp_dealloc = Some(observe_type_drop);
+        metaclass.tp_call = Some(molt_cpython_abi::api::typeobj::molt_type_call);
+        let (mut requested, _input_class) = classes();
+        requested.ob_base.ob_base.ob_type = metaclass.as_ptr();
+        let (actual_class, _actual_input_class) = classes();
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyTraceBack_Type,
+        };
+        let actual = unsafe { exception(actual_class.as_ptr(), 0) };
+        let _pending = PendingReset;
+        let _control = ConstructorControl;
+        FAILURE.with(|value| value.set(actual.as_ptr()));
+        RESULT.with(|result| result.set(ConstructorResult::OtherException));
+        unsafe {
+            assert_eq!(requested.ob_base.ob_base.ob_refcnt, 1);
+            // Restore supplies the traceback after construction. The actual
+            // instance remains independently owned so the observer can inspect
+            // its exact selected identity and traceback safely.
+            observations();
+            errors::PyErr_Restore(
+                requested.as_ptr().cast(),
+                ptr::null_mut(),
+                object::Py_NewRef(&raw mut traceback),
+            );
+            assert_eq!(
+                observations(),
+                [
+                    Observation {
+                        role: CONSTRUCTOR,
+                        exception: 0,
+                        traceback: 0
+                    },
+                    Observation {
+                        role: REQUESTED_TYPE,
+                        exception: actual.as_ptr() as usize,
+                        traceback: (&raw mut traceback) as usize
+                    },
+                ]
+            );
+            let selected = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(selected.as_ptr(), actual.as_ptr());
+            assert_eq!(requested.ob_base.ob_base.ob_refcnt, 0);
+            drop(selected);
+            drop(actual);
+            assert_eq!(traceback.ob_refcnt, 1);
+        }
+    }
 }

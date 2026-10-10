@@ -43,7 +43,7 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
                 call_callable1(py, method, digits)
             }
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+        dec_ref_bits(py, method);
         return result;
     }
     if exception_pending(py) {

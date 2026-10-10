@@ -865,11 +865,11 @@ fn mapping_method_as_list(o: u64, name: &std::ffi::CStr) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let method = PyObject_GetAttrString(o, name.as_ptr());
         if exception_pending(_py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, method));
+            dec_ref_bits(_py, method);
             return 0;
         }
         let result = unsafe { call_callable0(_py, method) };
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, method));
+        dec_ref_bits(_py, method);
         crate::object::mapping_merge::output_as_list(_py, o, name.to_bytes(), result).unwrap_or(0)
     })
 }
@@ -1314,7 +1314,7 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let result = molt_set_attr_name(obj, name, value);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        dec_ref_bits(_py, result);
         if exception_pending(_py) { -1 } else { 0 }
     })
 }
@@ -1375,7 +1375,7 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let result = molt_del_attr_name(obj, name);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        dec_ref_bits(_py, result);
         if exception_pending(_py) { -1 } else { 0 }
     })
 }

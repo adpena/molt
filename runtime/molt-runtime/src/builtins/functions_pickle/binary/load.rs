@@ -36,7 +36,7 @@ fn pickle_apply_dict_state(
     let dictionary = crate::molt_get_attr_name(inst_bits, name);
     molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, name));
     if exception_pending(_py) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, dictionary));
+        dec_ref_bits(_py, dictionary);
         return Err(MoltObject::none().bits());
     }
     let Some(_target) = obj_from_bits(dictionary)
@@ -57,7 +57,7 @@ fn pickle_apply_dict_state(
             dict_state_bits,
         )
     };
-    molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, dictionary));
+    dec_ref_bits(_py, dictionary);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }

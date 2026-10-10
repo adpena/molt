@@ -483,7 +483,7 @@ fn copy_callable(py: &PyToken<'_>, module: u64) -> u64 {
     let Some(pointer) = obj_from_bits(bits).as_ptr() else {
         return 0;
     };
-    let mut pin = PtrDropGuard::preserving(pointer);
+    let mut pin = PtrDropGuard::new(pointer);
     let module_name = text(py, "_contextvars");
     let spec = NativeCallableSpec {
         name: Some("copy_context"),
@@ -530,7 +530,7 @@ pub extern "C" fn molt_contextvars_types(module: u64) -> u64 {
         if copy == 0 {
             return none();
         }
-        let _pin = PtrDropGuard::preserving(obj_from_bits(copy).as_ptr().unwrap());
+        let _pin = PtrDropGuard::new(obj_from_bits(copy).as_ptr().unwrap());
         let p = crate::alloc_tuple(py, &[classes[0], classes[1], classes[2], copy]);
         if p.is_null() {
             none()
@@ -761,7 +761,7 @@ pub extern "C" fn molt_contextvars_run(ctx: u64, args: u64, kwargs: u64) -> u64 
         let Some(p) = obj_from_bits(builder).as_ptr() else {
             return none();
         };
-        let mut pin = PtrDropGuard::preserving(p);
+        let mut pin = PtrDropGuard::new(p);
         for &value in rest {
             let result = unsafe { crate::molt_callargs_push_pos(builder, value) };
             dec_ref_bits(py, result);
@@ -787,7 +787,7 @@ fn iter(py: &PyToken<'_>, ctx: u64, mode: u64) -> u64 {
         return none();
     }
     let root = owned(py, unsafe { context(ctx).root });
-    let _pin = (root != 0).then(|| PtrDropGuard::preserving(obj_from_bits(root).as_ptr().unwrap()));
+    let _pin = (root != 0).then(|| PtrDropGuard::new(obj_from_bits(root).as_ptr().unwrap()));
     let Some(bits) = alloc(
         py,
         iterator_class(py, mode),
@@ -859,8 +859,8 @@ fn equal(py: &PyToken<'_>, left: u64, right: u64, invert: bool) -> u64 {
     }
     let a = owned(py, unsafe { context(left).root });
     let b = owned(py, unsafe { context(right).root });
-    let _ap = (a != 0).then(|| PtrDropGuard::preserving(obj_from_bits(a).as_ptr().unwrap()));
-    let _bp = (b != 0).then(|| PtrDropGuard::preserving(obj_from_bits(b).as_ptr().unwrap()));
+    let _ap = (a != 0).then(|| PtrDropGuard::new(obj_from_bits(a).as_ptr().unwrap()));
+    let _bp = (b != 0).then(|| PtrDropGuard::new(obj_from_bits(b).as_ptr().unwrap()));
     let mut result = unsafe { context(left).len == context(right).len };
     if result && a != b {
         let mut cursor = trie::Cursor::new(a);

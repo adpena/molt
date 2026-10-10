@@ -276,7 +276,11 @@ unsafe extern "C" fn classmethod_call(
     } else {
         unsafe { object::PyObject_Call(bound, tail, kwargs) }
     };
-    unsafe { errors::release_preserving_error(&[tail, bound]) };
+    unsafe {
+        for &object in &[tail, bound] {
+            crate::api::refcount::Py_XDECREF(object);
+        }
+    };
     result
 }
 

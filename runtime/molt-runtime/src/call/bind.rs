@@ -249,14 +249,12 @@ unsafe fn call_foreign_with_arguments(
     };
     let result =
         unsafe { molt_cpython_abi::bridge::molt_foreign_call(c_ptr, args_bits, kwargs_bits) };
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        if args_bits != 0 {
-            dec_ref_bits(_py, args_bits);
-        }
-        if kwargs_bits != 0 {
-            dec_ref_bits(_py, kwargs_bits);
-        }
-    });
+    if args_bits != 0 {
+        dec_ref_bits(_py, args_bits);
+    }
+    if kwargs_bits != 0 {
+        dec_ref_bits(_py, kwargs_bits);
+    }
     match result.decode() {
         molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => bits,
         molt_cpython_abi::hooks::DecodedHandleResult::Missing

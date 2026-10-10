@@ -467,14 +467,14 @@ fn runtime_classinfo_match(
     value: u64,
     classinfo: u64,
     protocol: ClassInfoProtocol,
-) -> bool {
+) -> Option<bool> {
     let _value = crate::builtins::exceptions::ExceptionValue::pin(py, value);
-    let mut matched = false;
+    let mut matched = None;
     crate::builtins::exceptions::with_saved_raised_exception(py, || {
         let Some(result) = classinfo_match(py, value, classinfo, protocol, true) else {
             return false;
         };
-        matched = result;
+        matched = Some(result);
         true
     });
     matched
@@ -783,7 +783,7 @@ pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
     })
 }
 
-pub(crate) fn issubclass_runtime(py: &PyToken<'_>, sub_bits: u64, class_bits: u64) -> bool {
+pub(crate) fn issubclass_runtime(py: &PyToken<'_>, sub_bits: u64, class_bits: u64) -> Option<bool> {
     runtime_classinfo_match(py, sub_bits, class_bits, ClassInfoProtocol::Subclass)
 }
 
@@ -791,7 +791,7 @@ pub(crate) fn isinstance_bits(py: &PyToken<'_>, val_bits: u64, class_bits: u64) 
     classinfo_match(py, val_bits, class_bits, ClassInfoProtocol::Instance, false).unwrap_or(false)
 }
 
-pub(crate) fn isinstance_runtime(py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
+pub(crate) fn isinstance_runtime(py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> Option<bool> {
     runtime_classinfo_match(py, val_bits, class_bits, ClassInfoProtocol::Instance)
 }
 
@@ -935,17 +935,31 @@ mod tests {
                 let derived = protocol_object(py, class.bits(), b"bases_result", bases.bits());
                 let value = protocol_object(py, class.bits(), b"class_result", derived.bits());
                 let alternatives = tuple(py, &[root.bits(), MoltObject::none().bits()], native);
-                assert!(issubclass_runtime(py, derived.bits(), root.bits()));
-                assert!(issubclass_runtime(py, root.bits(), root.bits()));
-                assert!(isinstance_runtime(py, value.bits(), root.bits()));
-                assert!(isinstance_runtime(py, value.bits(), alternatives.bits()));
-                assert!(issubclass_runtime(py, derived.bits(), alternatives.bits()));
-                assert!(!isinstance_runtime(py, value.bits(), empty.bits()));
-                assert!(!issubclass_runtime(
-                    py,
-                    MoltObject::none().bits(),
-                    empty.bits()
-                ));
+                assert_eq!(
+                    issubclass_runtime(py, derived.bits(), root.bits()),
+                    Some(true)
+                );
+                assert_eq!(issubclass_runtime(py, root.bits(), root.bits()), Some(true));
+                assert_eq!(
+                    isinstance_runtime(py, value.bits(), root.bits()),
+                    Some(true)
+                );
+                assert_eq!(
+                    isinstance_runtime(py, value.bits(), alternatives.bits()),
+                    Some(true)
+                );
+                assert_eq!(
+                    issubclass_runtime(py, derived.bits(), alternatives.bits()),
+                    Some(true)
+                );
+                assert_eq!(
+                    isinstance_runtime(py, value.bits(), empty.bits()),
+                    Some(false)
+                );
+                assert_eq!(
+                    issubclass_runtime(py, MoltObject::none().bits(), empty.bits()),
+                    Some(false)
+                );
                 // Public abstract acceptance never proves physical ancestry.
                 assert!(!unsafe {
                     crate::object::class_layout::is_real_subtype(py, derived.bits(), root.bits())
@@ -972,7 +986,10 @@ mod tests {
                 clear_exception(py);
                 let bad_branch = tuple(py, &[malformed.bits()], native);
                 let outer = protocol_object(py, class.bits(), b"bases_result", bad_branch.bits());
-                assert!(!issubclass_runtime(py, outer.bits(), root.bits()));
+                assert_eq!(
+                    issubclass_runtime(py, outer.bits(), root.bits()),
+                    Some(false)
+                );
                 assert!(!exception_pending(py));
             }
         });
@@ -1000,31 +1017,39 @@ mod tests {
                 None
             );
             assert_original_error(py, failure.bits());
-            assert!(!issubclass_runtime(
-                py,
-                failing.bits(),
-                MoltObject::none().bits()
-            ));
+            assert_eq!(
+                issubclass_runtime(py, failing.bits(), MoltObject::none().bits()),
+                None
+            );
             assert_original_error(py, failure.bits());
-            assert!(!issubclass_runtime(py, root.bits(), failing.bits()));
+            assert_eq!(issubclass_runtime(py, root.bits(), failing.bits()), None);
             assert_original_error(py, failure.bits());
-            assert!(!isinstance_runtime(py, root.bits(), failing.bits()));
+            assert_eq!(isinstance_runtime(py, root.bits(), failing.bits()), None);
             assert_original_error(py, failure.bits());
             for target in [builtins.int, root.bits()] {
                 assert_eq!(instancecheck_default(py, failing.bits(), target), None);
                 assert_original_error(py, failure.bits());
             }
             // Exact actual-type admission must not observe the failing __class__.
-            assert!(isinstance_runtime(py, failing.bits(), class.bits()));
+            assert_eq!(
+                isinstance_runtime(py, failing.bits(), class.bits()),
+                Some(true)
+            );
             assert_eq!(
                 instancecheck_default(py, failing.bits(), class.bits()),
                 Some(true)
             );
             for native in [false, true] {
                 let matched_first = tuple(py, &[class.bits(), failing.bits()], native);
-                assert!(isinstance_runtime(py, failing.bits(), matched_first.bits()));
+                assert_eq!(
+                    isinstance_runtime(py, failing.bits(), matched_first.bits()),
+                    Some(true)
+                );
                 let failed_first = tuple(py, &[failing.bits(), class.bits()], native);
-                assert!(!isinstance_runtime(py, root.bits(), failed_first.bits()));
+                assert_eq!(
+                    isinstance_runtime(py, root.bits(), failed_first.bits()),
+                    None
+                );
                 assert_original_error(py, failure.bits());
             }
             let apparent = protocol_object(py, class.bits(), b"class_result", builtins.int);

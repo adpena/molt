@@ -50,7 +50,7 @@ impl ParseCleanup {
     fn retain(&mut self, resource: ParseResource) -> bool {
         if self.resources.try_reserve(1).is_err() {
             unsafe { PyErr_NoMemory() };
-            with_preserved_error(|| unsafe { resource.release() });
+            unsafe { resource.release() };
             return false;
         }
         self.resources.push(resource);
@@ -62,7 +62,7 @@ impl Drop for ParseCleanup {
     fn drop(&mut self) {
         if !self.committed {
             for resource in &self.resources {
-                with_preserved_error(|| unsafe { resource.release() });
+                unsafe { resource.release() };
             }
         }
     }
@@ -721,7 +721,7 @@ unsafe fn convert_argument(
                     return 0;
                 }
                 let value = unsafe { PyLong_AsSsize_t(index) };
-                unsafe { release_preserving_error(&[index]) };
+                unsafe { crate::api::refcount::Py_XDECREF(index) };
                 if value == -1 && raised_error_pending() {
                     return 0;
                 }

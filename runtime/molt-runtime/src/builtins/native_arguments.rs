@@ -147,7 +147,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
             );
         };
         inc_ref_bits(py, kwargs);
-        let dictionary_owner = PtrDropGuard::preserving(kwargs_ptr);
+        let dictionary_owner = PtrDropGuard::new(kwargs_ptr);
         use crate::object::ops_dict::{DictSnapshotKind, dict_snapshot};
         // One retained, resource-accounted dictionary observation supplies both
         // keys and values; no projection or independent epoch can split them.
@@ -344,7 +344,7 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
         if let Some(bits) = value {
             if let Some(ptr) = obj_from_bits(bits).as_ptr() {
                 inc_ref_bits(py, bits);
-                bound.owners.push(PtrDropGuard::preserving(ptr));
+                bound.owners.push(PtrDropGuard::new(ptr));
             }
             bound.slots.as_mut()[index] = Some(bits);
         } else if index < required {

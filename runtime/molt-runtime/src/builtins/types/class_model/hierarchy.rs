@@ -290,18 +290,10 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             }
             // Even a failed later projection write must invalidate a committed
             // hierarchy before the first displaced owner can reenter Python.
-            if exception_pending(_py) {
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    publication.publish();
-                });
-            } else {
-                publication.publish();
-            }
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                drop(retired);
-                dec_ref_bits(_py, old_bases);
-                dec_ref_bits(_py, old_mro);
-            });
+            publication.publish();
+            drop(retired);
+            dec_ref_bits(_py, old_bases);
+            dec_ref_bits(_py, old_mro);
         }
         MoltObject::none().bits()
     })

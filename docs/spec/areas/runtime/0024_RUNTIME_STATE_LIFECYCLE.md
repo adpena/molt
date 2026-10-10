@@ -343,8 +343,11 @@ its callback owner internally, but the outer formatting callback receives an
 exact-string projection without redispatching a subclass's `__str__`. The writer
 consumes or releases the formatted result before the field value is released;
 the expanded spec owner outlives that value. Owned callback outputs transfer
-directly to the writer, and temporary-owner release preserves both existing
-raised-error channels.
+directly to the writer. Semantic callback outputs and operands retire with the
+pending error visible to native deallocators, which preserve its exact identity;
+runtime callers complete native error custody before resuming. Internal exact
+storage projections retain their explicit protected release policy. A formatting
+error is published before its rejected callback result is released.
 The `_string` projections reuse callable-iterator ownership rather than adding
 specialized iterator layouts; their implementation type names are not a
 CPython iterator-type identity claim. Execution coverage remains defined by the

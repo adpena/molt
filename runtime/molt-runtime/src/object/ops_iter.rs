@@ -1189,10 +1189,8 @@ struct HashIteratorRow<'a, 'py> {
 }
 impl Drop for HashIteratorRow<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(self.py, self.key);
-            dec_ref_bits(self.py, self.value);
-        });
+        dec_ref_bits(self.py, self.key);
+        dec_ref_bits(self.py, self.value);
     }
 }
 impl HashIteratorRow<'_, '_> {
@@ -1282,9 +1280,7 @@ unsafe fn hash_iterator_step<'a, 'py>(
                 "RuntimeError",
                 "dictionary keys changed during iteration",
             );
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                hash_iterator_finish(py, ptr, reverse);
-            });
+            hash_iterator_finish(py, ptr, reverse);
             return Err(());
         }
         inc_ref_bits(py, key);

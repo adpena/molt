@@ -1786,7 +1786,7 @@ impl Eq for PowerSlot<'_, '_> {}
 impl Drop for PowerSlot<'_, '_> {
     fn drop(&mut self) {
         if let Some((_, callable)) = self.native {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(self.py, callable));
+            dec_ref_bits(self.py, callable);
         }
     }
 }
@@ -1824,17 +1824,15 @@ unsafe fn power_slot<'a, 'py>(
             }
             _ => None,
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(py, class);
-            if native.is_none()
-                && let Some(left) = left
-            {
-                dec_ref_bits(py, left);
-            }
-        });
+        dec_ref_bits(py, class);
+        if native.is_none()
+            && let Some(left) = left
+        {
+            dec_ref_bits(py, left);
+        }
         if exception_pending(py) {
             if let Some((_, left)) = native {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, left));
+                dec_ref_bits(py, left);
             }
             Err(MoltObject::none().bits())
         } else if left.is_some() || right.is_some() {
@@ -1901,9 +1899,7 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
                         // canonical already-bound native/WASM ABI invocation.
                         let result = call_function_obj_bound_vec(py, callable, &[a, b, modulus]);
                         if exception_pending(py) {
-                            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                                dec_ref_bits(py, result)
-                            });
+                            dec_ref_bits(py, result);
                             Some(MoltObject::none().bits())
                         } else if is_not_implemented_bits(py, result) {
                             dec_ref_bits(py, result);

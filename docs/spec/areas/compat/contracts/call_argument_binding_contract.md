@@ -51,12 +51,15 @@ This spec defines:
   lowers the call through the generic binder instead. The retired diagnostic
   code MOLT-FE002 once rejected such calls at compile time.
 
-### 2.2 Not in scope (initially)
-- Exact CPython `TypeError` message text parity (we target message-class + key name inclusion; exact wording can be a later tightening gate).
-- Full introspection parity (`inspect.signature`, `__text_signature__`, etc.).
-- Exotic mapping/iterable behaviors beyond the verified subset (see Tier rules).
-- `functools.partial`-style signature rewriting.
-- Binding semantics for dynamically constructed Python callables with non-Molt signatures (falls back to Tier 1 generic call, or is rejected under closed-world rules).
+### 2.2 Remaining implementation and verification obligations
+Exact version-specific `TypeError` diagnostics, admitted signature introspection,
+mapping and iterable callbacks, `functools.partial` binding and dynamically
+constructed admitted callables retain their CPython contracts. Their original
+implementation staging does not exclude them from release qualification. Only
+an explicit restriction in the [dynamic-semantics policy](dynamic_execution_policy_contract.md)
+can exclude excessive dynamism; an unfamiliar callable or iterable is not itself
+such a restriction. A generic Molt call path must preserve the same semantics as
+specialized lowering and must never use host-Python fallback.
 
 ---
 
@@ -606,7 +609,10 @@ Both vectorcall and the runtime binder transport positional values followed by
 keyword values, paired with an ordered keyword-name tuple. A kwargs dictionary
 is never passed as FASTCALL kwnames. Only VARARGS conventions pack argument
 tuples/dictionaries. Borrowed inputs remain pinned across extension reentry;
-temporary argument cleanup preserves the callee's exact error indicator.
+temporary arguments retire with the callee's exact error indicator visible to
+native deallocators. Such deallocators preserve that indicator. Retained keyword
+snapshots remain semantic owners even if a callback removes the original
+dictionary's references.
 
 A runtime callable retains receiver, defining class and diagnostic name in its
 ordinary traced closure. The executable registry owns no hidden Python edges.
@@ -628,7 +634,7 @@ on demand; its last runtime owner releases the wrapper's single C hold.
 `RuntimeValue` is the shared temporary crossing guard for C-function owners,
 module APIs, mapping/sequence mutation, and marshaled call arguments. It borrows
 an already-observed canonical value or releases its temporary foreign owner
-while preserving the exact error indicator. A failed managed observation cannot
+with the exact error indicator visible. A failed managed observation cannot
 be reclassified as foreign. Foreign reservation rechecks canonical identity
 under the publication lock; allocation failure publishes neither a wrapper nor
 a C hold. `PyModule_AddObject` consumes its C reference only on successful
@@ -641,8 +647,11 @@ to be complete. Semantic reads use strict observation. This distinction applies
 to list/tuple insertion, dict values and module values, including self/mutual
 construction cycles; dictionary keys and call arguments remain observations.
 Runtime-to-C borrowed arguments acquire new C references without consuming the
-caller's runtime hold. Foreign get/set/call cleanup preserves the exact pending
-error, and attribute deletion has explicit presence independent of value bits.
+caller's runtime hold. Foreign get/set/call operand retirement leaves the exact
+pending error visible and completes native-to-runtime error custody before a
+runtime consumer resumes. Explicit suppression/projection transactions retain
+their separately declared protected policy. Attribute deletion has explicit
+presence independent of value bits.
 Typed owned/borrowed results use status alone for success: float `+0.0` has bits
 zero and remains a value. Uninitialized runtime tuple slots use the existing
 canonical missing singleton, never a scalar payload sentinel. Foreign call and

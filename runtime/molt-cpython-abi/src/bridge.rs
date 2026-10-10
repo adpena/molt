@@ -1006,14 +1006,12 @@ impl ManagedView {
     /// deliberately called only after bridge-map locks have been dropped:
     /// carrier deallocation re-enters the address registry.
     fn release_owned_items(&mut self) {
-        crate::api::errors::with_preserved_error(|| {
-            self.release_owned_items_with(|pointer, mirrored| unsafe {
-                if mirrored {
-                    GLOBAL_BRIDGE.projection_decref(pointer);
-                } else {
-                    crate::api::refcount::Py_XDECREF(pointer);
-                }
-            });
+        self.release_owned_items_with(|pointer, mirrored| unsafe {
+            if mirrored {
+                GLOBAL_BRIDGE.projection_decref(pointer);
+            } else {
+                crate::api::refcount::Py_XDECREF(pointer);
+            }
         });
     }
 
@@ -2167,7 +2165,7 @@ pub unsafe fn owned_native_result_to_runtime(
             ensure_result_error(c"native slot result could not be projected to a runtime value")
         };
     }
-    unsafe { crate::api::errors::release_preserving_error(&[result]) };
+    unsafe { crate::api::refcount::Py_XDECREF(result) };
     bits.map_or_else(
         crate::hooks::OwnedHandleResult::error,
         crate::hooks::OwnedHandleResult::ok,
@@ -2387,6 +2385,10 @@ pub unsafe fn foreign_object_setter_admitted(c_ptr: usize, delete: bool) -> bool
 /// descendants. Class projection and subclass membership remain bridge/type
 /// authorities; this transaction owns no additional registry or cached slots.
 pub struct RuntimeTypeMutation {
+    // Publication may run with an incoming operation error temporarily saved.
+    // Keep semantic lookup snapshots until the runtime restores that error and
+    // calls retire_published; declaration and registry pins retain their lifetime.
+    retired: Vec<crate::api::refcount::OwnedPyObject>,
     class: u64,
     name: u64,
     prepared: Vec<(
@@ -2403,6 +2405,7 @@ impl RuntimeTypeMutation {
     /// `class` and `name` must remain live under the GIL through publication.
     pub unsafe fn prepare(class: u64, name: u64) -> Result<Self, crate::ErrorIndicatorSet> {
         let mut result = Self {
+            retired: Vec::new(),
             class,
             name,
             prepared: Vec::new(),
@@ -2473,6 +2476,14 @@ impl RuntimeTypeMutation {
         }
     }
 
+    /// Retire semantic publication snapshots after the runtime has restored its
+    /// selected operation error. Prepared registry/declaration pins remain live.
+    /// The runtime caller completes the native error channel around this release.
+    #[inline]
+    pub fn retire_published(&mut self) {
+        self.retired.clear();
+    }
+
     /// Reobserve after callback-capable commit, before displaced retirement.
     /// Include newly published roots; do not modify an alias rebound to another
     /// class. Every callback runs outside bridge locks with owners retained.
@@ -2506,7 +2517,7 @@ impl RuntimeTypeMutation {
                         .map(|handle| handle.bits())
                         == Some(self.class)
                         && let Some(slots) = slots
-                        && slots.publish_for_runtime(self.class) < 0
+                        && slots.publish_for_runtime(self.class, &mut self.retired) < 0
                     {
                         return -1;
                     }

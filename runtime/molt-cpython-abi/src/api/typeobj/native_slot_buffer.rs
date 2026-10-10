@@ -74,13 +74,13 @@ unsafe fn call_python(exporter: *mut PyObject, memoryview: *mut PyObject) {
 }
 
 unsafe extern "C" fn clear(object: *mut PyObject) -> c_int {
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         let export = object.cast::<PythonBufferExport>();
         let exporter =
             OwnedPyObject::from_owned(std::mem::replace(&mut (*export).exporter, ptr::null_mut()));
         let memoryview = OwnedPyObject::from_borrowed((*export).view.obj);
         if memoryview.as_ptr().is_null() {
-            return;
+            return 0;
         }
         let original = memory::PyMemoryView_GET_BUFFER(memoryview.as_ptr());
         let same_exporter = !original.is_null() && (*original).obj == exporter.as_ptr();
@@ -92,10 +92,14 @@ unsafe extern "C" fn clear(object: *mut PyObject) -> c_int {
             if type_bf_releasebuffer(tp)
                 .is_some_and(|slot| ptr::fn_addr_eq(slot, release as BfReleaseBuffer))
             {
-                call_python(exporter.as_ptr(), memoryview.as_ptr());
+                errors::with_preserved_error(|| {
+                    call_python(exporter.as_ptr(), memoryview.as_ptr());
+                });
             }
         }
-    });
+        // The memoryview snapshot retires before the exporter, with the
+        // caller's error restored after the Python release callback.
+    }
     0
 }
 
@@ -119,8 +123,10 @@ pub(super) unsafe extern "C" fn get(
     flags: c_int,
 ) -> c_int {
     unsafe {
-        let exporter_owner = OwnedPyObject::from_borrowed(exporter);
-        let flags = OwnedPyObject::from_owned(numbers::PyLong_FromLongLong(i64::from(flags)));
+        let exporter_owner = crate::api::refcount::OwnedPyObject::from_borrowed(exporter);
+        let flags = crate::api::refcount::ProtectedPyObject::from_owned(
+            numbers::PyLong_FromLongLong(i64::from(flags)),
+        );
         if flags.as_ptr().is_null() {
             return -1;
         }
@@ -144,7 +150,8 @@ pub(super) unsafe extern "C" fn get(
         if tp.is_null() {
             return -1;
         }
-        let wrapper = OwnedPyObject::from_owned(memory::_PyObject_GC_New(tp));
+        let wrapper =
+            crate::api::refcount::ProtectedPyObject::from_owned(memory::_PyObject_GC_New(tp));
         if wrapper.as_ptr().is_null() {
             return -1;
         }
@@ -170,20 +177,24 @@ pub(super) unsafe extern "C" fn get(
 }
 
 pub(super) unsafe extern "C" fn release(exporter: *mut PyObject, view: *mut Py_buffer) {
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         let owner = OwnedPyObject::from_borrowed(exporter);
-        let temporary = OwnedPyObject::from_owned(memory::restricted_memoryview_from_buffer(view));
-        if temporary.as_ptr().is_null() {
-            errors::PyErr_WriteUnraisable(exporter);
-        } else {
-            call_python(exporter, temporary.as_ptr());
-            let released =
-                OwnedPyObject::from_owned(memory::memoryview_release(temporary.as_ptr()));
-            if released.as_ptr().is_null() {
+        errors::with_preserved_error(|| {
+            let temporary =
+                OwnedPyObject::from_owned(memory::restricted_memoryview_from_buffer(view));
+            if temporary.as_ptr().is_null() {
                 errors::PyErr_WriteUnraisable(exporter);
+            } else {
+                call_python(exporter, temporary.as_ptr());
+                let released =
+                    OwnedPyObject::from_owned(memory::memoryview_release(temporary.as_ptr()));
+                if released.as_ptr().is_null() {
+                    errors::PyErr_WriteUnraisable(exporter);
+                }
             }
-        }
+        });
         // Python overrides cannot omit a native base's resource release.
+        // Native callbacks observe the restored operation error.
         let tp = crate::bridge::semantic_type(owner.as_ptr());
         if tp.is_null() {
             return;
@@ -202,8 +213,5 @@ pub(super) unsafe extern "C" fn release(exporter: *mut PyObject, view: *mut Py_b
                 break;
             }
         }
-        if descriptors::pending() {
-            errors::PyErr_WriteUnraisable(exporter);
-        }
-    });
+    }
 }

@@ -38,14 +38,14 @@ pub unsafe extern "C" fn PySlice_New(
     }
     let Some(bits) = bridge.molt_handle_for_pyobj(object) else {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        unsafe { crate::api::errors::release_preserving_error(&[object]) };
+        unsafe { crate::api::refcount::Py_DECREF(object) };
         return std::ptr::null_mut();
     };
     // Preserve the actual C bounds (including distinct equal numeric carriers),
     // not newly materialized objects with merely equal values. The same staged
     // projection transaction owns both cold population and these exact origins.
     if !bridge.refresh_slice_view_with_origins(bits.bits(), Some(fields)) {
-        unsafe { crate::api::errors::release_preserving_error(&[object]) };
+        unsafe { crate::api::refcount::Py_DECREF(object) };
         return std::ptr::null_mut();
     }
     object
@@ -102,7 +102,7 @@ unsafe fn slice_index(v: *mut PyObject, out: &mut Py_ssize_t) -> bool {
         return false;
     }
     let value = crate::api::numbers::py_long_as_ssize_clamped(index);
-    unsafe { crate::api::errors::release_preserving_error(&[index]) };
+    unsafe { crate::api::refcount::Py_XDECREF(index) };
     match value {
         Some(x) => {
             *out = x;

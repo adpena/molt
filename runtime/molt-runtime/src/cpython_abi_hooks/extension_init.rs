@@ -1,8 +1,9 @@
 //! One owned PyInit transaction for static native/WASM and explicit dynamic loading.
 //! The runtime import cache owns publication; ABI views remain stable while C
-//! objects retain them. Failure unwinds cache/state/C owners with errors detached.
+//! objects retain them. Cache rollback preserves errors; semantic owners retire ordinarily.
 
 use super::*;
+use crate::object::foreign::{NativeObjectOwner, retire_native_reference};
 
 thread_local! {
     // Rust-owned names carry no GC roots. All linked header transports use
@@ -18,7 +19,7 @@ struct LegacySnapshotOwner(u64);
 
 impl Drop for LegacySnapshotOwner {
     fn drop(&mut self) {
-        with_preserved_error(|| unsafe { hook_dec_ref(self.0) });
+        unsafe { hook_dec_ref(self.0) };
     }
 }
 
@@ -179,7 +180,7 @@ enum ExtensionPublicationAdmission {
 }
 
 struct ModulePublication {
-    object: *mut PyObject,
+    object: NativeObjectOwner,
     name_bits: u64,
     def: *mut PyModuleDef,
     register_state: bool,
@@ -240,9 +241,9 @@ impl ModulePublication {
         // Acquire an independent runtime owner, then Drop releases only the
         // constructor C ref without dismantling a projection still referenced
         // by native m_self edges.
-        let Some(bits) =
-            (unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(self.object) })
-        else {
+        let Some(bits) = (unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(self.object.as_ptr())
+        }) else {
             return Err("extension module result could not transfer ABI ownership".into());
         };
         debug_assert!(!self.register_state);
@@ -257,12 +258,11 @@ impl Drop for ModulePublication {
             if !self.committed
                 && self.published
                 && let Some(own) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .molt_handle_for_pyobj(self.object)
+                    .molt_handle_for_pyobj(self.object.as_ptr())
                     .map(|value| value.bits())
             {
                 let _ = crate::builtins::modules::module_cache_remove(self.name_bits, Some(own));
             }
-            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(self.object) };
         });
     }
 }
@@ -292,7 +292,7 @@ unsafe fn module_result_to_bits(
     } = context;
     let single_phase = !matches!(phase, ExtensionPhase::MultiPhase { .. });
     let mut publication = ModulePublication {
-        object,
+        object: unsafe { NativeObjectOwner::from_owned(object) },
         def,
         register_state: single_phase,
         name_bits,
@@ -354,7 +354,7 @@ unsafe fn module_result_to_bits(
                 value,
             )
         };
-        with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(value) });
+        retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(value) });
         if status != 0 {
             return Err(format!(
                 "{name}: extension {} metadata initialization failed",
@@ -467,7 +467,7 @@ fn restore_legacy_extension(
     let dict = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
     let _ = crate::molt_dict_update(dict, snapshot);
     if crate::exception_pending(py) {
-        with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(object) });
+        retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(object) });
         return MoltObject::none().bits();
     }
     // A new/unannotated snapshot clone has no physical extension definition;
@@ -475,7 +475,7 @@ fn restore_legacy_extension(
     // intentionally retain the original m_self from the snapshot.
     crate::c_api::module_mark_legacy_reimport(py, bits);
     let Some(spec) = extension_spec(py, name_bits, origin_bits, supplied_spec) else {
-        with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(object) });
+        retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(object) });
         return initialization_failure(py, "legacy extension ModuleSpec allocation failed");
     };
     let result = unsafe {
@@ -496,7 +496,7 @@ fn restore_legacy_extension(
             },
         )
     };
-    with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
+    retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
     match result {
         Ok(bits) => bits,
         Err(message) => initialization_failure(py, &message),
@@ -606,7 +606,9 @@ fn initialize_result(
                         .is_empty()
             };
         if !definition {
-            with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) });
+            retire_native_reference(|| unsafe {
+                molt_cpython_abi::api::refcount::Py_DECREF(result)
+            });
         }
         return initialization_contract_violation(
             py,
@@ -620,7 +622,9 @@ fn initialize_result(
     let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits));
     if name.as_ref().is_none_or(|name| name.is_empty()) {
         if !definition {
-            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
+            retire_native_reference(|| unsafe {
+                molt_cpython_abi::api::refcount::Py_DECREF(result)
+            });
         }
         return crate::raise_exception::<u64>(
             py,
@@ -645,7 +649,9 @@ fn initialize_result(
                     })
             });
         if !valid_module {
-            with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) });
+            retire_native_reference(|| unsafe {
+                molt_cpython_abi::api::refcount::Py_DECREF(result)
+            });
             return initialization_contract_violation(
                 py,
                 &format!("{name}: PyInit did not return an extension module"),
@@ -660,7 +666,9 @@ fn initialize_result(
     let spec = extension_spec(py, name_bits, origin_bits, supplied_spec);
     let Some(spec) = spec else {
         if !definition {
-            with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) });
+            retire_native_reference(|| unsafe {
+                molt_cpython_abi::api::refcount::Py_DECREF(result)
+            });
         }
         return initialization_failure(
             py,
@@ -670,7 +678,7 @@ fn initialize_result(
     let module = if definition {
         if unsafe { (*def).m_name.is_null() || CStr::from_ptr((*def).m_name).to_bytes().is_empty() }
         {
-            with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
+            retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
             return initialization_failure(
                 py,
                 "extension PyInit returned an invalid module definition",
@@ -679,7 +687,7 @@ fn initialize_result(
         let module =
             unsafe { molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(def, spec, 0) };
         if module.is_null() {
-            with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
+            retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
             return initialization_failure(py, &format!("{name}: PyModuleDef creation failed"));
         }
         module
@@ -707,7 +715,7 @@ fn initialize_result(
             },
         )
     };
-    with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
+    retire_native_reference(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
     match outcome {
         Ok(bits) => bits,
         Err(message) => initialization_failure(
@@ -794,7 +802,7 @@ pub(crate) fn execute_prepared_extension(
             return initialization_failure(&py, "extension module ABI view unavailable");
         }
         let mut publication = ModulePublication {
-            object,
+            object: unsafe { NativeObjectOwner::from_owned(object) },
             name_bits,
             def,
             register_state: false,
@@ -1445,7 +1453,7 @@ mod tests {
                         .borrowed_handle_to_new_pyobj(second);
                     assert!(!object.is_null());
                     drop(ModulePublication {
-                        object,
+                        object: unsafe { NativeObjectOwner::from_owned(object) },
                         name_bits,
                         def: &raw mut def,
                         register_state: false,

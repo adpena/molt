@@ -225,16 +225,21 @@ impl ObjectBridge {
             if !committed {
                 ensure_result_error(c"type identity changed before name publication");
             }
-            crate::api::errors::with_preserved_error(|| {
-                crate::api::memory::PyMem_Free(retired_name.cast());
-                drop(retired_cstring);
+            crate::api::memory::PyMem_Free(retired_name.cast());
+            drop(retired_cstring);
+            let retire = || {
                 let release = if committed { old } else { projected };
                 if mirrored {
                     self.projection_decref(release);
                 } else {
                     crate::api::refcount::Py_XDECREF(release);
                 }
-            });
+            };
+            if committed {
+                retire();
+            } else {
+                crate::api::errors::with_preserved_error(retire);
+            }
             committed
         }
     }
@@ -337,7 +342,7 @@ impl ObjectBridge {
             )
         };
         if !valid_slot || (!pointer.is_null() && !self.pyobj_matches_handle(pointer, value_bits)) {
-            unsafe { crate::api::errors::release_preserving_error(&[pointer]) };
+            unsafe { crate::api::refcount::Py_XDECREF(pointer) };
             if !crate::api::errors::raised_error_pending() {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
@@ -350,7 +355,7 @@ impl ObjectBridge {
         }
         if !unsafe { self.projection_adopt_owned_ref(pointer) } {
             unsafe {
-                crate::api::errors::release_preserving_error(&[pointer]);
+                crate::api::refcount::Py_XDECREF(pointer);
             }
             return None;
         }

@@ -411,7 +411,7 @@ impl Drop for ModuleCallbackLease<'_, '_> {
         if let Some(bits) = self.owner {
             // Release only after leaving both C and the metadata lock. This can
             // enter terminal m_free when reentry removed the last original root.
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(self.py, bits));
+            dec_ref_bits(self.py, bits);
         }
     }
 }

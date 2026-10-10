@@ -211,12 +211,12 @@ pub(crate) unsafe fn molt_object_alloc_with_tail(
         && unsafe { crate::hooks::hooks_or_stubs().native_gc_allocate(initialized.addr()) } < 0
     {
         unsafe { crate::api::errors::check_native_status(-1, "native_gc_allocate") };
-        crate::api::errors::with_preserved_error(|| unsafe {
+        unsafe {
             if (*typeobj).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 {
                 crate::api::refcount::Py_DECREF(typeobj.cast::<PyObject>());
             }
             PyMem_Free(initialized.cast::<c_void>());
-        });
+        }
         return std::ptr::null_mut();
     }
     initialized
@@ -876,9 +876,20 @@ struct MemoryViewExport {
     master: Py_buffer,
 }
 
-pub struct MemoryViewLease(std::ptr::NonNull<MemoryViewExport>);
+#[repr(transparent)]
+pub struct BufferLease<P: crate::api::refcount::ReferenceRetirement> {
+    export: std::ptr::NonNull<MemoryViewExport>,
+    policy: std::marker::PhantomData<P>,
+}
 
-impl MemoryViewLease {
+pub type MemoryViewLease = BufferLease<crate::api::refcount::CReferenceRelease>;
+
+const _: () = {
+    assert!(std::mem::size_of::<MemoryViewLease>() == std::mem::size_of::<usize>());
+    assert!(std::mem::align_of::<MemoryViewLease>() == std::mem::align_of::<usize>());
+};
+
+impl<P: crate::api::refcount::ReferenceRetirement> BufferLease<P> {
     /// The declaring slot is passed explicitly by __buffer__ adapters; ordinary
     /// acquisition passes PyObject_GetBuffer. Failed callbacks own their cleanup.
     pub unsafe fn acquire(
@@ -886,7 +897,7 @@ impl MemoryViewLease {
         flags: c_int,
         get: unsafe extern "C" fn(*mut PyObject, *mut Py_buffer, c_int) -> c_int,
     ) -> Result<Self, crate::ErrorIndicatorSet> {
-        let owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(object) };
+        let owner = unsafe { crate::api::refcount::PyObjectOwner::<P>::from_borrowed(object) };
         let pointer = unsafe { PyMem_Calloc(1, std::mem::size_of::<MemoryViewExport>()) }
             .cast::<MemoryViewExport>();
         let Some(pointer) = std::ptr::NonNull::new(pointer) else {
@@ -896,7 +907,10 @@ impl MemoryViewLease {
         unsafe {
             (&raw mut (*pointer.as_ptr()).references).write(std::sync::atomic::AtomicUsize::new(1))
         };
-        let lease = Self(pointer);
+        let lease = Self {
+            export: pointer,
+            policy: std::marker::PhantomData,
+        };
         let status = unsafe { get(owner.as_ptr(), &raw mut (*pointer.as_ptr()).master, flags) };
         if unsafe { crate::api::errors::check_native_status(status, "native buffer callback") } < 0
         {
@@ -909,22 +923,26 @@ impl MemoryViewLease {
     }
 
     pub fn owner(&self) -> *mut PyObject {
-        unsafe { (*self.0.as_ptr()).master.obj }
+        unsafe { (*self.export.as_ptr()).master.obj }
     }
     pub fn descriptor(&self) -> *const Py_buffer {
-        unsafe { &raw const (*self.0.as_ptr()).master }
+        unsafe { &raw const (*self.export.as_ptr()).master }
     }
     pub fn gc_edge(&self) -> Option<NativeGcEdge> {
         NativeGcEdge::from_pyobj(&crate::bridge::GLOBAL_BRIDGE, self.owner())
     }
-}
 
-impl Clone for MemoryViewLease {
-    fn clone(&self) -> Self {
+    /// Share the same acquired export with the receiving Rust caller's static
+    /// retirement policy. Opaque ABI handoffs use this operation, never a cast
+    /// between owners or a second retain implementation.
+    #[inline]
+    pub fn clone_with_policy<Q: crate::api::refcount::ReferenceRetirement>(
+        &self,
+    ) -> BufferLease<Q> {
         // Like Arc, an unreachable reference-count overflow must never wrap and
         // free live storage. No fallible allocation occurs during sharing.
         let old = unsafe {
-            (*self.0.as_ptr())
+            (*self.export.as_ptr())
                 .references
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         };
@@ -932,25 +950,38 @@ impl Clone for MemoryViewLease {
             std::process::abort();
         }
         unsafe { crate::api::refcount::Py_XINCREF(self.owner()) };
-        Self(self.0)
+        BufferLease {
+            export: self.export,
+            policy: std::marker::PhantomData,
+        }
     }
 }
 
-impl Drop for MemoryViewLease {
+impl<P: crate::api::refcount::ReferenceRetirement> Clone for BufferLease<P> {
+    #[inline]
+    fn clone(&self) -> Self {
+        self.clone_with_policy()
+    }
+}
+
+impl<P: crate::api::refcount::ReferenceRetirement> Drop for BufferLease<P> {
+    #[inline]
     fn drop(&mut self) {
-        let export = self.0.as_ptr();
-        if unsafe {
-            (*export)
-                .references
-                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
-        } != 1
-        {
-            unsafe { crate::api::errors::release_preserving_error(&[self.owner()]) };
-            return;
-        }
-        crate::api::errors::with_preserved_error(|| unsafe {
-            crate::api::buffer::PyBuffer_Release(&raw mut (*export).master);
-            PyMem_Free(export.cast());
+        P::retire(|| {
+            let export = self.export.as_ptr();
+            if unsafe {
+                (*export)
+                    .references
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            } != 1
+            {
+                unsafe { crate::api::refcount::Py_XDECREF(self.owner()) };
+                return;
+            }
+            unsafe {
+                crate::api::buffer::PyBuffer_Release(&raw mut (*export).master);
+                PyMem_Free(export.cast());
+            }
         });
     }
 }

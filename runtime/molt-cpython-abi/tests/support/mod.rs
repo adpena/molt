@@ -276,7 +276,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             type_is_subtype,
             take_pending_exception,
             clear_pending_exception,
-            with_preserved_pending_exception,
+            with_saved_pending_exception,
             handled_exception_get,
             handled_exception_set,
             managed_gc_control,

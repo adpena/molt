@@ -42,7 +42,7 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
                 "GPU launch builder allocation failed",
             );
         };
-        let _builder_owner = crate::PtrDropGuard::preserving(builder_ptr);
+        let _builder_owner = crate::PtrDropGuard::new(builder_ptr);
         let expanded = unsafe { crate::molt_callargs_expand_star(builder, args_bits) };
         if crate::exception_pending(_py) {
             return expanded;

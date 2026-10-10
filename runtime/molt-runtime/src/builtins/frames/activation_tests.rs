@@ -583,11 +583,43 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         frame_stack_push_owned(py, code, globals, builtins, 0);
         frame_stack_set_line(10);
         let lazy = frame_stack_trace_payload_bits(py, None, false).unwrap();
-        let eager = traceback_payload_to_traceback_bits(py, lazy);
+        let prior =
+            crate::builtins::exceptions::alloc_exception(py, "LookupError", "prior trace error");
+        assert!(!prior.is_null());
+        let prior = crate::builtins::exceptions::ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(prior).bits(),
+        );
+        crate::record_exception(py, obj_from_bits(prior.bits()).as_ptr().unwrap());
+        let eager = traceback_payload_to_traceback_bits(py, lazy).expect("materialized traceback");
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(prior.bits()));
+        crate::clear_exception(py);
         assert!(!obj_from_bits(eager).is_none());
+        // A failed lazy materialization selects its allocation error, rather
+        // than returning absence or reviving the admitted incoming exception.
+        {
+            use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+            struct RestoreBudget;
+            impl Drop for RestoreBudget {
+                fn drop(&mut self) {
+                    set_tracker(Box::new(UnlimitedTracker));
+                }
+            }
+            crate::record_exception(py, obj_from_bits(prior.bits()).as_ptr().unwrap());
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            let budget = RestoreBudget;
+            let failed = traceback_payload_to_traceback_bits(py, lazy);
+            drop(budget);
+            assert_eq!(failed, None);
+            take_error(py, "MemoryError");
+        }
         frame_stack_set_line(20);
         let prefix = frame_stack_trace_payload_prepend_bits(py, None, false, eager).unwrap();
-        let observed = traceback_payload_to_traceback_bits(py, prefix);
+        let observed =
+            traceback_payload_to_traceback_bits(py, prefix).expect("materialized traceback");
         let key = string(py, b"tb_next");
         let next = unsafe {
             dict_get_in_place(

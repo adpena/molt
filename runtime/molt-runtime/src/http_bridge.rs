@@ -221,7 +221,7 @@ pub extern "C" fn __molt_http_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_dec_ref_bits(bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, bits));
+        dec_ref_bits(_py, bits);
     })
 }
 

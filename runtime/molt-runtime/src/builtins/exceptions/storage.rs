@@ -3,6 +3,7 @@
 //! explicitly owned and never masquerade as borrows from native storage.
 
 use super::*;
+use crate::object::foreign::NativeObjectOwner;
 use molt_cpython_abi::{
     abi_types as cabi,
     api::{errors as cerrors, refcount as cref},
@@ -17,8 +18,9 @@ fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T 
     }
 }
 
-/// One owned reference held across Python callbacks. Release keeps a pending
-/// exception exact: finalizers it triggers cannot replace the raised error.
+/// One semantic reference held across Python callbacks. Ordinary retirement
+/// keeps the operation error visible to native deallocators; managed finalizers
+/// own their explicit saved-error boundary.
 pub(crate) struct ExceptionValue<'a, 'py> {
     pub(crate) py: &'a PyToken<'py>,
     bits: u64,
@@ -50,7 +52,7 @@ impl<'a, 'py> ExceptionValue<'a, 'py> {
 
 impl Drop for ExceptionValue<'_, '_> {
     fn drop(&mut self) {
-        cerrors::with_preserved_error(|| dec_ref_bits(self.py, self.bits));
+        dec_ref_bits(self.py, self.bits);
     }
 }
 
@@ -152,7 +154,7 @@ impl ExceptionStorage {
                 (!exception_pending(py)).then_some(())
             }
             Self::Native(ptr) => unsafe {
-                let args = cref::OwnedPyObject::from_owned(
+                let args = cref::ProtectedPyObject::from_owned(
                     GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(args),
                 );
                 if args.as_ptr().is_null() {
@@ -162,7 +164,7 @@ impl ExceptionStorage {
                     );
                     return None;
                 }
-                let keywords = cref::OwnedPyObject::from_owned(if names.is_empty() {
+                let keywords = cref::ProtectedPyObject::from_owned(if names.is_empty() {
                     std::ptr::null_mut()
                 } else {
                     molt_cpython_abi::api::mapping::PyDict_New()
@@ -175,7 +177,7 @@ impl ExceptionStorage {
                     return None;
                 }
                 for (&name, &value) in names.iter().zip(values) {
-                    let name = cref::OwnedPyObject::from_owned(
+                    let name = cref::ProtectedPyObject::from_owned(
                         GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(name),
                     );
                     if name.as_ptr().is_null() {
@@ -185,7 +187,7 @@ impl ExceptionStorage {
                         );
                         return None;
                     }
-                    let value = cref::OwnedPyObject::from_owned(
+                    let value = cref::ProtectedPyObject::from_owned(
                         GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value),
                     );
                     if value.as_ptr().is_null()
@@ -286,16 +288,10 @@ impl ExceptionStorage {
         if matches!(field, ExceptionFieldSlot::Traceback)
             && let Self::Managed(ptr) = self
         {
-            let mut result = None;
-            with_saved_raised_exception(py, || {
-                let bits = crate::exception_materialize_traceback_bits(py, ptr);
-                if exception_pending(py) {
-                    return false;
-                }
-                result = Some(ExceptionValue::pin(py, bits));
-                true
-            });
-            return result;
+            return Some(ExceptionValue::pin(
+                py,
+                crate::exception_materialize_traceback_bits(py, ptr)?,
+            ));
         }
         self.read(py, field)
     }
@@ -321,15 +317,7 @@ impl ExceptionStorage {
                 // for_exception admitted the physical BaseException prefix.
                 // Read storage without attribute dispatch or a pending-error
                 // probe: callers may be observing this very raised exception.
-                let base = &*ptr.cast::<cabi::PyBaseExceptionObject>();
-                let value = match field {
-                    ExceptionFieldSlot::Traceback => base.traceback,
-                    ExceptionFieldSlot::Context => base.context,
-                    ExceptionFieldSlot::Cause => base.cause,
-                    ExceptionFieldSlot::Args => base.args,
-                    ExceptionFieldSlot::Dict => base.dict,
-                    ExceptionFieldSlot::Notes => base.notes,
-                };
+                let value = native_field(ptr, field);
                 if value.is_null() {
                     Some(ExceptionValue::pin(py, MoltObject::none().bits()))
                 } else {
@@ -379,16 +367,28 @@ impl ExceptionStorage {
         field: ExceptionFieldSlot,
         value: u64,
     ) -> Option<()> {
-        if matches!(self, Self::Native(_)) {
-            return with_saved_raised_exception(py, || {
-                self.publish_inner(py, field, value).is_some()
+        // Projection runs without the incoming raised owner, but replacement
+        // retires semantic fields only after that transaction restores it.
+        let mut retired = None;
+        let result = if matches!(self, Self::Native(_)) {
+            with_saved_raised_exception(py, || {
+                self.publish_inner(py, field, value, &mut retired).is_some()
             })
-            .then_some(());
-        }
-        self.publish_inner(py, field, value)
+            .then_some(())
+        } else {
+            self.publish_inner(py, field, value, &mut retired)
+        };
+        drop(retired);
+        result
     }
 
-    fn publish_inner(self, py: &PyToken<'_>, field: ExceptionFieldSlot, value: u64) -> Option<()> {
+    fn publish_inner(
+        self,
+        py: &PyToken<'_>,
+        field: ExceptionFieldSlot,
+        value: u64,
+        retired: &mut Option<NativeObjectOwner>,
+    ) -> Option<()> {
         match self {
             Self::Managed(ptr) => {
                 if matches!(field, ExceptionFieldSlot::Traceback) {
@@ -409,10 +409,7 @@ impl ExceptionStorage {
                     && traceback_payload_is_lazy(value)
                 {
                     let bits =
-                        crate::builtins::frames::traceback_payload_to_traceback_bits(py, value);
-                    if obj_from_bits(bits).is_none() {
-                        return fail(py, "MemoryError", "traceback materialization failed");
-                    }
+                        crate::builtins::frames::traceback_payload_to_traceback_bits(py, value)?;
                     Some(ExceptionValue::adopt(py, bits))
                 } else {
                     None
@@ -431,6 +428,12 @@ impl ExceptionStorage {
                     }
                     projected
                 };
+                // Keep the displaced field alive through the canonical C
+                // setter, whose ordinary DECREF must not be the final edge
+                // while the incoming runtime error is temporarily detached.
+                if !matches!(field, ExceptionFieldSlot::Dict | ExceptionFieldSlot::Notes) {
+                    *retired = Some(NativeObjectOwner::from_borrowed(native_field(ptr, field)));
+                }
                 let status = match field {
                     ExceptionFieldSlot::Traceback => {
                         let status = cerrors::PyException_SetTraceback(ptr, c_value);
@@ -458,7 +461,7 @@ impl ExceptionStorage {
                             &mut base.notes
                         };
                         let previous = std::mem::replace(slot, c_value);
-                        cerrors::with_preserved_error(|| cref::Py_XDECREF(previous));
+                        *retired = Some(NativeObjectOwner::from_owned(previous));
                         0
                     }
                 };
@@ -473,6 +476,19 @@ impl ExceptionStorage {
                 }
             },
         }
+    }
+}
+
+/// Borrow the admitted physical BaseException prefix without callbacks.
+unsafe fn native_field(ptr: *mut cabi::PyObject, field: ExceptionFieldSlot) -> *mut cabi::PyObject {
+    let base = unsafe { &*ptr.cast::<cabi::PyBaseExceptionObject>() };
+    match field {
+        ExceptionFieldSlot::Traceback => base.traceback,
+        ExceptionFieldSlot::Context => base.context,
+        ExceptionFieldSlot::Cause => base.cause,
+        ExceptionFieldSlot::Args => base.args,
+        ExceptionFieldSlot::Dict => base.dict,
+        ExceptionFieldSlot::Notes => base.notes,
     }
 }
 
@@ -493,10 +509,12 @@ pub(super) unsafe fn replace_native_typed_fields(
     fields: &[(ExceptionTypedField, u64)],
 ) -> Result<(), &'static str> {
     enum Value {
-        Object(cref::OwnedPyObject),
+        Object(cref::ProtectedPyObject),
         Scalar(isize),
     }
     let mut result = Err("native typed exception update failed");
+    let mut retired: [Option<NativeObjectOwner>; MAX_EXCEPTION_TYPED_FIELDS] =
+        std::array::from_fn(|_| None);
     with_saved_raised_exception(py, || {
         result = (|| unsafe {
             let layout = cabi::exception_layout_for_type((*ptr).ob_type)
@@ -531,12 +549,10 @@ pub(super) unsafe fn replace_native_typed_fields(
                         );
                         return Err("typed exception field projection failed");
                     }
-                    Value::Object(cref::OwnedPyObject::from_owned(object))
+                    Value::Object(cref::ProtectedPyObject::from_owned(object))
                 };
                 updates[index] = Some((offset, value));
             }
-            let mut retired: [Option<cref::OwnedPyObject>; MAX_EXCEPTION_TYPED_FIELDS] =
-                std::array::from_fn(|_| None);
             for (index, (offset, value)) in updates.into_iter().flatten().enumerate() {
                 let address = ptr.cast::<u8>().add(offset);
                 match value {
@@ -545,16 +561,16 @@ pub(super) unsafe fn replace_native_typed_fields(
                             &mut *address.cast::<*mut cabi::PyObject>(),
                             value.into_ptr(),
                         );
-                        retired[index] = Some(cref::OwnedPyObject::from_owned(old));
+                        retired[index] = Some(NativeObjectOwner::from_owned(old));
                     }
                     Value::Scalar(value) => *address.cast::<isize>() = value,
                 }
             }
-            drop(retired);
             Ok(())
         })();
         result.is_ok()
     });
+    drop(retired);
     result
 }
 
@@ -585,7 +601,7 @@ pub(crate) unsafe fn native_owned_value<'a, 'py>(
     value: *mut cabi::PyObject,
 ) -> Option<ExceptionValue<'a, 'py>> {
     let bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(value) };
-    cerrors::with_preserved_error(|| unsafe { cref::Py_DECREF(value) });
+    crate::object::foreign::retire_native_reference(|| unsafe { cref::Py_DECREF(value) });
     match bits {
         Some(bits) => Some(ExceptionValue::adopt(py, bits)),
         None => {

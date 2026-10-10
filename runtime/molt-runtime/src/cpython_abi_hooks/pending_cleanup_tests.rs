@@ -623,7 +623,7 @@ unsafe extern "C" fn sequence_input_drop(object: *mut PyObject) {
 }
 
 #[test]
-fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_transfer() {
+fn explicit_cleanup_preserves_both_errors_through_sequence_retirement_and_item_transfer() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
@@ -676,10 +676,10 @@ fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_tra
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
                     errors::with_preserved_error(|| dec_ref_bits(py, transferred));
                 } else {
-                    drop(item_owner);
+                    errors::with_preserved_error(|| drop(item_owner));
                 }
-                drop(tuple_owner);
-                drop(snapshot_owner);
+                errors::with_preserved_error(|| drop(tuple_owner));
+                errors::with_preserved_error(|| drop(snapshot_owner));
                 assert_eq!(
                     SEQUENCE_INPUT_DROPS.with(|count| count.get()),
                     1,
@@ -965,7 +965,7 @@ fn pending_callback_completion_preserves_emergency_and_publishes_other_operands(
 }
 
 #[test]
-fn core_owned_iterator_value_preserves_both_errors_during_native_retirement() {
+fn core_protected_value_preserves_both_errors_during_native_retirement() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
@@ -995,14 +995,16 @@ fn core_owned_iterator_value_preserves_both_errors_during_native_retirement() {
                 .cast::<PyObject>();
                 let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(input).unwrap();
                 refcount::Py_DECREF(input);
-                let owner =
-                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
+                let owner = molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    bits,
+                );
                 set_c_error(original_view);
                 crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
                 if transfer {
                     let bits = owner.into_bits();
                     assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0);
-                    molt_runtime_core::ffi::__molt_runtime_release_owned_value(bits);
+                    molt_runtime_core::ffi::__molt_runtime_release_protected_value(bits);
                 } else {
                     drop(owner);
                 }
@@ -1016,6 +1018,429 @@ fn core_owned_iterator_value_preserves_both_errors_during_native_retirement() {
         }
         for bits in [runtime, original, cleanup] {
             dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[derive(Clone, Copy, Default)]
+struct RetirementObservation {
+    drops: usize,
+    releases: usize,
+    error: usize,
+    traceback: usize,
+    release_error: usize,
+    release_traceback: usize,
+}
+
+thread_local! {
+    static RETIREMENT_OBSERVATION: std::cell::Cell<RetirementObservation> =
+        std::cell::Cell::new(RetirementObservation::default());
+    static RETIREMENT_HOSTILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RETIREMENT_GET_RESULT: std::cell::Cell<Option<(usize, c_int)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[repr(C)]
+struct RetirementProbe {
+    object: PyObject,
+    byte: u8,
+}
+
+unsafe fn observe_retirement_error(release: bool) {
+    unsafe {
+        let error = errors::PyErr_GetRaisedException();
+        let trace = if error.is_null() {
+            ptr::null_mut()
+        } else {
+            errors::PyException_GetTraceback(error)
+        };
+        RETIREMENT_OBSERVATION.with(|cell| {
+            let mut observed = cell.get();
+            if release {
+                observed.releases += 1;
+                observed.release_error = error.addr();
+                observed.release_traceback = trace.addr();
+            } else {
+                observed.drops += 1;
+                observed.error = error.addr();
+                observed.traceback = trace.addr();
+            }
+            cell.set(observed);
+        });
+        refcount::Py_XDECREF(trace);
+        errors::PyErr_SetRaisedException(error);
+        if !release && RETIREMENT_HOSTILE.with(std::cell::Cell::get) {
+            errors::PyErr_SetString(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                c"explicit protected cleanup".as_ptr(),
+            );
+        }
+    }
+}
+
+unsafe extern "C" fn retirement_probe_drop(object: *mut PyObject) {
+    unsafe {
+        observe_retirement_error(false);
+    }
+    drop(unsafe { Box::from_raw(object.cast::<RetirementProbe>()) });
+}
+
+unsafe extern "C" fn retirement_probe_getbuffer(
+    object: *mut PyObject,
+    view: *mut molt_cpython_abi::abi_types::Py_buffer,
+    flags: c_int,
+) -> c_int {
+    unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            view,
+            object,
+            (&raw mut (*object.cast::<RetirementProbe>()).byte).cast(),
+            1,
+            0,
+            flags,
+        )
+    }
+}
+
+// The callback removes the fixture's original edge. Acquisition's receiver pin
+// is therefore the last owner on failure; no fixture guard masks its retirement.
+unsafe extern "C" fn retirement_probe_failed_getbuffer(
+    object: *mut PyObject,
+    view: *mut molt_cpython_abi::abi_types::Py_buffer,
+    flags: c_int,
+) -> c_int {
+    unsafe {
+        let Some((error, status)) = RETIREMENT_GET_RESULT.with(std::cell::Cell::get) else {
+            return -1;
+        };
+        if status >= 0 && retirement_probe_getbuffer(object, view, flags) < 0 {
+            refcount::Py_DECREF(object);
+            return -1;
+        }
+        refcount::Py_DECREF(object);
+        errors::PyErr_SetRaisedException(molt_cpython_abi::api::object::Py_NewRef(
+            std::ptr::with_exposed_provenance_mut(error),
+        ));
+        status
+    }
+}
+
+unsafe extern "C" fn retirement_probe_releasebuffer(
+    _object: *mut PyObject,
+    _view: *mut molt_cpython_abi::abi_types::Py_buffer,
+) {
+    unsafe {
+        observe_retirement_error(true);
+    }
+}
+
+#[test]
+fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        use super::native_test_fixture::NativeType;
+        use crate::object::foreign::{NativeObjectOwner, NativeReferenceRetirement};
+        use molt_cpython_abi::{
+            abi_types,
+            api::{buffer, memory, object},
+        };
+        let failure = exception_bits(py, "LookupError");
+        let _failure =
+            crate::PtrDropGuard::preserving(crate::obj_from_bits(failure).as_ptr().unwrap());
+        let failure_view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(failure) };
+        assert!(!failure_view.is_null());
+        let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
+            .as_ptr()
+            .unwrap();
+        let trace_bits = crate::alloc_instance_for_class(py, trace_class);
+        let traceback = unsafe {
+            refcount::ProtectedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(trace_bits))
+        };
+        assert!(!traceback.as_ptr().is_null());
+        assert_eq!(
+            unsafe { errors::PyException_SetTraceback(failure_view, traceback.as_ptr()) },
+            0
+        );
+        let mut kind = NativeType::subtype(
+            &raw mut abi_types::PyBaseObject_Type,
+            c"RetirementPolicyProbe",
+        );
+        kind.tp_dealloc = Some(retirement_probe_drop);
+        let mut slots = abi_types::PyBufferProcs {
+            bf_getbuffer: retirement_probe_getbuffer as *const () as *mut _,
+            bf_releasebuffer: retirement_probe_releasebuffer as *const () as *mut _,
+        };
+        kind.tp_as_buffer = (&raw mut slots).cast();
+        assert_eq!(kind.ready(), 0);
+        struct HostileReset;
+        impl Drop for HostileReset {
+            fn drop(&mut self) {
+                RETIREMENT_HOSTILE.with(|cell| cell.set(false));
+                RETIREMENT_GET_RESULT.with(|cell| cell.set(None));
+            }
+        }
+        let _reset = HostileReset;
+        for lease in [false, true] {
+            for policy in 0..3 {
+                RETIREMENT_OBSERVATION.with(|cell| cell.set(RetirementObservation::default()));
+                RETIREMENT_HOSTILE.with(|cell| cell.set(false));
+                let object = Box::into_raw(Box::new(RetirementProbe {
+                    object: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut *kind,
+                    },
+                    byte: 42,
+                }))
+                .cast::<PyObject>();
+                // Acquire and clone before publishing the operation error. The
+                // final selected owner is the only remaining exporter edge.
+                let source = if lease {
+                    let object = unsafe { refcount::OwnedPyObject::from_owned(object) };
+                    let source = unsafe {
+                        memory::MemoryViewLease::acquire(
+                            object.as_ptr(),
+                            0,
+                            buffer::PyObject_GetBuffer,
+                        )
+                    }
+                    .expect("native export");
+                    drop(object);
+                    Some(source)
+                } else {
+                    None
+                };
+                unsafe {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(failure_view));
+                }
+                if policy != 0 {
+                    assert!(transfer_pending_cpython_exception());
+                    assert!(crate::exception_pending(py));
+                }
+                RETIREMENT_HOSTILE.with(|cell| cell.set(policy == 2));
+                if let Some(source) = source {
+                    match policy {
+                        0 => {
+                            let selected = source.clone();
+                            drop(source);
+                            drop(selected);
+                        }
+                        1 => {
+                            let selected = source.clone_with_policy::<NativeReferenceRetirement>();
+                            drop(source);
+                            drop(selected);
+                        }
+                        _ => {
+                            let selected =
+                                source.clone_with_policy::<refcount::ProtectedReferenceRelease>();
+                            drop(source);
+                            drop(selected);
+                        }
+                    }
+                } else {
+                    unsafe {
+                        match policy {
+                            0 => {
+                                let owner = refcount::OwnedPyObject::from_owned(object);
+                                let transferred = owner.into_ptr();
+                                assert_eq!(RETIREMENT_OBSERVATION.with(|cell| cell.get().drops), 0);
+                                drop(refcount::OwnedPyObject::from_owned(transferred));
+                            }
+                            1 => drop(NativeObjectOwner::from_owned(object)),
+                            _ => drop(refcount::ProtectedPyObject::from_owned(object)),
+                        }
+                    }
+                }
+                RETIREMENT_HOSTILE.with(|cell| cell.set(false));
+                let observed = RETIREMENT_OBSERVATION.with(std::cell::Cell::get);
+                assert_eq!(observed.drops, 1, "lease={lease} policy={policy}");
+                assert_eq!(observed.releases, usize::from(lease));
+                assert_eq!(
+                    observed.error,
+                    if policy == 2 { 0 } else { failure_view.addr() }
+                );
+                assert_eq!(
+                    observed.traceback,
+                    if policy == 2 {
+                        0
+                    } else {
+                        traceback.as_ptr().addr()
+                    }
+                );
+                if lease {
+                    assert_eq!(observed.release_error, observed.error);
+                    assert_eq!(observed.release_traceback, observed.traceback);
+                }
+                assert_eq!(crate::exception_pending(py), policy != 0);
+                let restored = unsafe {
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException())
+                };
+                assert_eq!(restored.as_ptr(), failure_view);
+                let trace = unsafe {
+                    refcount::OwnedPyObject::from_owned(errors::PyException_GetTraceback(
+                        restored.as_ptr(),
+                    ))
+                };
+                assert_eq!(trace.as_ptr(), traceback.as_ptr());
+                assert!(!crate::exception_pending(py));
+                assert!(unsafe { errors::PyErr_Occurred().is_null() });
+            }
+        }
+
+        for runtime in [false, true] {
+            for status in [-1, 0] {
+                RETIREMENT_OBSERVATION.with(|cell| cell.set(RetirementObservation::default()));
+                RETIREMENT_GET_RESULT.with(|cell| cell.set(Some((failure_view.addr(), status))));
+                let receiver = Box::into_raw(Box::new(RetirementProbe {
+                    object: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut *kind,
+                    },
+                    byte: 42,
+                }))
+                .cast::<PyObject>();
+                let rejected = if runtime {
+                    unsafe {
+                        crate::object::foreign::RuntimeBufferLease::acquire(
+                            receiver,
+                            0,
+                            retirement_probe_failed_getbuffer,
+                        )
+                    }
+                    .is_err()
+                } else {
+                    unsafe {
+                        memory::MemoryViewLease::acquire(
+                            receiver,
+                            0,
+                            retirement_probe_failed_getbuffer,
+                        )
+                    }
+                    .is_err()
+                };
+                RETIREMENT_GET_RESULT.with(|cell| cell.set(None));
+                assert!(rejected);
+                let observed = RETIREMENT_OBSERVATION.with(std::cell::Cell::get);
+                assert_eq!(observed.drops, 1, "failed receiver pin is the last edge");
+                assert_eq!(observed.releases, usize::from(status >= 0));
+                assert_eq!(crate::exception_pending(py), runtime);
+                let raised = unsafe {
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException())
+                };
+                assert!(!raised.as_ptr().is_null());
+                assert_eq!(observed.error, raised.as_ptr().addr());
+                if status < 0 {
+                    assert_eq!(raised.as_ptr(), failure_view);
+                    assert_eq!(observed.traceback, traceback.as_ptr().addr());
+                } else {
+                    assert_ne!(
+                        raised.as_ptr(),
+                        failure_view,
+                        "success with error is a protocol failure"
+                    );
+                    assert_eq!(
+                        unsafe { object::Py_TYPE(raised.as_ptr()) },
+                        &raw mut abi_types::PyExc_SystemError
+                    );
+                    assert_eq!(observed.release_error, observed.error);
+                }
+                assert!(unsafe { errors::PyErr_Occurred().is_null() });
+            }
+        }
+        crate::record_exception(py, crate::obj_from_bits(failure).as_ptr().unwrap());
+        unsafe {
+            drop(NativeObjectOwner::from_owned(ptr::null_mut()));
+        }
+        assert_eq!(
+            crate::exception_last_bits_noinc(py),
+            Some(failure),
+            "NULL is an empty owner"
+        );
+        crate::clear_exception(py);
+    });
+}
+
+#[test]
+fn cold_type_publication_preserves_prior_on_success_and_selects_real_failure() {
+    use crate::builtins::exceptions::ExceptionValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        for emergency in [false, true] {
+            for fail in [false, true] {
+                let prior = ExceptionValue::adopt(py, exception_bits(py, "LookupError"));
+                let name = ExceptionValue::adopt(
+                    py,
+                    crate::attr_name_bits_from_bytes(py, b"ColdPendingPublication").unwrap(),
+                );
+                let namespace = crate::alloc_dict_with_pairs(py, &[]);
+                assert!(!namespace.is_null());
+                let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace).bits());
+                let class = ExceptionValue::adopt(
+                    py,
+                    crate::builtins::types::molt_type_new(
+                        crate::builtin_classes(py).type_obj,
+                        name.bits(),
+                        crate::builtin_classes(py).object,
+                        namespace.bits(),
+                        MoltObject::none().bits(),
+                    ),
+                );
+                let class_ptr = crate::obj_from_bits(class.bits())
+                    .as_ptr()
+                    .expect("managed class");
+                assert!(!crate::exception_pending(py));
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(class_ptr)).load_synchronized_flags() }
+                        & crate::object::HEADER_FLAG_HAS_ABI_VIEW,
+                    0
+                );
+                if emergency {
+                    crate::record_memory_error_without_allocation(py);
+                } else {
+                    crate::record_exception(
+                        py,
+                        crate::obj_from_bits(prior.bits()).as_ptr().unwrap(),
+                    );
+                }
+                if fail {
+                    let (view, attempts) = GLOBAL_BRIDGE
+                        .with_denied_publication_for_test(class.bits(), || unsafe {
+                            GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class.bits())
+                        });
+                    assert!(view.is_null());
+                    assert_eq!(attempts, 1, "actual cold allocation admission was reached");
+                    assert_eq!(
+                        unsafe {
+                            errors::PyErr_ExceptionMatches(
+                                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast(),
+                            )
+                        },
+                        1,
+                        "the allocation failure replaces the incoming error"
+                    );
+                    assert_eq!(
+                        unsafe { (*header_from_obj_ptr(class_ptr)).load_synchronized_flags() }
+                            & crate::object::HEADER_FLAG_HAS_ABI_VIEW,
+                        0
+                    );
+                } else {
+                    let view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class.bits()) };
+                    assert!(!view.is_null());
+                    assert_eq!(
+                        GLOBAL_BRIDGE.molt_handle_for_pyobj(view).unwrap().bits(),
+                        class.bits()
+                    );
+                    if emergency {
+                        assert_emergency_pending(py);
+                    } else {
+                        assert_eq!(crate::exception_last_bits_noinc(py), Some(prior.bits()));
+                    }
+                }
+                unsafe { errors::PyErr_Clear() };
+                assert!(!crate::exception_pending(py));
+            }
         }
     });
 }

@@ -24,7 +24,7 @@ pub(super) struct BuiltinArgumentStorage {
 
 impl BuiltinArgumentStorage {
     fn own(&mut self, py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-        let owner = PtrDropGuard::preserving(ptr);
+        let owner = PtrDropGuard::new(ptr);
         if ptr.is_null() {
             if !exception_pending(py) {
                 raise_exception::<()>(py, "MemoryError", "builtin argument allocation failed");

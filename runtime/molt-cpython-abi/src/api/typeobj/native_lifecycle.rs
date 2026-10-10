@@ -1,7 +1,7 @@
 //! Native allocation, finalization and terminal release share one handshake.
 
 use crate::abi_types::{Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE, PyObject, PyTypeObject};
-use crate::api::{errors, memory, refcount};
+use crate::api::{memory, refcount};
 use std::ffi::c_void;
 use std::ptr;
 
@@ -17,14 +17,14 @@ pub(super) unsafe fn release_unconstructed_type(
     metaclass: *mut PyTypeObject,
     owns_metaclass: bool,
 ) {
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         if let Some(storage) = NativeDeallocation::storage(object) {
             storage.finish();
         }
         if owns_metaclass {
             refcount::Py_DECREF(metaclass.cast());
         }
-    });
+    }
 }
 
 impl NativeDeallocation {
@@ -115,11 +115,11 @@ impl NativeDeallocation {
 }
 
 pub(crate) unsafe extern "C" fn object_dealloc(object: *mut PyObject) {
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         if let Some(deallocation) = NativeDeallocation::storage(object) {
             deallocation.finish();
         }
-    });
+    }
 }
 
 /// The default heap boundary owns instance finalization and the instance's
@@ -232,7 +232,7 @@ unsafe fn clear_subtype_dict(object: *mut PyObject, base: *mut PyTypeObject) {
 /// One default heap-subtype boundary owns finalization, member/dict release and
 /// the instance's heap-class reference. Its base may be an arbitrary extension.
 pub(crate) unsafe extern "C" fn subtype_dealloc(object: *mut PyObject) {
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         let Some(_terminal) = NativeDeallocation::begin(object) else {
             return;
         };
@@ -268,7 +268,7 @@ pub(crate) unsafe extern "C" fn subtype_dealloc(object: *mut PyObject) {
         if release_type {
             refcount::Py_DECREF(current.cast());
         }
-    });
+    }
 }
 
 pub(super) unsafe extern "C" fn subtype_traverse(
@@ -366,7 +366,7 @@ pub(crate) unsafe extern "C" fn type_dealloc(object: *mut PyObject) {
             memory::Py_FatalError(c"native type deallocation requires proven heap storage".as_ptr())
         };
     };
-    errors::with_preserved_error(|| unsafe {
+    unsafe {
         let Some(deallocation) = NativeDeallocation::storage(object) else {
             return;
         };
@@ -386,16 +386,18 @@ pub(crate) unsafe extern "C" fn type_dealloc(object: *mut PyObject) {
         let doc = std::mem::replace(&mut (*type_).tp_doc, ptr::null());
         let name = std::mem::replace(&mut (*heap)._ht_tpname, ptr::null_mut());
         (*type_).tp_name = ptr::null();
-        errors::release_preserving_error(&edges);
+        for edge in edges {
+            refcount::Py_XDECREF(edge);
+        }
         memory::PyMem_Free(doc.cast_mut().cast());
         memory::PyMem_Free(name.cast());
         deallocation.finish();
-    });
+    }
 }
 
 /// A failed spec construction can already own a self-referential MRO or
 /// descriptors. Cut those construction cycles before releasing its first owner.
-pub(super) struct HeapTypeConstruction(pub(super) refcount::OwnedPyObject);
+pub(super) struct HeapTypeConstruction(pub(super) crate::api::refcount::OwnedPyObject);
 
 impl HeapTypeConstruction {
     pub(super) fn into_ptr(self) -> *mut PyObject {
@@ -406,12 +408,12 @@ impl HeapTypeConstruction {
 
 impl Drop for HeapTypeConstruction {
     fn drop(&mut self) {
-        errors::with_preserved_error(|| unsafe {
+        unsafe {
             let type_ = self.0.as_ptr().cast::<PyTypeObject>();
             if !(*type_).tp_dict.is_null() {
                 crate::api::mapping::PyDict_Clear((*type_).tp_dict);
             }
             refcount::Py_CLEAR(&raw mut (*type_).tp_mro);
-        });
+        }
     }
 }

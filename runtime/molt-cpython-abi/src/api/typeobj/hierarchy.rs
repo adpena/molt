@@ -18,7 +18,7 @@ pub(super) unsafe fn prepare(
             }
         }
         let base = (*tp).tp_base;
-        let _base = OwnedPyObject::from_borrowed(base.cast());
+        let _base = crate::api::refcount::OwnedPyObject::from_borrowed(base.cast());
         if !base.is_null() {
             if ready_type(bridge, base) < 0 {
                 return -1;
@@ -136,7 +136,7 @@ unsafe fn compute_mro(tp: *mut PyTypeObject) -> c_int {
             }
         }
         let previous = std::mem::replace(&mut (*tp).tp_mro, mro.into_ptr());
-        crate::api::errors::release_preserving_error(&[previous]);
+        crate::api::refcount::Py_XDECREF(previous);
         0
     }
 }
@@ -146,7 +146,7 @@ unsafe fn compute_mro(tp: *mut PyTypeObject) -> c_int {
 unsafe fn solid_owner(
     mut tp: *mut PyTypeObject,
     owners: &mut HashMap<*mut PyTypeObject, *mut PyTypeObject>,
-    owner_pins: &mut Vec<OwnedPyObject>,
+    owner_pins: &mut Vec<crate::api::refcount::OwnedPyObject>,
 ) -> Option<*mut PyTypeObject> {
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
@@ -167,7 +167,9 @@ unsafe fn solid_owner(
                     value.bits(),
                     crate::hooks::TypeMetadataField::SolidOwner,
                 );
-                let pin = OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_result_to_pyobj(result));
+                let pin = crate::api::refcount::OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.owned_result_to_pyobj(result),
+                );
                 if pin.as_ptr().is_null() {
                     return None;
                 }
@@ -203,7 +205,7 @@ unsafe fn solid_owner(
 
 pub(super) unsafe fn best_base(bases: *mut PyObject) -> *mut PyTypeObject {
     unsafe {
-        let bases = OwnedPyObject::from_borrowed(bases);
+        let bases = crate::api::refcount::OwnedPyObject::from_borrowed(bases);
         let count = PyTuple_Size(bases.as_ptr());
         if count < 0 {
             return ptr::null_mut();
@@ -218,7 +220,9 @@ pub(super) unsafe fn best_base(bases: *mut PyObject) -> *mut PyTypeObject {
                 reject_type_layout(c"bases must contain only type objects");
                 return ptr::null_mut();
             }
-            candidates.push(OwnedPyObject::from_borrowed(candidate));
+            candidates.push(crate::api::refcount::OwnedPyObject::from_borrowed(
+                candidate,
+            ));
         }
         let mut selected = None;
         let mut owners = HashMap::new();
@@ -262,8 +266,8 @@ pub(super) unsafe fn set_bases(tp: *mut PyTypeObject, value: *mut PyObject) -> c
         if crate::api::sequences::PyTuple_Check(value) == 0 {
             return reject_type_layout(c"__bases__ must be a tuple of classes");
         }
-        let _receiver = OwnedPyObject::from_borrowed(tp.cast());
-        let _incoming = OwnedPyObject::from_borrowed(value);
+        let _receiver = crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast());
+        let _incoming = crate::api::refcount::OwnedPyObject::from_borrowed(value);
         reject_type_layout(c"native class bases are immutable after type readiness")
     }
 }
@@ -273,9 +277,9 @@ pub(super) unsafe fn set_bases(tp: *mut PyTypeObject, value: *mut PyObject) -> c
 pub(super) unsafe fn assign_class(object: *mut PyObject, target: *mut PyTypeObject) -> c_int {
     unsafe {
         let original = (*object).ob_type;
-        let _receiver = OwnedPyObject::from_borrowed(object);
+        let _receiver = crate::api::refcount::OwnedPyObject::from_borrowed(object);
         let old = OwnedPyObject::from_borrowed(original.cast());
-        let new = OwnedPyObject::from_borrowed(target.cast());
+        let new = crate::api::refcount::OwnedPyObject::from_borrowed(target.cast());
         if GLOBAL_BRIDGE
             .observed_handle_for_pyobj(target.cast())
             .is_some_and(|value| {
@@ -336,7 +340,7 @@ pub(super) unsafe fn assign_class(object: *mut PyObject, target: *mut PyTypeObje
         }
         crate::api::refcount::Py_INCREF(target.cast());
         (*object).ob_type = target;
-        crate::api::errors::release_preserving_error(&[original.cast()]);
+        crate::api::refcount::Py_XDECREF(original.cast());
         drop(new);
         drop(old);
         0

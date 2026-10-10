@@ -60,7 +60,7 @@ unsafe fn call_dunder_raw(
             return BinaryDunderOutcome::Missing;
         };
         if exception_pending(_py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, res_bits));
+            dec_ref_bits(_py, res_bits);
             return BinaryDunderOutcome::Error;
         }
         if is_not_implemented_bits(_py, res_bits) {
@@ -112,7 +112,7 @@ unsafe fn call_current_dunder(
             None if exception_pending(py) => BinaryDunderOutcome::Error,
             None => BinaryDunderOutcome::Missing,
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, owner));
+        dec_ref_bits(py, owner);
         outcome
     }
 }

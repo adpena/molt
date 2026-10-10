@@ -251,12 +251,24 @@ fn native_classinfo_preserves_hooks_tuple_order_and_throw_failure_identity() {
             );
             let actual = crate::builtins::exceptions::exception_class(py, input.bits()).unwrap();
             let lookup = crate::exception_type_bits_from_name(py, "LookupError");
-            assert!(crate::isinstance_runtime(py, input.bits(), lookup));
-            assert!(crate::issubclass_runtime(py, actual.bits(), lookup));
+            assert_eq!(
+                crate::isinstance_runtime(py, input.bits(), lookup),
+                Some(true)
+            );
+            assert_eq!(
+                crate::issubclass_runtime(py, actual.bits(), lookup),
+                Some(true)
+            );
             CHECK_MODE.store(0, Ordering::SeqCst);
             CHECK_CALLS.store(0, Ordering::SeqCst);
-            assert!(crate::isinstance_runtime(py, input.bits(), class.bits()));
-            assert!(crate::issubclass_runtime(py, actual.bits(), class.bits()));
+            assert_eq!(
+                crate::isinstance_runtime(py, input.bits(), class.bits()),
+                Some(true)
+            );
+            assert_eq!(
+                crate::issubclass_runtime(py, actual.bits(), class.bits()),
+                Some(true)
+            );
             assert_eq!(CHECK_CALLS.load(Ordering::SeqCst), 2);
             let tuple = ExceptionValue::adopt(
                 py,
@@ -266,8 +278,14 @@ fn native_classinfo_preserves_hooks_tuple_order_and_throw_failure_identity() {
                 ))
                 .bits(),
             );
-            assert!(crate::isinstance_runtime(py, input.bits(), tuple.bits()));
-            assert!(crate::issubclass_runtime(py, actual.bits(), tuple.bits()));
+            assert_eq!(
+                crate::isinstance_runtime(py, input.bits(), tuple.bits()),
+                Some(true)
+            );
+            assert_eq!(
+                crate::issubclass_runtime(py, actual.bits(), tuple.bits()),
+                Some(true)
+            );
             assert!(
                 !crate::exception_pending(py),
                 "successful first member skips invalid later classinfo"
@@ -281,11 +299,10 @@ fn native_classinfo_preserves_hooks_tuple_order_and_throw_failure_identity() {
                 .bits(),
             );
             CHECK_CALLS.store(0, Ordering::SeqCst);
-            assert!(!crate::isinstance_runtime(
-                py,
-                input.bits(),
-                invalid_first.bits()
-            ));
+            assert_eq!(
+                crate::isinstance_runtime(py, input.bits(), invalid_first.bits()),
+                None
+            );
             assert!(crate::exception_pending(py));
             assert_eq!(CHECK_CALLS.load(Ordering::SeqCst), 0);
             crate::clear_exception(py);
@@ -421,7 +438,8 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
         drop(frame);
         let traceback = ExceptionValue::adopt(
             py,
-            crate::builtins::frames::traceback_payload_to_traceback_bits(py, payload.bits()),
+            crate::builtins::frames::traceback_payload_to_traceback_bits(py, payload.bits())
+                .expect("materialized traceback"),
         );
         assert!(!MoltObject::from_bits(traceback.bits()).is_none());
         assert!(!crate::exception_pending(py));

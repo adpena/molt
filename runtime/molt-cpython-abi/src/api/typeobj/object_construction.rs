@@ -71,6 +71,7 @@ unsafe fn reject_abstract(tp: *mut PyTypeObject) -> bool {
         }
         let sorted =
             OwnedPyObject::from_owned(abstract_sequence::PySequence_List(methods.as_ptr()));
+        drop(methods);
         if sorted.as_ptr().is_null() || sequences::PyList_Sort(sorted.as_ptr()) < 0 {
             return true;
         }
@@ -78,12 +79,17 @@ unsafe fn reject_abstract(tp: *mut PyTypeObject) -> bool {
         if count < 0 {
             return true;
         }
-        let separator = OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"', '".as_ptr()));
+        let separator = crate::api::refcount::OwnedPyObject::from_owned(
+            strings::PyUnicode_FromString(c"', '".as_ptr()),
+        );
         if separator.as_ptr().is_null() {
             return true;
         }
-        let joined =
-            OwnedPyObject::from_owned(strings::PyUnicode_Join(separator.as_ptr(), sorted.as_ptr()));
+        let joined = crate::api::refcount::OwnedPyObject::from_owned(strings::PyUnicode_Join(
+            separator.as_ptr(),
+            sorted.as_ptr(),
+        ));
+        drop(sorted);
         if joined.as_ptr().is_null() {
             return true;
         }
@@ -106,7 +112,7 @@ pub(crate) unsafe extern "C" fn object_new(
     kwds: *mut PyObject,
 ) -> *mut PyObject {
     unsafe {
-        let _owner = OwnedPyObject::from_borrowed(tp.cast());
+        let _owner = crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast());
         match excess_args(args, kwds) {
             Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
             Ok(false) => {}

@@ -327,25 +327,31 @@ pub extern "C" fn molt_importlib_compiled_loader_exec_module(
             displaced.restore_on_error();
             return none;
         }
-        let payload = if isinstance_runtime(py, imported, builtin_classes(py).dict) {
-            inc_ref_bits(py, imported);
-            imported
-        } else {
-            match attr_or_none(py, imported, b"__dict__") {
-                Some(bits) if isinstance_runtime(py, bits, builtin_classes(py).dict) => bits,
-                Some(bits) => {
-                    if !obj_from_bits(bits).is_none() {
-                        dec_ref_bits(py, bits);
-                    }
-                    let message = format!(
-                        "import returned non-module payload: {}",
-                        type_name(py, obj_from_bits(imported))
-                    );
-                    let _ = raise_exception::<u64>(py, "TypeError", &message);
-                    none
-                }
-                None => none,
+        let payload = match isinstance_runtime(py, imported, builtin_classes(py).dict) {
+            Some(true) => {
+                inc_ref_bits(py, imported);
+                imported
             }
+            Some(false) => match attr_or_none(py, imported, b"__dict__") {
+                Some(bits) => match isinstance_runtime(py, bits, builtin_classes(py).dict) {
+                    Some(true) => bits,
+                    matched => {
+                        if !obj_from_bits(bits).is_none() {
+                            dec_ref_bits(py, bits);
+                        }
+                        if matched == Some(false) {
+                            let message = format!(
+                                "import returned non-module payload: {}",
+                                type_name(py, obj_from_bits(imported))
+                            );
+                            let _ = raise_exception::<u64>(py, "TypeError", &message);
+                        }
+                        none
+                    }
+                },
+                None => none,
+            },
+            None => none,
         };
         if !exception_pending(py)
             && let Some(target) = required_attr(py, module_bits, b"__dict__")
@@ -746,11 +752,10 @@ mod tests {
             assert!(obj_from_bits(outcome).is_none());
             assert!(!exception_pending(py), "{}", pending_exception_summary(py));
             let copied_modules = attr_or_none(py, target, b"modules").expect("copied sys.modules");
-            assert!(isinstance_runtime(
-                py,
-                copied_modules,
-                builtin_classes(py).dict
-            ));
+            assert_eq!(
+                isinstance_runtime(py, copied_modules, builtin_classes(py).dict),
+                Some(true)
+            );
             let modules =
                 crate::builtins::platform::importlib_runtime_modules_bits(py).expect("sys.modules");
             let modules_ptr = obj_from_bits(modules).as_ptr().expect("modules dict");

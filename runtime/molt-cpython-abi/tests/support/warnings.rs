@@ -2,7 +2,7 @@
 //! Real PyErr_WarnEx still owns import, lookup, argument construction and call.
 
 use molt_cpython_abi::abi_types::{Py_None, PyObject};
-use molt_cpython_abi::api::{errors, numbers, object, sequences, strings};
+use molt_cpython_abi::api::{errors, numbers, object, refcount, sequences, strings};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char};
@@ -21,6 +21,7 @@ thread_local! {
     static EMISSIONS: RefCell<Vec<Emission>> = const { RefCell::new(Vec::new()) };
     static AS_ERROR: Cell<bool> = const { Cell::new(false) };
     static OBSERVER: Cell<Option<fn()>> = const { Cell::new(None) };
+    static ERROR_INSTANCE: RefCell<Option<refcount::ProtectedPyObject>> = const { RefCell::new(None) };
 }
 
 pub unsafe extern "C" fn import_module(data: *const u8, len: usize) -> u64 {
@@ -71,7 +72,17 @@ unsafe extern "C" fn call(
         observer();
     }
     if AS_ERROR.with(Cell::get) {
-        unsafe { errors::PyErr_SetString(category, text) };
+        let error = ERROR_INSTANCE.with(|value| {
+            value
+                .borrow()
+                .as_ref()
+                .map_or(ptr::null_mut(), |owner| owner.as_ptr())
+        });
+        if error.is_null() {
+            unsafe { errors::PyErr_SetString(category, text) };
+        } else {
+            unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
+        }
         ptr::null_mut()
     } else {
         unsafe { object::Py_NewRef(&raw mut Py_None) }
@@ -84,6 +95,34 @@ pub fn set_as_error(enabled: bool) {
 
 pub fn set_observer(observer: Option<fn()>) {
     OBSERVER.with(|value| value.set(observer));
+}
+
+unsafe fn set_error_instance(error: *mut PyObject) {
+    let owner = if error.is_null() {
+        None
+    } else {
+        Some(unsafe { refcount::ProtectedPyObject::from_borrowed(error) })
+    };
+    let previous = ERROR_INSTANCE.with(|value| value.replace(owner));
+    drop(previous);
+}
+
+/// Raise the supplied exception through the real warning-call boundary while
+/// warning-as-error is enabled. The provider owns a reference for this scope;
+/// the caller's instance and traceback remain independent identity witnesses.
+///
+/// # Safety
+/// `error` must be a live exception instance for the duration of `run`.
+pub unsafe fn with_error_instance(error: *mut PyObject, run: impl FnOnce()) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            unsafe { set_error_instance(ptr::null_mut()) };
+        }
+    }
+    unsafe { set_error_instance(error) };
+    let _reset = Reset;
+    run();
 }
 
 pub fn emissions() -> Vec<Emission> {
@@ -106,6 +145,7 @@ pub fn with_provider(run: impl FnOnce()) {
             CALLABLE.with(|value| value.set(0));
             set_as_error(false);
             set_observer(None);
+            unsafe { set_error_instance(ptr::null_mut()) };
         }
     }
     let mut module_type = super::StaticType::new();
@@ -129,6 +169,7 @@ pub fn with_provider(run: impl FnOnce()) {
     clear();
     set_as_error(false);
     set_observer(None);
+    unsafe { set_error_instance(ptr::null_mut()) };
     let reset = Reset;
     run();
     drop(reset);

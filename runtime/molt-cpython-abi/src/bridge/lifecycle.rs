@@ -35,11 +35,9 @@ pub struct RetiredTypeCycleProjection {
 
 impl Drop for RetiredTypeCycleProjection {
     fn drop(&mut self) {
-        crate::api::errors::with_preserved_error(|| {
-            for pointer in self.pointers {
-                unsafe { GLOBAL_BRIDGE.projection_decref(pointer) };
-            }
-        });
+        for pointer in self.pointers {
+            unsafe { GLOBAL_BRIDGE.projection_decref(pointer) };
+        }
     }
 }
 
@@ -74,7 +72,11 @@ impl Drop for RetiredOwnedCFields {
             &mut self.pointers,
             [std::ptr::null_mut(); EXCEPTION_VIEW_POINTER_FIELDS],
         );
-        unsafe { crate::api::errors::release_preserving_error(&pointers) };
+        unsafe {
+            for &object in &pointers {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+        };
     }
 }
 

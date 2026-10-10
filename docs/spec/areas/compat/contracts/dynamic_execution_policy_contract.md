@@ -7,12 +7,18 @@
 ---
 
 ## 1. Current Policy (Default, Active)
-For compiled Molt binaries, dynamic semantics are supported only within the
-explicit, test-backed verified subset. This is not a claim that everything
-outside the following carve-outs is implemented:
+For compiled Molt binaries, the [Python contract](verified_subset_contract.md)
+limits excessive dynamism that obstructs efficient ahead-of-time compilation
+and standalone execution. Verification records implementation evidence separately
+from that intended scope. The restrictions concern:
 - unrestricted `eval`/`exec` execution paths
 - runtime monkeypatching as a general semantic compatibility goal
 - unrestricted reflection/introspection lanes that block static reasoning
+
+Each exclusion requires a concrete performance or compilation rationale. Missing
+implementation, a slow implementation or a failing conformance test cannot justify
+an exclusion. Behavior inside the contract remains a correctness and performance
+obligation until implemented and verified.
 
 This aligns with:
 - `docs/spec/areas/core/0000-vision.md` (Tier 0 constraints)

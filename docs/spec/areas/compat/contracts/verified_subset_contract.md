@@ -6,15 +6,36 @@
 
 ## Definition
 
-The verified subset is the source-bound set of Python language, runtime, and
-stdlib behaviors for which Molt has demonstrated CPython-equivalent observable
-behavior. A required coordinate is not verified merely because it appears in a
-configuration file: verification exists only when the exact source revision has
-a passing receipt for every required coordinate.
+Molt's Python contract defines the language, runtime and standard-library
+semantics it commits to implement correctly within explicit restrictions on
+excessive dynamism that obstruct efficient ahead-of-time compilation and
+standalone execution. The [dynamic-semantics policy](dynamic_execution_policy_contract.md)
+owns those restrictions. Each restriction needs a concrete performance or
+compilation rationale; implementation difficulty, a slow implementation, missing
+support or a failing test does not establish a design exclusion. Scoped mutation,
+callbacks and introspection remain subject to their admitted Python semantics.
 
-Behavior that requires unrestricted dynamic execution, runtime monkeypatching,
-or a hidden host-CPython fallback remains outside this contract and must fail
-closed under Molt's explicit dynamic and capability policies.
+Verification describes evidence for this contract, not its intended scope. A
+required coordinate is verified only when the exact source revision has passing
+receipts for every required observation in that coordinate. Missing features,
+incorrect behavior, performance failures and unverified coordinates remain
+engineering and release obligations inside the contract; they cannot be
+reclassified as outside the subset to obtain a passing release.
+
+Version-pinned [CPython source](https://github.com/python/cpython) and applicable
+accepted [official PEPs](https://peps.python.org/) are the semantic authorities.
+Use the selected target version's implementation and applicable PEP revisions;
+historical proposals do not override later Python behavior. Preserve specified
+observable behavior, including errors, side effects and callback order, while
+optimizing the implementation. Differential execution verifies the implementation
+against that authority.
+
+Target availability and capabilities are explicit deployment coordinates, not
+additional language exclusions. Unsupported requests fail early under their
+own policies. Compiled outputs never depend on a host or fallback Python
+interpreter. Source comparison, conformance receipts and release checks run on
+the development side; emitted binaries retain only the checks required by their
+actual runtime semantics and safety contracts.
 
 The current required matrix is the cross-product of:
 

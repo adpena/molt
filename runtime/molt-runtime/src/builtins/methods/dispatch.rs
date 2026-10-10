@@ -183,47 +183,50 @@ pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> boo
     if unsafe { class_declares(pointer, ClassDeclaration::NativeNamespacePublished) } {
         return true;
     }
-    if !publish_special_methods(py, class) || !publish_declared_methods(py, class) {
-        return false;
-    }
-    let b = builtin_classes(py);
-    let complete = if class == b.int {
-        super::numeric::publish_int_class_methods(py)
-    } else if class == b.float {
-        super::numeric::publish_float_class_methods(py)
-    } else if class == b.complex {
-        super::numeric::publish_complex_class_methods(py)
-    } else if issubclass_bits(class, b.base_exception) {
-        if !crate::builtins::exceptions::publish_exception_fields(py, class)
-            || !crate::builtins::exceptions::publish_exception_render_methods(py, class)
-        {
+    crate::builtins::exceptions::with_saved_raised_exception(py, || {
+        if !publish_special_methods(py, class) || !publish_declared_methods(py, class) {
             return false;
         }
-        let owner = if class == b.exception_group {
-            b.base_exception_group
-        } else {
-            class
-        };
-        let _ = crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__");
-        if exception_pending(py) {
-            return false;
-        }
-        if class == b.base_exception {
-            crate::builtins::exceptions::publish_exception_methods(py)
-        } else if class == b.base_exception_group || class == b.exception_group {
-            crate::builtins::exceptions::publish_exception_group_methods(py)
+        let b = builtin_classes(py);
+        let complete = if class == b.int {
+            super::numeric::publish_int_class_methods(py)
+        } else if class == b.float {
+            super::numeric::publish_float_class_methods(py)
+        } else if class == b.complex {
+            super::numeric::publish_complex_class_methods(py)
+        } else if issubclass_bits(class, b.base_exception) {
+            if !crate::builtins::exceptions::publish_exception_fields(py, class)
+                || !crate::builtins::exceptions::publish_exception_render_methods(py, class)
+            {
+                return false;
+            }
+            let owner = if class == b.exception_group {
+                b.base_exception_group
+            } else {
+                class
+            };
+            let _ =
+                crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__");
+            if exception_pending(py) {
+                return false;
+            }
+            if class == b.base_exception {
+                crate::builtins::exceptions::publish_exception_methods(py)
+            } else if class == b.base_exception_group || class == b.exception_group {
+                crate::builtins::exceptions::publish_exception_group_methods(py)
+            } else {
+                true
+            }
+        } else if io_class(py, class) {
+            super::io::publish_file_methods(py, class)
         } else {
             true
+        };
+        if complete && !exception_pending(py) {
+            unsafe { class_declare(pointer, ClassDeclaration::NativeNamespacePublished) };
+            true
+        } else {
+            false
         }
-    } else if io_class(py, class) {
-        super::io::publish_file_methods(py, class)
-    } else {
-        true
-    };
-    if complete && !exception_pending(py) {
-        unsafe { class_declare(pointer, ClassDeclaration::NativeNamespacePublished) };
-        true
-    } else {
-        false
-    }
+    })
 }

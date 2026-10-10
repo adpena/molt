@@ -53,7 +53,7 @@ pub(crate) unsafe fn setter_type_admitted(
         if mro.is_null() {
             return true;
         }
-        let _mro_owner = refcount::OwnedPyObject::from_borrowed(mro);
+        let _mro_owner = crate::api::refcount::OwnedPyObject::from_borrowed(mro);
         let current = (*ty).tp_setattro.map(|f| f as *const () as *mut c_void);
         let is_python_dispatch = |class: *mut PyTypeObject| {
             crate::bridge::GLOBAL_BRIDGE.type_uses_runtime_slots(class)
@@ -808,7 +808,7 @@ unsafe extern "C" fn descr_call(
         return ptr::null_mut();
     }
     let result = unsafe { raw_call(object.cast(), self_, tail, kwargs) };
-    unsafe { errors::release_preserving_error(&[tail]) };
+    unsafe { refcount::Py_DECREF(tail) };
     result
 }
 
@@ -892,7 +892,11 @@ unsafe extern "C" fn method_clear(object: *mut PyObject) -> c_int {
             std::mem::replace(&mut (*wrapper).self_, ptr::null_mut()),
         ]
     };
-    unsafe { errors::release_preserving_error(&edges) };
+    unsafe {
+        for &object in &edges {
+            crate::api::refcount::Py_XDECREF(object);
+        }
+    };
     0
 }
 

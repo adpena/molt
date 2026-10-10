@@ -109,7 +109,7 @@ impl<'a, 'py> OwnedIterator<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, iterable: u64) -> Option<Self> {
         let bits = molt_iter(iterable);
         if exception_pending(py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+            dec_ref_bits(py, bits);
             return None;
         }
         if obj_from_bits(bits).is_none() {

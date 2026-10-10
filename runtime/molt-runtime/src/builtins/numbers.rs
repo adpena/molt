@@ -11,7 +11,7 @@ use crate::object::class_layout::{ScalarValueKind, scalar_value_bits};
 use crate::object::ops::{as_float_extended, is_float_extended};
 use crate::{
     INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
-    alloc_object, call_callable0, class_name_for_error, dec_ref_bits, exception_pending,
+    alloc_object, call_callable0, class_name_for_error, exception_pending,
     maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception, runtime_state_for_gil,
     type_of_bits,
 };

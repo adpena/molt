@@ -170,7 +170,7 @@ pub(crate) fn copy_context(py: &PyToken<'_>, source: u64) -> Option<u64> {
         let c = context(source);
         (owned(py, c.root), c.len)
     };
-    let _pin = (root != 0).then(|| PtrDropGuard::preserving(obj_from_bits(root).as_ptr().unwrap()));
+    let _pin = (root != 0).then(|| PtrDropGuard::new(obj_from_bits(root).as_ptr().unwrap()));
     let out = alloc(
         py,
         context_class(py),
@@ -248,9 +248,7 @@ impl<'a, 'py> EnteredContext<'a, 'py> {
 }
 impl Drop for EnteredContext<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            exit(self.py, self.bits);
-        });
+        exit(self.py, self.bits);
     }
 }
 
@@ -312,10 +310,10 @@ pub(crate) fn set_variable(py: &PyToken<'_>, var: u64, value: u64) -> Option<u64
     let ctx = current(py)?;
     let old = trie::lookup(unsafe { context(ctx).root }, var, var_hash(var));
     owned(py, ctx);
-    let _context_pin = PtrDropGuard::preserving(obj_from_bits(ctx).as_ptr().unwrap());
+    let _context_pin = PtrDropGuard::new(obj_from_bits(ctx).as_ptr().unwrap());
     let _old_pin = old.and_then(|bits| {
         owned(py, bits);
-        obj_from_bits(bits).as_ptr().map(PtrDropGuard::preserving)
+        obj_from_bits(bits).as_ptr().map(PtrDropGuard::new)
     });
     // Token construction MUST succeed before association. It holds the actual
     // Context identity and the old value independently of later reset/GC.
@@ -329,7 +327,7 @@ pub(crate) fn set_variable(py: &PyToken<'_>, var: u64, value: u64) -> Option<u64
             flags: 0,
         },
     )?;
-    let mut pin = PtrDropGuard::preserving(obj_from_bits(token).as_ptr().unwrap());
+    let mut pin = PtrDropGuard::new(obj_from_bits(token).as_ptr().unwrap());
     unsafe {
         let t = &mut *obj_from_bits(token).as_ptr().unwrap().cast::<Token>();
         t.context = owned(py, ctx);
@@ -462,24 +460,22 @@ impl Drop for ExecutionContextLease<'_, '_> {
         if matches!(self.binding, B::Inherited) {
             return;
         }
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            match self.binding {
-                B::Owned(ctx) => {
+        match self.binding {
+            B::Owned(ctx) => {
+                exit(self.py, ctx);
+            }
+            B::OwnedEmpty => {
+                let ctx = CURRENT.with(Cell::get);
+                if ctx == 0 {
+                    CURRENT.with(|v| v.set(DORMANT_PREVIOUS.with(|p| p.replace(0))));
+                } else {
                     exit(self.py, ctx);
                 }
-                B::OwnedEmpty => {
-                    let ctx = CURRENT.with(Cell::get);
-                    if ctx == 0 {
-                        CURRENT.with(|v| v.set(DORMANT_PREVIOUS.with(|p| p.replace(0))));
-                    } else {
-                        exit(self.py, ctx);
-                    }
-                }
-                B::Inherited => {}
             }
-            DORMANT_TASK.with(|v| v.set(self.saved_task));
-            DORMANT_PREVIOUS.with(|v| v.set(self.saved_previous));
-        });
+            B::Inherited => {}
+        }
+        DORMANT_TASK.with(|v| v.set(self.saved_task));
+        DORMANT_PREVIOUS.with(|v| v.set(self.saved_previous));
     }
 }
 pub(crate) fn capture_scheduled_context(

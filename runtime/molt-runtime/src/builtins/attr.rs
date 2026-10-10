@@ -1657,7 +1657,7 @@ pub(crate) unsafe fn lookup_special_method_bits(
         let method = class_attr_lookup(py, class, class, Some(instance), name);
         if exception_pending(py) {
             if let Some(method) = method {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+                dec_ref_bits(py, method);
             }
             return None;
         }
@@ -1791,16 +1791,14 @@ unsafe fn with_class_descriptor_snapshot<R>(
                             }
                         }
                         if !exception_pending(py) {
-                            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                                descriptor_cache_store(
-                                    py,
-                                    class_bits,
-                                    attr_bits,
-                                    version,
-                                    entry.data_desc_bits,
-                                    entry.class_attr_bits,
-                                );
-                            });
+                            descriptor_cache_store(
+                                py,
+                                class_bits,
+                                attr_bits,
+                                version,
+                                entry.data_desc_bits,
+                                entry.class_attr_bits,
+                            );
                         }
                         entry
                     }
@@ -1811,9 +1809,7 @@ unsafe fn with_class_descriptor_snapshot<R>(
         };
         let result = lookup(snapshot.as_ref());
         if let Some(snapshot) = snapshot {
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                snapshot.release(py);
-            });
+            snapshot.release(py);
         }
         result
     }
@@ -1919,7 +1915,7 @@ pub(crate) unsafe fn attr_lookup_ptr_allow_missing(
         }
         if exception_pending(_py) {
             if let Some(result) = res {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+                dec_ref_bits(_py, result);
             }
             let _ = clear_attribute_error_if_pending(_py);
             return None;
@@ -2120,15 +2116,13 @@ unsafe fn bind_descriptor(
                 }
             }
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            if let Some(owner) = owner {
-                dec_ref_bits(_py, owner);
-            }
-            if let Some(instance) = instance_bits {
-                dec_ref_bits(_py, instance);
-            }
-            dec_ref_bits(_py, val_bits);
-        });
+        if let Some(owner) = owner {
+            dec_ref_bits(_py, owner);
+        }
+        if let Some(instance) = instance_bits {
+            dec_ref_bits(_py, instance);
+        }
+        dec_ref_bits(_py, val_bits);
         result
     }
 }

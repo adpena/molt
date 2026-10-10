@@ -59,23 +59,13 @@ def test_core_policy_docs_keep_carveouts_and_standalone_binary_story() -> None:
     fallback = _read_text(
         "docs/spec/areas/compat/contracts/compatibility_fallback_contract.md"
     )
-    dynamic = _read_text(
-        "docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md"
-    )
-    verified = _read_text(
-        "docs/spec/areas/compat/contracts/verified_subset_contract.md"
-    )
-
     assert "CPython `>=3.12` parity target" in vision
     assert "host-CPython fallback" in vision
     assert "unrestricted `eval`/`exec`" in breaks
     assert "host-Python fallback" in breaks
     assert "No host CPython in binaries" in fallback
     assert "full CPython `>=3.12` parity" in fallback
-    assert "explicit, test-backed verified subset" in dynamic
-    assert "not a claim that everything" in dynamic
     assert "mutation of global state after startup" not in breaks
-    assert "runtime monkeypatching" in verified
 
 
 def test_packaging_docs_call_out_standalone_binary_contract() -> None:

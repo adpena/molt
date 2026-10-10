@@ -202,7 +202,7 @@ impl<const N: usize> CallbackOperands<N> {
         if self.synchronize() {
             result
         } else {
-            unsafe { errors::release_preserving_error(&[result]) };
+            unsafe { crate::api::refcount::Py_XDECREF(result) };
             ptr::null_mut()
         }
     }
@@ -216,9 +216,15 @@ impl<const N: usize> CallbackOperands<N> {
 impl<const N: usize> Drop for CallbackOperands<N> {
     fn drop(&mut self) {
         unsafe {
-            errors::release_preserving_error(&self.spill);
-            errors::release_preserving_error(&self.inline[..self.inline_len]);
-            errors::release_preserving_error(&self.roots);
+            for &object in &self.spill {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+            for &object in &self.inline[..self.inline_len] {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+            for &object in &self.roots {
+                crate::api::refcount::Py_XDECREF(object);
+            }
         }
     }
 }

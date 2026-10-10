@@ -545,8 +545,10 @@ thread_local! {
     static MEMBER_TRANSFER_RESULT: Cell<bool> = const { Cell::new(false) };
     static MEMBER_STORAGE: Cell<usize> = const { Cell::new(0) };
     static MEMBER_WARNING_BYTES: RefCell<Vec<[u8; 24]>> = const { RefCell::new(Vec::new()) };
+    static MEMBER_WARNING_FINALIZERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static MEMBER_FINALIZERS: Cell<usize> = const { Cell::new(0) };
     static MEMBER_FINALIZER_BYTES: Cell<[u8; 24]> = const { Cell::new([0; 24]) };
+    static MEMBER_FINALIZER_PENDING: Cell<(usize, usize)> = const { Cell::new((usize::MAX, usize::MAX)) };
 }
 
 unsafe extern "C" fn member_target_minor() -> i64 {
@@ -575,20 +577,53 @@ fn member_storage_snapshot() -> [u8; 24] {
 }
 
 fn observe_member_warning() {
-    MEMBER_WARNING_BYTES.with(|observations| {
-        observations.borrow_mut().push(member_storage_snapshot());
+    let storage = MEMBER_STORAGE.with(Cell::get) as *const [u8; 24];
+    if !storage.is_null() {
+        MEMBER_WARNING_BYTES.with(|observations| {
+            observations.borrow_mut().push(unsafe { *storage });
+        });
+    }
+    MEMBER_WARNING_FINALIZERS.with(|observations| {
+        observations
+            .borrow_mut()
+            .push(MEMBER_FINALIZERS.with(Cell::get));
     });
+}
+
+// Declare after a stack-backed traceback so a failing assertion clears the
+// pending exception before that traceback's fixture storage leaves scope.
+struct PendingErrorReset;
+
+impl Drop for PendingErrorReset {
+    fn drop(&mut self) {
+        unsafe { errors::PyErr_Clear() };
+    }
+}
+
+/// A conforming native deallocator may inspect the active error, but must
+/// restore the same exception owner without normalizing or replacing it.
+unsafe fn retirement_pending_identity() -> (usize, usize) {
+    let error = unsafe { errors::PyErr_GetRaisedException() };
+    let traceback = if error.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { errors::PyException_GetTraceback(error) }
+    };
+    let identity = (error as usize, traceback as usize);
+    unsafe {
+        refcount::Py_XDECREF(traceback);
+        errors::PyErr_SetRaisedException(error);
+    }
+    identity
 }
 
 unsafe extern "C" fn member_result_finalizer(_object: *mut PyObject) {
     MEMBER_FINALIZERS.with(|count| count.set(count.get() + 1));
-    MEMBER_FINALIZER_BYTES.with(|bytes| bytes.set(member_storage_snapshot()));
-    unsafe {
-        errors::PyErr_SetString(
-            (&raw mut member_abi::PyExc_LookupError).cast(),
-            c"member temporary finalizer".as_ptr(),
-        )
-    };
+    let storage = MEMBER_STORAGE.with(Cell::get) as *const [u8; 24];
+    if !storage.is_null() {
+        MEMBER_FINALIZER_BYTES.with(|bytes| bytes.set(unsafe { *storage }));
+    }
+    MEMBER_FINALIZER_PENDING.with(|value| value.set(unsafe { retirement_pending_identity() }));
 }
 
 fn install() -> support::AbiTestThreadStateTransaction {
@@ -605,6 +640,7 @@ fn install() -> support::AbiTestThreadStateTransaction {
     MEMBER_ERROR.with(|value| value.set(0));
     MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
     MEMBER_FINALIZERS.with(|value| value.set(0));
+    MEMBER_FINALIZER_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
     transaction
 }
 
@@ -621,6 +657,7 @@ unsafe fn write_member(ty: c_int, value: *mut PyObject, offset: usize) -> (c_int
     let mut descriptor = member(ty, offset as isize);
     MEMBER_INDEX_CALLS.with(|value| value.set(0));
     MEMBER_WARNING_BYTES.with(|value| value.borrow_mut().clear());
+    MEMBER_WARNING_FINALIZERS.with(|value| value.borrow_mut().clear());
     MEMBER_STORAGE.with(|value| value.set(storage.as_mut_ptr() as usize));
     let result = unsafe {
         typeobj::PyMember_SetOne(storage.as_mut_ptr().cast(), &raw mut descriptor, value)
@@ -1002,68 +1039,160 @@ fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
         subtype.tp_name = c"MemberIndexResult".as_ptr();
         subtype.tp_as_number = (&raw mut slots).cast();
         subtype.tp_dealloc = Some(member_result_finalizer);
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut member_abi::PyTraceBack_Type,
+        };
+        let _pending_reset = PendingErrorReset;
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_DeprecationWarning).cast(),
+            c"__index__ returned non-int (type MemberIndexResult).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.".as_ptr(),
+        );
+        let warning = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!warning.as_ptr().is_null());
+        assert_eq!(
+            errors::PyException_SetTraceback(warning.as_ptr(), &raw mut traceback),
+            0
+        );
+        support::warnings::with_error_instance(warning.as_ptr(), || {
+            for minor in [12, 13, 14] {
+                MEMBER_TARGET.with(|value| value.set(minor));
+                for warning_error in [false, true] {
+                    let mut result = member_abi::PyLongObject {
+                        ob_base: PyObject {
+                            ob_refcnt: 1,
+                            ob_type: subtype.as_ptr(),
+                        },
+                        long_value: member_abi::PyLongValue {
+                            lv_tag: 10,
+                            ob_digit: [1],
+                        },
+                    };
+                    MEMBER_RESULT.with(|value| value.set((&raw mut result) as usize));
+                    MEMBER_TRANSFER_RESULT.with(|value| value.set(true));
+                    MEMBER_FINALIZERS.with(|value| value.set(0));
+                    MEMBER_FINALIZER_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+                    support::warnings::clear();
+                    support::warnings::set_as_error(warning_error);
+                    let (status, bytes) = write_member(T_UINT, &raw mut input, 0);
+                    assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
+                    assert_eq!(MEMBER_FINALIZERS.with(Cell::get), 1);
+                    assert_eq!(MEMBER_FINALIZER_BYTES.with(Cell::get), [0xa5; 24]);
+                    let warnings = support::warnings::emissions();
+                    assert_eq!(warnings.len(), if warning_error { 1 } else { 2 });
+                    assert!(
+                        warnings[0]
+                            .message
+                            .starts_with("__index__ returned non-int (type MemberIndexResult)")
+                    );
+                    assert_eq!(
+                        warnings[0].category,
+                        (&raw mut member_abi::PyExc_DeprecationWarning) as usize
+                    );
+                    if warning_error {
+                        assert_eq!(status, -1);
+                        assert_eq!(bytes, [0xa5; 24]);
+                        assert_eq!(warnings.len(), 1);
+                        let raised =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert_eq!(raised.as_ptr(), warning.as_ptr());
+                        assert_eq!(
+                            MEMBER_FINALIZER_PENDING.with(Cell::get),
+                            (warning.as_ptr() as usize, (&raw mut traceback) as usize)
+                        );
+                        let observed_traceback = refcount::OwnedPyObject::from_owned(
+                            errors::PyException_GetTraceback(raised.as_ptr()),
+                        );
+                        assert_eq!(observed_traceback.as_ptr(), &raw mut traceback);
+                        errors::PyErr_SetRaisedException(raised.into_ptr());
+                        assert_eq!(
+                            support::take_current_error_text().as_deref(),
+                            Some(warnings[0].message.as_str())
+                        );
+                        MEMBER_WARNING_BYTES
+                            .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24]]));
+                        MEMBER_WARNING_FINALIZERS
+                            .with(|value| assert_eq!(*value.borrow(), vec![0]));
+                    } else {
+                        let expected = expected_member_bytes(0, &u32::MAX.to_ne_bytes());
+                        assert_eq!(status, 0);
+                        assert_eq!(bytes, expected);
+                        assert_eq!(warnings.len(), 2);
+                        assert_eq!(
+                            warnings[1].message,
+                            "Writing negative value into unsigned field"
+                        );
+                        assert_eq!(
+                            warnings[1].category,
+                            (&raw mut member_abi::PyExc_RuntimeWarning) as usize
+                        );
+                        MEMBER_WARNING_BYTES
+                            .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24], expected]));
+                        MEMBER_WARNING_FINALIZERS
+                            .with(|value| assert_eq!(*value.borrow(), vec![0, 1]));
+                        assert_eq!(MEMBER_FINALIZER_PENDING.with(Cell::get), (0, 0));
+                        assert!(errors::PyErr_Occurred().is_null());
+                    }
+                    assert_eq!(
+                        result.ob_base.ob_refcnt, 0,
+                        "the protocol transfers its sole result owner"
+                    );
+                }
+            }
+        });
+        drop(warning);
+        assert_eq!(traceback.ob_refcnt, 1);
+
+        // A genuine subtype result with magnitude 2**120 overflows every C
+        // carrier used by these branches, on both LP64 and LLP64 targets.
+        #[repr(C)]
+        struct WideInteger {
+            ob_base: PyObject,
+            lv_tag: usize,
+            digits: [u32; 5],
+        }
+        support::warnings::set_as_error(false);
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|value| value.set(minor));
-            for warning_error in [false, true] {
-                let mut result = member_abi::PyLongObject {
-                    ob_base: PyObject {
-                        ob_refcnt: 1,
-                        ob_type: subtype.as_ptr(),
-                    },
-                    long_value: member_abi::PyLongValue {
-                        lv_tag: 10,
-                        ob_digit: [1],
-                    },
-                };
-                MEMBER_RESULT.with(|value| value.set((&raw mut result) as usize));
-                MEMBER_TRANSFER_RESULT.with(|value| value.set(true));
-                MEMBER_FINALIZERS.with(|value| value.set(0));
-                support::warnings::clear();
-                support::warnings::set_as_error(warning_error);
-                let (status, bytes) = write_member(T_UINT, &raw mut input, 0);
-                assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
-                assert_eq!(MEMBER_FINALIZERS.with(Cell::get), 1);
-                assert_eq!(MEMBER_FINALIZER_BYTES.with(Cell::get), [0xa5; 24]);
-                let warnings = support::warnings::emissions();
-                assert_eq!(warnings.len(), if warning_error { 1 } else { 2 });
-                assert!(
-                    warnings[0]
-                        .message
-                        .starts_with("__index__ returned non-int (type MemberIndexResult)")
-                );
-                assert_eq!(
-                    warnings[0].category,
-                    (&raw mut member_abi::PyExc_DeprecationWarning) as usize
-                );
-                if warning_error {
+            for ty in [T_UINT, T_ULONG, T_ULONGLONG] {
+                for negative in [false, true] {
+                    let mut result = WideInteger {
+                        ob_base: PyObject {
+                            ob_refcnt: 1,
+                            ob_type: subtype.as_ptr(),
+                        },
+                        lv_tag: (5 << 3) | if negative { 2 } else { 0 },
+                        digits: [0, 0, 0, 0, 1],
+                    };
+                    MEMBER_RESULT.with(|value| value.set((&raw mut result) as usize));
+                    MEMBER_TRANSFER_RESULT.with(|value| value.set(true));
+                    MEMBER_FINALIZERS.with(|value| value.set(0));
+                    MEMBER_FINALIZER_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+                    support::warnings::clear();
+                    let offset = usize::from(ty == T_ULONGLONG);
+                    let (status, bytes) = write_member(ty, &raw mut input, offset);
                     assert_eq!(status, -1);
                     assert_eq!(bytes, [0xa5; 24]);
-                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
+                    assert_eq!(MEMBER_FINALIZERS.with(Cell::get), 1);
+                    assert_eq!(MEMBER_FINALIZER_BYTES.with(Cell::get), [0xa5; 24]);
+                    let raised =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!raised.as_ptr().is_null());
                     assert_eq!(
-                        support::take_current_error_text().as_deref(),
-                        Some(warnings[0].message.as_str())
+                        object::Py_TYPE(raised.as_ptr()),
+                        &raw mut member_abi::PyExc_OverflowError
                     );
+                    assert_eq!(
+                        MEMBER_FINALIZER_PENDING.with(Cell::get),
+                        (raised.as_ptr() as usize, 0)
+                    );
+                    assert_eq!(support::warnings::emissions().len(), 1);
                     MEMBER_WARNING_BYTES
                         .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24]]));
-                } else {
-                    let expected = expected_member_bytes(0, &u32::MAX.to_ne_bytes());
-                    assert_eq!(status, 0);
-                    assert_eq!(bytes, expected);
-                    assert_eq!(warnings.len(), 2);
-                    assert_eq!(
-                        warnings[1].message,
-                        "Writing negative value into unsigned field"
-                    );
-                    assert_eq!(
-                        warnings[1].category,
-                        (&raw mut member_abi::PyExc_RuntimeWarning) as usize
-                    );
-                    MEMBER_WARNING_BYTES
-                        .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24], expected]));
-                    assert!(
-                        errors::PyErr_Occurred().is_null(),
-                        "temporary finalizer error must not escape"
-                    );
+                    MEMBER_WARNING_FINALIZERS.with(|value| assert_eq!(*value.borrow(), vec![0]));
+                    assert_eq!(result.ob_base.ob_refcnt, 0);
+                    assert!(errors::PyErr_Occurred().is_null());
                 }
             }
         }
@@ -1071,6 +1200,491 @@ fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
         MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
         assert_eq!(input.ob_refcnt, 1);
     });
+}
+
+thread_local! {
+    static SEMANTIC_RESULT: Cell<usize> = const { Cell::new(0) };
+    static SEMANTIC_BOOL_ERROR: Cell<usize> = const { Cell::new(0) };
+    static SEMANTIC_BOOL_VALUE: Cell<c_int> = const { Cell::new(0) };
+    static SEMANTIC_BOOL_CALLS: Cell<usize> = const { Cell::new(0) };
+    static SEMANTIC_RETIREMENTS: Cell<usize> = const { Cell::new(0) };
+    static SEMANTIC_PENDING: Cell<(usize, usize)> = const { Cell::new((usize::MAX, usize::MAX)) };
+}
+
+unsafe extern "C" fn semantic_result(_object: *mut PyObject) -> *mut PyObject {
+    SEMANTIC_RESULT.with(|value| value.replace(0)) as *mut PyObject
+}
+
+unsafe extern "C" fn semantic_compare_result(
+    object: *mut PyObject,
+    _other: *mut PyObject,
+    _op: c_int,
+) -> *mut PyObject {
+    unsafe { semantic_result(object) }
+}
+
+unsafe extern "C" fn semantic_result_bool(_object: *mut PyObject) -> c_int {
+    SEMANTIC_BOOL_CALLS.with(|value| value.set(value.get() + 1));
+    let error = SEMANTIC_BOOL_ERROR.with(Cell::get) as *mut PyObject;
+    if !error.is_null() {
+        unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
+        -1
+    } else {
+        SEMANTIC_BOOL_VALUE.with(Cell::get)
+    }
+}
+
+unsafe extern "C" fn semantic_result_finalizer(_object: *mut PyObject) {
+    SEMANTIC_RETIREMENTS.with(|value| value.set(value.get() + 1));
+    SEMANTIC_PENDING.with(|value| value.set(unsafe { retirement_pending_identity() }));
+}
+
+#[test]
+fn stringifier_and_richcompare_results_retire_with_the_exact_active_error() {
+    let _abi_test = install();
+    unsafe {
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        class.tp_name = c"SemanticResultProducer".as_ptr();
+        class.tp_str = Some(semantic_result);
+        class.tp_repr = Some(semantic_result);
+        class.tp_richcompare = Some(semantic_compare_result);
+        let mut input = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        let mut other = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        let mut result_slots: member_abi::PyNumberMethods = std::mem::zeroed();
+        result_slots.nb_bool = semantic_result_bool as *const () as *mut c_void;
+        let mut result_class = support::StaticType::new();
+        result_class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        result_class.tp_name = c"SemanticResult".as_ptr();
+        result_class.tp_as_number = (&raw mut result_slots).cast();
+        result_class.tp_dealloc = Some(semantic_result_finalizer);
+        for (stringify, message) in [
+            (
+                typeobj::PyObject_Str as unsafe extern "C" fn(*mut PyObject) -> *mut PyObject,
+                "__str__ returned non-string (type SemanticResult)",
+            ),
+            (
+                typeobj::PyObject_Repr as unsafe extern "C" fn(*mut PyObject) -> *mut PyObject,
+                "__repr__ returned non-string (type SemanticResult)",
+            ),
+        ] {
+            let mut result = PyObject {
+                ob_refcnt: 1,
+                ob_type: result_class.as_ptr(),
+            };
+            SEMANTIC_RESULT.with(|value| value.set((&raw mut result) as usize));
+            SEMANTIC_RETIREMENTS.with(|value| value.set(0));
+            SEMANTIC_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+            assert!(stringify(&raw mut input).is_null());
+            let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!raised.as_ptr().is_null());
+            assert_eq!(
+                object::Py_TYPE(raised.as_ptr()),
+                &raw mut member_abi::PyExc_TypeError
+            );
+            assert_eq!(SEMANTIC_RETIREMENTS.with(Cell::get), 1);
+            assert_eq!(
+                SEMANTIC_PENDING.with(Cell::get),
+                (raised.as_ptr() as usize, 0)
+            );
+            assert_eq!(result.ob_refcnt, 0);
+            errors::PyErr_SetRaisedException(raised.into_ptr());
+            assert_eq!(support::take_current_error_text().as_deref(), Some(message));
+        }
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut member_abi::PyTraceBack_Type,
+        };
+        let _pending_reset = PendingErrorReset;
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_ValueError).cast(),
+            c"truth conversion failed".as_ptr(),
+        );
+        let failure = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!failure.as_ptr().is_null());
+        assert_eq!(
+            errors::PyException_SetTraceback(failure.as_ptr(), &raw mut traceback),
+            0
+        );
+        for truth in [-1, 0, 1] {
+            let mut result = PyObject {
+                ob_refcnt: 1,
+                ob_type: result_class.as_ptr(),
+            };
+            SEMANTIC_RESULT.with(|value| value.set((&raw mut result) as usize));
+            SEMANTIC_BOOL_ERROR.with(|value| {
+                value.set(if truth < 0 {
+                    failure.as_ptr() as usize
+                } else {
+                    0
+                })
+            });
+            SEMANTIC_BOOL_VALUE.with(|value| value.set(truth));
+            SEMANTIC_BOOL_CALLS.with(|value| value.set(0));
+            SEMANTIC_RETIREMENTS.with(|value| value.set(0));
+            SEMANTIC_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+            assert_eq!(
+                typeobj::PyObject_RichCompareBool(&raw mut input, &raw mut other, PY_EQ),
+                truth
+            );
+            assert_eq!(SEMANTIC_BOOL_CALLS.with(Cell::get), 1);
+            assert_eq!(SEMANTIC_RETIREMENTS.with(Cell::get), 1);
+            assert_eq!(result.ob_refcnt, 0);
+            if truth < 0 {
+                let raised =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(raised.as_ptr(), failure.as_ptr());
+                assert_eq!(
+                    SEMANTIC_PENDING.with(Cell::get),
+                    (failure.as_ptr() as usize, (&raw mut traceback) as usize)
+                );
+                let observed_traceback = refcount::OwnedPyObject::from_owned(
+                    errors::PyException_GetTraceback(raised.as_ptr()),
+                );
+                assert_eq!(observed_traceback.as_ptr(), &raw mut traceback);
+            } else {
+                assert_eq!(SEMANTIC_PENDING.with(Cell::get), (0, 0));
+            }
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+        SEMANTIC_BOOL_ERROR.with(|value| value.set(0));
+        drop(failure);
+        assert_eq!(traceback.ob_refcnt, 1);
+        assert_eq!(input.ob_refcnt, 1);
+        assert_eq!(other.ob_refcnt, 1);
+    }
+}
+
+thread_local! {
+    static TYPE_ATTRIBUTE_META: Cell<usize> = const { Cell::new(0) };
+    static TYPE_ATTRIBUTE_DICT: Cell<usize> = const { Cell::new(0) };
+    static TYPE_ATTRIBUTE_FAILURE: Cell<usize> = const { Cell::new(0) };
+    static TYPE_ATTRIBUTE_OBSERVED_REFS: Cell<isize> = const { Cell::new(-1) };
+    static TYPE_ATTRIBUTE_GET_CALLS: Cell<usize> = const { Cell::new(0) };
+    static TYPE_ATTRIBUTE_DROPS: Cell<usize> = const { Cell::new(0) };
+    static TYPE_ATTRIBUTE_PENDING: Cell<(usize, usize)> = const { Cell::new((usize::MAX, usize::MAX)) };
+}
+
+unsafe extern "C" fn local_attribute_get(
+    _descriptor: *mut PyObject,
+    _instance: *mut PyObject,
+    _owner: *mut PyObject,
+) -> *mut PyObject {
+    TYPE_ATTRIBUTE_GET_CALLS.with(|value| value.set(value.get() + 1));
+    let meta = TYPE_ATTRIBUTE_META.with(Cell::get) as *mut PyObject;
+    if !meta.is_null() {
+        TYPE_ATTRIBUTE_OBSERVED_REFS.with(|value| value.set(unsafe { (*meta).ob_refcnt }));
+    }
+    unsafe { object::Py_NewRef(&raw mut member_abi::Py_None) }
+}
+
+unsafe extern "C" fn removing_meta_attribute_get(
+    _descriptor: *mut PyObject,
+    _instance: *mut PyObject,
+    _owner: *mut PyObject,
+) -> *mut PyObject {
+    TYPE_ATTRIBUTE_GET_CALLS.with(|value| value.set(value.get() + 1));
+    let dict = TYPE_ATTRIBUTE_DICT.with(Cell::get) as *mut PyObject;
+    if unsafe { molt_cpython_abi::api::mapping::PyDict_DelItemString(dict, c"field".as_ptr()) } < 0
+    {
+        return ptr::null_mut();
+    }
+    let error = TYPE_ATTRIBUTE_FAILURE.with(Cell::get) as *mut PyObject;
+    unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn meta_attribute_finalizer(object: *mut PyObject) {
+    TYPE_ATTRIBUTE_DROPS.with(|value| value.set(value.get() + 1));
+    TYPE_ATTRIBUTE_PENDING.with(|value| value.set(unsafe { retirement_pending_identity() }));
+    unsafe { drop(Box::from_raw(object)) };
+}
+
+unsafe extern "C" fn local_attribute_finalizer(object: *mut PyObject) {
+    unsafe { drop(Box::from_raw(object)) };
+}
+
+#[test]
+fn type_attribute_descriptors_retire_at_their_public_lookup_boundaries() {
+    let _abi_test = install();
+    unsafe {
+        use molt_cpython_abi::api::mapping;
+        let mut meta_descriptor_type = support::StaticType::new();
+        meta_descriptor_type.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        meta_descriptor_type.tp_name = c"MetaAttributeDescriptor".as_ptr();
+        meta_descriptor_type.tp_descr_get = Some(removing_meta_attribute_get);
+        meta_descriptor_type.tp_dealloc = Some(meta_attribute_finalizer);
+        let mut local_descriptor_type = support::StaticType::new();
+        local_descriptor_type.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        local_descriptor_type.tp_name = c"LocalAttributeDescriptor".as_ptr();
+        local_descriptor_type.tp_descr_get = Some(local_attribute_get);
+        local_descriptor_type.tp_dealloc = Some(local_attribute_finalizer);
+        let mut metaclass = support::StaticType::new();
+        metaclass.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        metaclass.tp_base = &raw mut member_abi::PyType_Type;
+        metaclass.tp_name = c"AttributeMetaclass".as_ptr();
+        metaclass.tp_flags = member_abi::Py_TPFLAGS_READY;
+        metaclass.tp_getattro = member_abi::PyType_Type.tp_getattro;
+        assert!(metaclass.tp_getattro.is_some());
+        metaclass.tp_dict = mapping::PyDict_New();
+        assert!(!metaclass.tp_dict.is_null());
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = metaclass.as_ptr();
+        class.tp_base = &raw mut member_abi::PyBaseObject_Type;
+        class.tp_name = c"AttributeOwner".as_ptr();
+        class.tp_flags = member_abi::Py_TPFLAGS_READY;
+        class.tp_dict = mapping::PyDict_New();
+        assert!(!class.tp_dict.is_null());
+        let meta_descriptor =
+            refcount::OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
+                ob_refcnt: 1,
+                ob_type: meta_descriptor_type.as_ptr(),
+            })));
+        let local_descriptor =
+            refcount::OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
+                ob_refcnt: 1,
+                ob_type: local_descriptor_type.as_ptr(),
+            })));
+        assert_eq!(
+            mapping::PyDict_SetItemString(
+                metaclass.tp_dict,
+                c"field".as_ptr(),
+                meta_descriptor.as_ptr()
+            ),
+            0
+        );
+        assert_eq!(
+            mapping::PyDict_SetItemString(
+                class.tp_dict,
+                c"field".as_ptr(),
+                local_descriptor.as_ptr()
+            ),
+            0
+        );
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut member_abi::PyTraceBack_Type,
+        };
+        let _pending_reset = PendingErrorReset;
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_LookupError).cast(),
+            c"metatype descriptor failed".as_ptr(),
+        );
+        let failure = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!failure.as_ptr().is_null());
+        assert_eq!(
+            errors::PyException_SetTraceback(failure.as_ptr(), &raw mut traceback),
+            0
+        );
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TYPE_ATTRIBUTE_META.with(|value| value.set(0));
+                TYPE_ATTRIBUTE_DICT.with(|value| value.set(0));
+                TYPE_ATTRIBUTE_FAILURE.with(|value| value.set(0));
+            }
+        }
+        let _reset = Reset;
+        TYPE_ATTRIBUTE_META.with(|value| value.set(meta_descriptor.as_ptr() as usize));
+        TYPE_ATTRIBUTE_DICT.with(|value| value.set(metaclass.tp_dict as usize));
+        TYPE_ATTRIBUTE_FAILURE.with(|value| value.set(failure.as_ptr() as usize));
+        TYPE_ATTRIBUTE_GET_CALLS.with(|value| value.set(0));
+        TYPE_ATTRIBUTE_OBSERVED_REFS.with(|value| value.set(-1));
+        TYPE_ATTRIBUTE_DROPS.with(|value| value.set(0));
+        let baseline = (*meta_descriptor.as_ptr()).ob_refcnt;
+        let found = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            class.as_ptr().cast(),
+            c"field".as_ptr(),
+        ));
+        assert_eq!(found.as_ptr(), &raw mut member_abi::Py_None);
+        assert_eq!(TYPE_ATTRIBUTE_GET_CALLS.with(Cell::get), 1);
+        assert_eq!(
+            TYPE_ATTRIBUTE_OBSERVED_REFS.with(Cell::get),
+            baseline,
+            "the unused metatype snapshot must retire before the local descriptor is invoked"
+        );
+        assert_eq!((*meta_descriptor.as_ptr()).ob_refcnt, baseline);
+        assert_eq!(TYPE_ATTRIBUTE_DROPS.with(Cell::get), 0);
+        assert!(errors::PyErr_Occurred().is_null());
+        drop(found);
+
+        // With the local declaration removed, the metatype descriptor runs.
+        // It removes its own published edge; the lookup's owner is then sole.
+        assert_eq!(
+            mapping::PyDict_DelItemString(class.tp_dict, c"field".as_ptr()),
+            0
+        );
+        drop(meta_descriptor);
+        TYPE_ATTRIBUTE_GET_CALLS.with(|value| value.set(0));
+        TYPE_ATTRIBUTE_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+        assert!(object::PyObject_GetAttrString(class.as_ptr().cast(), c"field".as_ptr()).is_null());
+        let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(raised.as_ptr(), failure.as_ptr());
+        assert_eq!(TYPE_ATTRIBUTE_GET_CALLS.with(Cell::get), 1);
+        assert_eq!(TYPE_ATTRIBUTE_DROPS.with(Cell::get), 1);
+        assert_eq!(
+            TYPE_ATTRIBUTE_PENDING.with(Cell::get),
+            (failure.as_ptr() as usize, (&raw mut traceback) as usize)
+        );
+        let observed_traceback =
+            refcount::OwnedPyObject::from_owned(errors::PyException_GetTraceback(raised.as_ptr()));
+        assert_eq!(observed_traceback.as_ptr(), &raw mut traceback);
+        drop(observed_traceback);
+        drop(raised);
+        drop(failure);
+        assert_eq!(traceback.ob_refcnt, 1);
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+}
+
+thread_local! {
+    static REPLACEMENT_METACLASS: Cell<usize> = const { Cell::new(0) };
+    static METACLASS_FAILURE: Cell<usize> = const { Cell::new(0) };
+    static METACLASS_REPLACEMENTS: Cell<usize> = const { Cell::new(0) };
+    static METACLASS_RETIREMENTS: Cell<usize> = const { Cell::new(0) };
+    static METACLASS_PENDING: Cell<(usize, usize)> = const { Cell::new((usize::MAX, usize::MAX)) };
+}
+
+unsafe extern "C" fn replacing_metaclass_attribute_get(
+    _descriptor: *mut PyObject,
+    instance: *mut PyObject,
+    _owner: *mut PyObject,
+) -> *mut PyObject {
+    let replacement = REPLACEMENT_METACLASS.with(Cell::get) as *mut PyObject;
+    // The root __class__ descriptor's real native storage delegate admits the
+    // same mutable, compatible metaclass transition as ordinary instances.
+    if unsafe {
+        typeobj::native_type_attribute_set(
+            instance,
+            typeobj::TypeAttributeField::Class,
+            replacement,
+            false,
+        )
+    } < 0
+    {
+        return ptr::null_mut();
+    }
+    METACLASS_REPLACEMENTS.with(|value| value.set(value.get() + 1));
+    let error = METACLASS_FAILURE.with(Cell::get) as *mut PyObject;
+    unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn retired_metaclass(_metaclass: *mut PyObject) {
+    // StaticType owns the physical test allocation. This real tp_dealloc hook
+    // observes its sole C reference reaching zero without freeing that storage.
+    METACLASS_RETIREMENTS.with(|value| value.set(value.get() + 1));
+    METACLASS_PENDING.with(|value| value.set(unsafe { retirement_pending_identity() }));
+}
+
+#[test]
+fn type_lookup_retires_a_replaced_metaclass_with_the_exact_active_error() {
+    let _abi_test = install();
+    unsafe {
+        use molt_cpython_abi::api::mapping;
+        let mut metatype = support::StaticType::new();
+        metatype.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        metatype.tp_base = &raw mut member_abi::PyType_Type;
+        metatype.tp_name = c"RetirementMetatype".as_ptr();
+        metatype.tp_dealloc = Some(retired_metaclass);
+        let mut descriptor_type = support::StaticType::new();
+        descriptor_type.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        descriptor_type.tp_name = c"ReplacingMetaclassDescriptor".as_ptr();
+        descriptor_type.tp_descr_get = Some(replacing_metaclass_attribute_get);
+        descriptor_type.tp_dealloc = Some(local_attribute_finalizer);
+        let mut original = support::StaticType::new();
+        let mut replacement = support::StaticType::new();
+        for meta in [&mut original, &mut replacement] {
+            meta.ob_base.ob_base.ob_type = metatype.as_ptr();
+            meta.tp_base = &raw mut member_abi::PyType_Type;
+            meta.tp_name = c"ReplaceableMetaclass".as_ptr();
+            meta.tp_flags = member_abi::Py_TPFLAGS_READY | member_abi::Py_TPFLAGS_HEAPTYPE;
+            meta.tp_basicsize = member_abi::PyType_Type.tp_basicsize;
+            meta.tp_itemsize = member_abi::PyType_Type.tp_itemsize;
+            meta.tp_getattro = member_abi::PyType_Type.tp_getattro;
+        }
+        original.tp_dict = mapping::PyDict_New();
+        assert!(!original.tp_dict.is_null());
+        let mut class = support::StaticType::new();
+        // Original's initial reference is the class's metaclass edge, not an
+        // extra test owner. Replacing the edge leaves only the lookup pin.
+        class.ob_base.ob_base.ob_type = original.as_ptr();
+        class.tp_base = &raw mut member_abi::PyBaseObject_Type;
+        class.tp_name = c"MetaclassReplacementOwner".as_ptr();
+        class.tp_flags = member_abi::Py_TPFLAGS_READY;
+        let descriptor = refcount::OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
+            ob_refcnt: 1,
+            ob_type: descriptor_type.as_ptr(),
+        })));
+        assert_eq!(
+            mapping::PyDict_SetItemString(original.tp_dict, c"field".as_ptr(), descriptor.as_ptr()),
+            0
+        );
+        let name = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::strings::PyUnicode_FromString(c"field".as_ptr()),
+        );
+        assert!(!name.as_ptr().is_null());
+        let mut traceback = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut member_abi::PyTraceBack_Type,
+        };
+        let _pending_reset = PendingErrorReset;
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_LookupError).cast(),
+            c"metaclass replacement failed".as_ptr(),
+        );
+        let failure = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!failure.as_ptr().is_null());
+        assert_eq!(
+            errors::PyException_SetTraceback(failure.as_ptr(), &raw mut traceback),
+            0
+        );
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                REPLACEMENT_METACLASS.with(|value| value.set(0));
+                METACLASS_FAILURE.with(|value| value.set(0));
+            }
+        }
+        let _reset = Reset;
+        REPLACEMENT_METACLASS.with(|value| value.set(replacement.as_ptr() as usize));
+        METACLASS_FAILURE.with(|value| value.set(failure.as_ptr() as usize));
+        METACLASS_REPLACEMENTS.with(|value| value.set(0));
+        METACLASS_RETIREMENTS.with(|value| value.set(0));
+        METACLASS_PENDING.with(|value| value.set((usize::MAX, usize::MAX)));
+        let replacement_refs = replacement.ob_base.ob_base.ob_refcnt;
+        // Enter the public native slot itself. PyObject_GetAttr's outer type
+        // pin would otherwise mask whether this inner pin uses ordinary Drop.
+        let get = original.tp_getattro.expect("type getter installed");
+        assert!(get(class.as_ptr().cast(), name.as_ptr()).is_null());
+        let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(METACLASS_REPLACEMENTS.with(Cell::get), 1);
+        assert_eq!(class.ob_base.ob_base.ob_type, replacement.as_ptr());
+        assert_eq!(original.ob_base.ob_base.ob_refcnt, 0);
+        assert_eq!(METACLASS_RETIREMENTS.with(Cell::get), 1);
+        assert_eq!(raised.as_ptr(), failure.as_ptr());
+        assert_eq!(
+            METACLASS_PENDING.with(Cell::get),
+            (failure.as_ptr() as usize, (&raw mut traceback) as usize)
+        );
+        let observed_traceback =
+            refcount::OwnedPyObject::from_owned(errors::PyException_GetTraceback(raised.as_ptr()));
+        assert_eq!(observed_traceback.as_ptr(), &raw mut traceback);
+        assert_eq!(replacement.ob_base.ob_base.ob_refcnt, replacement_refs + 1);
+        class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        refcount::Py_DECREF(replacement.as_ptr().cast());
+        drop(observed_traceback);
+        drop(raised);
+        drop(failure);
+        assert_eq!(traceback.ob_refcnt, 1);
+        assert!(errors::PyErr_Occurred().is_null());
+    }
 }
 
 // ===========================================================================

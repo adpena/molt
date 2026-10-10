@@ -211,9 +211,9 @@ pub(crate) unsafe fn memoryview_assign_slice(
             }
             Some(())
         })();
-        // A real exporter release may run foreign/Python finalizers. Preserve
-        // both success and the exact callback/geometry/structure failure.
-        molt_cpython_abi::api::errors::with_preserved_error(|| drop(source));
+        // Release the semantic source export with any assignment error visible.
+        // RuntimeBufferLease completes a native callback's error-channel transfer.
+        drop(source);
         result
     }
 }
@@ -383,7 +383,7 @@ pub(crate) struct TypedStridedStorage {
     pub(crate) offset: isize,
     pub(crate) base_bits: u64,
     pub(crate) owner_bits: u64,
-    pub(crate) native_lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+    pub(crate) native_lease: Option<crate::object::foreign::RuntimeBufferLease>,
     pub(crate) format_bits: u64,
     pub(crate) format: [u8; MOLT_BUFFER_FORMAT_CAP],
     pub(crate) shape: Vec<isize>,
@@ -529,7 +529,7 @@ impl TypedStridedStorage {
 
     pub(crate) fn with_native_lease(
         mut self,
-        lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+        lease: Option<crate::object::foreign::RuntimeBufferLease>,
     ) -> Self {
         self.native_lease = lease;
         self
@@ -1508,7 +1508,7 @@ pub(crate) unsafe fn from_native_descriptor(
     py: &PyToken<'_>,
     descriptor: &molt_cpython_abi::hooks::MoltBufferView,
     format: *const std::ffi::c_char,
-    lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+    lease: Option<crate::object::foreign::RuntimeBufferLease>,
 ) -> u64 {
     let rank = descriptor.ndim as usize;
     if rank > MOLT_BUFFER_MAX_NDIM

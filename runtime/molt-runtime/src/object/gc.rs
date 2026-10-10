@@ -2194,7 +2194,7 @@ impl GcScratchLease {
         if kind == CandidatePins::None {
             return;
         }
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
+        let release = || {
             for candidate in &self.candidates {
                 unsafe {
                     match (kind, candidate.node) {
@@ -2209,7 +2209,12 @@ impl GcScratchLease {
                     }
                 }
             }
-        });
+        };
+        if kind == CandidatePins::Collector {
+            molt_cpython_abi::api::errors::with_preserved_error(release);
+        } else {
+            super::foreign::retire_native_reference(release);
+        }
     }
 }
 
@@ -2506,12 +2511,10 @@ pub(crate) unsafe fn get_referents(
                 "GC introspection result allocation failed",
             ))
     };
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        for bits in scratch.api_targets.drain(..) {
-            crate::dec_ref_bits(py, bits);
-        }
-        drop(objects);
-    });
+    for bits in scratch.api_targets.drain(..) {
+        crate::dec_ref_bits(py, bits);
+    }
+    drop(objects);
     result
 }
 

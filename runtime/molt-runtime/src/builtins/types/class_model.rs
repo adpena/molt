@@ -614,7 +614,9 @@ pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let result = isinstance_runtime(_py, val_bits, class_bits);
+        let Some(result) = isinstance_runtime(_py, val_bits, class_bits) else {
+            return MoltObject::none().bits();
+        };
         if trace_isinstance_enabled() {
             eprintln!(
                 "molt isinstance val_type={} class_type={} result={}",
@@ -630,7 +632,10 @@ pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        MoltObject::from_bool(issubclass_runtime(_py, sub_bits, class_bits)).bits()
+        issubclass_runtime(_py, sub_bits, class_bits).map_or_else(
+            || MoltObject::none().bits(),
+            |matched| MoltObject::from_bool(matched).bits(),
+        )
     })
 }
 
@@ -728,7 +733,7 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
         );
         let _methods = obj_from_bits(methods)
             .as_ptr()
-            .map(crate::PtrDropGuard::preserving);
+            .map(crate::PtrDropGuard::new);
         if exception_pending(py) {
             return true;
         }
@@ -738,7 +743,7 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
         let sorted_ptr = obj_from_bits(sorted)
             .as_ptr()
             .expect("owned abstract method list");
-        let _sorted = crate::PtrDropGuard::preserving(sorted_ptr);
+        let _sorted = crate::PtrDropGuard::new(sorted_ptr);
         crate::molt_list_sort(
             sorted,
             MoltObject::none().bits(),

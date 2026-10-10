@@ -904,7 +904,7 @@ unsafe extern "C" fn hook_dict_mutate(
             }
         };
         let status = publish.map_or(0, |publish| unsafe { publish(context) });
-        with_preserved_error(|| drop(retired));
+        drop(retired);
         status
     })
 }
@@ -923,19 +923,33 @@ unsafe extern "C" fn hook_dict_get(
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
             return BorrowedHandleResult::missing();
         }
-        let value = match hash_source {
-            molt_cpython_abi::hooks::DictHashSource::Compute => unsafe {
-                dict_get_in_place(&_py, ptr, key_bits)
-            },
-            molt_cpython_abi::hooks::DictHashSource::Supplied => unsafe {
-                crate::object::ops::dict_get_with_hash_in_place(&_py, ptr, key_bits, hash as u64)
-            },
+        let mut result = BorrowedHandleResult::error();
+        let mut lookup = || {
+            let value = match hash_source {
+                molt_cpython_abi::hooks::DictHashSource::Compute => unsafe {
+                    dict_get_in_place(&_py, ptr, key_bits)
+                },
+                molt_cpython_abi::hooks::DictHashSource::Supplied => unsafe {
+                    crate::object::ops::dict_get_with_hash_in_place(
+                        &_py,
+                        ptr,
+                        key_bits,
+                        hash as u64,
+                    )
+                },
+            };
+            if crate::exception_pending(&_py) {
+                return false;
+            }
+            result = value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok);
+            true
         };
         if crate::exception_pending(&_py) {
-            BorrowedHandleResult::error()
+            crate::builtins::exceptions::with_saved_raised_exception(&_py, lookup);
         } else {
-            value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
+            lookup();
         }
+        result
     })
 }
 
@@ -1158,7 +1172,7 @@ unsafe extern "C" fn hook_descriptor_get(
         );
         if crate::exception_pending(&py) {
             if let Some(bits) = result {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(&py, bits));
+                dec_ref_bits(&py, bits);
             }
             OwnedHandleResult::error()
         } else {
@@ -1352,9 +1366,7 @@ unsafe extern "C" fn hook_object_vectorcall(
             &values[positional_count..],
         );
         if crate::exception_pending(&py) {
-            with_preserved_error(|| {
-                crate::dec_ref_bits(&py, result);
-            });
+            crate::dec_ref_bits(&py, result);
             OwnedHandleResult::error()
         } else {
             OwnedHandleResult::ok(result)
@@ -1383,9 +1395,7 @@ unsafe fn hook_object_call_with_pos(
         };
         let result = crate::call::bind::call_bind_capi(&py, callable_bits, None, pos, mapping);
         if crate::exception_pending(&py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                crate::dec_ref_bits(&py, result);
-            });
+            crate::dec_ref_bits(&py, result);
             return OwnedHandleResult::error();
         }
         OwnedHandleResult::ok(result)
@@ -1558,7 +1568,7 @@ unsafe extern "C" fn hook_object_get_iter(obj_bits: u64) -> OwnedHandleResult {
     with_gil(|py| {
         let bits = crate::molt_iter(obj_bits);
         if crate::exception_pending(&py) {
-            with_preserved_error(|| dec_ref_bits(&py, bits));
+            dec_ref_bits(&py, bits);
             return OwnedHandleResult::error();
         }
         if MoltObject::from_bits(bits).is_none() {
@@ -1573,7 +1583,7 @@ unsafe extern "C" fn hook_object_get_item(obj_bits: u64, key_bits: u64) -> Owned
     with_gil(|py| {
         let bits = crate::object::ops::molt_index(obj_bits, key_bits);
         if crate::exception_pending(&py) {
-            with_preserved_error(|| dec_ref_bits(&py, bits));
+            dec_ref_bits(&py, bits);
             OwnedHandleResult::error()
         } else {
             OwnedHandleResult::ok(bits)
@@ -1615,7 +1625,7 @@ unsafe extern "C" fn hook_iter_next(iter_bits: u64, exhausted: *mut c_int) -> Ow
         // it, whereas PyIter_Send must return the exact StopIteration.value.
         let pair = crate::molt_iter_next(iter_bits);
         if crate::exception_pending(&py) {
-            with_preserved_error(|| dec_ref_bits(&py, pair));
+            dec_ref_bits(&py, pair);
             return OwnedHandleResult::error();
         }
         let decoded = MoltObject::from_bits(pair).as_ptr().and_then(|ptr| unsafe {
@@ -1772,7 +1782,7 @@ fn sys_module_attr_borrowed(
 
             if crate::exception_pending(&py) {
                 if let Some(bits) = value {
-                    with_preserved_error(|| dec_ref_bits(&py, bits));
+                    dec_ref_bits(&py, bits);
                 }
                 return BorrowedHandleResult::error();
             }
@@ -2252,7 +2262,12 @@ unsafe extern "C" fn hook_exception_get_field(
                 crate::exception_context_bits(exception_ptr)
             },
             crate::builtins::exceptions::ExceptionFieldSlot::Traceback => {
-                crate::exception_materialize_traceback_bits(&_py, exception_ptr)
+                let Some(traceback) =
+                    crate::exception_materialize_traceback_bits(&_py, exception_ptr)
+                else {
+                    return OwnedHandleResult::error();
+                };
+                traceback
             }
             crate::builtins::exceptions::ExceptionFieldSlot::Args => {
                 let Some(args) = crate::exception_materialized_args_bits(&_py, exception_ptr)
@@ -2266,9 +2281,6 @@ unsafe extern "C" fn hook_exception_get_field(
                 unreachable!("runtime_exception_field admits only the public C exception fields")
             }
         };
-        if crate::exception_pending(&_py) {
-            return OwnedHandleResult::error();
-        }
         if !matches!(field, crate::builtins::exceptions::ExceptionFieldSlot::Args)
             && crate::obj_from_bits(value_bits).is_none()
         {
@@ -2358,10 +2370,14 @@ unsafe extern "C" fn hook_exception_snapshot(
         let Some(args) = crate::exception_materialized_args_bits(&_py, exception_ptr) else {
             return -1;
         };
-        let traceback = crate::exception_materialize_traceback_bits(&_py, exception_ptr);
-        if crate::exception_pending(&_py) || crate::obj_from_bits(args).is_none() {
+        if crate::obj_from_bits(args).is_none() {
             return -1;
         }
+        let args = crate::builtins::exceptions::ExceptionValue::pin(&_py, args);
+        let Some(traceback) = crate::exception_materialize_traceback_bits(&_py, exception_ptr)
+        else {
+            return -1;
+        };
         let dict = unsafe { crate::exception_dict_bits(exception_ptr) };
         let notes = unsafe { crate::exception_notes_bits(exception_ptr) };
         let context = unsafe { crate::exception_context_bits(exception_ptr) };
@@ -2378,19 +2394,13 @@ unsafe extern "C" fn hook_exception_snapshot(
             typed_present_mask: typed.present_mask,
             layout_kind: typed.layout_kind as u8,
             suppress_context: u32::from(suppress),
-            args,
+            args: args.into_bits(),
             typed_handles: typed.handles,
             unicode_start: typed.unicode_start,
             unicode_end: typed.unicode_end,
             os_error_written: typed.os_error_written,
             ..ExceptionSnapshot::default()
         };
-        if crate::exception_pending(&_py) {
-            for bits in snapshot.typed_fields().into_iter().flatten() {
-                crate::dec_ref_bits(&_py, bits);
-            }
-            return -1;
-        }
         for (mask, bits, slot) in [
             (EXCEPTION_SNAPSHOT_DICT, dict, &raw mut snapshot.dict),
             (EXCEPTION_SNAPSHOT_NOTES, notes, &raw mut snapshot.notes),
@@ -2413,11 +2423,9 @@ unsafe extern "C" fn hook_exception_snapshot(
             };
             if present {
                 snapshot.present_mask |= mask;
+                inc_ref_bits(&_py, bits);
                 unsafe { *slot = bits };
             }
-        }
-        for bits in snapshot.base_fields().into_iter().flatten() {
-            inc_ref_bits(&_py, bits);
         }
         unsafe { out.write(snapshot) };
         0
@@ -2520,11 +2528,7 @@ unsafe extern "C" fn hook_object_classinfo_match(
                 crate::issubclass_runtime(&py, value, classinfo)
             }
         };
-        if crate::exception_pending(&py) {
-            -1
-        } else {
-            c_int::from(matched)
-        }
+        matched.map_or(-1, c_int::from)
     })
 }
 
@@ -2588,16 +2592,15 @@ unsafe extern "C" fn hook_clear_pending_exception() {
     });
 }
 
-unsafe extern "C" fn hook_with_preserved_pending_exception(
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void),
+unsafe extern "C" fn hook_with_saved_pending_exception(
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> c_int,
     context: *mut std::ffi::c_void,
 ) {
     with_gil(|py| {
         crate::builtins::exceptions::with_saved_raised_exception(&py, || {
-            // The ABI trampoline catches Rust unwind and drains cleanup errors
-            // before returning, while the exact raised owner remains detached.
-            unsafe { callback(context) };
-            true
+            // The ABI trampoline catches unwind before crossing this C boundary.
+            // Success restores the saved owner; failure selects the new state.
+            unsafe { callback(context) == 0 }
         });
     });
 }
@@ -2928,7 +2931,11 @@ unsafe extern "C" fn hook_memoryview_from_buffer(
                 lease
                     .cast::<molt_cpython_abi::api::memory::MemoryViewLease>()
                     .as_ref()
-                    .cloned(),
+                    .map(|lease| {
+                        lease
+                            .clone_with_policy::<crate::object::foreign::NativeReferenceRetirement>(
+                            )
+                    }),
             )
         };
         if !crate::exception_pending(&py)
@@ -3216,16 +3223,25 @@ unsafe extern "C" fn hook_type_lookup_borrowed(
             crate::raise_exception::<u64>(&py, "SystemError", "expected runtime type");
             return BorrowedHandleResult::error();
         };
-        let value = if search_mro != 0 {
-            crate::builtins::attr::class_namespace_lookup_mro(&py, class, name_bits)
-        } else {
-            crate::builtins::attr::class_namespace_lookup_raw(&py, class, name_bits)
+        let mut result = BorrowedHandleResult::error();
+        let mut lookup = || {
+            let value = if search_mro != 0 {
+                crate::builtins::attr::class_namespace_lookup_mro(&py, class, name_bits)
+            } else {
+                crate::builtins::attr::class_namespace_lookup_raw(&py, class, name_bits)
+            };
+            if crate::exception_pending(&py) {
+                return false;
+            }
+            result = value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok);
+            true
         };
         if crate::exception_pending(&py) {
-            BorrowedHandleResult::error()
+            crate::builtins::exceptions::with_saved_raised_exception(&py, lookup);
         } else {
-            value.map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
+            lookup();
         }
+        result
     })
 }
 
@@ -3278,7 +3294,7 @@ fn import_add_module_owned(
     let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys);
     if crate::exception_pending(py) {
         if let Some(bits) = modules {
-            with_preserved_error(|| crate::dec_ref_bits(py, bits));
+            crate::dec_ref_bits(py, bits);
         }
         return Err(MoltObject::none().bits());
     }
@@ -3322,16 +3338,16 @@ fn import_add_module_owned(
                 on_admitted(bits);
                 // The constructor owner pins the result while displaced
                 // values are released outside the dictionary mutation.
-                with_preserved_error(|| drop(retired));
+                drop(retired);
                 Ok(bits)
             }
             Err(()) => {
-                with_preserved_error(|| crate::dec_ref_bits(py, bits));
+                crate::dec_ref_bits(py, bits);
                 Err(MoltObject::none().bits())
             }
         }
     })();
-    with_preserved_error(|| crate::dec_ref_bits(py, modules));
+    crate::dec_ref_bits(py, modules);
     result
 }
 
@@ -3363,7 +3379,7 @@ unsafe extern "C" fn hook_import_add_module_borrowed(
         match result {
             Ok(bits) => {
                 // The C API borrows the dictionary's reference.
-                with_preserved_error(|| crate::dec_ref_bits(py, bits));
+                crate::dec_ref_bits(py, bits);
                 BorrowedHandleResult::ok(bits)
             }
             Err(_) => BorrowedHandleResult::error(),
@@ -3848,7 +3864,7 @@ pub(crate) fn transfer_pending_cpython_exception() -> bool {
         crate::builtins::exceptions::resolve_raised(&py, &mut raised);
         true
     });
-    molt_cpython_abi::api::errors::with_preserved_error(|| drop(error));
+    crate::object::foreign::retire_native_reference(|| drop(error));
     transferred || with_gil(|py| crate::exception_pending(&py))
 }
 
@@ -3978,7 +3994,7 @@ impl CExtIngress {
 
 impl Drop for CExtIngress {
     fn drop(&mut self) {
-        with_preserved_error(|| {
+        crate::object::foreign::retire_native_reference(|| {
             let owned = if self.promoted.is_empty() {
                 &self.inline[..self.inline_len]
             } else {
@@ -4539,7 +4555,7 @@ unsafe extern "C" fn hook_register_c_function(
             );
             // Configuration has retained its descriptor edge or copied the
             // qualified name. The C closure below separately owns self_bits.
-            with_preserved_error(|| drop(owner_guard));
+            drop(owner_guard);
             if !configured {
                 dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
                 return 0;
@@ -5230,7 +5246,7 @@ pub fn register_cpython_hooks() -> bool {
                 object_classinfo_match: Some(hook_object_classinfo_match),
                 take_pending_exception: hook_take_pending_exception,
                 clear_pending_exception: hook_clear_pending_exception,
-                with_preserved_pending_exception: hook_with_preserved_pending_exception,
+                with_saved_pending_exception: hook_with_saved_pending_exception,
                 handled_exception_get: hook_handled_exception_get,
                 handled_exception_set: hook_handled_exception_set,
                 native_gc_allocate: Some(hook_native_gc_allocate),
@@ -5320,6 +5336,8 @@ mod native_raised_state_tests;
 mod native_test_fixture;
 #[cfg(test)]
 mod pending_cleanup_tests;
+#[cfg(test)]
+mod semantic_retirement_tests;
 #[cfg(test)]
 mod slice_semantics_tests;
 #[cfg(test)]

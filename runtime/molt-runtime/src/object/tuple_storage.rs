@@ -4,7 +4,7 @@
 use crate::*;
 use molt_cpython_abi::abi_types::{PyMappingMethods, PyObject, PySequenceMethods, PyTuple_Type};
 use molt_cpython_abi::api::abstract_sequence::{BinaryFunc, ObjObjProc, SsizeArgFunc};
-use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences};
+use molt_cpython_abi::api::{errors, refcount::ProtectedPyObject, sequences};
 use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, owned_native_result_to_runtime};
 use molt_cpython_abi::hooks::DecodedHandleResult;
 use molt_obj_model::sequence_compare::RichCompareOp;
@@ -112,7 +112,7 @@ impl TupleComparisonItem<'_, '_, '_> {
 impl Drop for TupleComparisonItem<'_, '_, '_> {
     fn drop(&mut self) {
         if self.owned {
-            errors::with_preserved_error(|| dec_ref_bits(self.receiver.py, self.bits));
+            dec_ref_bits(self.receiver.py, self.bits);
         }
     }
 }
@@ -212,12 +212,13 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
         })
     }
 
-    fn project(&self, bits: u64) -> Option<OwnedPyObject> {
+    fn project(&self, bits: u64) -> Option<ProtectedPyObject> {
         if Self::pending(self.py) {
             return None;
         }
-        let object =
-            unsafe { OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits)) };
+        let object = unsafe {
+            ProtectedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits))
+        };
         if object.as_ptr().is_null() || Self::pending(self.py) {
             crate::cpython_abi_hooks::propagate_native_failure(self.py, "tuple operand projection");
             None
@@ -320,6 +321,6 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
 
 impl Drop for TupleStorage<'_, '_> {
     fn drop(&mut self) {
-        errors::with_preserved_error(|| dec_ref_bits(self.py, self.bits));
+        dec_ref_bits(self.py, self.bits);
     }
 }

@@ -205,7 +205,7 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
             return Err(());
         }
         let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(name);
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
+        crate::object::foreign::retire_native_reference(|| {
             molt_cpython_abi::api::refcount::Py_DECREF(name);
         });
         let Some(bits) = bits else {
@@ -216,7 +216,7 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
             return Err(());
         };
         let bytes = crate::object::ops_format::string_obj_bytes(obj_from_bits(bits));
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+        dec_ref_bits(py, bits);
         bytes.ok_or_else(|| {
             raise_exception::<()>(
                 py,
@@ -326,7 +326,7 @@ impl NativeDescriptorReceiver {
 impl Drop for NativeDescriptorReceiver {
     fn drop(&mut self) {
         if self.owner.is_some() {
-            molt_cpython_abi::api::errors::with_preserved_error(|| drop(self.owner.take()));
+            drop(self.owner.take());
         }
     }
 }
@@ -618,7 +618,7 @@ pub(crate) unsafe fn native_callable_repr(py: &PyToken<'_>, public: *mut u8) -> 
                 }
             };
             let receiver_type = format_class_name_bytes(class);
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, class));
+            dec_ref_bits(py, class);
             let address = obj_from_bits(receiver)
                 .as_ptr()
                 .map_or(receiver as usize, |ptr| ptr as usize);

@@ -42,7 +42,7 @@ impl FormatOutput {
     pub(crate) fn into_bits(self, py: &PyToken<'_>) -> u64 {
         if exception_pending(py) {
             if let Self::OwnedString(bits) = self {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+                dec_ref_bits(py, bits);
             }
             return MoltObject::none().bits();
         }
@@ -75,7 +75,7 @@ impl FormatOutput {
     }
 
     /// Keep a renderer's owned string alive while its immutable storage is read.
-    /// Cleanup cannot replace a callback/allocation error with a finalizer error.
+    /// Ordinary retirement exposes callback/allocation errors to native final owners.
     pub(crate) fn with_bytes<T>(
         self,
         py: &PyToken<'_>,
@@ -108,7 +108,7 @@ impl FormatOutput {
                         Err(FormatError::Pending)
                     }
                 };
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+                dec_ref_bits(py, bits);
                 result
             }
         }
@@ -200,7 +200,7 @@ impl<'a, 'py> FormatWriter<'a, 'py> {
 impl Drop for FormatWriter<'_, '_> {
     fn drop(&mut self) {
         if let Some(FormatOutput::OwnedString(bits)) = self.output.take() {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(self.py, bits));
+            dec_ref_bits(self.py, bits);
         }
     }
 }
@@ -921,7 +921,7 @@ pub(crate) unsafe fn invoke_format_method(
             Some(spec) => call_callable1(py, method, spec),
             None => call_callable0(py, method),
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+        dec_ref_bits(py, method);
         if !exception_pending(py)
             && obj_from_bits(result)
                 .as_ptr()
@@ -950,15 +950,13 @@ pub(crate) unsafe fn invoke_format_method(
             for bytes in [slot_bytes, prefix, returned_type.as_slice(), suffix] {
                 if let Err(error) = append_format_bytes(&mut message, bytes) {
                     error.raise::<()>(py);
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(py, result)
-                    });
+                    dec_ref_bits(py, result);
                     return MoltObject::none().bits();
                 }
             }
             crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
         }
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        dec_ref_bits(py, result);
         MoltObject::none().bits()
     }
 }

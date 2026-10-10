@@ -1,6 +1,7 @@
 // dir() and object.__dir__ introspection authority.
 // Kept separate from call dispatch and object slot wrappers so builtin method-surface facts have one home.
 
+use crate::object::foreign::NativeObjectOwner;
 use crate::*;
 use molt_obj_model::MoltObject;
 
@@ -10,7 +11,7 @@ unsafe fn dir_materialize(py: &PyToken<'_>, result: u64) -> Option<u64> {
     if let Some(pointer) = obj_from_bits(result).as_ptr()
         && unsafe { object_type_id(pointer) == TYPE_ID_FOREIGN }
     {
-        use molt_cpython_abi::api::{abstract_sequence, refcount::OwnedPyObject};
+        use molt_cpython_abi::api::abstract_sequence;
         use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
         let native = unsafe { crate::object::foreign::foreign_ptr_from_obj(pointer) };
         let list = unsafe {
@@ -20,7 +21,7 @@ unsafe fn dir_materialize(py: &PyToken<'_>, result: u64) -> Option<u64> {
             crate::cpython_abi_hooks::propagate_native_failure(py, "directory native iterable");
             return None;
         }
-        let list = unsafe { OwnedPyObject::from_owned(list) };
+        let list = unsafe { NativeObjectOwner::from_owned(list) };
         let result = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(list.as_ptr()) };
         if result.is_none() {
             crate::cpython_abi_hooks::propagate_native_failure(py, "directory list projection");
@@ -36,13 +37,13 @@ unsafe fn dir_materialize(py: &PyToken<'_>, result: u64) -> Option<u64> {
 /// no raw class-layout walker can bypass __dict__/__class__/__bases__ callbacks.
 unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: bool) -> u64 {
     use molt_cpython_abi::abi_types::PyObject;
-    use molt_cpython_abi::api::{abstract_sequence, mapping, object, refcount::OwnedPyObject};
+    use molt_cpython_abi::api::{abstract_sequence, mapping, object, refcount::ProtectedPyObject};
     use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 
     unsafe fn optional(
         object_ptr: *mut PyObject,
         name: &std::ffi::CStr,
-    ) -> Result<Option<OwnedPyObject>, ()> {
+    ) -> Result<Option<NativeObjectOwner>, ()> {
         let mut value = std::ptr::null_mut();
         let status = unsafe {
             object::PyObject_GetOptionalAttrString(object_ptr, name.as_ptr(), &raw mut value)
@@ -50,7 +51,7 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
         match status {
             -1 => Err(()),
             0 => Ok(None),
-            _ => Ok(Some(unsafe { OwnedPyObject::from_owned(value) })),
+            _ => Ok(Some(unsafe { NativeObjectOwner::from_owned(value) })),
         }
     }
 
@@ -77,20 +78,20 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
                 if base.is_null() {
                     return Err(());
                 }
-                let base = unsafe { OwnedPyObject::from_owned(base) };
+                let base = unsafe { NativeObjectOwner::from_owned(base) };
                 unsafe { merge_class(py, dictionary, base.as_ptr()) }?;
             }
         }
         Ok(())
     }
 
-    let result = (|| -> Result<OwnedPyObject, ()> {
+    let result = (|| -> Result<NativeObjectOwner, ()> {
         unsafe {
             let source = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(obj_bits);
             if source.is_null() {
                 return Err(());
             }
-            let source = OwnedPyObject::from_owned(source);
+            let source = ProtectedPyObject::from_owned(source);
             let dictionary = if type_directory {
                 mapping::PyDict_New()
             } else if let Some(namespace) = optional(source.as_ptr(), c"__dict__")? {
@@ -105,7 +106,7 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
             if dictionary.is_null() {
                 return Err(());
             }
-            let dictionary = OwnedPyObject::from_owned(dictionary);
+            let dictionary = NativeObjectOwner::from_owned(dictionary);
             if type_directory {
                 merge_class(py, dictionary.as_ptr(), source.as_ptr())?;
             } else if let Some(class) = optional(source.as_ptr(), c"__class__")? {
@@ -115,7 +116,7 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
             if result.is_null() {
                 return Err(());
             }
-            let result = OwnedPyObject::from_owned(result);
+            let result = NativeObjectOwner::from_owned(result);
             Ok(result)
         }
     })();
@@ -166,24 +167,18 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 let locals_bits = crate::molt_locals_builtin();
                 if exception_pending(_py) {
                     if !obj_from_bits(locals_bits).is_none() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, locals_bits)
-                        });
+                        dec_ref_bits(_py, locals_bits);
                     }
                     return MoltObject::none().bits();
                 }
                 let list_bits = list_from_iter_bits(_py, locals_bits)
                     .unwrap_or_else(|| MoltObject::none().bits());
                 if !obj_from_bits(locals_bits).is_none() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, locals_bits)
-                    });
+                    dec_ref_bits(_py, locals_bits);
                 }
                 if obj_from_bits(list_bits).is_none() || exception_pending(_py) {
                     if !obj_from_bits(list_bits).is_none() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, list_bits)
-                        });
+                        dec_ref_bits(_py, list_bits);
                     }
                     return MoltObject::none().bits();
                 }
@@ -191,9 +186,7 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 let reverse_bits = MoltObject::from_int(0).bits();
                 let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
                 if exception_pending(_py) {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, list_bits)
-                    });
+                    dec_ref_bits(_py, list_bits);
                     return MoltObject::none().bits();
                 }
                 return list_bits;
@@ -212,32 +205,22 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
 
                 if let Some(override_bits) = override_bits {
                     let res_bits = call_callable0(_py, override_bits);
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, override_bits)
-                    });
+                    dec_ref_bits(_py, override_bits);
                     if exception_pending(_py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
+                        dec_ref_bits(_py, res_bits);
                         return MoltObject::none().bits();
                     }
                     // CPython materializes and sorts a user `__dir__` result.
                     let Some(list_bits) = dir_materialize(_py, res_bits) else {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
+                        dec_ref_bits(_py, res_bits);
                         return MoltObject::none().bits();
                     };
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
+                    dec_ref_bits(_py, res_bits);
                     let none_bits = MoltObject::none().bits();
                     let reverse_bits = MoltObject::from_int(0).bits();
                     let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
                     if exception_pending(_py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, list_bits)
-                        });
+                        dec_ref_bits(_py, list_bits);
                         return MoltObject::none().bits();
                     }
                     return list_bits;
@@ -255,7 +238,7 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
             MoltObject::from_bool(false).bits(),
         );
         if exception_pending(_py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+            dec_ref_bits(_py, result);
             MoltObject::none().bits()
         } else {
             result

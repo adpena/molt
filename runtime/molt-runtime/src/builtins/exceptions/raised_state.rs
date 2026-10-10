@@ -60,7 +60,7 @@ pub(super) fn release_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
         RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)
             if !obj_from_bits(bits).is_none() =>
         {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, bits));
+            dec_ref_bits(_py, bits);
         }
         RaisedSnapshot::None
         | RaisedSnapshot::Emergency(_)
@@ -91,9 +91,7 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
                     CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
                 }
                 if !old.is_null() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
-                    });
+                    dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
                 }
             }
         }
@@ -110,9 +108,7 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
                     CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
                 }
                 if let Some(old) = old {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());
-                    });
+                    dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());
                 }
             }
         }
@@ -128,7 +124,7 @@ pub(super) fn discard_current_raised(_py: &PyToken<'_>) {
     // clear helper: unraisable cleanup must remain available after a task-map
     // panic poisoned its mutex.
     let mut raised = Some(take_raised(_py));
-    release_raised(_py, &mut raised);
+    molt_cpython_abi::api::errors::with_preserved_error(|| release_raised(_py, &mut raised));
 }
 
 /// Run a fallible callback boundary with no incoming raised exception visible.

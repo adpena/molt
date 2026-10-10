@@ -155,24 +155,70 @@ pub unsafe extern "C" fn Py_CLEAR(op: *mut *mut PyObject) {
     }
 }
 
-/// Keep a borrowed native object alive across reentrant operations. Releasing
-/// it must not replace the active exception.
-pub struct OwnedPyObject(*mut PyObject);
+/// Compile-time policy for a reference or resource retirement action.
+///
+/// # Safety
+/// Implementations must invoke the supplied FnOnce exactly once, synchronously,
+/// without suppressing its execution or repeating it. The resource owner alone
+/// defines reference custody; a policy only supplies its error-state boundary.
+/// Any unwind from the action must remain on the invoking Rust stack.
+pub unsafe trait ReferenceRetirement {
+    fn retire(release: impl FnOnce());
+}
 
-impl OwnedPyObject {
+/// Ordinary C retirement: native destructors observe the operation error.
+pub enum CReferenceRelease {}
+
+unsafe impl ReferenceRetirement for CReferenceRelease {
+    #[inline]
+    fn retire(release: impl FnOnce()) {
+        release();
+    }
+}
+
+/// Explicitly protected cleanup, including unpublished projection rollback.
+pub enum ProtectedReferenceRelease {}
+
+unsafe impl ReferenceRetirement for ProtectedReferenceRelease {
+    #[inline]
+    fn retire(release: impl FnOnce()) {
+        crate::api::errors::with_preserved_error(release);
+    }
+}
+
+/// One pointer of reference custody with a compile-time retirement policy.
+/// NULL is an empty owner. The raw pointer deliberately retains its !Send/!Sync
+/// behavior; no policy grants cross-thread access to a Python object.
+#[repr(transparent)]
+pub struct PyObjectOwner<P: ReferenceRetirement> {
+    object: *mut PyObject,
+    policy: std::marker::PhantomData<P>,
+}
+
+/// An ordinary semantic operand, callback result, or callable reference.
+pub type OwnedPyObject = PyObjectOwner<CReferenceRelease>;
+/// A reference retired inside an explicit error-suppression boundary.
+pub type ProtectedPyObject = PyObjectOwner<ProtectedReferenceRelease>;
+
+impl<P: ReferenceRetirement> PyObjectOwner<P> {
     /// Adopt an already owned reference without an additional INCREF/DECREF pair.
     ///
     /// # Safety
     /// A non-null pointer must carry one owned reference transferred to this guard.
+    #[inline]
     pub unsafe fn from_owned(object: *mut PyObject) -> Self {
-        Self(object)
+        Self {
+            object,
+            policy: std::marker::PhantomData,
+        }
     }
 
     /// # Safety
     /// A non-null pointer must remain live until this guard retains it.
+    #[inline]
     pub unsafe fn from_borrowed(object: *mut PyObject) -> Self {
         unsafe { Py_XINCREF(object) };
-        Self(object)
+        unsafe { Self::from_owned(object) }
     }
 
     /// Retain a non-owning observation only while its allocation is live.
@@ -183,6 +229,7 @@ impl OwnedPyObject {
     /// # Safety
     /// A non-null pointer must remain allocated through this call. Callers
     /// observing registry addresses must validate their allocation generation.
+    #[inline]
     pub unsafe fn try_from_borrowed(object: *mut PyObject) -> Option<Self> {
         if object.is_null() {
             return None;
@@ -197,23 +244,35 @@ impl OwnedPyObject {
             return None;
         }
         unsafe { Py_INCREF(object) };
-        Some(Self(object))
+        Some(unsafe { Self::from_owned(object) })
     }
 
+    #[inline]
     pub fn as_ptr(&self) -> *mut PyObject {
-        self.0
+        self.object
     }
 
     /// Transfer the owned reference without releasing it.
+    #[inline]
     pub fn into_ptr(self) -> *mut PyObject {
-        let object = self.0;
+        let object = self.object;
         std::mem::forget(self);
         object
     }
 }
 
-impl Drop for OwnedPyObject {
+impl<P: ReferenceRetirement> Drop for PyObjectOwner<P> {
+    #[inline]
     fn drop(&mut self) {
-        unsafe { crate::api::errors::release_preserving_error(&[self.0]) };
+        if !self.object.is_null() {
+            P::retire(|| unsafe { Py_DECREF(self.object) });
+        }
     }
 }
+
+const _: () = {
+    assert!(std::mem::size_of::<OwnedPyObject>() == std::mem::size_of::<*mut PyObject>());
+    assert!(std::mem::align_of::<OwnedPyObject>() == std::mem::align_of::<*mut PyObject>());
+    assert!(std::mem::size_of::<ProtectedPyObject>() == std::mem::size_of::<*mut PyObject>());
+    assert!(std::mem::align_of::<ProtectedPyObject>() == std::mem::align_of::<*mut PyObject>());
+};

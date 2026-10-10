@@ -50,7 +50,7 @@ struct ProtocolArg {
 impl Drop for ProtocolArg {
     fn drop(&mut self) {
         if self.owned && !self.ptr.is_null() {
-            unsafe { crate::api::errors::release_preserving_error(&[self.ptr]) };
+            unsafe { crate::api::refcount::Py_XDECREF(self.ptr) };
         }
     }
 }

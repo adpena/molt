@@ -1326,19 +1326,17 @@ impl PreparedFunctionCode {
 
 impl DisplacedFunctionCode {
     pub(crate) fn release(self, py: &PyToken<'_>) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for bits in self
-                .signature
-                .into_iter()
-                .chain(self.setup_signature)
-                .chain(self.lexical)
-                .chain([self.code])
-            {
-                if bits != 0 {
-                    dec_ref_bits(py, bits);
-                }
+        for bits in self
+            .signature
+            .into_iter()
+            .chain(self.setup_signature)
+            .chain(self.lexical)
+            .chain([self.code])
+        {
+            if bits != 0 {
+                dec_ref_bits(py, bits);
             }
-        });
+        }
     }
 }
 

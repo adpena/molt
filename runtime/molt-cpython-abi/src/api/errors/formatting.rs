@@ -8,11 +8,11 @@ use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::{
     ExceptionFieldStorage, ExceptionLayoutKind, ExceptionStrSlot, ExceptionTypedField,
     exception_render::{
-        ExceptionRenderContext, ExceptionRenderOwned, ExceptionRenderSnapshot,
-        render_exception_repr, render_exception_str,
+        ExceptionRenderContext, ExceptionRenderSnapshot, render_exception_repr,
+        render_exception_str,
     },
 };
-use std::{mem::ManuallyDrop, ptr};
+use std::ptr;
 
 type StringSlot = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 
@@ -30,35 +30,7 @@ pub(crate) fn exception_str_slot(slot: ExceptionStrSlot) -> StringSlot {
     }
 }
 
-struct RenderValue(std::ptr::NonNull<PyObject>);
-
-impl RenderValue {
-    fn into_ptr(self) -> *mut PyObject {
-        let pointer = self.0.as_ptr();
-        std::mem::forget(self);
-        pointer
-    }
-}
-
-impl Drop for RenderValue {
-    fn drop(&mut self) {
-        // Snapshot rebinding may make this the final reference. Preserve both
-        // error channels through callbacks during destruction.
-        super::with_preserved_error(|| unsafe { refcount::Py_DECREF(self.0.as_ptr()) });
-    }
-}
-
-impl ExceptionRenderOwned for RenderValue {
-    fn release_all(values: impl Iterator<Item = Self>) {
-        // One snapshot has one custody boundary, including when releasing its
-        // last references invokes callbacks. Individual owners still use Drop.
-        super::with_preserved_error(|| {
-            for value in values {
-                unsafe { refcount::Py_DECREF(value.into_ptr()) };
-            }
-        });
-    }
-}
+type RenderValue = refcount::OwnedPyObject;
 
 struct PhysicalRender;
 
@@ -67,14 +39,13 @@ impl ExceptionRenderContext for PhysicalRender {
     type Owned = RenderValue;
 
     fn borrow(value: &RenderValue) -> *mut PyObject {
-        value.0.as_ptr()
+        value.as_ptr()
     }
     fn none(&self) -> *mut PyObject {
         &raw mut crate::abi_types::Py_None
     }
     fn retain(&self, value: *mut PyObject) -> RenderValue {
-        unsafe { refcount::Py_INCREF(value) };
-        RenderValue(std::ptr::NonNull::new(value).expect("retained render value"))
+        unsafe { RenderValue::from_borrowed(value) }
     }
 
     fn capture(
@@ -116,7 +87,7 @@ impl ExceptionRenderContext for PhysicalRender {
                     None
                 },
                 fields: std::array::from_fn(|_| None),
-                class: ManuallyDrop::new(self.retain(class.cast())),
+                class: self.retain(class.cast()),
                 layout,
                 start: 0,
                 end: 0,
@@ -146,7 +117,8 @@ impl ExceptionRenderContext for PhysicalRender {
 
     fn string_from_bytes(&self, bytes: &[u8]) -> Option<RenderValue> {
         let value = unsafe { strings::unicode_from_python_bytes(bytes) };
-        std::ptr::NonNull::new(value).map(RenderValue)
+        std::ptr::NonNull::new(value)
+            .map(|value| unsafe { RenderValue::from_owned(value.as_ptr()) })
     }
 
     fn render(&self, value: Option<*mut PyObject>, repr: bool) -> Option<RenderValue> {
@@ -158,7 +130,8 @@ impl ExceptionRenderContext for PhysicalRender {
                 typeobj::PyObject_Str(value)
             }
         };
-        std::ptr::NonNull::new(result).map(RenderValue)
+        std::ptr::NonNull::new(result)
+            .map(|value| unsafe { RenderValue::from_owned(value.as_ptr()) })
     }
 
     fn string_bytes(&self, value: *mut PyObject) -> Option<Vec<u8>> {

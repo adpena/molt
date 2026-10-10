@@ -139,7 +139,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
                 );
             };
             let value = unsafe { call_callable1(py, method, index_bits) };
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+            dec_ref_bits(py, method);
             value
         }
     }

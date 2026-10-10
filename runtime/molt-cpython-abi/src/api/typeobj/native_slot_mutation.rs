@@ -35,10 +35,7 @@ unsafe fn lookup_current(
             if base.is_null() {
                 return Err(crate::ErrorIndicatorSet);
             }
-            let value = type_namespace_lookup_with_bridge(bridge, base, key);
-            if descriptors::pending() {
-                return Err(crate::ErrorIndicatorSet);
-            }
+            let value = type_namespace_lookup_with_bridge(bridge, base, key)?;
             if !value.is_null() {
                 owners.push(OwnedPyObject::from_borrowed(value));
                 return Ok((value, base));
@@ -226,7 +223,8 @@ pub(crate) unsafe fn initialize(
         let class = bridge
             .molt_handle_for_pyobj(tp.cast())
             .map(|value| value.bits());
-        mutation.publish_bound(bridge, class)
+        let mut owners = Vec::new();
+        mutation.publish_bound(bridge, class, &mut owners)
     }
 }
 
@@ -267,11 +265,16 @@ impl Mutation {
     /// published. MRO lookup errors are suppressed per update_one_slot; errors
     /// checking subclass shadowing propagate, with the namespace committed.
     pub(crate) unsafe fn publish(&self) -> c_int {
-        unsafe { self.publish_bound(&GLOBAL_BRIDGE, None) }
+        let mut owners = Vec::new();
+        unsafe { self.publish_bound(&GLOBAL_BRIDGE, None, &mut owners) }
     }
 
-    pub(crate) unsafe fn publish_for_runtime(&self, class: u64) -> c_int {
-        unsafe { self.publish_bound(&GLOBAL_BRIDGE, Some(class)) }
+    pub(crate) unsafe fn publish_for_runtime(
+        &self,
+        class: u64,
+        owners: &mut Vec<OwnedPyObject>,
+    ) -> c_int {
+        unsafe { self.publish_bound(&GLOBAL_BRIDGE, Some(class), owners) }
     }
 
     fn root_is_bound(&self, bridge: &crate::bridge::ObjectBridge, class: Option<u64>) -> bool {
@@ -287,6 +290,7 @@ impl Mutation {
         &self,
         bridge: &crate::bridge::ObjectBridge,
         class: Option<u64>,
+        owners: &mut Vec<OwnedPyObject>,
     ) -> c_int {
         unsafe {
             if self.groups.is_empty() {
@@ -294,7 +298,6 @@ impl Mutation {
             }
             let tp = self.root.as_ptr().cast::<PyTypeObject>();
             let name = self.changed.as_ptr();
-            let mut owners = Vec::new();
             let Some(root) = type_identity(&mut TYPE_SUBCLASSES.lock(), tp) else {
                 return -1;
             };
@@ -316,10 +319,10 @@ impl Mutation {
                 }
                 let current_binding = bridge.molt_handle_for_pyobj(current.cast());
                 if current != tp {
-                    let shadow = type_namespace_lookup_with_bridge(bridge, current, name);
-                    if descriptors::pending() {
-                        return -1;
-                    }
+                    let shadow = match type_namespace_lookup_with_bridge(bridge, current, name) {
+                        Ok(shadow) => shadow,
+                        Err(crate::ErrorIndicatorSet) => return -1,
+                    };
                     if !self.root_is_bound(bridge, class) {
                         return 0;
                     }
@@ -357,7 +360,7 @@ impl Mutation {
                     for (index, key) in declarations {
                         let row = &SLOT_WRAPPER_DEFS[*index];
                         let (descriptor, declaring_type) =
-                            match lookup_current(bridge, current, key.as_ptr(), &mut owners) {
+                            match lookup_current(bridge, current, key.as_ptr(), owners) {
                                 Ok(value) => value,
                                 Err(crate::ErrorIndicatorSet) => {
                                     errors::PyErr_Clear();

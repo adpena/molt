@@ -14,7 +14,7 @@ pub use projection::{
 };
 
 fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Option<String> {
-    if !isinstance_runtime(_py, name_bits, builtin_classes(_py).str) {
+    if !isinstance_runtime(_py, name_bits, builtin_classes(_py).str)? {
         let _ = raise_exception::<u64>(_py, "TypeError", "Field names must be strings");
         return None;
     }

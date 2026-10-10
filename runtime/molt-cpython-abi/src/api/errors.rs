@@ -249,12 +249,28 @@ impl Drop for ExceptionNormalizationGuard {
     }
 }
 
+// A normalized indicator has one semantic value owner. Retire the auxiliary
+// class/traceback pins first so its finalizer sees only the selected next state.
+// Caller-owned legacy triples retain their independent OwnedCError drop order.
+fn retire_normalized_error(error: Option<OwnedCError>) {
+    if let Some(mut error) = error {
+        let value = std::mem::replace(&mut error.value, ptr::null_mut());
+        drop(error);
+        unsafe { crate::api::refcount::Py_XDECREF(value) };
+    }
+}
+
 fn replace_current_error(state: Option<OwnedCError>) {
-    // Hold the selected state outside both indicators while retiring superseded
-    // owners. Finalizers may use either channel; neither can replace this state.
-    clear_all_pending_errors();
+    // Publish the selected state before retiring either displaced owner. A
+    // lawful native deallocator observes that exact next error (or NULL), and
+    // may restore it through either raised channel. Never drain in a loop after
+    // publication: native retirement can move the selected C state to runtime.
     let old = crate::api::object::replace_thread_state_error(state);
-    debug_assert!(old.is_none());
+    let hooks = crate::hooks::hooks_or_stubs();
+    if unsafe { (hooks.exception_pending)() } != 0 {
+        unsafe { (hooks.clear_pending_exception)() };
+    }
+    retire_normalized_error(old);
 }
 
 /// Transfer the exact owned C error-indicator triple.
@@ -305,13 +321,11 @@ fn owned_c_error_from_runtime_projection(
 ) -> Option<OwnedCError> {
     let hooks = crate::hooks::hooks_or_stubs();
     let release_handles = |handles: &[u64]| {
-        with_preserved_error(|| {
-            for &bits in handles {
-                if bits != 0 {
-                    unsafe { (hooks.dec_ref)(bits) };
-                }
+        for &bits in handles {
+            if bits != 0 {
+                unsafe { (hooks.dec_ref)(bits) };
             }
-        });
+        }
     };
     let crate::hooks::DecodedHandleResult::Ok(exception_bits) = result.decode() else {
         release_handles(&[class_bits, traceback_bits]);
@@ -337,14 +351,17 @@ fn owned_c_error_from_runtime_projection(
     };
     if traceback_bits != 0 && traceback.is_null() {
         release_handles(&[exception_bits, class_bits, traceback_bits]);
-        unsafe { release_preserving_error(&[exc_type]) };
+        unsafe { crate::api::refcount::Py_DECREF(exc_type) };
         return None;
     }
     unsafe { crate::api::refcount::Py_XINCREF(traceback) };
     let value = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(exception_bits) };
     release_handles(&[class_bits, traceback_bits]);
     if value.is_null() {
-        unsafe { release_preserving_error(&[exc_type, traceback]) };
+        unsafe {
+            crate::api::refcount::Py_DECREF(exc_type);
+            crate::api::refcount::Py_XDECREF(traceback);
+        }
         return None;
     }
     Some(OwnedCError {
@@ -416,16 +433,78 @@ pub(crate) fn clear_all_pending_errors() {
     }
 }
 
-/// Release temporary owners with both exact raised-error channels detached.
-/// Preservation never projects runtime state into C views or materializes a
-/// traceback. Handled state remains live, and cleanup-only errors are drained
-/// before either incoming channel is restored, including during Rust unwind.
-pub fn with_preserved_error<T, F: FnOnce() -> T>(cleanup: F) -> T {
-    struct Cleanup<F, T> {
+/// Run fallible preparation with both incoming raised-error channels detached.
+/// Success restores those exact owners; failure keeps the callback's selected
+/// error and retires the incoming owners under it. No runtime state is projected
+/// into C views, so allocation-free emergency errors remain allocation-free.
+/// Handled state stays live. A successful callback must leave no new error.
+pub fn with_saved_error<T, F: FnOnce() -> Result<T, crate::ErrorIndicatorSet>>(
+    prepare: F,
+) -> Result<T, crate::ErrorIndicatorSet> {
+    struct Preparation<F, T> {
         run: Option<F>,
-        result: Option<std::thread::Result<T>>,
+        result: Option<std::thread::Result<Result<T, crate::ErrorIndicatorSet>>>,
     }
 
+    unsafe extern "C" fn invoke<F, T>(context: *mut std::ffi::c_void) -> c_int
+    where
+        F: FnOnce() -> Result<T, crate::ErrorIndicatorSet>,
+    {
+        let prepare = unsafe { &mut *context.cast::<Preparation<F, T>>() };
+        // Catch on the C callback's Rust side. An unwind restores both incoming
+        // channels before it resumes on the original Rust stack.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prepare
+                .run
+                .take()
+                .expect("preparation callback must run once")()
+        }));
+        let status = match &result {
+            Ok(Ok(_)) => 0,
+            Ok(Err(_)) => -1,
+            Err(_) => {
+                clear_all_pending_errors();
+                0
+            }
+        };
+        prepare.result = Some(result);
+        status
+    }
+
+    let error = take_current_error();
+    let mut prepare = Preparation::<F, T> {
+        run: Some(prepare),
+        result: None,
+    };
+    let hooks = crate::hooks::hooks_or_stubs();
+    unsafe {
+        (hooks.with_saved_pending_exception)(invoke::<F, T>, (&raw mut prepare).cast());
+    }
+    let result = prepare
+        .result
+        .expect("preparation hook must call back synchronously");
+    if matches!(&result, Ok(Err(_))) {
+        // The runtime has retained the selected failure, including an emergency
+        // with no C representation. Ordinary retirement may move that exact
+        // failure between channels; do not republish or drain after it.
+        retire_normalized_error(error);
+    } else if let Some(error) = error {
+        // The hook has restored the runtime channel. Raw C publication must not
+        // call the public replacement path, which would clear that owner.
+        let replaced = crate::api::object::replace_thread_state_error(Some(error));
+        debug_assert!(replaced.is_none());
+    }
+    match result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Release temporary owners with both exact raised-error channels detached.
+/// Cleanup-only errors are drained before either incoming channel is restored,
+/// including during Rust unwind. This is explicit suppression, unlike fallible
+/// preparation, which keeps a callback failure selected.
+pub fn with_preserved_error<T, F: FnOnce() -> T>(cleanup: F) -> T {
     struct DrainPendingErrors;
 
     impl Drop for DrainPendingErrors {
@@ -434,38 +513,12 @@ pub fn with_preserved_error<T, F: FnOnce() -> T>(cleanup: F) -> T {
         }
     }
 
-    unsafe extern "C" fn invoke<F: FnOnce() -> T, T>(context: *mut std::ffi::c_void) {
-        let cleanup = unsafe { &mut *context.cast::<Cleanup<F, T>>() };
-        // Keep unwinding entirely on this side of the C callback boundary.
-        cleanup.result = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-            || {
-                let _drain = DrainPendingErrors;
-                cleanup.run.take().expect("cleanup callback must run once")()
-            },
-        )));
-    }
-
-    let error = take_current_error();
-    let mut cleanup = Cleanup::<F, T> {
-        run: Some(cleanup),
-        result: None,
-    };
-    let hooks = crate::hooks::hooks_or_stubs();
-    unsafe {
-        (hooks.with_preserved_pending_exception)(invoke::<F, T>, (&raw mut cleanup).cast());
-    }
-    // The hook has already restored the runtime channel. Raw C publication
-    // must not invoke the public replacement path, which drains both channels.
-    if let Some(error) = error {
-        let replaced = crate::api::object::replace_thread_state_error(Some(error));
-        debug_assert!(replaced.is_none());
-    }
-    match cleanup
-        .result
-        .expect("cleanup hook must call back synchronously")
-    {
+    match with_saved_error(|| {
+        let _drain = DrainPendingErrors;
+        Ok(cleanup())
+    }) {
         Ok(result) => result,
-        Err(payload) => std::panic::resume_unwind(payload),
+        Err(crate::ErrorIndicatorSet) => unreachable!("cleanup always restores the incoming state"),
     }
 }
 
@@ -507,53 +560,68 @@ enum ExceptionPreparation {
 /// held root owns the traversal; Floyd's algorithm also terminates an existing
 /// cycle. No Python attribute lookup or second exception registry is involved.
 unsafe fn chain_implicit_exception_context(value: *mut PyObject) -> bool {
-    let context = unsafe { PyErr_GetHandledException() };
+    let Ok(context) = (unsafe { handled_exception() }) else {
+        return false;
+    };
     if context.is_null() {
-        return !raised_error_pending();
+        return true;
     }
     if context == value || context == &raw mut crate::abi_types::Py_None {
-        unsafe { release_preserving_error(&[context]) };
+        unsafe { crate::api::refcount::Py_XDECREF(context) };
         return true;
     }
     let mut current = unsafe { crate::api::object::Py_NewRef(context) };
     let mut slow = unsafe { crate::api::object::Py_NewRef(context) };
     let mut advance_slow = false;
+    let mut valid = true;
     loop {
-        let next = unsafe { PyException_GetContext(current) };
+        let next = match unsafe { exception_context(current) } {
+            Ok(next) => next,
+            Err(crate::ErrorIndicatorSet) => {
+                valid = false;
+                break;
+            }
+        };
         if next.is_null() {
             break;
         }
         if next == value {
-            unsafe {
-                PyException_SetContext(current, ptr::null_mut());
-                release_preserving_error(&[next]);
-            }
+            valid = unsafe { set_exception_context(current, ptr::null_mut()) }.is_ok();
+            unsafe { crate::api::refcount::Py_XDECREF(next) };
             break;
         }
         let previous = std::mem::replace(&mut current, next);
-        unsafe { release_preserving_error(&[previous]) };
+        unsafe { crate::api::refcount::Py_XDECREF(previous) };
         if current == slow {
             break;
         }
         if advance_slow {
-            let next_slow = unsafe { PyException_GetContext(slow) };
+            let next_slow = match unsafe { exception_context(slow) } {
+                Ok(next) => next,
+                Err(crate::ErrorIndicatorSet) => {
+                    valid = false;
+                    break;
+                }
+            };
             if next_slow.is_null() {
                 break;
             }
             let previous = std::mem::replace(&mut slow, next_slow);
-            unsafe { release_preserving_error(&[previous]) };
+            unsafe { crate::api::refcount::Py_XDECREF(previous) };
         }
         advance_slow = !advance_slow;
     }
-    unsafe { release_preserving_error(&[current, slow]) };
-    if raised_error_pending() {
-        unsafe { release_preserving_error(&[context]) };
+    unsafe {
+        crate::api::refcount::Py_XDECREF(current);
+        crate::api::refcount::Py_XDECREF(slow);
+    }
+    if !valid {
+        unsafe { crate::api::refcount::Py_XDECREF(context) };
         return false;
     }
-    // Steals context. SetObject replaces a prior explicit context, as CPython
-    // does; Restore and Normalize never enter this operation.
-    unsafe { PyException_SetContext(value, context) };
-    !raised_error_pending()
+    // The setter steals context. Its typed status distinguishes a new failure
+    // from the previously pending error that SetObject has not replaced yet.
+    unsafe { set_exception_context(value, context) }.is_ok()
 }
 
 /// Normalize through the existing class-call and exception-field authorities.
@@ -594,23 +662,23 @@ unsafe fn normalize_prepared_error(
                 );
             }
         }
-        with_preserved_error(|| drop(prepare));
+        drop(prepare);
         return None;
     }
-    let superseded = if !matches!(ingress, ExceptionIngress::Normalize) {
-        // A diagnostic may borrow its class or message from the old C error.
-        // Detach that exact owner before clearing the indicators, then keep
-        // its storage pinned until diagnostic preparation has finished.
-        let previous = take_current_error();
-        replace_current_error(None);
-        previous
-    } else {
-        None
-    };
-    let prepared = normalization.prepare(preparation, prepare);
-    if let Some(previous) = superseded {
-        with_preserved_error(|| drop(previous));
-    }
+    let prepared =
+        if matches!(preparation, ExceptionPreparation::Diagnostic) && raised_error_pending() {
+            // Text is an internal projection whose allocator reports status
+            // through the pending indicator. Keep a producer failure selected
+            // without forcing an allocation-free emergency into an OwnedCError.
+            with_saved_error(|| {
+                normalization
+                    .prepare(preparation, prepare)
+                    .ok_or(crate::ErrorIndicatorSet)
+            })
+            .ok()
+        } else {
+            normalization.prepare(preparation, prepare)
+        };
     let mut error = prepared?;
     if unsafe { normalize_error_in_place(&mut error, ingress) } {
         Some(error)
@@ -623,11 +691,74 @@ unsafe fn normalize_prepared_error(
                 );
             }
         }
-        // Inputs and invalid constructor results can have reentrant finalizers.
-        // Their disposal cannot replace the selected normalization failure.
-        with_preserved_error(|| drop(error));
+        // Restore consumes value before type/traceback on construction failure;
+        // Normalize consumes type/value while the failure is active, before its
+        // caller fetches that failure and reconciles the original traceback.
+        if matches!(ingress, ExceptionIngress::Restore) {
+            let value = std::mem::replace(&mut error.value, ptr::null_mut());
+            unsafe { crate::api::refcount::Py_XDECREF(value) };
+        }
+        drop(error);
         None
     }
+}
+
+// CPython's SetObject failure note deliberately runs with the constructor
+// failure detached. Repr failure falls back to <unknown>; failure to allocate
+// that text falls back to the type-only note. The eventual note failure is
+// overwritten only after the original construction input has retired.
+unsafe fn normalization_failure_note(
+    exception: *mut PyObject,
+    value: *mut PyObject,
+) -> *mut PyObject {
+    let mut args = unsafe { crate::api::typeobj::PyObject_Repr(value) };
+    if args.is_null() {
+        unsafe { PyErr_Clear() };
+        args = unsafe { PyUnicode_FromFormat(c"<unknown>".as_ptr()) };
+    }
+    let name = unsafe { (*exception.cast::<PyTypeObject>()).tp_name };
+    if args.is_null() {
+        unsafe {
+            PyErr_Clear();
+            PyUnicode_FromFormat(c"Normalization failed: type=%s".as_ptr(), name)
+        }
+    } else {
+        let note = unsafe {
+            PyUnicode_FromFormat(
+                c"Normalization failed: type=%s args=%S".as_ptr(),
+                name,
+                args,
+            )
+        };
+        unsafe { crate::api::refcount::Py_DECREF(args) };
+        note
+    }
+}
+
+// The immutable base descriptor routes to the existing add_note authority.
+// Looking up failure.add_note would incorrectly dispatch a subclass override;
+// copying __notes__ lookup/set/append here would create a second implementation.
+unsafe fn add_normalization_failure_note(exception: *mut PyObject, note: *mut PyObject) {
+    use crate::api::refcount::OwnedPyObject;
+    let method = unsafe {
+        OwnedPyObject::from_owned(crate::api::object::PyObject_GetAttrString(
+            (&raw mut crate::abi_types::PyExc_BaseException).cast(),
+            c"add_note".as_ptr(),
+        ))
+    };
+    if method.as_ptr().is_null() {
+        return;
+    }
+    let mut args = [exception, note];
+    let result = unsafe {
+        crate::api::object::PyObject_Vectorcall(
+            method.as_ptr(),
+            args.as_mut_ptr(),
+            args.len(),
+            ptr::null_mut(),
+        )
+    };
+    unsafe { crate::api::refcount::Py_XDECREF(result) };
 }
 
 unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIngress) -> bool {
@@ -643,11 +774,13 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
         }
         return false;
     }
-    let instance_class = unsafe { exception_instance_class(error.value) };
-    let matching = if instance_class.is_null() {
-        false
-    } else {
-        match ingress {
+    let instance_class = match unsafe { exception_instance_class(error.value) } {
+        Ok(class) => class,
+        Err(crate::ErrorIndicatorSet) => return false,
+    };
+    let matching = match instance_class {
+        None => false,
+        Some(instance_class) => match ingress {
             ExceptionIngress::Restore => instance_class.cast::<PyObject>() == error.exc_type,
             ExceptionIngress::SetObject | ExceptionIngress::Normalize => {
                 let subclass = unsafe {
@@ -658,12 +791,14 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
                 }
                 subclass != 0
             }
-        }
+        },
     };
-    if raised_error_pending() {
-        return false;
-    }
     if !matching {
+        if matches!(ingress, ExceptionIngress::SetObject) {
+            // CPython clears only when it must call the class. An admitted
+            // instance retains the old indicator until final publication.
+            replace_current_error(None);
+        }
         if !crate::hooks::native_gc_allocation_available() {
             // Before GC authority exists, construction cannot even allocate its
             // argument tuple. Keep only the admitted exception class in the
@@ -671,7 +806,11 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
             // an exception instance and must never be published as one.
             let value = std::mem::replace(&mut error.value, ptr::null_mut());
             let traceback = std::mem::replace(&mut error.traceback, ptr::null_mut());
-            unsafe { release_preserving_error(&[value, traceback]) };
+            unsafe {
+                for &object in &[value, traceback] {
+                    crate::api::refcount::Py_XDECREF(object);
+                }
+            };
             return true;
         }
         let args = if error.value.is_null() || error.value == &raw mut crate::abi_types::Py_None {
@@ -684,42 +823,73 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
         if args.is_null() {
             return false;
         }
-        let normalized =
+        let mut normalized =
             unsafe { crate::api::object::PyObject_Call(error.exc_type, args, ptr::null_mut()) };
-        unsafe { release_preserving_error(&[args]) };
+        unsafe { crate::api::refcount::Py_XDECREF(args) };
+        if !normalized.is_null() {
+            match unsafe { exception_instance_class(normalized) } {
+                Ok(Some(_)) => {}
+                result => {
+                    if result.is_ok() {
+                        unsafe {
+                            PyErr_SetString(
+                                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                                c"calling an exception class did not return a BaseException instance".as_ptr(),
+                            );
+                        }
+                    }
+                    // _PyErr_CreateException rejects/retires its result before
+                    // its caller retires the original construction argument.
+                    unsafe { crate::api::refcount::Py_DECREF(normalized) };
+                    normalized = ptr::null_mut();
+                }
+            }
+        }
         if normalized.is_null() {
+            if matches!(ingress, ExceptionIngress::SetObject) {
+                // SetObject annotates its detached constructor failure before
+                // reinstating that exact owner. The input retires after note
+                // formatting and before add_note, including when formatting
+                // fails. Restore/Normalize keep the failure visible throughout.
+                let failure = unsafe {
+                    crate::api::refcount::OwnedPyObject::from_owned(PyErr_GetRaisedException())
+                };
+                let previous = std::mem::replace(&mut error.value, ptr::null_mut());
+                let note = if !failure.as_ptr().is_null() {
+                    unsafe { normalization_failure_note(error.exc_type, previous) }
+                } else {
+                    // An allocation-free runtime emergency has no exception
+                    // instance on which to append a note; keep it selected.
+                    ptr::null_mut()
+                };
+                unsafe { crate::api::refcount::Py_XDECREF(previous) };
+                if !failure.as_ptr().is_null() {
+                    if !note.is_null() {
+                        unsafe { add_normalization_failure_note(failure.as_ptr(), note) };
+                        unsafe { crate::api::refcount::Py_DECREF(note) };
+                    }
+                    // Note callbacks may mutate the detached instance's class
+                    // or traceback. Publish it through the fresh-field owner,
+                    // not the auxiliary triple captured before those callbacks.
+                    unsafe { PyErr_SetRaisedException(failure.into_ptr()) };
+                }
+            }
             return false;
         }
         let previous = std::mem::replace(&mut error.value, normalized);
-        unsafe { release_preserving_error(&[previous]) };
-    }
-    let actual_class = unsafe { exception_instance_class(error.value) };
-    if actual_class.is_null() {
-        unsafe {
-            PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                c"calling an exception class did not return a BaseException instance".as_ptr(),
-            );
-        }
-        return false;
-    }
-    if actual_class.cast::<PyObject>() != error.exc_type {
-        let actual_type = unsafe { crate::api::object::Py_NewRef(actual_class.cast()) };
-        let previous = std::mem::replace(&mut error.exc_type, actual_type);
-        unsafe { release_preserving_error(&[previous]) };
+        unsafe { crate::api::refcount::Py_XDECREF(previous) };
     }
     match ingress {
         ExceptionIngress::SetObject => {
             if !unsafe { chain_implicit_exception_context(error.value) } {
                 return false;
             }
-            let traceback = unsafe { PyException_GetTraceback(error.value) };
-            if raised_error_pending() {
-                unsafe { release_preserving_error(&[traceback]) };
-                return false;
-            }
+            let traceback = match unsafe { exception_traceback(error.value) } {
+                Ok(traceback) => traceback,
+                Err(crate::ErrorIndicatorSet) => return false,
+            };
             let previous = std::mem::replace(&mut error.traceback, traceback);
-            unsafe { release_preserving_error(&[previous]) };
+            unsafe { crate::api::refcount::Py_XDECREF(previous) };
         }
         ExceptionIngress::Restore => {
             // Restore explicitly clears the instance traceback when its owned
@@ -734,18 +904,49 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
             }
             if error.traceback == &raw mut crate::abi_types::Py_None {
                 let previous = std::mem::replace(&mut error.traceback, ptr::null_mut());
-                unsafe { release_preserving_error(&[previous]) };
+                unsafe { crate::api::refcount::Py_XDECREF(previous) };
             }
         }
-        ExceptionIngress::Normalize => {}
+        ExceptionIngress::Normalize => {
+            // The legacy caller triple believes an admitted subtype, but a
+            // constructor-created value leaves the requested type unchanged
+            // (CPython _PyErr_NormalizeException's separate else-if branch).
+            if matching
+                && let Some(actual_class) = instance_class
+                && actual_class.cast::<PyObject>() != error.exc_type
+            {
+                let actual_type = unsafe { crate::api::object::Py_NewRef(actual_class.cast()) };
+                let previous = std::mem::replace(&mut error.exc_type, actual_type);
+                unsafe { crate::api::refcount::Py_XDECREF(previous) };
+            }
+        }
     }
     true
 }
 
 unsafe fn normalize_and_replace(error: OwnedCError, ingress: ExceptionIngress) {
     if let Some(error) = unsafe { normalize_owned_error(error, ingress) } {
-        replace_current_error(Some(error));
+        unsafe { publish_normalized_error(error) };
     }
+}
+
+/// Raised state follows the value's actual class after callback-owning inputs
+/// and fields have retired. The requested class is a separate legacy ingress
+/// owner: Restore retires it only after publishing the new raised instance.
+unsafe fn publish_normalized_error(mut error: OwnedCError) {
+    let requested_type = if error.value.is_null() {
+        ptr::null_mut()
+    } else {
+        let actual_type = unsafe { crate::api::typeobj::PyObject_Type(error.value) };
+        if actual_type.is_null() {
+            let value = std::mem::replace(&mut error.value, ptr::null_mut());
+            unsafe { crate::api::refcount::Py_XDECREF(value) };
+            return;
+        }
+        std::mem::replace(&mut error.exc_type, actual_type)
+    };
+    replace_current_error(Some(error));
+    unsafe { crate::api::refcount::Py_XDECREF(requested_type) };
 }
 
 #[unsafe(no_mangle)]
@@ -770,18 +971,18 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
                             // Use the Unicode constructor's canonical decoder.
                             // Its exact error remains selected through cleanup.
                             let invalid = crate::api::strings::PyUnicode_FromString(message);
-                            release_preserving_error(&[invalid]);
+                            crate::api::refcount::Py_XDECREF(invalid);
                             if !raised_error_pending() {
                                 install_normalization_failure();
                             }
-                            with_preserved_error(|| drop(error));
+                            drop(error);
                             return None;
                         };
                         message_text
                     };
                     let value = allocate_exception_message(msg);
                     if value.is_null() && raised_error_pending() {
-                        with_preserved_error(|| drop(error));
+                        drop(error);
                         return None;
                     }
                     value
@@ -798,7 +999,7 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
         )
     };
     if let Some(error) = normalized {
-        replace_current_error(Some(error));
+        unsafe { publish_normalized_error(error) };
     }
 }
 
@@ -1453,7 +1654,7 @@ unsafe fn normalize_oserror_windows_args(args: *mut PyObject) -> *mut PyObject {
     }
     let winerror = unsafe { crate::api::numbers::PyLong_AsLong(winerror) };
     if winerror == -1 && raised_error_pending() {
-        unsafe { release_preserving_error(&[args]) };
+        unsafe { crate::api::refcount::Py_XDECREF(args) };
         return ptr::null_mut();
     }
     let errno = molt_runtime_platform::windows_abi::winerror_to_errno(winerror as i32);
@@ -1959,7 +2160,7 @@ unsafe fn allocate_native_exception(
     if allocation.is_null() {
         unsafe {
             check_native_result(allocation, "native exception tp_alloc");
-            release_preserving_error(&[owned_args]);
+            crate::api::refcount::Py_XDECREF(owned_args);
         }
         return ptr::null_mut();
     }
@@ -1969,7 +2170,7 @@ unsafe fn allocate_native_exception(
         unsafe { check_native_status(-1, "native_gc_allocate") };
         let free = unsafe { (*subtype).tp_free }.unwrap_or(crate::api::memory::PyObject_GC_Del);
         let heap_type = unsafe { (*subtype).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 };
-        with_preserved_error(|| unsafe {
+        unsafe {
             crate::api::refcount::Py_DECREF(owned_args);
             if !std::ptr::fn_addr_eq(
                 free,
@@ -1981,7 +2182,7 @@ unsafe fn allocate_native_exception(
             if heap_type {
                 crate::api::refcount::Py_DECREF(subtype.cast::<PyObject>());
             }
-        });
+        };
         return ptr::null_mut();
     }
     let instance = allocation.cast::<PyBaseExceptionObject>();
@@ -2009,7 +2210,7 @@ unsafe fn allocate_native_exception(
     {
         unsafe {
             check_native_status(-1, "native_gc_track");
-            release_preserving_error(&[allocation]);
+            crate::api::refcount::Py_DECREF(allocation);
         }
         return ptr::null_mut();
     }
@@ -2089,7 +2290,7 @@ unsafe fn new_native_exception_group(
         )
     };
     if status < 0 {
-        with_preserved_error(|| unsafe { (hooks.dec_ref)(args_bits) });
+        unsafe { (hooks.dec_ref)(args_bits) };
         if !raised_error_pending() {
             unsafe {
                 PyErr_SetString(
@@ -2105,7 +2306,13 @@ unsafe fn new_native_exception_group(
     let message = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(message_bits) };
     let exceptions = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(exceptions_bits) };
     if message.is_null() || exceptions.is_null() {
-        unsafe { release_preserving_error(&[message, exceptions]) };
+        unsafe {
+            {
+                for &object in &[message, exceptions] {
+                    crate::api::refcount::Py_XDECREF(object);
+                }
+            }
+        };
         if !raised_error_pending() {
             unsafe {
                 PyErr_SetString(
@@ -2123,7 +2330,13 @@ unsafe fn new_native_exception_group(
     };
     let instance = unsafe { allocate_native_exception(selected, args) };
     if instance.is_null() {
-        unsafe { release_preserving_error(&[message, exceptions]) };
+        unsafe {
+            {
+                for &object in &[message, exceptions] {
+                    crate::api::refcount::Py_XDECREF(object);
+                }
+            }
+        };
         return ptr::null_mut();
     }
     let layout = molt_lang_obj_model::ExceptionLayoutKind::Group;
@@ -2201,7 +2414,7 @@ pub unsafe extern "C" fn molt_native_exception_new(
                 if unsafe { crate::api::numbers::PyLong_Check(errno_obj) } != 0 {
                     let errno = unsafe { crate::api::numbers::PyLong_AsLong(errno_obj) };
                     if errno == -1 && raised_error_pending() {
-                        unsafe { release_preserving_error(&[args]) };
+                        unsafe { crate::api::refcount::Py_XDECREF(args) };
                         return ptr::null_mut();
                     }
                     selected = unsafe { oserror_subtype_for_errno(errno as c_int) };
@@ -2237,13 +2450,13 @@ pub unsafe extern "C" fn molt_native_exception_dealloc(op: *mut PyObject) {
     {
         return;
     }
-    with_preserved_error(|| unsafe {
+    unsafe {
         let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
             return;
         };
         molt_native_exception_clear(op);
         deallocation.finish();
-    });
+    }
 }
 
 /// Validate an owned native callback result before publishing it across either
@@ -2264,7 +2477,7 @@ pub(crate) unsafe fn check_native_result(result: *mut PyObject, operation: &str)
     }
     if pending {
         unsafe {
-            release_preserving_error(&[result]);
+            crate::api::refcount::Py_XDECREF(result);
             replace_current_with_system_error(&format!(
                 "{operation} returned a result with an exception set"
             ));
@@ -2316,7 +2529,7 @@ pub(crate) unsafe fn replace_current_with_system_error(message: &str) {
     {
         return;
     }
-    let original = take_current_error();
+    let original = take_raised_error();
     let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
         std::ffi::CString::new("native call contract violation")
             .expect("static message contains no nul")
@@ -2327,14 +2540,14 @@ pub(crate) unsafe fn replace_current_with_system_error(message: &str) {
             c_message.as_ptr(),
         )
     };
-    let Some(replacement) = take_current_error() else {
-        with_preserved_error(|| drop(original));
+    let Some(replacement) = take_raised_error() else {
         if !raised_error_pending() {
             unsafe { install_normalization_failure() };
         }
+        drop(original);
         return;
     };
-    if let Some(original) = original {
+    if let Some(original) = original.as_ref() {
         if !replacement.value.is_null()
             && !original.value.is_null()
             && !std::ptr::eq(replacement.value, original.value)
@@ -2352,9 +2565,9 @@ pub(crate) unsafe fn replace_current_with_system_error(message: &str) {
                 replace_current_error(None);
             }
         }
-        with_preserved_error(|| drop(original));
     }
     replace_current_error(Some(replacement));
+    drop(original);
 }
 
 #[unsafe(no_mangle)]
@@ -2741,23 +2954,21 @@ pub unsafe extern "C" fn PyErr_Fetch(
         .as_ref()
         .map(|state| (state.exc_type, state.value, state.traceback))
         .unwrap_or((ptr::null_mut(), ptr::null_mut(), ptr::null_mut()));
-    with_preserved_error(|| {
-        if !p_type.is_null() {
-            unsafe { *p_type = type_ptr };
-        } else if !type_ptr.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(type_ptr) };
-        }
-        if !p_value.is_null() {
-            unsafe { *p_value = value_ptr };
-        } else if !value_ptr.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(value_ptr) };
-        }
-        if !p_tb.is_null() {
-            unsafe { *p_tb = traceback_ptr };
-        } else if !traceback_ptr.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(traceback_ptr) };
-        }
-    });
+    if !p_type.is_null() {
+        unsafe { *p_type = type_ptr };
+    } else if !type_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(type_ptr) };
+    }
+    if !p_value.is_null() {
+        unsafe { *p_value = value_ptr };
+    } else if !value_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(value_ptr) };
+    }
+    if !p_tb.is_null() {
+        unsafe { *p_tb = traceback_ptr };
+    } else if !traceback_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(traceback_ptr) };
+    }
 }
 
 /// Transfer the normalized raised instance and clear the propagating indicator.
@@ -2769,7 +2980,10 @@ pub unsafe extern "C" fn PyErr_GetRaisedException() -> *mut PyObject {
         return ptr::null_mut();
     };
     let value = std::mem::replace(&mut error.value, ptr::null_mut());
-    with_preserved_error(|| drop(error));
+    // The transferred instance retains its physical class/traceback. These
+    // auxiliary triple owners are ordinary projection retirement with NULL
+    // selected, matching GetRaisedException's detached state.
+    drop(error);
     value
 }
 
@@ -2778,40 +2992,51 @@ pub unsafe extern "C" fn PyErr_GetRaisedException() -> *mut PyObject {
 /// other C APIs. Unlike Restore, this API never calls an exception constructor.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetRaisedException(exc: *mut PyObject) {
-    let previous = take_current_error();
-    clear_all_pending_errors();
-    if !exc.is_null() {
-        let mut next = OwnedCError {
-            exc_type: unsafe { crate::api::typeobj::PyObject_Type(exc) },
-            value: exc,
-            traceback: ptr::null_mut(),
-        };
-        if !next.exc_type.is_null() {
-            next.traceback = unsafe { PyException_GetTraceback(exc) };
-        }
-        if !next.exc_type.is_null() && !raised_error_pending() {
-            replace_current_error(Some(next));
-        } else {
-            with_preserved_error(|| drop(next));
-        }
+    if exc.is_null() {
+        replace_current_error(None);
+        return;
     }
-    with_preserved_error(|| drop(previous));
+    let mut next = OwnedCError {
+        exc_type: ptr::null_mut(),
+        value: exc,
+        traceback: ptr::null_mut(),
+    };
+    let Ok(traceback) = (unsafe { exception_traceback(exc) }) else {
+        return;
+    };
+    next.traceback = traceback;
+    next.exc_type = unsafe { crate::api::typeobj::PyObject_Type(exc) };
+    if next.exc_type.is_null() {
+        return;
+    }
+    replace_current_error(Some(next));
 }
 
 /// Return the runtime's active handled exception (`sys.exception()`) as a new
 /// reference, distinct from the propagating error indicator.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_GetHandledException() -> *mut PyObject {
+    unsafe { handled_exception() }.unwrap_or(ptr::null_mut())
+}
+
+unsafe fn handled_exception() -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
     let result = unsafe { (crate::hooks::hooks_or_stubs().handled_exception_get)() };
     match result.decode() {
-        crate::hooks::DecodedHandleResult::Missing => ptr::null_mut(),
+        crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
         crate::hooks::DecodedHandleResult::Error => {
-            let _ = transfer_runtime_pending_to_current();
-            ptr::null_mut()
+            if let Some(error) = take_runtime_pending_error() {
+                replace_current_error(Some(error));
+            }
+            Err(crate::ErrorIndicatorSet)
         }
-        crate::hooks::DecodedHandleResult::Ok(bits) => unsafe {
-            GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)
-        },
+        crate::hooks::DecodedHandleResult::Ok(bits) => {
+            let value = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+            if value.is_null() {
+                Err(crate::ErrorIndicatorSet)
+            } else {
+                Ok(value)
+            }
+        }
     }
 }
 
@@ -2920,12 +3145,12 @@ pub unsafe extern "C" fn PyErr_Restore(
     tb: *mut PyObject,
 ) {
     if exc_type.is_null() {
+        replace_current_error(None);
         drop(OwnedCError {
             exc_type,
             value,
             traceback: tb,
         });
-        replace_current_error(None);
     } else {
         unsafe {
             normalize_and_replace(
@@ -2973,7 +3198,7 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
         )
     };
     let normalized = if let Some(normalized) = normalized {
-        unsafe { release_preserving_error(&[original_traceback]) };
+        unsafe { crate::api::refcount::Py_XDECREF(original_traceback) };
         normalized
     } else {
         // Constructors report through the same normalized ingress. Transfer
@@ -2984,13 +3209,13 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
             take_current_error()
         });
         let Some(mut replacement) = replacement else {
-            unsafe { release_preserving_error(&[original_traceback]) };
+            unsafe { crate::api::refcount::Py_XDECREF(original_traceback) };
             return;
         };
         if replacement.traceback.is_null() {
             replacement.traceback = original_traceback;
         } else {
-            unsafe { release_preserving_error(&[original_traceback]) };
+            unsafe { crate::api::refcount::Py_XDECREF(original_traceback) };
         }
         replacement
     };
@@ -2999,7 +3224,7 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
         *exc = normalized.exc_type;
         *val = normalized.value;
         if tb.is_null() {
-            release_preserving_error(&[normalized.traceback]);
+            crate::api::refcount::Py_XDECREF(normalized.traceback);
         } else {
             *tb = normalized.traceback;
         }
@@ -3017,11 +3242,9 @@ fn allocate_exception_message(text: &str) -> *mut PyObject {
     }
     let bits = unsafe { h.alloc_str(text.as_ptr(), text.len()) };
     if raised_error_pending() {
-        with_preserved_error(|| {
-            if bits != 0 {
-                unsafe { (h.dec_ref)(bits) };
-            }
-        });
+        if bits != 0 {
+            unsafe { (h.dec_ref)(bits) };
+        }
         return ptr::null_mut();
     }
     if bits == 0 {
@@ -3042,7 +3265,7 @@ fn allocate_exception_message(text: &str) -> *mut PyObject {
         crate::bridge::is_semantic_instance_of(value, &raw mut crate::abi_types::PyUnicode_Type)
     };
     if !is_text || raised_error_pending() {
-        unsafe { release_preserving_error(&[value]) };
+        unsafe { crate::api::refcount::Py_DECREF(value) };
         if !raised_error_pending() {
             // A malformed producer result has no usable diagnostic payload.
             // Report that concrete contract violation through normal native
@@ -3090,9 +3313,11 @@ pub unsafe fn exception_class_check(value: *mut PyObject) -> bool {
 /// Borrow the actual class only after physical managed/native exception
 /// admission. A native subclass is identified by its canonical layout and
 /// actual ob_type, never by exact exported-singleton identity.
-unsafe fn exception_instance_class(value: *mut PyObject) -> *mut PyTypeObject {
+unsafe fn exception_instance_class(
+    value: *mut PyObject,
+) -> Result<Option<*mut PyTypeObject>, crate::ErrorIndicatorSet> {
     if value.is_null() {
-        return ptr::null_mut();
+        return Ok(None);
     }
     let class = if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(value)
         && unsafe { crate::hooks::hooks_or_stubs().classify_heap(handle.bits()) }
@@ -3101,22 +3326,27 @@ unsafe fn exception_instance_class(value: *mut PyObject) -> *mut PyTypeObject {
         match unsafe { crate::hooks::hooks_or_stubs().runtime_class_borrowed(handle.bits()) }
             .decode()
         {
-            crate::hooks::DecodedHandleResult::Ok(class_bits) => unsafe {
-                GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class_bits)
-            },
-            crate::hooks::DecodedHandleResult::Missing
-            | crate::hooks::DecodedHandleResult::Error => return ptr::null_mut(),
+            crate::hooks::DecodedHandleResult::Ok(class_bits) => {
+                let class = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class_bits) };
+                if class.is_null() {
+                    return Err(crate::ErrorIndicatorSet);
+                }
+                class
+            }
+            crate::hooks::DecodedHandleResult::Missing => return Ok(None),
+            crate::hooks::DecodedHandleResult::Error => {
+                if let Some(error) = take_runtime_pending_error() {
+                    replace_current_error(Some(error));
+                }
+                return Err(crate::ErrorIndicatorSet);
+            }
         }
     } else if unsafe { native_exception_instance(value) } {
         unsafe { (*value).ob_type.cast::<PyObject>() }
     } else {
-        return ptr::null_mut();
+        return Ok(None);
     };
-    if unsafe { exception_class_pointer(class) } {
-        class.cast()
-    } else {
-        ptr::null_mut()
-    }
+    Ok(unsafe { exception_class_pointer(class) }.then_some(class.cast()))
 }
 
 unsafe fn given_exception_matches(given: *mut PyObject, exc: *mut PyObject) -> bool {
@@ -3144,12 +3374,10 @@ unsafe fn given_exception_matches(given: *mut PyObject, exc: *mut PyObject) -> b
         }
         return false;
     }
-    let instance_class = unsafe { exception_instance_class(given) };
-    let given = if instance_class.is_null() {
-        given
-    } else {
-        instance_class.cast()
+    let Ok(instance_class) = (unsafe { exception_instance_class(given) }) else {
+        return false;
     };
+    let given = instance_class.map_or(given, |class| class.cast());
     if unsafe { exception_class_pointer(given) && exception_class_pointer(exc) } {
         return unsafe { crate::api::typeobj::PyType_IsSubtype(given.cast(), exc.cast()) != 0 };
     }
@@ -3215,6 +3443,9 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
         if status == 0 && published {
             return 0;
         }
+        if let Some(error) = take_runtime_pending_error() {
+            replace_current_error(Some(error));
+        }
         if !raised_error_pending() {
             unsafe {
                 PyErr_SetString(
@@ -3265,43 +3496,30 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut PyObject {
+    unsafe { exception_traceback(exc) }.unwrap_or(ptr::null_mut())
+}
+
+unsafe fn exception_traceback(
+    exc: *mut PyObject,
+) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
     if exc.is_null() {
-        return ptr::null_mut();
+        return Ok(ptr::null_mut());
     }
-    if let Some(exception) = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc) {
-        let result = unsafe {
-            (crate::hooks::hooks_or_stubs().exception_get_field)(
-                exception.bits(),
-                crate::hooks::ExceptionField::Traceback as u32,
-            )
-        };
-        return match result.decode() {
-            crate::hooks::DecodedHandleResult::Missing => ptr::null_mut(),
-            crate::hooks::DecodedHandleResult::Ok(bits) => unsafe {
-                GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)
-            },
-            crate::hooks::DecodedHandleResult::Error => {
-                unsafe {
-                    set_exception_field_type_error(
-                        c"PyException_GetTraceback: expected an exception instance",
-                    )
-                };
-                ptr::null_mut()
-            }
-        };
+    if let Some(result) =
+        unsafe { managed_exception_get_field(exc, crate::hooks::ExceptionField::Traceback) }
+    {
+        return result;
     }
     let Some(base) = foreign_exception_layout(exc) else {
         unsafe {
             PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
                 c"PyException_GetTraceback: expected an exception instance".as_ptr(),
             )
         };
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     };
-    let traceback = unsafe { (*base).traceback };
-    unsafe { crate::api::refcount::Py_XINCREF(traceback) };
-    traceback
+    Ok(unsafe { crate::api::object::Py_XNewRef((*base).traceback) })
 }
 
 fn foreign_exception_layout(exc: *mut PyObject) -> Option<*mut PyBaseExceptionObject> {
@@ -3394,8 +3612,10 @@ unsafe fn managed_exception_set_field(
     if let Some(bits) = value_bits {
         unsafe { (hooks.dec_ref)(bits) };
     }
-    if status != 0 {
-        let _ = transfer_runtime_pending_to_current();
+    if status != 0 || !published {
+        if let Some(error) = take_runtime_pending_error() {
+            replace_current_error(Some(error));
+        }
     }
     Some(if published { status } else { -1 })
 }
@@ -3411,10 +3631,17 @@ unsafe fn managed_exception_get_field(
     Some(match result.decode() {
         crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
         crate::hooks::DecodedHandleResult::Ok(bits) => {
-            Ok(unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) })
+            let value = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+            if value.is_null() {
+                Err(crate::ErrorIndicatorSet)
+            } else {
+                Ok(value)
+            }
         }
         crate::hooks::DecodedHandleResult::Error => {
-            let _ = transfer_runtime_pending_to_current();
+            if let Some(error) = take_runtime_pending_error() {
+                replace_current_error(Some(error));
+            }
             Err(crate::ErrorIndicatorSet)
         }
     })
@@ -3432,14 +3659,21 @@ unsafe fn set_exception_field_type_error(message: &'static CStr) {
 }
 
 unsafe fn exception_instance_pointer(value: *mut PyObject) -> bool {
-    with_preserved_error(|| unsafe { !exception_instance_class(value).is_null() })
+    with_preserved_error(|| unsafe { matches!(exception_instance_class(value), Ok(Some(_))) })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mut PyObject) {
+    let _ = unsafe { set_exception_context(exc, context) };
+}
+
+unsafe fn set_exception_context(
+    exc: *mut PyObject,
+    context: *mut PyObject,
+) -> Result<(), crate::ErrorIndicatorSet> {
     if exc.is_null() {
         unsafe { crate::api::refcount::Py_XDECREF(context) };
-        return;
+        return Ok(());
     }
     if let Some(status) =
         unsafe { managed_exception_set_field(exc, crate::hooks::ExceptionField::Context, context) }
@@ -3450,7 +3684,11 @@ pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mu
                 set_exception_field_type_error(c"exception context must be an exception or None")
             };
         }
-        return;
+        return if status == 0 {
+            Ok(())
+        } else {
+            Err(crate::ErrorIndicatorSet)
+        };
     }
     let Some(base) = foreign_exception_layout(exc) else {
         unsafe {
@@ -3459,7 +3697,7 @@ pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mu
                 c"PyException_SetContext: expected an exception instance",
             );
         }
-        return;
+        return Err(crate::ErrorIndicatorSet);
     };
     let context = if std::ptr::eq(context, &raw mut crate::abi_types::Py_None) {
         unsafe { crate::api::refcount::Py_DECREF(context) };
@@ -3472,7 +3710,7 @@ pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mu
             crate::api::refcount::Py_DECREF(context);
             set_exception_field_type_error(c"exception context must be an exception or None");
         }
-        return;
+        return Err(crate::ErrorIndicatorSet);
     }
     unsafe {
         let old = (*base).context;
@@ -3483,24 +3721,19 @@ pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mu
             crate::api::refcount::Py_XDECREF(old);
         }
     }
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_GetContext(exc: *mut PyObject) -> *mut PyObject {
+    unsafe { exception_context(exc) }.unwrap_or(ptr::null_mut())
+}
+
+unsafe fn exception_context(exc: *mut PyObject) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
     if let Some(result) =
         unsafe { managed_exception_get_field(exc, crate::hooks::ExceptionField::Context) }
     {
-        return match result {
-            Ok(value) => value,
-            Err(crate::ErrorIndicatorSet) => {
-                unsafe {
-                    set_exception_field_type_error(
-                        c"PyException_GetContext: expected an exception instance",
-                    )
-                };
-                ptr::null_mut()
-            }
-        };
+        return result;
     }
     let Some(base) = foreign_exception_layout(exc) else {
         unsafe {
@@ -3508,11 +3741,9 @@ pub unsafe extern "C" fn PyException_GetContext(exc: *mut PyObject) -> *mut PyOb
                 c"PyException_GetContext: expected an exception instance",
             )
         };
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     };
-    let context = unsafe { (*base).context };
-    unsafe { crate::api::refcount::Py_XINCREF(context) };
-    context
+    Ok(unsafe { crate::api::object::Py_XNewRef((*base).context) })
 }
 
 #[unsafe(no_mangle)]
