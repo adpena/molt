@@ -15,6 +15,10 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # The runtime build identity covers the build interpreter's file tree,
+  # bytecode caches included. Jobs that wrote different caches into their
+  # fresh interpreter could never agree on the prepared runtime's identity.
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   nightly-prepare:
