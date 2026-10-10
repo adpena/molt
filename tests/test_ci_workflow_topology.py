@@ -671,6 +671,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     )
     profile = custody / "tmp" / "harness_memory_guard" / "commands.jsonl"
     pytest_dir = custody / "tmp" / "pytest-memory-guard"
+    metadata = runner_temp / "mr-12345-2"
     assert outputs["profile_log"] == str(profile)
     assert outputs["guard_state_root"] == str(custody / "tmp" / "memory_guard")
     assert outputs["pytest_guard_root"] == str(pytest_dir)
@@ -682,6 +683,9 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         "env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT": ""
         if state == "setup-no-root"
         else str(custody),
+        "env.MOLT_PROOF_TEST_METADATA_ROOT": ""
+        if state == "setup-no-root"
+        else str(metadata),
         **{
             f"steps.build-control.outputs.{name}": value
             if state.startswith("failed-")
@@ -718,6 +722,9 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
             *common_profiles,
             "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
+            "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
+            "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
+            "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.jsonl', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
         ]
     )
     rendered = [_diagnostic_path_expression(line, values) for line in paths]
@@ -771,10 +778,19 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             workspace
             / "proof-receipts/evidence/runtime-gate-runs/run/child-0/raw.stderr.log",
             custody / "target/release-output/deps/molt-test-artifacts/run/stderr.log",
+            metadata / "case/metadata-owner.json",
+            metadata / "case/execution.supervisor-receipt.json.events.123.0.tmp",
+            metadata / "case/execution.supervisor-receipt.json.events.abcdef.jsonl",
         ]
     for retained in retained_files:
         # Same filenames under a foreign run must never be swept into upload.
-        owner = custody if retained.is_relative_to(custody) else workspace
+        owner = (
+            custody
+            if retained.is_relative_to(custody)
+            else metadata
+            if retained.is_relative_to(metadata)
+            else workspace
+        )
         foreign = runner_temp / "mp-99999-1" / retained.relative_to(owner)
         foreign.parent.mkdir(parents=True, exist_ok=True)
         foreign.write_text('{"foreign":true}', encoding="utf-8")
@@ -784,6 +800,20 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             expected.add(retained)
     if state.startswith("failed-"):
         (pytest_dir / "unrelated.txt").write_text("not guard JSON", encoding="utf-8")
+        if not detailed:
+            # A raw policy/result/CAS may contain command or environment secrets.
+            # The diagnostics consumer must retain only the native journal and
+            # fixture owner, including when no final receipt was published.
+            for name in (
+                "execution.supervisor-policy.json",
+                "execution.json",
+                "execution.request.json",
+                "execution.command.stdout.log",
+                "custody-cas/private.json",
+            ):
+                secret = metadata / "case" / name
+                secret.parent.mkdir(parents=True, exist_ok=True)
+                secret.write_text("fixture-secret-must-not-upload", encoding="utf-8")
     if state == "failed-with-receipt":
         receipt = workspace / rendered[0]
         receipt.parent.mkdir(parents=True, exist_ok=True)
@@ -796,6 +826,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             candidate = workspace / candidate
         assert (
             candidate.is_relative_to(custody)
+            or (not detailed and candidate.is_relative_to(metadata))
             or candidate == workspace / rendered[0]
             or candidate == workspace / "proof-receipts/evidence/runtime-gate-runs"
             or (

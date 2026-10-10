@@ -49,6 +49,23 @@ newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
+The current runtime ownership candidate at `406d69789` compiles the full
+Linux/aarch64 default-feature release-output test image. Its first execution
+was stopped by proof custody when a process fixture launched the undeclared
+POSIX shell; it has no completed aggregate or semantic acceptance. The native
+journal retains the denial and incomplete cleanup observation. Complete the
+fixture descendant declaration family before rerunning that exact image.
+
+Windows development-tool identity now derives the interpreter architecture
+from CPython sysconfig rather than querying host WMI. The focused runtime
+identity/native-custody cohort passes 264 checks on macOS; actual Windows replay
+remains required. Platform-portability CI now retains existing native supervisor
+journal prefixes and metadata ownership records when an outer fixture times
+out. The artifact-selection cohort passes 93 checks; prefixes remain diagnostic
+and never substitute for a completed custody receipt. No emitted-binary work is
+added by either tooling change. The cause of the existing Windows fixture
+stall remains unproven pending those retained journals.
+
 Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
 Windows reports changed CPython runtime/import selection in its installed-record

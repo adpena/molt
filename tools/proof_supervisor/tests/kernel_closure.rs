@@ -425,7 +425,14 @@ fn outer_timeout_termination_closes_job_and_never_publishes_complete_receipt() {
             root_marker.display().to_string(),
             child_marker.display().to_string(),
         ],
-        environment: platform::required_environment(),
+        environment: {
+            let mut environment = platform::required_environment();
+            environment.insert(
+                "MOLT_RETENTION_SECRET".to_owned(),
+                "fixture-secret-must-not-upload".to_owned(),
+            );
+            environment
+        },
         root_role: "fixture".to_owned(),
         fixed_images: vec![FixedImage {
             role: "fixture".to_owned(),
@@ -449,14 +456,26 @@ fn outer_timeout_termination_closes_job_and_never_publishes_complete_receipt() {
     while (!root_marker.exists() || !child_marker.exists()) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
-    assert!(root_marker.exists() && child_marker.exists());
-    let root_pid: u32 = fs::read_to_string(&root_marker).unwrap().parse().unwrap();
-    let child_pid: u32 = fs::read_to_string(&child_marker).unwrap().parse().unwrap();
-    assert!(windows_process_is_alive(root_pid));
-    assert!(windows_process_is_alive(child_pid));
-
-    supervisor.kill().unwrap();
-    supervisor.wait().unwrap();
+    // Settle the actual supervisor even when startup evidence is absent.
+    // Assertions before kill/wait would abandon the real Job on test failure.
+    let root_pid = fs::read_to_string(&root_marker)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let child_pid = fs::read_to_string(&child_marker)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let both_alive = root_pid.is_some_and(windows_process_is_alive)
+        && child_pid.is_some_and(windows_process_is_alive);
+    let killed = supervisor.kill();
+    let waited = supervisor.wait();
+    killed.unwrap();
+    waited.unwrap();
+    let root_pid = root_pid.expect("supervised root did not publish its pid");
+    let child_pid = child_pid.expect("supervised child did not publish its pid");
+    assert!(
+        both_alive,
+        "timeout control must stop actual live root and descendant"
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while (windows_process_is_alive(root_pid) || windows_process_is_alive(child_pid))
         && Instant::now() < deadline
@@ -466,6 +485,49 @@ fn outer_timeout_termination_closes_job_and_never_publishes_complete_receipt() {
     assert!(!windows_process_is_alive(root_pid));
     assert!(!windows_process_is_alive(child_pid));
     assert!(!receipt_path.exists());
+    let prefix_name = format!(
+        "{}.events.",
+        receipt_path.file_name().unwrap().to_str().unwrap()
+    );
+    let journals: Vec<_> = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            name.starts_with(&prefix_name) && name.ends_with(".tmp")
+        })
+        .collect();
+    assert_eq!(
+        journals.len(),
+        1,
+        "timeout lost its one native journal owner"
+    );
+    let bytes = fs::read(&journals[0]).unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(!text.contains("fixture-secret-must-not-upload"));
+    assert!(!text.contains("MOLT_RETENTION_SECRET"));
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    // Independent literal wire oracle; no receipt or producer-derived expected
+    // journal is substituted for these real pre-timeout process admissions.
+    for pid in [root_pid, child_pid] {
+        for kind in ["process-create", "initial-image"] {
+            assert!(
+                records
+                    .iter()
+                    .any(|row| row["process_id"] == pid && row["event"]["kind"] == kind),
+                "missing real {kind} event for {pid}: {text}"
+            );
+        }
+    }
+    assert!(
+        records
+            .iter()
+            .all(|row| row["event"]["kind"] != "process-exit"),
+        "killed supervisor cannot claim terminal debug observation"
+    );
     let _ = fs::remove_dir_all(directory);
 }
 

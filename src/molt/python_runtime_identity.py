@@ -87,13 +87,23 @@ def _platform_identity() -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             f"unsupported provisioned-Python operating system: {sys.platform}"
         )
-    raw_architecture = platform.machine().strip().casefold()
-    architecture = {
-        "amd64": "x86_64",
-        "x86_64": "x86_64",
-        "arm64": "arm64",
-        "aarch64": "arm64",
-    }.get(raw_architecture)
+    if operating_system == "windows":
+        # CPython's Windows sysconfig platform names its build architecture.
+        # platform.machine() instead queries the host through WMI, loading
+        # transient COM DLLs and misidentifying an emulated interpreter.
+        raw_architecture = sysconfig.get_platform()
+        architecture = {
+            "win-amd64": "x86_64",
+            "win-arm64": "arm64",
+        }.get(raw_architecture)
+    else:
+        raw_architecture = platform.machine().strip().casefold()
+        architecture = {
+            "amd64": "x86_64",
+            "x86_64": "x86_64",
+            "arm64": "arm64",
+            "aarch64": "arm64",
+        }.get(raw_architecture)
     if architecture is None:
         raise PythonEnvironmentIdentityError(
             f"unsupported provisioned-Python architecture: {raw_architecture or '<empty>'}"
