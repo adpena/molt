@@ -87,7 +87,7 @@ def test_verified_supervisor_receipt_still_requires_exact_json(
     monkeypatch.setattr(
         supervisor_custody.command_identity,
         "_run_captured",
-        lambda *a, **kw: subprocess.CompletedProcess([], 0, "", ""),
+        lambda *a, **kw: subprocess.CompletedProcess([], 0, b"", b""),
     )
     with pytest.raises(ValueError, match="no readable receipt"):
         supervisor_custody._validated_supervisor_receipt(
@@ -116,6 +116,21 @@ def test_verified_result_binds_exact_receipt_and_policy_generations(
     original = {
         "schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA,
         "root_exit_code": 7,
+        "capability": {
+            "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
+            "platform": "linux"
+            if rooted
+            else {"win32": "windows", "darwin": "macos"}.get(
+                sys.platform, sys.platform
+            ),
+            "mode": "declared-tree",
+            "backend": "fixture-native-backend",
+            "admission": {"state": "eligible"},
+            "pre_entry_exec_authority": True,
+            "pre_entry_process_create_authority": True,
+            "recursive_descendant_authority": True,
+            "required_environment": {},
+        },
     }
     receipt_bytes = json.dumps(original).encode()
     policy_bytes = b'{"fixture":"original policy"}'
@@ -126,6 +141,8 @@ def test_verified_result_binds_exact_receipt_and_policy_generations(
         "receipt_bytes": len(receipt_bytes),
         "policy_input_sha256": hashlib.sha256(policy_bytes).hexdigest(),
         "policy_input_bytes": len(policy_bytes),
+        "native_custody_valid": True,
+        "journal_coverage_valid": True,
     }
     commands = []
 
@@ -137,7 +154,17 @@ def test_verified_result_binds_exact_receipt_and_policy_generations(
             )
         elif changed == "policy":
             policy_path.write_bytes(b'{"fixture":"replaced policy"}')
-        return subprocess.CompletedProcess(command, 0, json.dumps(binding), "")
+        assert kwargs["text"] is False
+        observed = dict(binding)
+        if changed:
+            path = receipt_path if changed == "receipt" else policy_path
+            prefix = "receipt" if changed == "receipt" else "policy_input"
+            data = path.read_bytes()
+            observed[prefix + "_sha256"] = hashlib.sha256(data).hexdigest()
+            observed[prefix + "_bytes"] = len(data)
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(observed).encode("utf-8"), b""
+        )
 
     monkeypatch.setattr(
         supervisor_custody.command_identity, "_run_captured", verifier_result
@@ -152,7 +179,7 @@ def test_verified_result_binds_exact_receipt_and_policy_generations(
     )
     if changed:
         with pytest.raises(
-            ValueError, match="verified different receipt or policy bytes"
+            ValueError, match="verified different (receipt|policy) bytes"
         ):
             supervisor_custody._validated_supervisor_receipt(**kwargs)
     else:
@@ -176,9 +203,12 @@ def test_verification_success_without_exact_input_binding_is_not_admitted(
     monkeypatch.setattr(
         supervisor_custody.command_identity,
         "_run_captured",
-        lambda *a, **k: subprocess.CompletedProcess([], 0, result, ""),
+        lambda *a, **k: subprocess.CompletedProcess([], 0, result.encode("utf-8"), b""),
     )
-    with pytest.raises(ValueError, match="verification binding|verified different"):
+    with pytest.raises(
+        ValueError,
+        match="verification (has no receipt byte identity|response is not exact JSON)|verified different",
+    ):
         supervisor_custody._validated_supervisor_receipt(
             binary=tmp_path / "fixture-verifier",
             policy_path=policy,
@@ -362,7 +392,7 @@ def test_python_generated_child_matches_native_execution_identity(tmp_path: Path
         ),
     )
     assert native_policy["derived_roots"] == child_policy["derived_roots"]
-    supervisor_custody._atomic_json(policy_path, native_policy)
+    supervisor_custody.publish_supervisor_policy(policy_path, native_policy)
     with server:
         completed = run_custody_subject_process(
             [
@@ -388,7 +418,8 @@ def test_python_generated_child_matches_native_execution_identity(tmp_path: Path
         cwd=tmp_path,
         env=environment,
     )
-    assert native["complete"] is True
+    assert supervisor_custody.supervisor_receipt_is_complete(native)
+    assert native["capability"]["admission"]["state"] == "admitted"
     assert native["root_exit_code"] == 0
     assert native["violations"] == []
     child = server.receipt()

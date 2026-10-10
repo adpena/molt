@@ -4003,6 +4003,16 @@ gates = [
 # =========================================================================
 
 [[named_lane]]
+id = "runtime.abi-fixture-authorities"
+description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
+argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
+toolchains = ["cargo", "rustc", "python"]
+cargo_native_c_units = ["target"]
+resource_family = "rust"
+contention_key = "cargo:molt-lang-cpython-abi"
+timeout_seconds = 1800
+
+[[named_lane]]
 id = "pact.witness.acceptance.native"
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]

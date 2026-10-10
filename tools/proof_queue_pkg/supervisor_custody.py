@@ -10,7 +10,7 @@ import re
 import secrets
 import sys
 import tempfile
-from typing import Mapping, Sequence, TypedDict, cast
+from typing import Literal, Mapping, Sequence, TypedDict, cast
 
 from molt import cargo_workspace
 from molt.dx import PROOF_SCRATCH_ROOT_ENV
@@ -38,59 +38,100 @@ def _protocol_authority() -> dict[str, object]:
     )
     try:
         payload = read_exact(
-            authority, max_bytes=4096, label="proof supervisor protocol authority"
+            authority, max_bytes=8192, label="proof supervisor protocol authority"
         )
     except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             "proof supervisor protocol authority is unavailable"
         ) from exc
-    expected = {
+    schemas = {
         "policy_schema",
         "capability_schema",
         "receipt_schema",
         "event_log_schema",
     }
+    budget_keys = {
+        "event_record_bytes",
+        "image_cache_entries",
+        "fixed_image_rows",
+        "file_id_utf8_bytes",
+        "live_processes",
+        "derived_roots",
+        "environment_entries",
+        "stable_process_id_utf8_bytes",
+        "inventory_unique_images",
+        "combined_diagnostics_json_bytes",
+        "live_trace_tasks",
+        "event_records",
+        "role_utf8_bytes",
+        "distinct_fixed_paths",
+        "command_elements",
+        "event_log_bytes",
+        "path_utf8_bytes",
+        "diagnostics_per_class",
+        "lifetime_processes",
+        "retained_derived_identity_bytes",
+        "receipt_bytes",
+        "policy_input_bytes",
+        "canonical_policy_bytes",
+        "one_image_roles_json_bytes",
+        "nonce_utf8_bytes",
+        "retained_observation_payload_bytes",
+    }
+    if type(payload) is not dict or set(payload) != schemas | {"budgets", "export"}:
+        raise RuntimeError("proof supervisor protocol authority is malformed")
+    if not all(
+        type(payload[k]) is str
+        and re.fullmatch(r"molt\.[a-z0-9.-]+\.v[0-9]+", payload[k])
+        for k in schemas
+    ):
+        raise RuntimeError("proof supervisor schema authority is malformed")
+    budgets = payload["budgets"]
     if (
-        not isinstance(payload, dict)
-        or set(payload) != expected | {"export", "policy_max_bytes"}
-        or type(payload.get("policy_max_bytes")) is not int
-        or payload["policy_max_bytes"] <= 0
-        or not all(
-            isinstance(payload[name], str)
-            and re.fullmatch(r"molt\.[a-z0-9.-]+\.v[0-9]+", payload[name])
-            for name in expected
+        type(budgets) is not dict
+        or set(budgets) != budget_keys
+        or any(
+            type(v) is not int or v <= 0 or v > sys.maxsize for v in budgets.values()
         )
     ):
-        raise RuntimeError("proof supervisor protocol authority is malformed")
+        raise RuntimeError("proof supervisor budget authority is malformed")
+    if (
+        budgets["path_utf8_bytes"] * 6 + budgets["one_image_roles_json_bytes"] + 4096
+        >= budgets["event_record_bytes"]
+        or budgets["combined_diagnostics_json_bytes"] + 8192 >= budgets["receipt_bytes"]
+        or budgets["retained_derived_identity_bytes"]
+        > budgets["retained_observation_payload_bytes"]
+        or budgets["live_processes"]
+        > min(budgets["lifetime_processes"], budgets["live_trace_tasks"])
+    ):
+        raise RuntimeError("proof supervisor budget relationships are malformed")
     export = payload["export"]
     if (
-        not isinstance(export, dict)
-        or set(export)
-        != {"footer_magic", "length_hex_digits", "event_max_bytes", "receipt_max_bytes"}
+        type(export) is not dict
+        or set(export) != {"footer_magic", "length_hex_digits", "event_max_bytes"}
         or not isinstance(export["footer_magic"], str)
         or not export["footer_magic"].isascii()
         or not export["footer_magic"].startswith("\n")
         or not export["footer_magic"].endswith("\n")
-        or any(
-            type(export[key]) is not int or export[key] <= 0
-            for key in ("length_hex_digits", "event_max_bytes", "receipt_max_bytes")
-        )
+        or type(export["length_hex_digits"]) is not int
+        or export["length_hex_digits"] != 16
+        or type(export["event_max_bytes"]) is not int
+        or not 0 < export["event_max_bytes"] <= budgets["event_log_bytes"]
     ):
         raise RuntimeError("proof supervisor export authority is malformed")
     return payload
 
 
-_PROTOCOL_SCHEMAS = _protocol_authority()
-SUPERVISOR_POLICY_SCHEMA = _PROTOCOL_SCHEMAS["policy_schema"]
-SUPERVISOR_CAPABILITY_SCHEMA = _PROTOCOL_SCHEMAS["capability_schema"]
-SUPERVISOR_RECEIPT_SCHEMA = _PROTOCOL_SCHEMAS["receipt_schema"]
-SUPERVISOR_EVENT_LOG_SCHEMA = _PROTOCOL_SCHEMAS["event_log_schema"]
-SUPERVISOR_POLICY_MAX_BYTES = _PROTOCOL_SCHEMAS["policy_max_bytes"]
-SUPERVISOR_RECEIPT_MAX_BYTES = _PROTOCOL_SCHEMAS["export"]["receipt_max_bytes"]
-_MAX_SUPERVISOR_EVENT_LOG_BYTES = 1024 * 1024 * 1024
-_MAX_SUPERVISOR_EVENT_RECORD_BYTES = 1024 * 1024
-_MAX_SUPERVISOR_EVENT_RECORDS = 10_000_000
-_MAX_INVENTORY_IMAGE_IDENTITIES = 16_384
+_PROTOCOL = _protocol_authority()
+SUPERVISOR_BUDGETS = _PROTOCOL["budgets"]
+SUPERVISOR_POLICY_SCHEMA = _PROTOCOL["policy_schema"]
+SUPERVISOR_CAPABILITY_SCHEMA = _PROTOCOL["capability_schema"]
+SUPERVISOR_RECEIPT_SCHEMA = _PROTOCOL["receipt_schema"]
+SUPERVISOR_EVENT_LOG_SCHEMA = _PROTOCOL["event_log_schema"]
+_MAX_SUPERVISOR_EVENT_LOG_BYTES = SUPERVISOR_BUDGETS["event_log_bytes"]
+_MAX_SUPERVISOR_EVENT_RECORD_BYTES = SUPERVISOR_BUDGETS["event_record_bytes"]
+_MAX_SUPERVISOR_EVENT_RECORDS = SUPERVISOR_BUDGETS["event_records"]
+_MAX_INVENTORY_IMAGE_IDENTITIES = SUPERVISOR_BUDGETS["inventory_unique_images"]
 
 
 def read_supervisor_export(
@@ -104,7 +145,7 @@ def read_supervisor_export(
     Parsing does not admit success. The caller must run the native verifier and
     require the successful terminal/coordinate/output contracts separately.
     """
-    export = _PROTOCOL_SCHEMAS["export"]
+    export = _PROTOCOL["export"]
     magic = export["footer_magic"].encode("ascii")
     digits = export["length_hex_digits"]
     footer_size = len(magic) + 2 * digits + 1
@@ -113,7 +154,8 @@ def read_supervisor_export(
         size = opened.stat.st_size
         if (
             size < footer_size
-            or size > 16 * 1024 * 1024 + export["receipt_max_bytes"] + footer_size
+            or size
+            > 16 * 1024 * 1024 + SUPERVISOR_BUDGETS["receipt_bytes"] + footer_size
         ):
             raise ValueError("supervisor export transport extent is invalid")
         if expected is not None:
@@ -134,7 +176,7 @@ def read_supervisor_export(
             raise ValueError("supervisor export lengths are not canonical")
         receipt_size, events_size = int(lengths[:digits], 16), int(lengths[digits:], 16)
         if (
-            not 0 < receipt_size <= export["receipt_max_bytes"]
+            not 0 < receipt_size <= SUPERVISOR_BUDGETS["receipt_bytes"]
             or not 0 <= events_size <= export["event_max_bytes"]
         ):
             raise ValueError("supervisor export payload exceeds its protocol bound")
@@ -184,6 +226,144 @@ def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     )
 
 
+def encode_supervisor_policy(payload: Mapping[str, object]) -> bytes:
+    """Freeze built-in policy containers, count exact compact UTF-8/LF bytes,
+    then encode through the existing exact-JSON authority.
+    No custom container callbacks or whole encoded string precede admission.
+    """
+    limit = SUPERVISOR_BUDGETS["policy_input_bytes"]
+    count = 1  # final LF
+
+    def charge(size: int) -> None:
+        nonlocal count
+        count += size
+        if count > limit:
+            raise ValueError("native policy exceeds protocol byte budget")
+
+    def text_size(value: str) -> int:
+        total = 2
+        for ch in value:
+            n = ord(ch)
+            if 0xD800 <= n <= 0xDFFF:
+                raise ValueError("native policy contains an unpaired Unicode surrogate")
+            total += (
+                2
+                if ch in '"\\\b\f\n\r\t'
+                else 6
+                if n < 32
+                else 1
+                if n < 128
+                else 2
+                if n < 2048
+                else 3
+                if n < 65536
+                else 4
+            )
+            if total > limit:
+                raise ValueError("native policy string exceeds protocol byte budget")
+        return total
+
+    def freeze(value: object, depth: int = 0) -> object:
+        if depth > 8:
+            raise ValueError("native policy structure is too deep")
+        if type(value) is str:
+            charge(text_size(value))
+            return value
+        if value is None:
+            charge(4)
+            return None
+        if type(value) is dict:
+            if len(value) > SUPERVISOR_BUDGETS["environment_entries"]:
+                raise ValueError("native policy object exceeds entry budget")
+            charge(2 + max(0, len(value) - 1) + len(value))
+            frozen: dict[str, object] = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise ValueError("native policy object key is not a string")
+                charge(text_size(key))
+                frozen[key] = freeze(item, depth + 1)
+            if len(frozen) != len(value):
+                raise ValueError("native policy changed while freezing")
+            return frozen
+        if type(value) is list:
+            if len(value) > max(
+                SUPERVISOR_BUDGETS["fixed_image_rows"],
+                SUPERVISOR_BUDGETS["command_elements"],
+            ):
+                raise ValueError("native policy sequence exceeds entry budget")
+            charge(2 + max(0, len(value) - 1))
+            length = len(value)
+            frozen_list = [freeze(item, depth + 1) for item in value]
+            if len(value) != length or len(frozen_list) != length:
+                raise ValueError("native policy changed while freezing")
+            return frozen_list
+        raise ValueError(
+            "native policy requires built-in primitive containers and strings"
+        )
+
+    frozen = freeze(payload)
+    if type(frozen) is not dict or frozen.get("schema") != SUPERVISOR_POLICY_SCHEMA:
+        raise ValueError("native policy schema is unsupported")
+
+    def size_bound(value: object, budget: str) -> None:
+        if (
+            type(value) is not str
+            or sum(
+                1
+                if ord(ch) < 128
+                else 2
+                if ord(ch) < 2048
+                else 3
+                if ord(ch) < 65536
+                else 4
+                for ch in value
+            )
+            > SUPERVISOR_BUDGETS[budget]
+        ):
+            raise ValueError(f"native policy exceeds {budget}")
+
+    size_bound(frozen.get("nonce"), "nonce_utf8_bytes")
+    size_bound(frozen.get("cwd"), "path_utf8_bytes")
+    size_bound(frozen.get("root_role"), "role_utf8_bytes")
+    for field, budget in (
+        ("command", "command_elements"),
+        ("environment", "environment_entries"),
+        ("fixed_images", "fixed_image_rows"),
+        ("derived_roots", "derived_roots"),
+    ):
+        value = frozen.get(field, {} if field == "environment" else [])
+        if (
+            type(value) is not (dict if field == "environment" else list)
+            or len(value) > SUPERVISOR_BUDGETS[budget]
+        ):
+            raise ValueError(f"native policy exceeds {budget}")
+    roles_by_path: dict[str, set[str]] = {}
+    for field in ("fixed_images", "derived_roots"):
+        for row in frozen.get(field, []):
+            if type(row) is not dict:
+                raise ValueError("native policy image row is malformed")
+            size_bound(row.get("path"), "path_utf8_bytes")
+            size_bound(row.get("role"), "role_utf8_bytes")
+            if field == "fixed_images":
+                roles_by_path.setdefault(row["path"], set()).add(row["role"])
+    if len(roles_by_path) > SUPERVISOR_BUDGETS["distinct_fixed_paths"]:
+        raise ValueError("native policy exceeds distinct fixed path budget")
+    for roles in roles_by_path.values():
+        if (
+            2 + max(0, len(roles) - 1) + sum(text_size(role) for role in roles)
+            > SUPERVISOR_BUDGETS["one_image_roles_json_bytes"]
+        ):
+            raise ValueError("native policy exceeds one-image role budget")
+    encoded = encode_exact(frozen, indent=None)
+    if len(encoded) != count:
+        raise ValueError("native policy encoded size disagrees with preflight")
+    return encoded
+
+
+def publish_supervisor_policy(path: Path, payload: Mapping[str, object]) -> None:
+    custody_cas.atomic_write_bytes(path, encode_supervisor_policy(payload))
+
+
 def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
     """Bind native supervisor sources and their declared local dependencies.
 
@@ -200,6 +380,8 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
         source / "Cargo.lock",
         source / "protocol.json",
         Path(cargo_workspace.__file__),
+        Path(__file__),
+        Path(sys.modules[encode_exact.__module__].__file__),
         Path(__file__).with_name("supervisor_generation.py"),
         Path(__file__).with_name("cargo_output_layout.py"),
         Path(__file__).with_name("guarded_execution.py"),
@@ -320,17 +502,31 @@ def _verified_supervisor_event_artifact(
     return event_path, list(unique_images)
 
 
-class SupervisorCapabilityUnavailable(ValueError):
+class SupervisorPrelaunchRefused(ValueError):
     def __init__(self, capability: dict[str, object]) -> None:
         self.capability = dict(capability)
+        admission = capability["admission"]
+        assert isinstance(admission, dict)
         super().__init__(
-            "native supervisor launch capability unavailable: "
-            + str(capability["reason"])
+            "native supervisor prelaunch refused: " + str(admission["reason"])
         )
 
 
-def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, str]:
-    """Validate one native capability and return its launch requirements."""
+def decode_supervisor_capability(
+    capability: object,
+    *,
+    mode: str,
+    context: Literal["prelaunch", "verified_terminal"],
+    expected_platform: str,
+) -> dict[str, str]:
+    """Decode one strict state contract; terminal decoding is not success admission.
+
+    Native replay owns the witness. Prelaunch can only refuse or permit an
+    attempt; a verified terminal may honestly remain eligible after launch
+    failure. Callers separately require a complete admitted receipt for success.
+    """
+    if context not in {"prelaunch", "verified_terminal"}:
+        raise ValueError("native supervisor capability context is unsupported")
     if (
         not isinstance(capability, dict)
         or set(capability)
@@ -339,55 +535,106 @@ def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, 
             "platform",
             "mode",
             "backend",
-            "available",
+            "admission",
             "pre_entry_exec_authority",
             "pre_entry_process_create_authority",
             "recursive_descendant_authority",
-            "reason",
             "required_environment",
         }
         or capability.get("schema") != SUPERVISOR_CAPABILITY_SCHEMA
+        or mode not in {"leaf", "declared-tree", "inventory-tree"}
         or capability.get("mode") != mode
-        or capability.get("platform")
-        != {
-            "win32": "windows",
-            "darwin": "macos",
-        }.get(sys.platform, sys.platform)
+        or expected_platform not in {"linux", "macos", "windows"}
+        or capability.get("platform") != expected_platform
         or not isinstance(capability.get("backend"), str)
         or not capability["backend"]
-        or not isinstance(capability.get("available"), bool)
-        or not isinstance(capability.get("pre_entry_exec_authority"), bool)
-        or not isinstance(capability.get("pre_entry_process_create_authority"), bool)
-        or not isinstance(capability.get("recursive_descendant_authority"), bool)
-        or not (
-            capability.get("reason") is None or isinstance(capability["reason"], str)
+        or any(
+            type(capability.get(name)) is not bool
+            for name in (
+                "pre_entry_exec_authority",
+                "pre_entry_process_create_authority",
+                "recursive_descendant_authority",
+            )
         )
     ):
-        raise ValueError("native supervisor launch capability schema or mode mismatch")
-    if capability.get("available") is not True:
-        raise SupervisorCapabilityUnavailable(capability)
-    if (
+        raise ValueError("native supervisor capability schema or mode mismatch")
+    admission = capability["admission"]
+    if not isinstance(admission, dict):
+        raise ValueError("native supervisor admission state is malformed")
+    state = admission.get("state")
+    if state == "ineligible":
+        reason = admission.get("reason")
+        valid = (
+            set(admission) == {"state", "reason"}
+            and isinstance(reason, str)
+            and bool(reason.strip())
+            and len(reason.encode("utf-8"))
+            <= SUPERVISOR_BUDGETS["combined_diagnostics_json_bytes"]
+            // (2 * SUPERVISOR_BUDGETS["diagnostics_per_class"])
+        )
+    elif state == "eligible":
+        valid = set(admission) == {"state"}
+    elif state == "admitted":
+        root = admission.get("root_stable_process_id")
+        created = admission.get("root_create_sequence")
+        image = admission.get("initial_image_sequence")
+        valid = (
+            set(admission)
+            == {
+                "state",
+                "root_stable_process_id",
+                "root_create_sequence",
+                "initial_image_sequence",
+            }
+            and isinstance(root, str)
+            and 0
+            < len(root.encode("utf-8"))
+            <= SUPERVISOR_BUDGETS["stable_process_id_utf8_bytes"]
+            and type(created) is int
+            and type(image) is int
+            and 0 < created < image <= _MAX_SUPERVISOR_EVENT_RECORDS
+        )
+    else:
+        valid = False
+    if not valid or context == "prelaunch" and state == "admitted":
+        raise ValueError("native supervisor admission state or context is malformed")
+    if state != "ineligible" and (
         capability["pre_entry_exec_authority"] is not True
         or mode == "leaf"
         and capability["pre_entry_process_create_authority"] is not True
         or mode != "leaf"
         and capability["recursive_descendant_authority"] is not True
     ):
-        raise ValueError("native supervisor launch capability lacks process custody")
+        raise ValueError("native supervisor planned backend lacks process custody")
     required = capability.get("required_environment")
     if not isinstance(required, dict):
         raise ValueError("native supervisor required environment is malformed")
     selected: dict[str, str] = {}
     for name, value in required.items():
         if (
-            re.fullmatch(r"[A-Z_][A-Z0-9_]*", name) is None
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Z_][A-Z0-9_]*", name) is None
             or not isinstance(value, str)
             or not value
             or any(character in value for character in ("\x00", "\r", "\n"))
         ):
             raise ValueError("native supervisor required environment is malformed")
         selected[name] = value
+    if context == "prelaunch" and state == "ineligible":
+        raise SupervisorPrelaunchRefused(capability)
     return dict(sorted(selected.items()))
+
+
+def supervisor_receipt_is_complete(receipt: Mapping[str, object]) -> bool:
+    """Success predicate after native integrity/replay validation, not a verifier."""
+    capability = receipt.get("capability")
+    admission = capability.get("admission") if isinstance(capability, dict) else None
+    return (
+        receipt.get("complete") is True
+        and receipt.get("state") == "COMPLETE"
+        and isinstance(admission, dict)
+        and admission.get("state") == "admitted"
+    )
 
 
 def required_execution_environment(
@@ -406,7 +653,14 @@ def required_execution_environment(
         capability = loads_exact(completed.stdout)
     except (ExactJsonError, json.JSONDecodeError) as exc:
         raise ValueError("native supervisor launch capability is not JSON") from exc
-    return decode_supervisor_capability(capability, mode=mode)
+    return decode_supervisor_capability(
+        capability,
+        mode=mode,
+        context="prelaunch",
+        expected_platform={"win32": "windows", "darwin": "macos"}.get(
+            sys.platform, sys.platform
+        ),
+    )
 
 
 def bind_required_environment(
@@ -661,6 +915,57 @@ def _supervisor_policy(
     }
 
 
+def validate_supervisor_receipt_verification(
+    response: object,
+    *,
+    receipt_identity: StableRegularFileIdentity,
+    policy_identity: StableRegularFileIdentity,
+) -> dict[str, object]:
+    """Bind native replay to the exact JSON generation retained by its consumer."""
+    if not isinstance(response, str):
+        raise ValueError(
+            "native process supervisor verification response is not UTF-8 text"
+        )
+    try:
+        payload = loads_exact(response)
+    except (ExactJsonError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "native process supervisor verification response is not exact JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "native process supervisor verification response is not an object"
+        )
+    digest = payload.get("receipt_sha256")
+    size = payload.get("receipt_bytes")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < 0
+    ):
+        raise ValueError(
+            "native process supervisor verification has no receipt byte identity"
+        )
+    if digest != receipt_identity.sha256 or size != receipt_identity.size:
+        raise ValueError("native process supervisor verified different receipt bytes")
+    if (
+        payload.get("policy_input_sha256") != policy_identity.sha256
+        or type(payload.get("policy_input_bytes")) is not int
+        or payload["policy_input_bytes"] != policy_identity.size
+    ):
+        raise ValueError("native process supervisor verified different policy bytes")
+    if (
+        payload.get("native_custody_valid") is not True
+        or payload.get("journal_coverage_valid") is not True
+    ):
+        raise ValueError(
+            "native process supervisor custody or coverage evidence is invalid"
+        )
+    return payload
+
+
 def _validated_supervisor_receipt(
     *,
     binary: Path,
@@ -670,6 +975,21 @@ def _validated_supervisor_receipt(
     env: Mapping[str, str],
     rootfs: Path | None = None,
 ) -> dict[str, object]:
+    try:
+        receipt_identity, receipt = capture_exact(
+            receipt_path,
+            max_bytes=SUPERVISOR_BUDGETS["receipt_bytes"],
+            label="native proof supervisor receipt",
+        )
+    except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "native proof supervisor returned no readable receipt"
+        ) from exc
+    policy_identity, _policy = capture_exact(
+        policy_path,
+        max_bytes=SUPERVISOR_BUDGETS["policy_input_bytes"],
+        label="native proof supervisor policy",
+    )
     verified = command_identity._run_captured(
         (
             str(binary),
@@ -682,61 +1002,38 @@ def _validated_supervisor_receipt(
         ),
         cwd=cwd,
         env=env,
+        text=False,
     )
     if verified.returncode != 0:
         raise ValueError(
             "native proof supervisor receipt verification failed: "
-            + (verified.stderr.strip() or verified.stdout.strip())
+            + (verified.stderr.strip() or verified.stdout.strip()).decode(
+                "utf-8", errors="replace"
+            )
         )
-    try:
-        identity, receipt = capture_exact(
-            receipt_path,
-            max_bytes=SUPERVISOR_RECEIPT_MAX_BYTES,
-            label="native proof supervisor receipt",
-        )
-    except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            "native proof supervisor returned no readable receipt"
-        ) from exc
+    validate_supervisor_receipt_verification(
+        verified.stdout.decode("utf-8"),
+        receipt_identity=receipt_identity,
+        policy_identity=policy_identity,
+    )
     if (
         not isinstance(receipt, dict)
         or receipt.get("schema") != SUPERVISOR_RECEIPT_SCHEMA
     ):
         raise ValueError("native proof supervisor receipt schema is unsupported")
-    try:
-        result = loads_exact(verified.stdout)
-        policy_identity, _ = capture_exact(
-            policy_path,
-            max_bytes=SUPERVISOR_POLICY_MAX_BYTES,
-            label="native proof supervisor policy",
-        )
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise ValueError(
-            "native proof supervisor returned no readable verification binding"
-        ) from exc
-    require_verified_input_bindings(result, receipt=identity, policy=policy_identity)
+    capability = receipt.get("capability")
+    mode = capability.get("mode") if isinstance(capability, dict) else None
+    if not isinstance(mode, str):
+        raise ValueError("native proof supervisor receipt has no closure mode")
+    decode_supervisor_capability(
+        capability,
+        mode=mode,
+        context="verified_terminal",
+        expected_platform="linux"
+        if rootfs is not None
+        else {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform),
+    )
     return receipt
-
-
-def require_verified_input_bindings(
-    result: object,
-    *,
-    receipt: StableRegularFileIdentity,
-    policy: StableRegularFileIdentity,
-) -> None:
-    """Bind either verifier consumer to the exact native-decoded input buffers."""
-    if (
-        not isinstance(result, dict)
-        or type(result.get("receipt_bytes")) is not int
-        or type(result.get("policy_input_bytes")) is not int
-        or (result.get("receipt_sha256"), result["receipt_bytes"])
-        != (receipt.sha256, receipt.size)
-        or (result.get("policy_input_sha256"), result["policy_input_bytes"])
-        != (policy.sha256, policy.size)
-    ):
-        raise ValueError(
-            "native proof supervisor verified different receipt or policy bytes"
-        )
 
 
 def capture_process_image_inventory(
@@ -785,7 +1082,7 @@ def capture_process_image_inventory(
             ],
             "derived_roots": [],
         }
-        _atomic_json(policy_path, policy)
+        publish_supervisor_policy(policy_path, policy)
         completed = command_identity._run_captured(
             (
                 str(binary),
@@ -805,7 +1102,7 @@ def capture_process_image_inventory(
                 try:
                     failed_receipt = read_exact(
                         receipt_path,
-                        max_bytes=SUPERVISOR_RECEIPT_MAX_BYTES,
+                        max_bytes=SUPERVISOR_BUDGETS["receipt_bytes"],
                         label="failed native proof supervisor receipt",
                     )
                 except (
@@ -834,8 +1131,7 @@ def capture_process_image_inventory(
             env=env,
         )
         if (
-            receipt.get("complete") is not True
-            or receipt.get("state") != "COMPLETE"
+            not supervisor_receipt_is_complete(receipt)
             or receipt.get("root_exit_code") != 0
             or receipt.get("errors") != []
             or receipt.get("violations") != []
