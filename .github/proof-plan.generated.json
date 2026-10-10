@@ -339,7 +339,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3897e5c0762f13003a6d14582b1b4d77443c6ea8cfe46256790c77fb4ae77993",
+  "authority_sha256": "9d86423c1a098dbc3711259ba5f83172f6789029205a19a3112e76f64907fb94",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2568,7 +2568,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 900,
       "toolchains": [
         "python",
         "uv",
@@ -6819,13 +6819,13 @@
       },
       "repository_policy": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 1500,
-        "headroom_seconds": 1140,
+        "critical_path_seconds": 1800,
+        "headroom_seconds": 840,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2340,
-        "required_job_seconds": 2460,
+        "projected_makespan_seconds": 2640,
+        "required_job_seconds": 2760,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2145
+          "repository-policy": 2220
         }
       },
       "rust": {
@@ -8788,14 +8788,14 @@
       "executable": "ninja",
       "name": "ninja",
       "setup_evidence": [
-        "pyproject.toml::\"ninja==1.13.0\"",
-        "uv.lock::version = \"1.13.0\""
+        "pyproject.toml::\"ninja==1.13.2\"",
+        "uv.lock::version = \"1.13.2\""
       ],
-      "setup_value": "1.13.0",
+      "setup_value": "1.13.2",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^1\\.13\\.0(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
+      "version_pattern": "^1\\.13\\.2(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
     },
     {
       "executable": "clang",
