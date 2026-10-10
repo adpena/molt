@@ -200,6 +200,11 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
 
     def visit_Module(self, node: ast.Module) -> None:
         resolve_python_private_names(node)
+        from molt.frontend.lowering.gpu_kernel_descriptor import body_origin_evidence
+
+        self._gpu_body_origin_candidates = body_origin_evidence(
+            self.module_name, node, self.target_python
+        )
         future_annotations = self._module_has_future_annotations(node)
         syntax_error = class_annotation_syntax_error(
             node,
@@ -217,7 +222,16 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                     "Use target Python 3.13+ or remove nested code from this annotation scope.",
                 ),
             )
-        node = self._prune_native_support_module_functions(node)
+        selected = self._prune_native_support_module_functions(node)
+        if selected is not node and self._gpu_body_origin_candidates:
+            from molt.frontend.lowering.gpu_kernel_descriptor import (
+                rebind_pruned_body_origins,
+            )
+
+            self._gpu_body_origin_candidates = rebind_pruned_body_origins(
+                selected, self._gpu_body_origin_candidates
+            )
+        node = selected
         # Generated SSA values and source bindings share a serialized string
         # field, so reserve every source-level identifier before emitting the
         # first value. This keeps their origins disjoint for legal names such as

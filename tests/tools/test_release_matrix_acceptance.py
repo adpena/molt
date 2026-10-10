@@ -29,6 +29,7 @@ def fixture_matrix():
             "arch": "arm64",
             "rust_target": "aarch64-pc-windows-msvc",
             "backend": "wasm",
+            "target": "wasm",
             "guest_profile": "release",
             "runtime_profile": "wasm-release",
             "compiler_profile": "release",
@@ -55,6 +56,7 @@ def winning_cell():
         build_observation={
             "compiled_with_verified": False,
             "selected_profiles": {
+                "backend": "wasm",
                 "guest_profile": "release",
                 "runtime_profile": "wasm-release",
                 "compiler_profile": "release",
@@ -87,6 +89,8 @@ def fixture_receipts(matrix, count=3):
                         observed_profiles={
                             k: cell[k]
                             for k in (
+                                "backend",
+                                "target",
                                 "guest_profile",
                                 "runtime_profile",
                                 "compiler_profile",
@@ -349,7 +353,8 @@ def test_canonical_benchmark_registry_cannot_silently_drop_a_workload(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "field", ["guest_profile", "runtime_profile", "compiler_profile", "target"]
+    "field",
+    ["backend", "guest_profile", "runtime_profile", "compiler_profile", "target"],
 )
 def test_matrix_rejects_labels_disconnected_from_selected_build(field):
     matrix = fixture_matrix()

@@ -398,7 +398,6 @@ def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
         "builtin_set",
         "builtin_memoryview",
         "builtin_complex",
-        "builtin_contextvars",
         "builtin_fcntl",
     }
     micro_base = {

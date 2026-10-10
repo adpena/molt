@@ -75,7 +75,7 @@
         "browser_gpu_worker.js"
       ],
       "role": "browser",
-      "sha256": "b423ef9ae4a05da187fd9220112dd59af32c9ca17ac7b9ccaf9cc7a6a5084ba4",
+      "sha256": "f0d3f37ac0f6149d01ddc545e803b7562a6d844faf8067f13d0b69991371f928",
       "source_type": "module"
     },
     "browser_gpu_worker.js": {
@@ -84,7 +84,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "5a1bbef9f03aab4d23eb6a528322e1d9077a59cf8495b006c7ed80eb40b9e7f3",
+      "sha256": "67d344fb6701ab41e62085725a2f32ca55e38a7234d2e1430cb8a5d1802a8351",
       "source_type": "script"
     },
     "browser_host.js": {
@@ -179,7 +179,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "746f10cddec6e648e446baa5b611b3a69f354e998e51e14e1fcd679321f14574",
+      "sha256": "0729f85cd27473154a1670e1fbeebfce6f948250de0e32785ac62b35eadc1f8f",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "5c99acd833dae7acded54af299a533ab2c54076a87b872ff35ffeb119885d119",
+      "sha256": "8c3b1f89b55b29d28dccfe5aed2881bf57139352ac78eeedc0f44285308ef608",
       "source_type": "data"
     }
   },

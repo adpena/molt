@@ -1323,7 +1323,15 @@ pub(super) fn importlib_path_importer_cache_signature_tuple_bits(
     }
 
     let mut pairs: Vec<(String, u64)> = Vec::new();
-    let entries = unsafe { dict_order(cache_ptr) };
+    let Some(entries) = (unsafe {
+        crate::object::ops_dict::dict_snapshot(
+            _py,
+            cache_ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        )
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
     for idx in (0..entries.len()).step_by(2) {
         let key_bits = entries[idx];
         let value_bits = entries[idx + 1];

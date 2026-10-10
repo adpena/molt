@@ -253,7 +253,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "{ir}"
             );
             assert_eq!(
-                init_ir.contains("@molt_task_register_token_owned("),
+                init_ir.contains("@molt_task_register_execution("),
                 registers_token,
                 "{ir}"
             );
@@ -271,13 +271,109 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             );
             assert!(
                 !ready_ir.contains("@molt_inc_ref_obj(")
-                    && !ready_ir.contains("@molt_task_register_token_owned("),
+                    && !ready_ir.contains("@molt_task_register_execution("),
                 "{ir}"
             );
             assert!(
                 !ir.contains("@molt_exception_clear("),
                 "allocation failure must preserve pending exception: {ir}"
             );
+        }
+    }
+}
+
+#[test]
+fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
+    for (symbol, expected_key) in [
+        ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
+        ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+        ("ordinary_poll", None),
+    ] {
+        for call_async in [false, true] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            if expected_key.is_none() {
+                backend.function_linkage_abis.insert(
+                    symbol.into(),
+                    test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
+                );
+            }
+            let mut function = TirFunction::new(
+                "task_identity_probe".into(),
+                vec![],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let result = function.fresh_value();
+            let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+            let mut attrs = AttrDict::from([
+                ("s_value".into(), AttrValue::Str(symbol.into())),
+                ("value".into(), AttrValue::Int(16)),
+                ("task_kind".into(), AttrValue::Str("future".into())),
+            ]);
+            if call_async {
+                attrs.insert("_original_kind".into(), AttrValue::Str("call_async".into()));
+            }
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: if call_async {
+                    OpCode::Copy
+                } else {
+                    OpCode::AllocTask
+                },
+                operands: vec![],
+                results: vec![result],
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![result],
+            };
+            let lowered = try_lower_tir_to_llvm(&function, &backend).unwrap();
+            backend
+                .module
+                .verify()
+                .expect("task poll identity module must verify");
+            let mut allocations = Vec::new();
+            for block in lowered.get_basic_blocks() {
+                let mut current = block.get_first_instruction();
+                while let Some(inst) = current {
+                    current = inst.get_next_instruction();
+                    if let Ok(call) = inkwell::values::CallSiteValue::try_from(inst)
+                        && call
+                            .get_called_fn_value()
+                            .is_some_and(|callee| callee.get_name().to_bytes() == b"molt_task_new")
+                    {
+                        allocations.push(inst);
+                    }
+                }
+            }
+            assert_eq!(allocations.len(), 1);
+            let poll = allocations[0]
+                .get_operand(0)
+                .unwrap()
+                .value()
+                .unwrap()
+                .into_int_value();
+            assert_eq!(
+                poll.get_zero_extended_constant(),
+                expected_key,
+                "call_async={call_async}/{symbol}: {}",
+                lowered.print_to_string()
+            );
+            if expected_key.is_none() {
+                let compiled = backend
+                    .module
+                    .get_function(symbol)
+                    .unwrap()
+                    .as_global_value()
+                    .as_pointer_value()
+                    .const_to_int(ctx.i64_type());
+                assert_eq!(
+                    poll, compiled,
+                    "compiled poll must retain its exact function address"
+                );
+            }
         }
     }
 }

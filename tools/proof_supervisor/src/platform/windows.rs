@@ -377,7 +377,9 @@ fn image_identity(
     Ok(policy.classify_path(&path, file_id, size, digest))
 }
 
-fn windows_cache_key(file: &File) -> Result<(BY_HANDLE_FILE_INFORMATION, ImageCacheKey), String> {
+pub(super) fn windows_cache_key(
+    file: &File,
+) -> Result<(BY_HANDLE_FILE_INFORMATION, ImageCacheKey), String> {
     let handle = file.as_raw_handle() as HANDLE;
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
     if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {

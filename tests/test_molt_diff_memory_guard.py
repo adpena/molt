@@ -46,6 +46,7 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
         elapsed_s=0.1,
         child_returncode=child_returncode,
         infrastructure_failure=failure,
+        child_stderr="",
     )
     monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
@@ -61,7 +62,7 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
     monkeypatch.setattr(module, "_record_memory_guard_event", events.append)
     result = module._run_subprocess(["fixture"], env={}, timeout=5)
     assert isinstance(result, module.compat_backends.BackendResult)
-    assert result.diagnostic_stderr == guarded.child_stderr
+    assert result.child_stderr == guarded.child_stderr
     assert result.child_returncode == child_returncode
     assert result.infrastructure_failure is failure
     assert result.stdout == "partial" and result.stderr == "custody incomplete"
@@ -252,7 +253,9 @@ def test_memory_guard_clamps_parallel_jobs(tmp_path: Path, monkeypatch) -> None:
         global_gb=0.07,
     )
 
-    assert module._constrain_jobs_for_memory_guard(16, config=config, log=False) == 2
+    # One 0.03 GB job fills the 0.03 GB tree; dividing the 0.07 GB global
+    # budget instead admitted two jobs whose budgets overflow the tree.
+    assert module._constrain_jobs_for_memory_guard(16, config=config, log=False) == 1
 
 
 def test_memory_guard_jsonl_rotation_preserves_recent_file(
@@ -382,12 +385,14 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
 
     config = module._diff_memory_guard_config()
 
+    # 7 jobs x 7.1392 GB = 49.97 GB fits the 51.40 GB tree; 8 would not.
+    assert config.max_tree_gb == pytest.approx(51.40224)
     assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(7.1392)
-    assert module._memory_guard_max_jobs(config) == 12
-    assert module._default_jobs() == 12
+    assert module._memory_guard_max_jobs(config) == 7
+    assert module._default_jobs() == 7
     payload = module._config_payload(config)
     assert payload["resource_pressure"]["schema"] == "molt.resource_pressure.v2"
-    assert payload["resource_pressure"]["diff"]["max_jobs"] == 12
+    assert payload["resource_pressure"]["diff"]["max_jobs"] == 7
 
 
 def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
@@ -402,9 +407,43 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     config = module._diff_memory_guard_config()
 
     assert config.global_gb == pytest.approx(23.5904)
+    assert config.max_tree_gb == pytest.approx(14.15424)
     assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(1.0)
-    assert module._memory_guard_max_jobs(config) == 23
-    assert module._default_jobs() == 23
+    assert module._memory_guard_max_jobs(config) == 14
+    assert module._default_jobs() == 14
+
+
+def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
+    monkeypatch, generous_host_memory
+) -> None:
+    # HF-105: a guard whose tree budget was 37.7 GB wrapped a differential run
+    # that sized its parallelism from the global budget; the guard killed the
+    # whole tree at 37.7 GB. The wrapping guard and the suite read the shared
+    # limits, so the suite's jobs must fit that same tree.
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
+    for name in ("PROCESS", "TOTAL", "GLOBAL"):
+        monkeypatch.delenv(f"MOLT_DIFF_MAX_{name}_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_JOBS", raising=False)
+    monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "30")
+    monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "37.7")
+    monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "63")
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 18)
+    outer = module.harness_memory_guard.limits_from_env("MOLT_HARNESS", os.environ)
+
+    config = module._diff_memory_guard_config()
+    jobs = module._default_jobs()
+    per_job = module._memory_guard_scheduler_per_job_gb(config)
+
+    tree = outer.max_total_rss_gb
+    assert tree == pytest.approx(37.7)
+    assert config.max_tree_gb == pytest.approx(tree)
+    # The most jobs whose per-job budgets fit the tree, and fewer than the
+    # global division admitted, which is what overran the tree.
+    assert jobs * per_job <= tree < (jobs + 1) * per_job
+    assert int(config.global_gb // per_job) > jobs
 
 
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
@@ -1027,6 +1066,7 @@ def test_native_resource_evidence_survives_build_and_run(
             violation=module.memory_guard.RssViolation(7, 2048, "fixture")
             if exhausted and source != "metrics"
             else None,
+            child_stderr="child diagnostic",
         )
 
     monkeypatch.setattr(
@@ -1059,6 +1099,81 @@ def test_native_resource_evidence_survives_build_and_run(
     )
     assert actual.rss_limit_exceeded and actual.resource_failure == "rss_limit_exceeded"
     assert actual.build_failed is (phase == "build")
-    assert actual.diagnostic_stderr == "child diagnostic"
+    assert actual.child_stderr == "child diagnostic"
     assert actual.child_returncode == (0 if source == "metrics" else -9)
     assert "partial stdout" in (actual.stderr if phase == "build" else actual.stdout)
+
+
+@pytest.mark.parametrize("phase", ["build", "run"])
+def test_native_timeout_preserves_guard_outcome_and_raw_streams(
+    tmp_path, monkeypatch, phase
+):
+    module = _load_diff_module()
+    source = tmp_path / "fixture.py"
+    source.write_text("print('guest')\n", encoding="utf-8")
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda _: None)
+    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
+    monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: None)
+    metrics = []
+    monkeypatch.setattr(
+        module, "_record_rss_metrics", lambda *a, **k: metrics.append(k)
+    )
+    calls = []
+
+    def launch(command, **kwargs):
+        calls.append(command)
+        assert kwargs["text"] is False
+        timed_out = ("molt.cli" in command) == (phase == "build")
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            124 if timed_out else 0,
+            b"partial stdout\r\n\xff",
+            b"guest\r\n\xfe\nmemory_guard: timeout" if timed_out else b"",
+            child_stderr=b"guest\r\n\xfe" if timed_out else b"",
+            elapsed_s=5.1,
+            child_returncode=-9 if timed_out else 0,
+            timed_out=timed_out,
+            guard_signal=9 if timed_out else None,
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *a, **k: SimpleNamespace(run=launch),
+    )
+    actual = module._run_molt_owned(
+        str(source),
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=None,
+        output_root=tmp_path,
+        environment={},
+    )
+    assert actual.timed_out and actual.returncode == 124
+    assert actual.child_returncode == -9 and actual.guard_signal == 9
+    assert actual.build_failed is (phase == "build")
+    assert (
+        actual.child_stderr.encode("utf-8", errors="surrogateescape")
+        == b"guest\r\n\xfe"
+    )
+    assert "memory_guard: timeout" in actual.stderr
+    assert actual.resource_failure is None
+    assert metrics[-1]["status"] == phase + "_timeout"
+    assert len(calls) == (1 if phase == "build" else 2)

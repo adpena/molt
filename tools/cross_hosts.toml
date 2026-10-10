@@ -34,8 +34,8 @@
 #                                 unless --keep-remote is passed.
 #
 #   # docker transport fields ------------------------------------------
-#   container   (str)             Image:tag. Runner does
-#                                   docker run --rm -v <stage>:<remote_dir>
+#   container   (str)             An already provisioned image digest. Runner does
+#                                   docker run --pull=never --rm -v <stage>:<remote_dir>
 #                                 mounting the staged artefacts.
 #   remote_dir  (str, optional)   Mount point inside container.
 #                                 Defaults to /work.
@@ -68,7 +68,8 @@
 # [[host]]
 # name = "linux-amd64-container"
 # transport = "docker"
-# container = "debian:bookworm-slim"
+# container = "debian@sha256:<verified 64-hex digest>"
+# Replace the placeholder from the explicitly provisioned image; no automatic pull.
 # target = "x86_64-unknown-linux-gnu"
 # remote_dir = "/work"
 #

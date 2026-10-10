@@ -501,42 +501,6 @@ pub(crate) struct AsyncGenHooks {
     pub(crate) finalizer: u64,
 }
 
-pub(crate) struct ContextVarsThreadState {
-    pub(crate) frames: Vec<HashMap<i64, u64>>,
-    pub(crate) tokens: HashMap<i64, (i64, u64, bool)>,
-    pub(crate) contexts: HashMap<i64, HashMap<i64, u64>>,
-}
-
-impl ContextVarsThreadState {
-    pub(crate) fn new() -> Self {
-        Self {
-            frames: vec![HashMap::new()],
-            tokens: HashMap::new(),
-            contexts: HashMap::new(),
-        }
-    }
-}
-
-pub(crate) struct ContextVarsState {
-    pub(crate) next_var_handle: i64,
-    pub(crate) next_token_handle: i64,
-    pub(crate) next_context_handle: i64,
-    pub(crate) var_defaults: HashMap<i64, u64>,
-    pub(crate) threads: HashMap<thread::ThreadId, ContextVarsThreadState>,
-}
-
-impl ContextVarsState {
-    pub(crate) fn new() -> Self {
-        Self {
-            next_var_handle: 1,
-            next_token_handle: 1,
-            next_context_handle: 1,
-            var_defaults: HashMap::new(),
-            threads: HashMap::new(),
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PythonVersionInfo {
     pub(crate) major: i64,
@@ -600,7 +564,8 @@ pub(crate) struct RuntimeState {
     pub(crate) event_loop_registry: EventLoopRegistry,
     pub(crate) pipe_transport_registry: PipeTransportRegistry,
     pub(crate) cancel_tokens: Mutex<HashMap<u64, CancelTokenEntry>>,
-    pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
+    pub(crate) task_tokens:
+        Mutex<HashMap<PtrSlot, crate::async_rt::cancellation::TaskExecutionAttachment>>,
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) asyncio_running_loops: Mutex<HashMap<u64, u64>>,
@@ -622,7 +587,6 @@ pub(crate) struct RuntimeState {
     pub(crate) await_waiter_index: Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<HashMap<thread::ThreadId, AsyncGenHooks>>,
-    pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) concurrent: ConcurrentRuntimeState,
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
     pub(crate) functools: FunctoolsRuntimeState,
@@ -735,7 +699,6 @@ impl RuntimeState {
             await_waiter_index: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
             asyncgen_hooks: Mutex::new(HashMap::new()),
-            contextvars: Mutex::new(ContextVarsState::new()),
             concurrent: ConcurrentRuntimeState::new(),
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
             functools: FunctoolsRuntimeState::new(),

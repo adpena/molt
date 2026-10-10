@@ -125,7 +125,7 @@ unsafe fn load_extension(
         });
     };
     let origin = path.to_string_lossy();
-    let name_bits = unsafe { (h.alloc_str)(name.as_ptr(), name.len()) };
+    let name_bits = unsafe { h.alloc_str(name.as_ptr(), name.len()) };
     if name_bits == 0 {
         crate::api::imports::propagate_hook_error(c"extension name allocation failed");
         return Err(LoadError::InitializationFailed {
@@ -133,7 +133,7 @@ unsafe fn load_extension(
         });
     }
     let name_owner = unsafe { crate::bridge::RuntimeValue::from_owned(name_bits) };
-    let origin_bits = unsafe { (h.alloc_str)(origin.as_ptr(), origin.len()) };
+    let origin_bits = unsafe { h.alloc_str(origin.as_ptr(), origin.len()) };
     if origin_bits == 0 {
         crate::api::imports::propagate_hook_error(c"extension origin allocation failed");
         return Err(LoadError::InitializationFailed {

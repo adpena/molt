@@ -129,7 +129,11 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         temporary_artifacts: Mapping[str, object] | None = None,
         child_returncode: int | None = None,
         infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
-        child_stderr: Output | None = None,
+        child_stderr: Output | None,
+        sampling_telemetry: memory_guard.GuardSamplingTelemetry | None = None,
+        sampling_interval_s: float | None = None,
+        cancelled: bool = False,
+        descendants_closed: bool = False,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -141,6 +145,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.peak = peak
         self.peak_total = peak_total
         self.timed_out = timed_out
+        self.cancelled = cancelled
+        self.descendants_closed = descendants_closed
         self.limit_at_violation = limit_at_violation
         self.orphaned_process_groups = tuple(orphaned_process_groups)
         self.cargo_incremental_quarantine = cargo_incremental_quarantine
@@ -154,7 +160,9 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.child_returncode = child_returncode
         self.infrastructure_failure = infrastructure_failure
         # Child diagnostics and guard/reproduction context have different authority.
-        self.child_stderr = stderr if child_stderr is None else child_stderr
+        self.child_stderr = child_stderr
+        self.sampling_telemetry = sampling_telemetry
+        self.sampling_interval_s = sampling_interval_s
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -893,6 +901,8 @@ def _append_guarded_command_profile(
     child_returncode: int | None = None,
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     operation_role: str | None = None,
+    cancelled: bool = False,
+    descendants_closed: bool = False,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
@@ -905,7 +915,7 @@ def _append_guarded_command_profile(
     )
     exit_signal = (
         None
-        if violation is not None or timed_out or guard_signal is not None
+        if violation is not None or timed_out or guard_signal is not None or cancelled
         else memory_guard.exit_signal_payload(returncode)
     )
     guard_signal_payload = (
@@ -920,6 +930,7 @@ def _append_guarded_command_profile(
         orphaned_process_groups=orphaned_process_groups,
         guard_signal=guard_signal,
         infrastructure_failure=infrastructure_failure,
+        cancelled=cancelled,
     )
     mode = _command_profile_mode(source)
     if mode == "off" or (mode == "incident" and status == "pass"):
@@ -942,6 +953,8 @@ def _append_guarded_command_profile(
         "memory_guard": limits_summary(limits),
         "memory_guard_enabled": limits.enabled,
         "timed_out": timed_out,
+        "cancelled": cancelled,
+        "descendants_closed": descendants_closed,
         "violation": _rss_record_payload(violation),
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
@@ -1259,6 +1272,9 @@ def guarded_completed_process(
     errors: str = "replace",
     operation_role: str | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
+    running_summary_json: str | None = None,
+    running_summary_environ: Mapping[str, str] | None = None,
     sampling_scope: str = "global",
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
@@ -1321,6 +1337,10 @@ def guarded_completed_process(
             encoding=encoding,
             errors=errors,
             on_spawn=on_spawn,
+            cancellation_requested=cancellation_requested,
+            running_summary_json=running_summary_json,
+            running_summary_environ=running_summary_environ,
+            running_summary_max_global_rss_kb=resolved_limits.max_global_rss_kb,
         )
     stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
@@ -1380,7 +1400,7 @@ def guarded_completed_process(
             ),
             text=text,
         )
-    else:
+    elif not guarded.cancelled:
         stderr = memory_guard._append_guard_message(
             stderr,
             _guard_exit_signal_message(
@@ -1446,6 +1466,8 @@ def guarded_completed_process(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
+        cancelled=guarded.cancelled,
+        descendants_closed=guarded.descendants_closed,
         operation_role=operation_role,
     )
     if profile_error:
@@ -1474,7 +1496,11 @@ def guarded_completed_process(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
-        child_stderr=guarded.stderr or ("" if text else b""),
+        child_stderr=guarded.child_stderr,
+        sampling_telemetry=guarded.sampling_telemetry,
+        sampling_interval_s=resolved_limits.poll_interval,
+        cancelled=guarded.cancelled,
+        descendants_closed=guarded.descendants_closed,
     )
 
 
@@ -1633,7 +1659,7 @@ def guarded_completed_process_to_tempfiles(
                 observed_at=incident_at,
             ),
         )
-    else:
+    elif not guarded.cancelled:
         stderr = _append_guard_bytes(
             stderr,
             _guard_exit_signal_message(
@@ -1695,6 +1721,8 @@ def guarded_completed_process_to_tempfiles(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
+        cancelled=guarded.cancelled,
+        descendants_closed=guarded.descendants_closed,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1722,7 +1750,15 @@ def guarded_completed_process_to_tempfiles(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
-        child_stderr=_guard_output_bytes(guarded.stderr),
+        child_stderr=(
+            None
+            if guarded.child_stderr is None
+            else _guard_output_bytes(guarded.child_stderr)
+        ),
+        sampling_telemetry=guarded.sampling_telemetry,
+        sampling_interval_s=resolved_limits.poll_interval,
+        cancelled=guarded.cancelled,
+        descendants_closed=guarded.descendants_closed,
     )
 
 
@@ -2546,6 +2582,9 @@ class HarnessExecutionContext:
         encoding: str = "utf-8",
         errors: str = "replace",
         on_spawn: Callable[[int], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+        running_summary_json: str | None = None,
+        running_summary_environ: Mapping[str, str] | None = None,
         sampling_scope: str = "global",
     ) -> GuardedCompletedProcess:
         command_env = (
@@ -2582,6 +2621,9 @@ class HarnessExecutionContext:
             encoding=encoding,
             errors=errors,
             on_spawn=on_spawn,
+            cancellation_requested=cancellation_requested,
+            running_summary_json=running_summary_json,
+            running_summary_environ=running_summary_environ,
             sampling_scope=sampling_scope,
         )
 

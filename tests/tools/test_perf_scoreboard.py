@@ -539,7 +539,7 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
 
     cell = measure.measure_cell(
         script_path=script,
-        spec=measure.BackendSpec("native", "llvm", "llvm", "native"),
+        spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
         samples=1,
         warmup=0,
@@ -597,6 +597,7 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
             1.0,
             {
                 "selected_profiles": {
+                    "backend": "llvm",
                     "guest_profile": "release",
                     "compiler_profile": "release",
                     "runtime_profile": "release-fast",
@@ -632,7 +633,7 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
 
     cell = measure.measure_cell(
         script_path=script,
-        spec=measure.BackendSpec("native", "llvm", "llvm", "native"),
+        spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
         samples=1,
         warmup=1,

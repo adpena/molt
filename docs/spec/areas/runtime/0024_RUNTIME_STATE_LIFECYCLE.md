@@ -712,12 +712,47 @@ a failed descriptor lookup cannot select the same fallback path.
   hard-exit, while `molt_runtime_shutdown()` remains the explicit embedding
   teardown API.
 - `RuntimeState` now owns builtin classes, interned/method caches, module/exception caches,
-  hash/capability state, async registries, context variable state, and argv storage
+  hash/capability state, async execution attachments, lazy Context classes, and argv storage
   (no lazy_static globals for those domains).
-- Context variable defaults, per-thread frame maps, reset tokens, and copied
-  context snapshots live under `RuntimeState.contextvars`; full shutdown and
-  process-exit finalization clear that state after `atexit` callbacks. Default-only
-  `ContextVar.get()` reads do not allocate per-thread context state.
+- Context, ContextVar and Token are native managed objects shared by Python,
+  the scheduler and the C ABI. A Context owns an immutable bitmap/collision trie
+  root; copying retains that root in one new Context. Each node owns and traces
+  its physical key/value/child edges. Context replacement publishes the new root
+  before releasing the old root, and reads pin a root under the runtime GIL
+  before invoking callbacks. This includes the root-pinning and allocation
+  failure protections in CPython 3.13.16/3.14.8 without changing older recorded
+  reference receipts.
+- Native-thread TLS owns the current Context lazily. Enter transfers the old
+  current reference into the entering Context's previous edge; Exit transfers it
+  back and clears entered state before releasing. True thread teardown and
+  runtime shutdown drain these owners to a fixed point. Detached CPython
+  thread-state records continue to pin the runtime lifetime; an ordinary C-call
+  detach does not destroy Context state. Default-only ContextVar reads allocate
+  no Context or trie. Token reset consumes before a callback-capable release and
+  retains its original Context, variable and old value independently.
+- One task execution attachment owns cancellation metadata and the selected
+  Context as distinct fields. The scheduler enters it for exactly one scheduled
+  poll and exits before pumping another task. Manual resumes, nested awaits and
+  synchronous inline block-on inherit the active Context. Raw independently
+  spawned tasks capture on the submitting thread; an empty capture remains
+  dormant until first use. Python Task.get_context and the attachment retain the
+  same selected Context. There is no cancellation-keyed Python Context map.
+  Spawn lifetime and each queued/running work item are external execution roots,
+  excluded from task-owned GC edges. A work item retains once at queue admission
+  and transfers unchanged through injector, worker, deferred and event-loop
+  transports. Completion, cancellation, closed-loop rejection and shutdown release
+  these roots outside queue locks. Terminal sink capacity counts separately any
+  external spawn reference transferred by explicit close/retirement.
+- The lazy runtime class cache owns Context classes, descriptors and iterator
+  classes. C receives canonical bridge views, including the public static type
+  shells. Cold C semantic admission initializes the same lazy owner before a
+  shell can become a foreign wrapper or enter generic constructor dispatch; it
+  does not add Context classes to eager builtin bootstrap. Both installed headers
+  call the same owner; neither imports Python nor
+  supplies successful no-op Enter/Exit. Python 3.14 Token context management and
+  Thread(context=...) follow the runtime target. C-API 3.14 watcher capability
+  remains explicitly unsupported under `config/cpython_coverage.toml`; Context
+  method support does not qualify watcher registration or notifications.
 - Fallback `configparser`, `csv`, and `random` registries plus C-API module
   metadata/state registries live under `RuntimeState` and are cleared during
   shutdown and executable process-exit finalization. `CallArgs` builder

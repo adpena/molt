@@ -302,8 +302,11 @@ fn wrapper_failure_contract_releases_success_result_and_preserves_real_failure()
         assert_eq!(unsafe { errors::PyErr_Occurred() }, error.cast());
         if callback == success_with_error as *const () as *mut c_void {
             let raised = unsafe { errors::PyErr_GetRaisedException() };
+            let raised_owner = unsafe { refcount::OwnedPyObject::from_owned(raised) };
             let cause = unsafe { errors::PyException_GetCause(raised) };
+            let cause_owner = unsafe { refcount::OwnedPyObject::from_owned(cause) };
             let context = unsafe { errors::PyException_GetContext(raised) };
+            let context_owner = unsafe { refcount::OwnedPyObject::from_owned(context) };
             assert!(!cause.is_null());
             assert_eq!(
                 cause, context,
@@ -315,11 +318,9 @@ fn wrapper_failure_contract_releases_success_result_and_preserves_real_failure()
                 },
                 1
             );
-            unsafe {
-                refcount::Py_DECREF(cause);
-                refcount::Py_DECREF(context);
-                refcount::Py_DECREF(raised);
-            }
+            drop(cause_owner);
+            drop(context_owner);
+            drop(raised_owner);
         }
         unsafe {
             errors::PyErr_Clear();

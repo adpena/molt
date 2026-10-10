@@ -448,12 +448,12 @@ fn exception_group_construct(py: &PyToken<'_>, message: u64, exceptions: u64) ->
         return fail(py, "SystemError", "BaseExceptionGroup is not initialized");
     };
     let result = unsafe {
-        crate::call::class_init::construct_exception_from_args(
+        crate::call::bind::call_bind_capi(
             py,
-            class,
+            MoltObject::from_ptr(class).bits(),
+            None,
             &[message, exceptions],
-            &[],
-            &[],
+            MoltObject::none().bits(),
         )
     };
     if exception_pending(py) {

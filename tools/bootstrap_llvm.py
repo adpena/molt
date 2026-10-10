@@ -45,7 +45,6 @@ from molt.llvm_toolchain import (  # noqa: E402
     project_llvm_toolchain_environment,
     required_llvm_targets_for_host,
     required_llvm_backend_pin,
-    reject_poison_toolchain_path,
     verify_llvm_toolchain_prefix,
     write_llvm_toolchain_attestation,
 )
@@ -387,7 +386,6 @@ def _download(
     expected_sha256: str,
     expected_size: int | None = None,
 ) -> None:
-    reject_poison_toolchain_path(archive, authority="LLVM archive cache")
     archive.parent.mkdir(parents=True, exist_ok=True)
     lock = archive.with_name(f".{archive.name}.lock")
     with _ExclusiveFileLock(lock):
@@ -600,7 +598,6 @@ def _safe_extract_tar_xz(
     source_contract: dict[str, object] | None = None,
     simulate_publication_crash_after: str | None = None,
 ) -> dict[str, object]:
-    reject_poison_toolchain_path(destination, authority="LLVM source custody")
     marker = destination / LLVM_SOURCE_MARKER
     lock = destination.with_name(f".{destination.name}.extract.lock")
     with _ExclusiveFileLock(lock):
@@ -866,7 +863,6 @@ def _publish_staged_prefix(
     validate: Callable[[Path], None],
     simulate_crash_after: str | None = None,
 ) -> None:
-    reject_poison_toolchain_path(destination, authority="canonical LLVM publication")
     if staging.parent.resolve() != destination.parent.resolve():
         raise SystemExit(
             "LLVM staging and publication prefixes must share one parent for "
@@ -1019,7 +1015,6 @@ def _prepare_build_cache(
     build_dir: Path,
     identity: dict[str, object],
 ) -> None:
-    reject_poison_toolchain_path(build_dir, authority="LLVM build cache")
     marker = build_dir / LLVM_BUILD_MARKER
     observed: object = None
     if marker.is_file():
@@ -1385,19 +1380,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    for name in (
-        "MOLT_TARGET_ROOT",
-        "MOLT_LLVM_PREFIX",
-        pin.env_var,
-        f"MLIR_SYS_{major * 10}_PREFIX",
-        f"TABLEGEN_{major * 10}_PREFIX",
-        "LLVM_CONFIG_PATH",
-    ):
-        if value := os.environ.get(name, "").strip():
-            reject_poison_toolchain_path(value, authority=name)
     managed = managed_llvm_paths(ROOT, pin, version=args.version)
     raw_prefix = args.prefix or managed.prefix
-    reject_poison_toolchain_path(raw_prefix, authority="LLVM bootstrap prefix")
     prefix = raw_prefix.resolve()
     targets = args.targets or _default_llvm_targets()
     target_set = {item for item in targets.split(";") if item}
@@ -1504,14 +1488,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"llvm-config={verification.llvm_config}")
         return 0
 
-    for label, raw in (
-        ("archive", args.archive),
-        ("source root", args.source_root),
-        ("build directory", args.build_dir),
-    ):
-        if raw is not None:
-            reject_poison_toolchain_path(raw, authority=f"LLVM bootstrap {label}")
-
     custody_paths = (
         managed
         if release is not None
@@ -1530,12 +1506,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.build_dir is not None
         else custody_paths.build_dir
     )
-    for label, path in (
-        ("archive", archive),
-        ("source root", source_root),
-        ("build directory", build_dir),
-    ):
-        reject_poison_toolchain_path(path, authority=f"LLVM bootstrap {label}")
     minimum_cmake = (
         release.minimum_cmake
         if release is not None

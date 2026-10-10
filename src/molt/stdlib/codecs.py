@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode")
@@ -35,21 +33,6 @@ _molt_charmap_build = _require_intrinsic("molt_codecs_charmap_build")
 _molt_charmap_decode = _require_intrinsic("molt_codecs_charmap_decode")
 _molt_charmap_encode = _require_intrinsic("molt_codecs_charmap_encode")
 _molt_make_identity_dict = _require_intrinsic("molt_codecs_make_identity_dict")
-
-# Align import-error provenance with uv-managed CPython layouts without
-# importing `glob` (which pulls in `re`/`warnings` during bootstrap).
-_uv_root = os.path.expanduser("~/.local/share/uv/python")
-if os.path.isdir(_uv_root):
-    _best_host_codecs: str | None = None
-    for _entry in sorted(os.listdir(_uv_root)):
-        if not _entry.startswith("cpython-3.12"):
-            continue
-        _candidate = os.path.join(_uv_root, _entry, "lib", "python3.12", "codecs.py")
-        if os.path.isfile(_candidate):
-            _best_host_codecs = _candidate
-            break
-    if _best_host_codecs is not None:
-        __file__ = _best_host_codecs
 
 __all__ = [
     "BOM",

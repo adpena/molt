@@ -1,6 +1,6 @@
 use crate::PyToken;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -148,11 +148,34 @@ pub(crate) fn current_task_key() -> Option<PtrSlot> {
         .unwrap_or(None)
 }
 
+/// One external queue/current-poll owner. Moves between scheduler transports
+/// do not retain again; destruction must occur outside their registry locks.
 pub struct MoltTask {
-    pub future_ptr: *mut u8,
+    pub(super) future_ptr: *mut u8,
 }
 
 unsafe impl Send for MoltTask {}
+
+impl MoltTask {
+    pub(super) fn new(py: &PyToken<'_>, future_ptr: *mut u8) -> Self {
+        debug_assert!(!future_ptr.is_null());
+        inc_ref_bits(py, MoltObject::from_ptr(future_ptr).bits());
+        Self { future_ptr }
+    }
+
+    pub(super) fn into_owned_bits(self) -> u64 {
+        let this = std::mem::ManuallyDrop::new(self);
+        MoltObject::from_ptr(this.future_ptr).bits()
+    }
+}
+
+impl Drop for MoltTask {
+    fn drop(&mut self) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+            crate::molt_dec_ref(self.future_ptr);
+        });
+    }
+}
 
 pub struct MoltScheduler {
     injector: Arc<Injector<MoltTask>>,
@@ -165,50 +188,47 @@ pub struct MoltScheduler {
 
 #[derive(Default)]
 struct DeferredQueue {
-    entries: HashMap<PtrSlot, u64>,
-    by_epoch: BTreeMap<u64, VecDeque<PtrSlot>>,
+    // Reverse index and ordered owner follow the event-loop timer authority.
+    // Sequence preserves FIFO; cancellation removes both coordinates directly.
+    entries: HashMap<PtrSlot, (u64, u64)>,
+    by_epoch: BTreeMap<(u64, u64), MoltTask>,
+    next_sequence: u64,
 }
 
 impl DeferredQueue {
-    fn insert(&mut self, task_ptr: PtrSlot, target: u64) -> bool {
-        if self.entries.contains_key(&task_ptr) {
-            return false;
-        }
-        self.entries.insert(task_ptr, target);
-        self.by_epoch.entry(target).or_default().push_back(task_ptr);
-        true
+    fn insert(&mut self, task: MoltTask, target: u64) {
+        let slot = PtrSlot(task.future_ptr);
+        assert!(!self.entries.contains_key(&slot));
+        let key = (target, self.next_sequence);
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
+        self.entries.insert(slot, key);
+        // The unique sequence precludes replacement/drop under the mutex.
+        self.by_epoch.insert(key, task);
     }
 
-    fn remove(&mut self, task_ptr: PtrSlot) {
-        self.entries.remove(&task_ptr);
+    fn remove(&mut self, slot: PtrSlot) -> Option<MoltTask> {
+        let key = self.entries.remove(&slot)?;
+        Some(self.by_epoch.remove(&key).expect("deferred owner"))
     }
 
-    fn contains(&self, task_ptr: PtrSlot) -> bool {
-        self.entries.contains_key(&task_ptr)
+    fn contains(&self, slot: PtrSlot) -> bool {
+        self.entries.contains_key(&slot)
     }
 
     fn flush(&mut self, current: u64, injector: &Injector<MoltTask>) -> bool {
-        if self.entries.is_empty() {
-            return false;
-        }
         let mut enqueued = false;
-        let mut ready_epochs = Vec::new();
-        for (&epoch, queue) in self.by_epoch.iter_mut() {
-            if epoch > current {
-                break;
-            }
-            while let Some(task_ptr) = queue.pop_front() {
-                if self.entries.remove(&task_ptr).is_some() {
-                    injector.push(MoltTask {
-                        future_ptr: task_ptr.0,
-                    });
-                    enqueued = true;
-                }
-            }
-            ready_epochs.push(epoch);
-        }
-        for epoch in ready_epochs {
-            self.by_epoch.remove(&epoch);
+        while self
+            .by_epoch
+            .first_key_value()
+            .is_some_and(|(&(epoch, _), _)| epoch <= current)
+        {
+            let (_, task) = self.by_epoch.pop_first().unwrap();
+            self.entries.remove(&PtrSlot(task.future_ptr));
+            injector.push(task);
+            enqueued = true;
         }
         enqueued
     }
@@ -253,6 +273,11 @@ impl MoltScheduler {
                         }
                         loop {
                             if !running_clone.load(AtomicOrdering::Relaxed) {
+                                // Transfer local owners to shutdown's GIL-held
+                                // drain; never abandon them with raw pointers.
+                                while let Some(task) = worker.pop() {
+                                    injector_clone.push(task);
+                                }
                                 break;
                             }
 
@@ -323,9 +348,13 @@ impl MoltScheduler {
             );
         }
         if let Some(loop_handle) = super::cancellation::task_loop_handle(_py, task.future_ptr) {
-            let task_ptr = task.future_ptr;
-            if !super::event_loop::enqueue_loop_task(_py, loop_handle, task) {
-                task_clear_queue_flags(task_ptr);
+            if let Err(rejected) = super::event_loop::enqueue_loop_task(_py, loop_handle, task) {
+                task_clear_queue_flags(rejected.future_ptr);
+                if let Some(bits) = super::cancellation::take_task_spawn_root(rejected.future_ptr) {
+                    dec_ref_bits(_py, bits);
+                }
+                // Rejection keeps work-item custody until the final pointer use.
+                drop(rejected);
             }
         } else {
             self.injector.push(task);
@@ -352,15 +381,17 @@ impl MoltScheduler {
         }
         let target = self.epoch.load(AtomicOrdering::Relaxed).saturating_add(1);
         let mut guard = self.deferred.lock().unwrap();
-        guard.insert(PtrSlot(task_ptr), target);
+        if !guard.contains(PtrSlot(task_ptr)) {
+            guard.insert(MoltTask::new(_py, task_ptr), target);
+        }
     }
 
     pub(crate) fn clear_deferred(&self, task_ptr: *mut u8) {
         if task_ptr.is_null() {
             return;
         }
-        let mut guard = self.deferred.lock().unwrap();
-        guard.remove(PtrSlot(task_ptr));
+        let removed = self.deferred.lock().unwrap().remove(PtrSlot(task_ptr));
+        drop(removed);
     }
 
     pub(crate) fn is_deferred(&self, task_ptr: *mut u8) -> bool {
@@ -420,29 +451,46 @@ impl MoltScheduler {
         }
     }
 
+    pub(crate) fn clear_stopped_queue(&self) {
+        assert!(!self.running.load(AtomicOrdering::Acquire));
+        let deferred = std::mem::take(&mut *self.deferred.lock().unwrap());
+        drop(deferred);
+        loop {
+            match self.injector.steal() {
+                crossbeam_deque::Steal::Success(task) => drop(task),
+                crossbeam_deque::Steal::Retry => continue,
+                crossbeam_deque::Steal::Empty => break,
+            }
+        }
+    }
+
     fn execute_task(task: MoltTask, _injector: &Injector<MoltTask>) {
+        let gil = GilGuard::new();
+        let py = gil.token();
+        // Local custody drops before the GIL and covers every exit, including
+        // done/invalid-poll entries and all completion/finalizer callbacks.
+        let task = task;
         {
             unsafe {
                 let task_ptr = task.future_ptr;
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
                 let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
-                {
+                let done = {
                     let _guard = task_queue_lock().lock().unwrap();
-                    if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+                    let done = ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0;
+                    if done {
                         (*header).update_flags(
                             0,
                             HEADER_FLAG_TASK_QUEUED
                                 | HEADER_FLAG_TASK_RUNNING
                                 | HEADER_FLAG_TASK_WAKE_PENDING,
                         );
-                        if async_trace_enabled() {
-                            eprintln!(
-                                "molt async trace: poll_skip_done task=0x{:x}",
-                                task_ptr as usize
-                            );
-                        }
-                        return;
                     }
+                    done
+                };
+                if done {
+                    clear_task_token(&py, task_ptr);
+                    return;
                 }
                 if poll_fn_addr != 0 {
                     if async_trace_enabled() {
@@ -451,9 +499,7 @@ impl MoltScheduler {
                             task_ptr as usize, poll_fn_addr
                         );
                     }
-                    let _gil = GilGuard::new();
-                    let _py = _gil.token();
-                    let _py = &_py;
+                    let _py = &py;
                     let task_scope = CurrentTaskScope::enter(_py, task_ptr);
                     let prev_task = task_scope.previous();
                     {
@@ -543,8 +589,10 @@ impl MoltScheduler {
                             enqueue_task_ptr(_py, task_ptr);
                         }
                     } else {
-                        clear_task_token(_py, task_ptr);
+                        // Publish terminal state before dropping Context or
+                        // exception edges that may reenter scheduler ingress.
                         task_mark_done(_py, task_ptr);
+                        clear_task_token(_py, task_ptr);
                         let _ = task_take_wake_pending(task_ptr);
                         let _ = wake_await_waiters(_py, task_ptr);
                     }
@@ -568,7 +616,8 @@ impl MoltScheduler {
                     }
                 }
                 if poll_fn_addr == 0 {
-                    task_clear_queue_flags(task_ptr);
+                    task_mark_done(&py, task_ptr);
+                    clear_task_token(&py, task_ptr);
                     if async_trace_enabled() {
                         eprintln!(
                             "molt async trace: poll_skip task=0x{:x} poll=0x0",
@@ -631,6 +680,9 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
                 HEADER_FLAG_TASK_QUEUED | HEADER_FLAG_TASK_RUNNING | HEADER_FLAG_TASK_WAKE_PENDING,
             );
         }
+    }
+    if let Some(scheduler) = runtime_state(_py).scheduler.get() {
+        scheduler.clear_deferred(task_ptr);
     }
     // Publish terminal state and release the queue lock before a displaced
     // continuation can run a destructor. Wakeup custody is independent.
@@ -731,12 +783,9 @@ pub(super) fn enqueue_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         return;
     }
     if should_enqueue {
-        runtime_state(_py).scheduler().enqueue(
-            _py,
-            MoltTask {
-                future_ptr: task_ptr,
-            },
-        );
+        runtime_state(_py)
+            .scheduler()
+            .enqueue(_py, MoltTask::new(_py, task_ptr));
     }
 }
 
@@ -819,12 +868,9 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         return;
     }
     if should_enqueue {
-        runtime_state(_py).scheduler().enqueue(
-            _py,
-            MoltTask {
-                future_ptr: task_ptr,
-            },
-        );
+        runtime_state(_py)
+            .scheduler()
+            .enqueue(_py, MoltTask::new(_py, task_ptr));
     }
 }
 
@@ -877,6 +923,12 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };
+            // Repeated spawn of a terminal task cannot establish an external
+            // reference for work that enqueue will necessarily reject.
+            let header = header_from_obj_ptr(task_ptr);
+            if (*header).has_flag(HEADER_FLAG_TASK_DONE) {
+                return MoltObject::none().bits();
+            }
             if async_trace_enabled() {
                 let poll_fn = crate::object::object_poll_fn(task_ptr);
                 eprintln!(
@@ -885,9 +937,11 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
                 );
             }
             cancel_tokens(_py);
-            // Respect the task's pre-registered cancellation/context token when present.
+            // Capture an independent execution Context on the submitting thread.
             let _ = ensure_task_token(_py, task_ptr, current_token_id());
-            let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+            if !super::cancellation::ensure_scheduled_context(_py, task_ptr) {
+                return MoltObject::none().bits();
+            }
             if ((*header).fetch_or_flags(HEADER_FLAG_SPAWN_RETAIN) & HEADER_FLAG_SPAWN_RETAIN) == 0
             {
                 inc_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
@@ -1390,5 +1444,300 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             }
         }
         result
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod context_queue_root_tests {
+    use super::*;
+    use crate::async_rt::cancellation::{TaskContextBinding, register_task_execution};
+    use crate::builtins::contextvars as context;
+    use crate::object::weakref::WeakBorrow;
+    use std::sync::atomic::AtomicUsize;
+
+    static POLLS: AtomicUsize = AtomicUsize::new(0);
+    static OBSERVED: AtomicU64 = AtomicU64::new(0);
+    static DEFER_FIRST: AtomicBool = AtomicBool::new(false);
+    static CANCEL_AFTER_OBSERVE: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn poll(raw: u64) -> i64 {
+        with_gil(|py| unsafe {
+            let ptr = std::ptr::with_exposed_provenance_mut::<u8>(raw as usize);
+            let var = *ptr.add(crate::GEN_CONTROL_SIZE).cast::<u64>();
+            let value = context::get_variable(&py, var, None).flatten().unwrap_or(0);
+            OBSERVED.store(value, AtomicOrdering::SeqCst);
+            if value != 0 {
+                dec_ref_bits(&py, value);
+            }
+            if CANCEL_AFTER_OBSERVE.load(AtomicOrdering::SeqCst) {
+                crate::async_rt::cancellation::task_set_cancel_pending(ptr);
+            }
+            let first = POLLS.fetch_add(1, AtomicOrdering::SeqCst) == 0;
+            if first && DEFER_FIRST.load(AtomicOrdering::SeqCst) {
+                runtime_state(&py).scheduler().defer_task_ptr(&py, ptr);
+                pending_bits_i64()
+            } else {
+                MoltObject::none().bits() as i64
+            }
+        })
+    }
+
+    fn var(py: &PyToken<'_>, name: &[u8]) -> u64 {
+        let name = MoltObject::from_ptr(crate::alloc_string(py, name)).bits();
+        let var = context::new_variable(py, name, None).unwrap();
+        dec_ref_bits(py, name);
+        var
+    }
+
+    fn install_deterministic_scheduler(py: &PyToken<'_>) {
+        // This is the production scheduler with no worker threads: a real
+        // spawn remains in its injector until this test calls drain_ready.
+        let scheduler = MoltScheduler {
+            injector: Arc::new(Injector::new()),
+            running: Arc::new(AtomicBool::new(true)),
+            deferred: Arc::new(Mutex::new(DeferredQueue::default())),
+            epoch: Arc::new(AtomicU64::new(0)),
+            worker_handles: Mutex::new(Vec::new()),
+        };
+        assert!(runtime_state(py).scheduler.set(scheduler).is_ok());
+    }
+
+    #[test]
+    fn real_spawn_and_deferred_poll_keep_task_context_alive_without_caller_owner() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            with_gil(|py| {
+                install_deterministic_scheduler(&py);
+                let scheduler = runtime_state(&py).scheduler();
+                for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
+                    for deferred in [false, true] {
+                        POLLS.store(0, AtomicOrdering::SeqCst);
+                        OBSERVED.store(0, AtomicOrdering::SeqCst);
+                        DEFER_FIRST.store(deferred, AtomicOrdering::SeqCst);
+                        let value_var = var(&py, b"queued-value");
+                        let cycle_var = var(&py, b"queued-cycle");
+                        let selected = context::new_context(&py).unwrap();
+                        let task = crate::molt_task_new(
+                            poll as *const () as usize as u64,
+                            (crate::GEN_CONTROL_SIZE + 8) as u64,
+                            kind,
+                        );
+                        let ptr = obj_from_bits(task).as_ptr().unwrap();
+                        unsafe {
+                            crate::object::payload_refs::store_borrowed(
+                                &py,
+                                ptr,
+                                crate::GEN_CONTROL_SIZE,
+                                value_var,
+                            );
+                        }
+                        {
+                            let _entered = context::EnteredContext::enter(&py, selected).unwrap();
+                            for (key, value) in [
+                                (value_var, MoltObject::from_int(77).bits()),
+                                (cycle_var, task),
+                            ] {
+                                let token = context::set_variable(&py, key, value).unwrap();
+                                dec_ref_bits(&py, token);
+                            }
+                        }
+                        register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
+                        let task_watch = WeakBorrow::new(&py, task).unwrap();
+                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                        let spawn_count = spawned_task_count();
+                        unsafe {
+                            molt_spawn(task);
+                        }
+                        dec_ref_bits(&py, task);
+                        dec_ref_bits(&py, selected);
+                        unsafe {
+                            crate::object::gc::collect_cycles(&py);
+                        }
+                        assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
+                        for watch in [&task_watch, &context_watch] {
+                            let live = watch
+                                .upgrade_owned()
+                                .expect("queued task and Context survive GC");
+                            dec_ref_bits(&py, live);
+                        }
+                        // Separate the suspended execution root from queue
+                        // custody. The external spawn root alone must survive GC.
+                        drop(scheduler.try_pop().expect("real queued work"));
+                        unsafe {
+                            crate::object::gc::collect_cycles(&py);
+                        }
+                        let live = task_watch
+                            .upgrade_owned()
+                            .expect("spawn is an external GC root");
+                        task_clear_queue_flags(ptr);
+                        enqueue_task_ptr(&py, ptr);
+                        dec_ref_bits(&py, live);
+                        scheduler.drain_ready();
+                        if deferred {
+                            assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 1);
+                            unsafe {
+                                crate::object::gc::collect_cycles(&py);
+                            }
+                            let live = task_watch
+                                .upgrade_owned()
+                                .expect("deferred owner survives GC");
+                            dec_ref_bits(&py, live);
+                            scheduler.drain_ready();
+                        }
+                        assert_eq!(
+                            POLLS.load(AtomicOrdering::SeqCst),
+                            if deferred { 2 } else { 1 }
+                        );
+                        assert_eq!(
+                            OBSERVED.load(AtomicOrdering::SeqCst),
+                            MoltObject::from_int(77).bits()
+                        );
+                        assert_eq!(spawned_task_count(), spawn_count);
+                        unsafe {
+                            crate::object::gc::collect_cycles(&py);
+                        }
+                        assert!(task_watch.upgrade_owned().is_none());
+                        assert!(context_watch.upgrade_owned().is_none());
+                        dec_ref_bits(&py, value_var);
+                        dec_ref_bits(&py, cycle_var);
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn unspawned_task_context_cycle_has_no_scheduler_root() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            with_gil(|py| {
+                POLLS.store(0, AtomicOrdering::SeqCst);
+                for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
+                    let variable = var(&py, b"unspawned-cycle");
+                    let selected = context::new_context(&py).unwrap();
+                    let task = crate::molt_task_new(
+                        poll as *const () as usize as u64,
+                        crate::GEN_CONTROL_SIZE as u64,
+                        kind,
+                    );
+                    let ptr = obj_from_bits(task).as_ptr().unwrap();
+                    {
+                        let _entered = context::EnteredContext::enter(&py, selected).unwrap();
+                        let token = context::set_variable(&py, variable, task).unwrap();
+                        dec_ref_bits(&py, token);
+                    }
+                    register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
+                    let task_watch = WeakBorrow::new(&py, task).unwrap();
+                    let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                    dec_ref_bits(&py, task);
+                    dec_ref_bits(&py, selected);
+                    unsafe {
+                        crate::object::gc::collect_cycles(&py);
+                    }
+                    assert!(task_watch.upgrade_owned().is_none());
+                    assert!(context_watch.upgrade_owned().is_none());
+                    dec_ref_bits(&py, variable);
+                }
+                assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
+            });
+        });
+    }
+    #[test]
+    fn event_loop_completion_cancellation_and_close_retire_all_external_roots() {
+        use crate::async_rt::{cancellation, event_loop};
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            with_gil(|py| {
+                install_deterministic_scheduler(&py);
+                DEFER_FIRST.store(false, AtomicOrdering::SeqCst);
+                for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
+                    // 0: complete, 1: cancellation during poll, 2: close with
+                    // both a queued step and a far-future timer owned by loop.
+                    for terminal in 0..3 {
+                        POLLS.store(0, AtomicOrdering::SeqCst);
+                        CANCEL_AFTER_OBSERVE.store(terminal == 1, AtomicOrdering::SeqCst);
+                        let variable = var(&py, b"loop-value");
+                        let selected = context::new_context(&py).unwrap();
+                        {
+                            let _entry = context::EnteredContext::enter(&py, selected).unwrap();
+                            let token = context::set_variable(
+                                &py,
+                                variable,
+                                MoltObject::from_int(77).bits(),
+                            )
+                            .unwrap();
+                            dec_ref_bits(&py, token);
+                        }
+                        let task = crate::molt_task_new(
+                            poll as *const () as usize as u64,
+                            (crate::GEN_CONTROL_SIZE + 8) as u64,
+                            kind,
+                        );
+                        let ptr = obj_from_bits(task).as_ptr().unwrap();
+                        unsafe {
+                            crate::object::payload_refs::store_borrowed(
+                                &py,
+                                ptr,
+                                crate::GEN_CONTROL_SIZE,
+                                variable,
+                            );
+                        }
+                        let execution = unsafe {
+                            cancellation::molt_cancel_token_new(MoltObject::from_int(-1).bits())
+                        };
+                        let id = obj_from_bits(execution).as_int().unwrap() as u64;
+                        register_task_execution(&py, ptr, id, TaskContextBinding::Owned(selected));
+                        unsafe {
+                            cancellation::molt_cancel_token_drop(execution);
+                        }
+                        let task_watch = WeakBorrow::new(&py, task).unwrap();
+                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                        let loop_handle = event_loop::molt_event_loop_new();
+                        let spawn_count = spawned_task_count();
+                        event_loop::molt_event_loop_spawn(loop_handle, task);
+                        assert!(!exception_pending(&py));
+                        if terminal == 2 {
+                            register_task_sleep(
+                                &py,
+                                ptr,
+                                Instant::now() + std::time::Duration::from_secs(3600),
+                            );
+                        }
+                        dec_ref_bits(&py, task);
+                        dec_ref_bits(&py, selected);
+                        unsafe {
+                            crate::object::gc::collect_cycles(&py);
+                        }
+                        let live = task_watch
+                            .upgrade_owned()
+                            .expect("loop queue owns live work");
+                        dec_ref_bits(&py, live);
+                        if terminal == 2 {
+                            event_loop::molt_event_loop_close(loop_handle);
+                        } else {
+                            event_loop::molt_event_loop_run_once(loop_handle);
+                            if terminal == 1 {
+                                assert!(exception_pending(&py));
+                                unsafe {
+                                    molt_cpython_abi::api::errors::PyErr_Clear();
+                                }
+                            } else {
+                                assert!(!exception_pending(&py));
+                            }
+                        }
+                        assert_eq!(
+                            POLLS.load(AtomicOrdering::SeqCst),
+                            usize::from(terminal != 2)
+                        );
+                        assert_eq!(spawned_task_count(), spawn_count);
+                        unsafe {
+                            crate::object::gc::collect_cycles(&py);
+                        }
+                        assert!(task_watch.upgrade_owned().is_none());
+                        assert!(context_watch.upgrade_owned().is_none());
+                        event_loop::molt_event_loop_drop(loop_handle);
+                        dec_ref_bits(&py, variable);
+                    }
+                }
+                CANCEL_AFTER_OBSERVE.store(false, AtomicOrdering::SeqCst);
+            });
+        });
     }
 }

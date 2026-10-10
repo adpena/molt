@@ -281,7 +281,7 @@ Interpretation:
   overrides for deliberate artifact placement. Maintainer/agent sessions should
   use `tools/run_context_env.py --prefer-external-artifacts --dx` or explicit
   `MOLT_EXT_ROOT`/`CARGO_TARGET_DIR` roots so build, test, and benchmark
-  artifacts land on a healthy external drive instead of Windows `C:`. This is a
+  artifacts land in a healthy configured root outside the checkout. This does not guarantee a different physical device. This is a
   development control-plane policy only; public `molt build` users may compile
   in place, use Molt/Cargo defaults, or pass explicit output/target flags.
 - On Windows, the shared memory guard, pytest bootstrap handoff, and child
@@ -412,7 +412,7 @@ Key controls:
   the same explicit contract; filenames do not decide output semantics.
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum
   reuse; use the DX resolver's external root for maintainer/agent proof lanes
-  when available, especially on Windows checkouts on `C:`. Lock/fingerprint
+  when available on every platform. Lock/fingerprint
   state uses the [shared build-state projection](OPERATIONS.md#build-throughput-multi-agent),
   independent of disposable output and per-run receipt placement. Explicit shared
   targets share Cargo rebuild locks. Daemon sockets default to

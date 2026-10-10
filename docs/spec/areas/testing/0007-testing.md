@@ -15,6 +15,19 @@ re-execute their own image use `runtime/test_support/captured_runtime_children.r
 which retains the child's complete streams under the same custody and publishes
 a source/image-bound descendant record (see `docs/agent/PROOF_QUEUE.md`).
 
+`runtime/molt-runtime/src/test_support.rs` owns process-wide runtime test
+transactions. Cleanup must preserve an original body panic and report a second
+cleanup failure separately; cleanup failure cannot produce a successful result.
+After terminal runtime failure, restoration must neither initialize the runtime
+nor release detached owners through partially retired metadata. Pending-call
+cleanup uses its existing callback-free queue operation, and the failed process
+retains already detached runtime owners until exit. This does not permit tests
+to continue using a failed runtime. Child evidence binds each actual mode to its
+exact termination, completion and mode-specific proof marker through
+`tools/runtime_descendant_receipts.py`; exchanging two modes' valid transcripts
+must fail verification. These controls belong to development test binaries and
+receipt tooling, not emitted programs.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.
@@ -124,7 +137,9 @@ as generated programs; a pass on one host cannot establish the whole matrix.
 `molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `molt build` with `--build-profile dev` (Molt dev profile maps to Cargo `dev-fast` by default).
 
 ### 1.0 Performance + Memory Controls
-- **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
+- **Parallelism**: auto-selected: the CPU count, capped so that the jobs' per-job budgets fit the
+  process-tree budget. Every job runs in one tree, which the suite sentinel and the guard that
+  wraps the suite both bound (`tools/resource_pressure.py` `scheduler_max_jobs`).
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
   - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEMORY_AVAILABLE_GB=<n>`.
 - **Development memory supervision**: repository pytest entry points and
@@ -291,6 +306,37 @@ cancelling independent work. Its transitive dependents are skipped with the
 failed dependency identity; unrelated running or ready commands remain subject
 to the existing dependency, resource, and custody limits. The enclosing receipt
 remains failed even if all independent commands succeed.
+
+Cancellation requests use the existing `GuardedCommand` launch capability and
+its sticky cancellation file. The guard remains the sole descendant owner,
+including the Windows Job. The five-second cancellation observation window is
+not a cleanup deadline and never authorizes terminating the guard. A pending
+observation yields a global infrastructure outcome, with the unique launch,
+startup, summary, cancellation and custody references in the ordinary failed
+receipt. The library preserves the exact handle on its custody exception; the
+CLI returns failure while the autonomous guard continues to own cleanup. A
+later terminal receipt must match the launch and child identities and attest
+`descendants_closed` before closure is claimed. A missing or failed terminal
+report cannot become an accepted cancellation merely because stop was requested.
+The raw guard cancellation code remains 137; the executor projects code 130
+only from an admitted cancelled terminal outcome and retains `guard_returncode`
+in its command record.
+The current native sampling and reaper calls do not establish a hard upper bound
+on actual cleanup; observation expiry reports unresolved closure, not cleanup
+failure. An eventual close does not retroactively turn the failed proof into a
+successful receipt.
+
+The canonical proof plan separately declares `job_reserve_seconds` for each CI
+job, matrix family and scheduled job. Admission requires its resource-aware
+command-deadline schedule plus that positive reserve to fit the workflow cap;
+each matrix runner must fit independently. The reserve covers setup, identity
+capture, guard finalization and artifact transport outside command deadlines.
+Observed allowances rounded upward to whole minutes and retained declared
+scheduled allowances are minimum planning allocations, not hard bounds on
+network provisioning or OS cleanup. Generated headroom subtracts both command
+work and reserve. Job allowance never extends a child's deadline or turns
+unresolved closure into success. Workflow-wide families retain their separate
+job topology and do not pretend to have one modeled execution budget.
 
 Global cancellation covers unsafe memory pressure, missing or invalid guard
 metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant

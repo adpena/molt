@@ -9,7 +9,7 @@
 
 use super::*;
 
-pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
+pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000000;
 pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
 pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[
@@ -58,7 +58,7 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 30;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 37;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 69;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -366,6 +366,230 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
+    ReservedRuntimeCallableInfo {
+        index: 37,
+        runtime_name: "molt_contextvars_types",
+        import_name: "contextvars_types",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 38,
+        runtime_name: "molt_contextvars_copy_current",
+        import_name: "contextvars_copy_current",
+        arity: 0,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 39,
+        runtime_name: "molt_contextvars_new",
+        import_name: "contextvars_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 40,
+        runtime_name: "molt_contextvars_token_new",
+        import_name: "contextvars_token_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 41,
+        runtime_name: "molt_contextvars_missing_new",
+        import_name: "contextvars_missing_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 42,
+        runtime_name: "molt_contextvars_keys_new",
+        import_name: "contextvars_keys_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 43,
+        runtime_name: "molt_contextvars_values_new",
+        import_name: "contextvars_values_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 44,
+        runtime_name: "molt_contextvars_items_new",
+        import_name: "contextvars_items_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 45,
+        runtime_name: "molt_contextvars_var_new",
+        import_name: "contextvars_var_new",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 46,
+        runtime_name: "molt_contextvars_var_get",
+        import_name: "contextvars_var_get",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 47,
+        runtime_name: "molt_contextvars_var_set",
+        import_name: "contextvars_var_set",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 48,
+        runtime_name: "molt_contextvars_var_reset",
+        import_name: "contextvars_var_reset",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 49,
+        runtime_name: "molt_contextvars_var_hash",
+        import_name: "contextvars_var_hash",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 50,
+        runtime_name: "molt_contextvars_copy",
+        import_name: "contextvars_copy",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 51,
+        runtime_name: "molt_contextvars_len",
+        import_name: "contextvars_len",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 52,
+        runtime_name: "molt_contextvars_getitem",
+        import_name: "contextvars_getitem",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 53,
+        runtime_name: "molt_contextvars_contains",
+        import_name: "contextvars_contains",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 54,
+        runtime_name: "molt_contextvars_get",
+        import_name: "contextvars_get",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 55,
+        runtime_name: "molt_contextvars_run",
+        import_name: "contextvars_run",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 56,
+        runtime_name: "molt_contextvars_keys",
+        import_name: "contextvars_keys",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 57,
+        runtime_name: "molt_contextvars_values",
+        import_name: "contextvars_values",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 58,
+        runtime_name: "molt_contextvars_items",
+        import_name: "contextvars_items",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 59,
+        runtime_name: "molt_contextvars_iter_self",
+        import_name: "contextvars_iter_self",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 60,
+        runtime_name: "molt_contextvars_iter_next",
+        import_name: "contextvars_iter_next",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 61,
+        runtime_name: "molt_contextvars_eq",
+        import_name: "contextvars_eq",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 62,
+        runtime_name: "molt_contextvars_ne",
+        import_name: "contextvars_ne",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 63,
+        runtime_name: "molt_contextvars_property",
+        import_name: "contextvars_property",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 64,
+        runtime_name: "molt_contextvars_token_enter",
+        import_name: "contextvars_token_enter",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 65,
+        runtime_name: "molt_contextvars_token_exit",
+        import_name: "contextvars_token_exit",
+        arity: 4,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 66,
+        runtime_name: "molt_contextvars_var_repr",
+        import_name: "contextvars_var_repr",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 67,
+        runtime_name: "molt_contextvars_token_repr",
+        import_name: "contextvars_token_repr",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 68,
+        runtime_name: "molt_contextvars_missing_repr",
+        import_name: "contextvars_missing_repr",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
 ];
 
 #[inline]
@@ -503,6 +727,38 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         34 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
         35 => Some(crate::molt_coroutine_wrapper_next as *const ()),
         36 => Some(crate::molt_generator_throw_method as *const ()),
+        37 => Some(crate::molt_contextvars_types as *const ()),
+        38 => Some(crate::molt_contextvars_copy_current as *const ()),
+        39 => Some(crate::molt_contextvars_new as *const ()),
+        40 => Some(crate::molt_contextvars_token_new as *const ()),
+        41 => Some(crate::molt_contextvars_missing_new as *const ()),
+        42 => Some(crate::molt_contextvars_keys_new as *const ()),
+        43 => Some(crate::molt_contextvars_values_new as *const ()),
+        44 => Some(crate::molt_contextvars_items_new as *const ()),
+        45 => Some(crate::molt_contextvars_var_new as *const ()),
+        46 => Some(crate::molt_contextvars_var_get as *const ()),
+        47 => Some(crate::molt_contextvars_var_set as *const ()),
+        48 => Some(crate::molt_contextvars_var_reset as *const ()),
+        49 => Some(crate::molt_contextvars_var_hash as *const ()),
+        50 => Some(crate::molt_contextvars_copy as *const ()),
+        51 => Some(crate::molt_contextvars_len as *const ()),
+        52 => Some(crate::molt_contextvars_getitem as *const ()),
+        53 => Some(crate::molt_contextvars_contains as *const ()),
+        54 => Some(crate::molt_contextvars_get as *const ()),
+        55 => Some(crate::molt_contextvars_run as *const ()),
+        56 => Some(crate::molt_contextvars_keys as *const ()),
+        57 => Some(crate::molt_contextvars_values as *const ()),
+        58 => Some(crate::molt_contextvars_items as *const ()),
+        59 => Some(crate::molt_contextvars_iter_self as *const ()),
+        60 => Some(crate::molt_contextvars_iter_next as *const ()),
+        61 => Some(crate::molt_contextvars_eq as *const ()),
+        62 => Some(crate::molt_contextvars_ne as *const ()),
+        63 => Some(crate::molt_contextvars_property as *const ()),
+        64 => Some(crate::molt_contextvars_token_enter as *const ()),
+        65 => Some(crate::molt_contextvars_token_exit as *const ()),
+        66 => Some(crate::molt_contextvars_var_repr as *const ()),
+        67 => Some(crate::molt_contextvars_token_repr as *const ()),
+        68 => Some(crate::molt_contextvars_missing_repr as *const ()),
         _ => None,
     }
 }
@@ -1352,4 +1608,36 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     let _ = crate::molt_coroutine_wrapper_iter as *const ();
     let _ = crate::molt_coroutine_wrapper_next as *const ();
     let _ = crate::molt_generator_throw_method as *const ();
+    let _ = crate::molt_contextvars_types as *const ();
+    let _ = crate::molt_contextvars_copy_current as *const ();
+    let _ = crate::molt_contextvars_new as *const ();
+    let _ = crate::molt_contextvars_token_new as *const ();
+    let _ = crate::molt_contextvars_missing_new as *const ();
+    let _ = crate::molt_contextvars_keys_new as *const ();
+    let _ = crate::molt_contextvars_values_new as *const ();
+    let _ = crate::molt_contextvars_items_new as *const ();
+    let _ = crate::molt_contextvars_var_new as *const ();
+    let _ = crate::molt_contextvars_var_get as *const ();
+    let _ = crate::molt_contextvars_var_set as *const ();
+    let _ = crate::molt_contextvars_var_reset as *const ();
+    let _ = crate::molt_contextvars_var_hash as *const ();
+    let _ = crate::molt_contextvars_copy as *const ();
+    let _ = crate::molt_contextvars_len as *const ();
+    let _ = crate::molt_contextvars_getitem as *const ();
+    let _ = crate::molt_contextvars_contains as *const ();
+    let _ = crate::molt_contextvars_get as *const ();
+    let _ = crate::molt_contextvars_run as *const ();
+    let _ = crate::molt_contextvars_keys as *const ();
+    let _ = crate::molt_contextvars_values as *const ();
+    let _ = crate::molt_contextvars_items as *const ();
+    let _ = crate::molt_contextvars_iter_self as *const ();
+    let _ = crate::molt_contextvars_iter_next as *const ();
+    let _ = crate::molt_contextvars_eq as *const ();
+    let _ = crate::molt_contextvars_ne as *const ();
+    let _ = crate::molt_contextvars_property as *const ();
+    let _ = crate::molt_contextvars_token_enter as *const ();
+    let _ = crate::molt_contextvars_token_exit as *const ();
+    let _ = crate::molt_contextvars_var_repr as *const ();
+    let _ = crate::molt_contextvars_token_repr as *const ();
+    let _ = crate::molt_contextvars_missing_repr as *const ();
 }

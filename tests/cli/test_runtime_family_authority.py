@@ -13,6 +13,7 @@ import pytest
 from molt.cli import runtime_cargo_plan as plans
 from molt.cli import runtime_fingerprints as fingerprints
 from molt.cli.runtime_build_identity import (
+    _capture_plan_toolchain,
     _runtime_build_environment_identity,
     _verify_plan_toolchain_content,
 )
@@ -29,6 +30,9 @@ from tests.rustc_test_support import (
     rustc_target_metadata_stdout as _metadata_stdout,
 )
 from tests.runtime_build_identity_helper import (
+    build_python_identity_fixture,
+    RuntimeFixtureRoot,
+    provisioned_wasi_sdk_fixture,
     native_runtime_staticlib_identity,
     runtime_build_identity,
 )
@@ -174,6 +178,14 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
 
     def metadata_command(command, **kwargs):
+        if tuple(command[1:]) == ("-vV",):
+            # The real resolver queries its admitted physical Rust compiler
+            # before selecting target metadata. Match this fixture's host.
+            assert Path(command[0]) == Path(kwargs["env"]["RUSTC"])
+            assert Path(command[0]).is_file()
+            return subprocess.CompletedProcess(
+                command, 0, "rustc fixture\nhost: x86_64-unknown-linux-gnu\n", ""
+            )
         assert "--print=file-names" in command
         assert kwargs["input"] == ""
         target = (
@@ -208,9 +220,13 @@ def _plan(
     target: str | None = None,
     **kwargs: object,
 ) -> plans.RuntimeCargoPlan:
+    environment = {"CARGO_HOME": str(root / "cargo-home"), **(env or {})}
+    if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+        installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
+        environment["WASI_SDK_PATH"] = str(installation.sdk)
     return plans.resolve_runtime_cargo_plan(
         root,
-        env={"CARGO_HOME": str(root / "cargo-home"), **(env or {})},
+        env=environment,
         cargo_command=("cargo", "rustc", *args),
         requested_target=target,
         host_target="x86_64-unknown-linux-gnu",
@@ -262,14 +278,23 @@ def test_runtime_plan_locks_compiler_dependencies_before_rustc_passthrough(
             "native-static-libs",
         ),
         target=target,
-        # Explicit C tool selectors keep the wasm32 plan independent of whether
-        # this host provisioned the pinned WASI SDK.
+        # _plan supplies a complete synthetic SDK for WASM. Native C tools
+        # remain separately authored host inputs.
         env={"MOLT_SKIP_CARGO_LOCK": "1"}
         | {name: "selected-" + name.lower() for name in ("CC", "CXX", "AR", "RANLIB")},
     )
     separator = plan.command.index("--")
     assert plan.command[:separator].count("--locked") == 1
-    assert plan.command[separator:] == ("--", "--print", "native-static-libs")
+    assert plan.command[separator : separator + 3] == (
+        "--",
+        "--print",
+        "native-static-libs",
+    )
+    assert plan.command[separator + 3 :] == (
+        ("-C", "link-self-contained=no", "-C", "linker-flavor=wasm-ld")
+        if target == "wasm32-wasip1"
+        else ()
+    )
 
 
 @pytest.mark.parametrize(
@@ -315,10 +340,26 @@ def test_cfg_target_plan_uses_rustc_facts_and_pins_selected_tools(
             }
         ),
     )
-    assert plan.rustflags == ("--cfg", "wasm_selected" if wasm else "baseline")
+    expected = ("--cfg", "wasm_selected" if wasm else "baseline")
+    if target == "wasm32-wasip1":
+        expected = (
+            "-L",
+            "native=" + str(plan.wasi_c_abi.path("libc").parent),
+            "-L",
+            "native=" + str(plan.wasi_c_abi.path("compiler_rt").parent),
+            "-C",
+            "link-self-contained=no",
+            "-C",
+            "linker-flavor=wasm-ld",
+            *expected,
+        )
+    assert plan.rustflags == expected
     assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
     assert seen and all(selected == target for selected, _ in seen)
-    if wasm:
+    if target == "wasm32-wasip1":
+        assert plan.tools["linker"] == Path(plan.environment["MOLT_WASM_LD"])
+        assert all("wasm-linker" not in token for token in plan.command)
+    elif wasm:
         assert plan.tools["linker"].name == "wasm-linker"
         assert any("wasm-linker" in token for token in plan.command)
 
@@ -537,8 +578,10 @@ def test_configuration_parse_and_receipt_share_one_generation(plan_root: Path) -
     before = path.stat()
     path.write_text('[build]\nrustflags="--cfg after!"\n', encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    before_identity = plan.configuration_identity()
+    assert plan.configuration_identity() == before_identity
     with pytest.raises(ValueError, match="changed"):
-        plan.configuration_identity()
+        plan.verify()
 
 
 @pytest.mark.parametrize("mutation", ["rustc", "resource", "config", "new-config"])
@@ -735,22 +778,14 @@ def test_windows_cargo_environment_case_alias_cannot_bypass_ambient_precedence()
         plans._apply_cargo_environment({"env": {"cc": "one", "CC": "two"}}, {}, env, {})
 
 
-def test_capture_hook_observes_final_selected_inputs_once(plan_root: Path) -> None:
+def test_plan_owns_final_selected_inputs(plan_root: Path) -> None:
     _config(plan_root, '[env]\nCC={value="configured-cc",force=true}\n')
-    captures = []
-
-    def capture(environment, tools, rust_roots):
-        captures.append((dict(environment), dict(tools), rust_roots))
-        with pytest.raises(TypeError):
-            environment["CC"] = "other"
-
-    plan = _plan(plan_root, capture_inputs=capture)
-    assert len(captures) == 1
-    environment, tools, roots = captures[0]
-    assert environment == dict(plan.environment)
-    assert tools == dict(plan.tools)
-    assert tools["cc"].name == "configured-cc"
-    assert roots == plan.rust_resources.roots
+    plan = _plan(plan_root)
+    assert plan.tools["cc"].name == "configured-cc"
+    with pytest.raises(TypeError):
+        plan.environment["CC"] = "other"
+    assert any(item.entrypoint == plan.tools["cc"] for item in plan.executable_custody)
+    plan.verify()
 
 
 @pytest.mark.parametrize(
@@ -1061,6 +1096,8 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
 def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from molt import process_guard
+
     suffix = ".exe" if os.name == "nt" else ""
     proxy = tmp_path / ("rustup" + suffix)
     selector = tmp_path / ("rustc" + suffix)
@@ -1076,7 +1113,7 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
             command, 0, stdout=str(compiler) + "\n", stderr=""
         )
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     monkeypatch.setattr(
         rust_toolchain, "resolve_executable", lambda value, **kwargs: Path(value)
     )
@@ -1099,7 +1136,7 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
 
 @pytest.mark.parametrize("mutation", ["rustc", "resource", "config"])
 def test_supplied_manifest_cannot_attest_a_different_live_plan(
-    plan_root: Path, mutation: str
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     plan = _plan(plan_root)
     content = {
@@ -1111,6 +1148,7 @@ def test_supplied_manifest_cannot_attest_a_different_live_plan(
             for item in plan.executable_custody
         },
         "wrappers": {},
+        "sysroots": {},
         "effective_target": plan.target,
         "cargo_configuration": plan.configuration_identity(),
         "rust_resources": {
@@ -1126,6 +1164,14 @@ def test_supplied_manifest_cannot_attest_a_different_live_plan(
         (plan_root / "rust-resources" / "libcore.rlib").write_bytes(b"new core")
     else:
         _config(plan_root, '[build]\nrustflags="--cfg changed"\n')
+    monkeypatch.setattr(
+        "molt.cli.runtime_build_identity._python_identity",
+        lambda *_args, **_kwargs: build_python_identity_fixture(),
+    )
+    # Captured projections remain pure. Runtime admission owns the live
+    # mutable-input fence before those facts can authorize execution.
+    with pytest.raises(ValueError, match="changed"):
+        _capture_plan_toolchain(plan)
     replacement = _plan(plan_root)
     with pytest.raises(ValueError, match="differs|differ"):
         _verify_plan_toolchain_content(replacement, content)
@@ -1231,9 +1277,17 @@ def test_rust_linker_selector_must_reconcile_with_executable_custody(
         args=("--", "-C", "linker=final-linker"),
     )
     if mutation == "command":
+        # Replace the admitted selector in place. Appending a duplicate is
+        # already rejected by canonical flag admission and never reaches the
+        # independent executable-custody reconciliation tested here.
+        original = "linker=" + str(plan.tools["final_linker"])
+        assert plan.command.count(original) == 1
         plan = replace(
             plan,
-            command=(*plan.command, "-C", "linker=" + str(plan.tools["linker"])),
+            command=tuple(
+                "linker=" + str(plan.tools["linker"]) if token == original else token
+                for token in plan.command
+            ),
         )
     elif mutation == "flags":
         flags = ("-C", "linker=" + str(plan.tools["final_linker"]))
@@ -1330,9 +1384,11 @@ def test_last_codegen_selector_wins_without_opening_shadowed_path(
     [
         (("--sysroot", "a", "--sysroot", "b"), "duplicate --sysroot"),
         (("--extern", "dep"), "explicit crate=artifact"),
-        (("-L", "unknown=somewhere"), "search kind"),
+        (("-L", "unknown=somewhere"), "resource is missing"),
         (("-Z", "codegen-backend="), "requires a resource selector"),
         (("@arguments.rsp",), "parsed argument custody"),
+        (("-o", "@arguments.rsp"), "parsed argument custody"),
+        (("--", "@arguments.rsp"), "parsed argument custody"),
     ],
 )
 def test_unresolved_rust_resource_selector_is_diagnosed(
@@ -1877,3 +1933,476 @@ def test_toolchain_manifest_owns_one_canonical_payload(monkeypatch, origin) -> N
     assert admitted == original
     with pytest.raises(ValueError, match="toolchain tools are invalid"):
         schema.RuntimeToolchainContentManifest.from_payload(wire["payload"])
+
+
+def test_pure_freestanding_rust_does_not_select_c_sdk(plan_root, monkeypatch):
+    monkeypatch.setattr(
+        plans,
+        "apply_provisioned_wasm_toolchain",
+        lambda *a, **k: pytest.fail("freestanding Rust selected a C SDK"),
+    )
+    plan = _plan(
+        plan_root,
+        target="wasm32-unknown-unknown",
+        args=("--target", "wasm32-unknown-unknown"),
+    )
+    assert plan.wasi_c_abi is None
+    assert "MOLT_WASI_C_ABI_PLAN" not in plan.environment
+
+
+def test_sdk_members_use_receipt_without_mutable_resource_capture(
+    plan_root, monkeypatch
+):
+    captured = []
+    original = plans.CargoFileCustody.capture.__func__
+
+    def capture(cls, label, path):
+        captured.append(path)
+        return original(cls, label, path)
+
+    monkeypatch.setattr(plans.CargoFileCustody, "capture", classmethod(capture))
+    plan = _plan(plan_root, target="wasm32-wasip1", args=("--target", "wasm32-wasip1"))
+    assert plan.wasi_c_abi is not None
+    for _role, path, size, digest in plan.wasi_c_abi.files:
+        assert captured.count(path) == 0
+        assert not any(item.entrypoint == path for item in plan.rust_resources.files)
+        fact = plan.wasi_sdk.facts["members"][_role]
+        assert (fact["size"], fact["sha256"]) == (size, digest)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [None, "foreign-linker", "driver-flavor", "unstable-flavor", "self-contained"],
+)
+def test_explicit_freestanding_c_provider_uses_selected_raw_linker(plan_root, override):
+    from molt import llvm_toolchain
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    c_abi = llvm_toolchain.wasi_c_abi_plan(installation)
+    environment = {"MOLT_WASI_C_ABI_PLAN": c_abi.encode()}
+    if override == "foreign-linker":
+        environment["CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"] = "foreign-linker"
+    elif override == "driver-flavor":
+        environment["RUSTFLAGS"] = "-Clinker-flavor=wasm-lld-cc"
+    elif override == "unstable-flavor":
+        environment["RUSTFLAGS"] = "-Clinker-flavor=wasm-lld"
+    elif override == "self-contained":
+        environment["RUSTFLAGS"] = "-Clink-self-contained=yes"
+
+    def resolve():
+        return _plan(
+            plan_root,
+            target="wasm32-unknown-unknown",
+            args=("--target", "wasm32-unknown-unknown"),
+            env=environment,
+        )
+
+    if override is not None:
+        with pytest.raises(
+            ValueError,
+            match="selected SDK raw linker|differs from the selected WASI SDK|conflicts with linker-flavor|conflicts with link-self-contained",
+        ):
+            resolve()
+    else:
+        plan = resolve()
+        assert plan.wasi_c_abi == c_abi
+        assert plan.tools["linker"] == c_abi.linker
+        assert plan.rustflags == (
+            "-L",
+            "native=" + str(c_abi.path("libc").parent),
+            "-L",
+            "native=" + str(c_abi.path("compiler_rt").parent),
+            "-C",
+            "link-self-contained=no",
+            "-C",
+            "linker-flavor=wasm-ld",
+        )
+        assert plan.environment["CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"] == str(
+            c_abi.linker
+        )
+        plan.verify()
+
+
+@pytest.mark.parametrize("source", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"])
+def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
+    plan_root, monkeypatch, source
+):
+    foreign = plan_root / "foreign-libraries"
+    foreign.mkdir()
+    (foreign / "libc.a").write_bytes(b"foreign libc must not shadow selected SDK")
+    flags = ("-L", "native=" + str(foreign), "--cfg", "user_preserved")
+    key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" if source == "target" else source
+    value = (
+        "\x1f".join(flags)
+        if source == "CARGO_ENCODED_RUSTFLAGS"
+        else __import__("shlex").join(flags)
+    )
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    captured = []
+    original = plans.CargoResourceRoot.files
+
+    def files(resource):
+        assert not resource.path.is_relative_to(installation.sdk), (
+            "managed SDK recursively recaptured"
+        )
+        captured.append(resource.path)
+        return original(resource)
+
+    monkeypatch.setattr(plans.CargoResourceRoot, "files", files)
+    plan = _plan(
+        plan_root,
+        target="wasm32-wasip1",
+        args=("--target", "wasm32-wasip1"),
+        env={key: value},
+    )
+    libc_dir = plan.wasi_c_abi.path("libc").parent
+    builtins_dir = plan.wasi_c_abi.path("compiler_rt").parent
+    assert plan.rustflags[:6] == (
+        "-L",
+        "native=" + str(libc_dir),
+        "-L",
+        "native=" + str(builtins_dir),
+        "-L",
+        "native=" + str(foreign),
+    )
+    assert "user_preserved" in plan.rustflags
+    assert foreign in captured
+    assert {
+        path for label, path in plan.logical_paths if label.startswith("wasi/search/")
+    } == {libc_dir, builtins_dir}
+    plan.verify()
+    (foreign / "libc.a").write_bytes(b"mutated user input")
+    with pytest.raises(ValueError):
+        plan.verify()
+
+
+def test_sdk_search_context_cannot_be_removed_from_retained_plan(plan_root):
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    plan = _plan(plan_root, target="wasm32-wasip1", args=("--target", "wasm32-wasip1"))
+    flags = plan.rustflags[4:]
+    damaged = replace(
+        plan,
+        rustflags=flags,
+        environment=MappingProxyType(
+            {
+                **plan.environment,
+                "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags),
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="admitted target context"):
+        damaged.verify()
+
+
+@pytest.mark.parametrize("simd,freestanding", [(True, False), (False, True)])
+@pytest.mark.parametrize(
+    "flag_origin", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
+)
+def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
+    plan_root, simd, freestanding, flag_origin
+):
+    from molt.cli import runtime_wasm_build_spec as specs
+
+    _config(
+        plan_root,
+        '[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n',
+    )
+    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    environment = {
+        "CARGO_HOME": str(plan_root / "cargo-home"),
+        "WASI_SDK_PATH": str(sdk.sdk),
+    }
+    if flag_origin != "target":
+        separator = "\x1f" if flag_origin == "CARGO_ENCODED_RUSTFLAGS" else " "
+        environment[flag_origin] = separator.join(
+            ("-C", "target-feature=-reference-types")
+        )
+    shared = specs._RuntimeWasmBuildSpec(
+        requested_cargo_profile="dev-fast",
+        cargo_profile="dev-fast",
+        profile_dir="dev-fast",
+        incremental_enabled=False,
+        env=environment,
+        artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
+        runtime_exports="",
+        link_flags="",
+        cargo_rustflags="",
+        fingerprint_rustflags="",
+        no_default_features=True,
+        wasm_cargo_features=(),
+        fingerprint_features=(),
+        fingerprint_path=plan_root / "shared.fingerprint.json",
+        target_root=plan_root / "target",
+        stored_fingerprint=None,
+        fingerprint=None,
+        staticlib_fingerprint=None,
+    )
+    reloc = shared._replace(artifact_selection=specs.RUNTIME_STATICLIB_ARTIFACTS)
+    shared, reloc = specs._resolve_runtime_wasm_cargo_specs(
+        plan_root,
+        shared,
+        reloc,
+        simd_enabled=simd,
+        freestanding=freestanding,
+    )
+    assert shared.cargo_plan is reloc.cargo_plan
+    plan = shared.cargo_plan
+    assert plan is not None
+    assert plan.host_target == "x86_64-unknown-linux-gnu"
+    # Literal expectations independent of the producer and SIMD receipt reader.
+    feature = (
+        "target-feature=-reference-types,+simd128"
+        if simd
+        else "target-feature=-reference-types,-simd128"
+    )
+    assert plan.rustflags.count("target-feature=-reference-types") == 1
+    assert feature in plan.rustflags
+    assert ('getrandom_backend="unsupported"' in plan.rustflags) is freestanding
+    assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
+    assert shared.cargo_rustflags == reloc.cargo_rustflags
+    index = plan.command.index("--crate-type")
+    assert plan.command[index : index + 2] == ("--crate-type", "staticlib,cdylib")
+    assert shared.fingerprint_rustflags == shared.cargo_rustflags
+    assert reloc.fingerprint_rustflags == reloc.cargo_rustflags
+    plan.verify()
+    # Capture binds the resolved environment before the actual runtime caller
+    # constructs its command again. Re-enter that caller, not plan.command
+    # (which already contains the resolver's pinned Cargo configuration).
+    repeated_shared, repeated_reloc = specs._resolve_runtime_wasm_cargo_specs(
+        plan_root,
+        shared,
+        reloc,
+        simd_enabled=simd,
+        freestanding=freestanding,
+    )
+    repeated = repeated_shared.cargo_plan
+    assert repeated is not None
+    assert repeated is repeated_reloc.cargo_plan
+    assert repeated.rustflags == plan.rustflags
+    assert repeated.command == plan.command
+    assert repeated.environment == plan.environment
+    assert repeated.configuration_identity() == plan.configuration_identity()
+    assert repeated_shared.fingerprint_rustflags == shared.fingerprint_rustflags
+    assert repeated_reloc.fingerprint_rustflags == reloc.fingerprint_rustflags
+    repeated.verify()
+
+
+@pytest.mark.parametrize(
+    "flag_origin", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
+)
+def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
+    plan_root, monkeypatch, flag_origin
+):
+    from contextlib import nullcontext
+    from molt.cli import runtime_wasm_build_support as support
+
+    _config(
+        plan_root,
+        '[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n',
+    )
+    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
+    environment = {
+        "CARGO_HOME": str(plan_root / "cargo-home"),
+        "WASI_SDK_PATH": str(sdk.sdk),
+    }
+    if flag_origin != "target":
+        separator = "\x1f" if flag_origin == "CARGO_ENCODED_RUSTFLAGS" else " "
+        environment[flag_origin] = separator.join(
+            ("-C", "target-feature=-reference-types")
+        )
+    monkeypatch.setattr(support, "build_python_scope", lambda state: nullcontext())
+    monkeypatch.setattr(support, "_cargo_build_env", lambda: dict(environment))
+    monkeypatch.setattr(
+        support, "_cargo_target_root", lambda root: plan_root / "target"
+    )
+    monkeypatch.setattr(
+        support,
+        "_runtime_fingerprint_path",
+        lambda *args: plan_root / "cpython.fingerprint.json",
+    )
+
+    class Planned(Exception):
+        pass
+
+    def capture_plan(*args, **kwargs):
+        # Reach the real producer's transform and actual Cargo-plan admission,
+        # then stop before build-Python setup, runtime identity or Cargo work.
+        raise Planned(plans.resolve_runtime_cargo_plan(*args, **kwargs))
+
+    monkeypatch.setattr(support, "resolve_runtime_cargo_plan", capture_plan)
+    with pytest.raises(Planned) as stopped:
+        support._ensure_wasm_cpython_abi_staticlib(
+            project_root=plan_root,
+            json_output=True,
+            cargo_profile="dev-fast",
+            cargo_timeout=1,
+        )
+    plan = stopped.value.args[0]
+    assert plan.host_target == "x86_64-unknown-linux-gnu"
+    assert plan.rustflags.count("target-feature=-reference-types") == 1
+    assert "target-feature=-reference-types,+simd128" in plan.rustflags
+    assert not any("getrandom_backend=" in flag for flag in plan.rustflags)
+    assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
+    assert "molt-lang-cpython-abi" in plan.command
+    index = plan.command.index("--crate-type")
+    assert plan.command[index : index + 2] == ("--crate-type", "staticlib")
+    plan.verify()
+    monkeypatch.setattr(support, "_cargo_build_env", lambda: dict(plan.environment))
+    with pytest.raises(Planned) as stopped_again:
+        support._ensure_wasm_cpython_abi_staticlib(
+            project_root=plan_root,
+            json_output=True,
+            cargo_profile="dev-fast",
+            cargo_timeout=1,
+        )
+    repeated = stopped_again.value.args[0]
+    assert repeated.rustflags == plan.rustflags
+    assert repeated.command == plan.command
+    assert repeated.environment == plan.environment
+    assert repeated.configuration_identity() == plan.configuration_identity()
+    repeated.verify()
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+@pytest.mark.parametrize("selector", ["linker", "link-arg"])
+@pytest.mark.parametrize("final", [False, True])
+def test_codegen_alias_resources_have_one_custody_and_partition(
+    plan_root, spelling, selector, final
+):
+    artifact = plan_root / "selected resource.bin"
+    artifact.write_bytes(
+        b"--export=first\n" if selector == "link-arg" else b"MZbackend"
+    )
+    operand = (
+        "selected-linker"
+        if selector == "linker"
+        else "@" + str(artifact)
+        if selector == "link-arg"
+        else str(artifact)
+    )
+    value = selector + "=" + operand
+    flags = (
+        (spelling, value)
+        if spelling in {"-C", "--codegen"}
+        else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+    )
+    plan = _plan(
+        plan_root,
+        args=("--", *flags) if final else (),
+        env={} if final else {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)},
+    )
+    lane = plan.command[plan.command.index("--") + 1 :] if final else plan.rustflags
+    selected = (
+        plan.tools["final_linker" if final else "linker"]
+        if selector == "linker"
+        else artifact
+    )
+    assert lane == (
+        "-C",
+        selector + "=" + ("@" if selector == "link-arg" else "") + str(selected),
+    )
+    if final and selector == "link-arg":
+        compile_command, linking = plan.partition_command()
+        assert linking == lane and value not in compile_command
+        assert "@response:sha256=" in plan.project_link_arguments(linking)[1]
+    plan.verify()
+    selected.write_bytes(b"changed admitted input")
+    with pytest.raises(ValueError, match="changed"):
+        plan.verify()
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+@pytest.mark.parametrize(
+    "option", ["linker-flavor=wasm-lld-cc", "link-self-contained=yes"]
+)
+def test_wasi_codegen_alias_conflict_fails_at_selected_mode(
+    plan_root, spelling, option
+):
+    flags = (
+        (spelling, option)
+        if spelling in {"-C", "--codegen"}
+        else (("-C" if spelling == "-Cjoined" else spelling) + option,)
+    )
+    with pytest.raises(ValueError, match="WASI external-libc mode conflicts"):
+        _plan(
+            plan_root,
+            target="wasm32-wasip1",
+            args=("--target", "wasm32-wasip1"),
+            env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)},
+        )
+
+
+@pytest.mark.parametrize(
+    "operand", ["-Clinker=tools/root", "--codegen=linker=tools/root"]
+)
+def test_runtime_search_operand_cannot_select_a_codegen_tool(plan_root, operand):
+    directory = plan_root / operand
+    directory.mkdir(parents=True)
+    artifact = directory / "libopaque.a"
+    artifact.write_bytes(b"opaque search input")
+    flags = ("-L", operand, "--out-dir", operand, "--remap-path-prefix", operand)
+    plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
+    assert plan.rustflags == ("-L", "all=" + str(directory), *flags[2:])
+    assert any(item.identity.path == artifact for item in plan.rust_resources.files)
+    assert all(not str(path).endswith("tools/root") for path in plan.tools.values())
+    artifact.write_bytes(b"changed opaque input")
+    with pytest.raises(ValueError, match="changed"):
+        plan.verify()
+
+
+@pytest.mark.parametrize("output", ["-C", "-Lnative=unselected", "--codegen"])
+def test_runtime_resource_and_partition_passes_preserve_output_operand(
+    plan_root, output
+):
+    plan = _plan(plan_root, args=("--", "-o", output, "--codegen=panic=abort"))
+    compile_command, link_args = plan.partition_command()
+    assert compile_command[-5:] == ("--", "-o", output, "-C", "panic=abort")
+    assert link_args == ()
+    plan.verify()
+
+
+@pytest.mark.parametrize(
+    "cluster,option",
+    [
+        ("-gC", "linker=selected-linker"),
+        ("-vC", "link_arg=@exports.rsp"),
+        ("-gZ", "codegen_backend=backend.dll"),
+    ],
+)
+def test_clustered_resource_options_keep_prefix_and_fence_selected_input(
+    plan_root, cluster, option
+):
+    (plan_root / "exports.rsp").write_bytes(b"--export=first\n")
+    (plan_root / "backend.dll").write_bytes(b"MZbackend")
+    plan = _plan(plan_root, args=("--", cluster + option))
+    compile_command, link_args = plan.partition_command()
+    assert cluster[:-1] in compile_command
+    if "link_arg=" in option:
+        assert link_args == ("-C", "link-arg=@" + str(plan_root / "exports.rsp"))
+        selected = plan_root / "exports.rsp"
+    elif "codegen_backend=" in option:
+        assert compile_command[-2:] == (
+            "-Z",
+            "codegen-backend=" + str(plan_root / "backend.dll"),
+        )
+        selected = plan_root / "backend.dll"
+    else:
+        selected = plan.tools["final_linker"]
+        assert compile_command[-2:] == ("-C", "linker=" + str(selected))
+    plan.verify()
+    selected.write_bytes(b"changed clustered resource")
+    with pytest.raises(ValueError, match="changed"):
+        plan.verify()
+
+
+def test_codegen_key_aliases_obey_last_selector_without_reading_shadowed_path(
+    plan_root,
+):
+    selected = plan_root / "backend.dll"
+    selected.write_bytes(b"MZbackend")
+    flags = ("-gZcodegen_backend=missing.dll", "-Z", "codegen-backend=" + str(selected))
+    plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
+    assert plan.rustflags == ("-g", "-Z", "codegen-backend=" + str(selected))
+    assert any(item.identity.path == selected for item in plan.rust_resources.files)

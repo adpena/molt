@@ -6,8 +6,8 @@ mod support;
 
 use std::ptr;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 // ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ fn test_list_new_fails_closed_on_alloc_failure() {
     // PyList_New MUST fail closed with NULL + a set MemoryError, NOT return a
     // non-NULL Py_None placeholder (which would defeat the caller's
     // `if (list == NULL)` guard and let it operate on None as a list).
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
     assert!(
@@ -36,7 +36,7 @@ fn test_list_new_fails_closed_on_alloc_failure() {
 
 #[test]
 fn test_list_new_with_size_fails_closed_on_alloc_failure() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyList_New(5) };
     assert!(py.is_null());
@@ -48,7 +48,7 @@ fn test_list_new_with_size_fails_closed_on_alloc_failure() {
 fn test_set_new_fails_closed() {
     // F5 teeth: PySet_New must fail closed (NULL + NotImplementedError) rather
     // than return a *list* with list semantics (no dedup, no membership).
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PySet_New(ptr::null_mut()) };
     assert!(
@@ -63,7 +63,7 @@ fn test_set_new_fails_closed() {
 fn test_set_membership_ops_fail_closed() {
     // F5 teeth: PySet_Contains/Add/Discard must return the error sentinel (-1)
     // with an exception set, NOT fake success/absence (0).
-    init();
+    let _abi_test = init();
     for result in [
         unsafe {
             molt_cpython_abi::api::sequences::PySet_Contains(ptr::null_mut(), ptr::null_mut())
@@ -90,7 +90,7 @@ fn test_set_membership_ops_fail_closed() {
 
 #[test]
 fn test_list_append_null_list_returns_error() {
-    init();
+    let _abi_test = init();
     let item = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_Append(ptr::null_mut(), item) };
     assert_eq!(result, -1);
@@ -99,7 +99,7 @@ fn test_list_append_null_list_returns_error() {
 
 #[test]
 fn test_list_append_null_item_returns_error() {
-    init();
+    let _abi_test = init();
     let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_Append(list, ptr::null_mut()) };
     assert_eq!(result, -1);
@@ -108,7 +108,7 @@ fn test_list_append_null_item_returns_error() {
 
 #[test]
 fn test_list_append_both_null_returns_error() {
-    init();
+    let _abi_test = init();
     let result = unsafe {
         molt_cpython_abi::api::sequences::PyList_Append(ptr::null_mut(), ptr::null_mut())
     };
@@ -117,7 +117,7 @@ fn test_list_append_both_null_returns_error() {
 
 #[test]
 fn test_list_append_rejects_non_list() {
-    init();
+    let _abi_test = init();
     let tuple = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
     let item = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -139,14 +139,14 @@ fn test_list_append_rejects_non_list() {
 
 #[test]
 fn test_list_getitem_null_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_GetItem(ptr::null_mut(), 0) };
     assert!(result.is_null());
 }
 
 #[test]
 fn test_list_get_item_negative_index_returns_null() {
-    init();
+    let _abi_test = init();
     let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_GET_ITEM(list, -1) };
     assert!(result.is_null());
@@ -155,7 +155,7 @@ fn test_list_get_item_negative_index_returns_null() {
 
 #[test]
 fn test_list_get_item_ref_null_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_GetItemRef(ptr::null_mut(), 0) };
     assert!(result.is_null());
 }
@@ -166,7 +166,7 @@ fn test_list_get_item_ref_null_returns_null() {
 
 #[test]
 fn test_list_setitem_null_list_returns_error() {
-    init();
+    let _abi_test = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result =
         unsafe { molt_cpython_abi::api::sequences::PyList_SetItem(ptr::null_mut(), 0, val) };
@@ -178,7 +178,7 @@ fn test_list_setitem_null_list_returns_error() {
 
 #[test]
 fn test_list_setitem_null_container_and_value_returns_error() {
-    init();
+    let _abi_test = init();
     // A NULL container is invalid even when the replacement is NULL. Do not
     // mistake the stub's allocation failure for rejection of a NULL item.
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -195,7 +195,7 @@ fn test_list_setitem_null_container_and_value_returns_error() {
 
 #[test]
 fn test_list_setitem_negative_index_returns_error() {
-    init();
+    let _abi_test = init();
     let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_SetItem(list, -1, val) };
@@ -217,7 +217,7 @@ fn test_list_setitem_negative_index_returns_error() {
 fn test_list_size_null_sets_error_and_returns_minus_one() {
     // CPython: PyList_Size(non-list/NULL) → PyErr_BadInternalCall() + -1, not a
     // fabricated 0 (sentinel sweep; same class as the PyDict_Size fix).
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::sequences::PyList_Size(ptr::null_mut()) };
     assert_eq!(size, -1, "PyList_Size(NULL) must be -1, not a fabricated 0");
@@ -230,7 +230,7 @@ fn test_list_size_null_sets_error_and_returns_minus_one() {
 
 #[test]
 fn test_list_get_size_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let size = unsafe { molt_cpython_abi::api::sequences::PyList_GET_SIZE(ptr::null_mut()) };
     assert_eq!(size, 0);
 }
@@ -241,14 +241,14 @@ fn test_list_get_size_null_returns_zero() {
 
 #[test]
 fn test_list_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_list_check_on_int_returns_zero() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_Check(py) };
     assert_eq!(result, 0);
@@ -261,7 +261,7 @@ fn test_list_check_on_int_returns_zero() {
 
 #[test]
 fn test_tuple_new_returns_non_null() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
@@ -269,7 +269,7 @@ fn test_tuple_new_returns_non_null() {
 
 #[test]
 fn test_tuple_new_with_size() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(3) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
@@ -277,7 +277,7 @@ fn test_tuple_new_with_size() {
 
 #[test]
 fn test_tuple_new_negative_size_rejects_with_system_error() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(-5) };
     assert!(py.is_null());
@@ -299,14 +299,14 @@ fn test_tuple_new_negative_size_rejects_with_system_error() {
 
 #[test]
 fn test_tuple_getitem_null_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_GetItem(ptr::null_mut(), 0) };
     assert!(result.is_null());
 }
 
 #[test]
 fn test_tuple_get_item_negative_index_returns_null() {
-    init();
+    let _abi_test = init();
     let tup = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(3) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_GET_ITEM(tup, -1) };
     assert!(result.is_null());
@@ -319,7 +319,7 @@ fn test_tuple_get_item_negative_index_returns_null() {
 
 #[test]
 fn test_tuple_setitem_null_tuple_returns_error() {
-    init();
+    let _abi_test = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result =
         unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(ptr::null_mut(), 0, val) };
@@ -333,7 +333,7 @@ fn test_tuple_setitem_null_tuple_returns_error() {
 fn test_tuple_setitem_null_value_clears_slot_and_releases_displaced_reference() {
     use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyObject};
     use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences};
-    init();
+    let _abi_test = init();
     // CPython v3.12.13 Objects/tupleobject.c:110-127 uses Py_XSETREF:
     // NULL is a valid replacement, and the displaced reference is released.
     // The stack sentinel retains one owner; the second is stolen by the tuple.
@@ -381,7 +381,7 @@ fn test_tuple_setitem_null_value_clears_slot_and_releases_displaced_reference() 
 
 #[test]
 fn test_tuple_setitem_negative_index_returns_error() {
-    init();
+    let _abi_test = init();
     let tup = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tup, -1, val) };
@@ -396,7 +396,7 @@ fn test_tuple_setitem_negative_index_returns_error() {
 
 #[test]
 fn test_tuple_setitem_rejects_shared_tuple() {
-    init();
+    let _abi_test = init();
     let tup = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
     assert!(!tup.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_INCREF(tup) };
@@ -422,7 +422,7 @@ fn test_tuple_setitem_rejects_shared_tuple() {
 
 #[test]
 fn test_tuple_size_null_is_bad_internal_call() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(ptr::null_mut()) };
     assert_eq!(size, -1);
@@ -432,7 +432,7 @@ fn test_tuple_size_null_is_bad_internal_call() {
 
 #[test]
 fn test_tuple_get_size_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let size = unsafe { molt_cpython_abi::api::sequences::PyTuple_GET_SIZE(ptr::null_mut()) };
     assert_eq!(size, 0);
 }
@@ -443,14 +443,14 @@ fn test_tuple_get_size_null_returns_zero() {
 
 #[test]
 fn test_tuple_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_tuple_check_on_int_returns_zero() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_Check(py) };
     assert_eq!(result, 0);
@@ -459,7 +459,7 @@ fn test_tuple_check_on_int_returns_zero() {
 
 #[test]
 fn test_sequence_fast_items_returns_raw_tuple_storage() {
-    init();
+    let _abi_test = init();
     let tuple = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(2) };
     let first = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
     let second = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(11) };

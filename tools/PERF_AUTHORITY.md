@@ -25,10 +25,15 @@ that actually ran, including its profile, feature set and runtime identity, and
 fail closed when that execution identity is absent. Profile declarations and
 source-checkout measurements do not qualify the installed release matrix.
 
-LLVM is required by E2 and the verified-subset policy. The current prebuilt
-compiler feature set omits LLVM. Its availability and acceptance remain open;
-a native-only pass cannot replace the required LLVM cells. These implementation
-gaps do not change the canonical command or relax its acceptance requirements.
+LLVM is required by E2 and the verified-subset policy. The production compiler
+feature set includes LLVM through the admitted, pinned static SDK path. That
+build policy is not a six-host execution or performance result. Installed
+availability requires the compiler features/profile and exact physical runtime
+cell; acceptance still requires the actual logical backend/profile products.
+`config/release_acceptance_matrix.toml`, read by `molt.release_lanes`, owns those
+lanes for runtime production, installed consumers and performance selection.
+A native-only pass cannot replace LLVM evidence. The canonical command and
+its acceptance requirements remain unchanged.
 
 `tools/release_exit_gate.py` treats every `status: pass` criterion as a typed
 receipt, not a generic file attachment. E1 must include a

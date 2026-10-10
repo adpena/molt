@@ -170,16 +170,14 @@ fn extract_env_dict(_py: &PyToken<'_>, env_bits: u64) -> Result<Vec<(String, Str
         if object_type_id(ptr) != TYPE_ID_DICT {
             return Err("env must be a dict".to_string());
         }
-        let order = dict_order(ptr);
-        let mut out = Vec::with_capacity(order.len() / 2);
-        let mut i = 0;
-        while i + 1 < order.len() {
-            let k = string_obj_to_owned(obj_from_bits(order[i]))
+        let mut out = Vec::with_capacity(crate::dict_len(ptr));
+        let mut cursor = 0;
+        while let Some(row) = crate::dict_next_entry(ptr, &mut cursor) {
+            let k = string_obj_to_owned(obj_from_bits(row.key))
                 .ok_or_else(|| "env keys must be str".to_string())?;
-            let v = string_obj_to_owned(obj_from_bits(order[i + 1]))
+            let v = string_obj_to_owned(obj_from_bits(row.value))
                 .ok_or_else(|| "env values must be str".to_string())?;
             out.push((k, v));
-            i += 2;
         }
         Ok(out)
     }

@@ -33,7 +33,7 @@ from tools import claims_status, check_sister_landed, commit_serializer  # noqa:
 from tools import advisory_classifier, disk_guard  # noqa: E402
 from tools import lane_maturity, powerplay_acceptance  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
-from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
+from tools import encoding_gate  # noqa: E402
 from tools import gen_cpython_coverage  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
@@ -520,11 +520,6 @@ def _canaries() -> list[Canary]:
                     active=True,
                 )[0]
             ),
-        ),
-        Canary(
-            "forbidden_checkout_guard",
-            "synthetic-onedrive-mutation-refused",
-            forbidden_checkout_guard.self_test,
         ),
         Canary(
             "apparatus_agent_safety",

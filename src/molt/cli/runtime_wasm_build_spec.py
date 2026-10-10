@@ -12,7 +12,6 @@ from typing import (
     Literal,
     Mapping,
     NamedTuple,
-    Sequence,
     TypeVar,
     cast,
 )
@@ -55,7 +54,6 @@ from molt.cli.runtime_identity_schema import (
     RuntimeBuildMemberPlan,
 )
 from molt.cli.runtime_cargo_plan import (
-    CargoResourceRoot,
     RuntimeCargoPlan,
     resolve_runtime_cargo_plan,
 )
@@ -78,11 +76,7 @@ from molt.cli.runtime_wasm_build_policy import (
     _runtime_wasm_incremental_target_root,
 )
 from molt.cli.runtime_wasm_build_support import (
-    RuntimeWasmLinkInputs,
-    resolve_runtime_wasm_link_inputs,
     _cargo_cmd_with_json_artifact_messages,
-    _configure_wasm_toolchain_env,
-    _configure_wasm_long_double_env,
     _wasm_runtime_codegen_flags,
 )
 from molt.cli.runtime_wasm_build_timings import (
@@ -122,7 +116,6 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     fingerprint: dict[str, Any] | None
     staticlib_fingerprint: dict[str, Any] | None
     cargo_plan: RuntimeCargoPlan | None = None
-    link_inputs: RuntimeWasmLinkInputs | None = None
 
     def with_cargo_plan(self, plan: RuntimeCargoPlan) -> _RuntimeWasmBuildSpec:
         return self._replace(
@@ -170,29 +163,6 @@ def _resolve_runtime_wasm_cargo_specs(
 ) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
     """Resolve the one command/environment consumed by capture and execution."""
     env = dict(shared.env)
-    link_inputs: RuntimeWasmLinkInputs | None = None
-
-    def capture_inputs(
-        effective_env: Mapping[str, str],
-        _tools: Mapping[str, Path],
-        rust_roots: Sequence[CargoResourceRoot],
-    ) -> None:
-        nonlocal link_inputs
-        target_libdirs = [
-            resource.path
-            for resource in rust_roots
-            if resource.label.startswith("rust/target-libdir/")
-        ]
-        if not target_libdirs:
-            raise ValueError(
-                "runtime WASM Cargo plan did not capture its Rust target library directory"
-            )
-        link_inputs = resolve_runtime_wasm_link_inputs(
-            env=effective_env,
-            target_libdir=target_libdirs[-1],
-            project_root=root,
-        )
-
     env["CARGO_TARGET_DIR"] = str(shared.target_root)
     command = _runtime_wasm_combined_cargo_command(shared)
     command[0] = env.get("CARGO", command[0])
@@ -214,14 +184,8 @@ def _resolve_runtime_wasm_cargo_specs(
             simd_enabled=simd_enabled,
             freestanding=freestanding,
         ),
-        capture_inputs=capture_inputs,
     )
-    if link_inputs is None:
-        raise ValueError("runtime WASM Cargo plan did not capture its link inputs")
-    return (
-        shared.with_cargo_plan(plan)._replace(link_inputs=link_inputs),
-        reloc.with_cargo_plan(plan)._replace(link_inputs=link_inputs),
-    )
+    return shared.with_cargo_plan(plan), reloc.with_cargo_plan(plan)
 
 
 def _resolved_runtime_wasm_family_identities(
@@ -237,10 +201,6 @@ def _resolved_runtime_wasm_family_identities(
         or shared_spec.cargo_rustflags != reloc_spec.cargo_rustflags
     ):
         raise ValueError("runtime shared/reloc specs do not form one resolved family")
-    inputs = shared_spec.link_inputs
-    if inputs is None:
-        raise ValueError("runtime WASM family requires its resolved link inputs")
-    inputs.verify()
     if shared_spec.cargo_plan is None:
         raise ValueError("runtime WASM family requires its resolved Cargo plan")
     preserve_debug = shared_spec.cargo_plan.preserve_debug_for_profile(
@@ -271,12 +231,6 @@ def _resolved_runtime_wasm_family_identities(
                 preserve_debug=True,
             ),
         ),
-        wasi_sysroot=inputs.wasi_sysroot,
-        wasm_linker=inputs.linker.entrypoint,
-        long_double_archive=inputs.long_double.path,
-        builtins_archive=inputs.clang_builtins.path,
-        wasi_libc_archive=inputs.libc.path,
-        rust_builtins_archive=inputs.rust_builtins.path,
         cargo_plan=shared_spec.cargo_plan,
         build_python_admission=build_python_admission,
     )
@@ -422,8 +376,6 @@ def _compute_runtime_wasm_build_spec(
     profile_dir = _cargo_profile_dir(cargo_profile)
     incremental_enabled = _runtime_wasm_incremental_enabled()
     env = _cargo_build_env()
-    _configure_wasm_toolchain_env(env)
-    _configure_wasm_long_double_env(env)
     if "CARGO_INCREMENTAL" not in os.environ:
         env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
     cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(

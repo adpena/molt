@@ -27,7 +27,7 @@ from molt.wasm_linking_symbols import (
     FLAG_UNDEFINED,
 )
 from wasm_archive import iter_wasm_object_members
-from wasm_link_native_inputs import _eager_native_link_paths
+from wasm_link_native_inputs import native_link_input_is_eager
 from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
 from wasm_link_format import (
     FLAG_EXPLICIT_NAME,
@@ -423,16 +423,15 @@ def _split_runtime_data_alias_object(
     facts_provider: WasmFactsProvider,
 ) -> SplitRuntimeDataAliasPlan | None:
     """Build runtime-address aliases for undefined CPython-ABI data symbols."""
-    candidate_symbols = _undefined_cpython_abi_data_symbols(
-        tuple(Path(item.path) for item in native_link_requirements.inputs),
-        facts_provider=facts_provider,
-    )
-    required_symbols = set(
-        _undefined_cpython_abi_data_symbols(
-            _eager_native_link_paths(native_link_requirements),
-            facts_provider=facts_provider,
+    candidate_symbols: set[str] = set()
+    required_symbols: set[str] = set()
+    for item in native_link_requirements.inputs:
+        symbols = _undefined_cpython_abi_data_symbols(
+            (Path(item.path),), facts_provider=facts_provider
         )
-    )
+        candidate_symbols.update(symbols)
+        if native_link_input_is_eager(item):
+            required_symbols.update(symbols)
     if not candidate_symbols:
         return None
     deploy_addresses = _runtime_exported_data_symbol_addresses(
@@ -454,7 +453,7 @@ def _split_runtime_data_alias_object(
     )
     alias_symbols: list[tuple[str, int, int]] = []
     missing: list[str] = []
-    for split_name in candidate_symbols:
+    for split_name in sorted(candidate_symbols):
         canonical = wasm_split_runtime_import_name_for_export(split_name)
         if canonical is None:
             canonical = split_name

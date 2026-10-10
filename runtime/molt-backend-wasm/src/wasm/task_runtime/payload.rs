@@ -16,10 +16,11 @@ pub(in crate::wasm) fn emit_register_cancel_token(
         reloc_enabled,
         import_ids[WasmRuntimeImport::CancelTokenGetCurrent],
     );
+    func.instruction(&Instruction::I64Const(molt_codegen_abi::box_none_bits()));
     emit_call(
         func,
         reloc_enabled,
-        import_ids[WasmRuntimeImport::TaskRegisterTokenOwned],
+        import_ids[WasmRuntimeImport::TaskRegisterExecution],
     );
     func.instruction(&Instruction::Drop);
 }

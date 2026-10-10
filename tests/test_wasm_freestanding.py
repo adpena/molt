@@ -626,11 +626,14 @@ def test_validate_freestanding_accepts_clean_module():
 def freestanding_build(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[Path, str]:
-    """Build the shared freestanding artifact once for every end-to-end assertion."""
+    """Build the freestanding WASM artifact without selecting a native host."""
 
     output_dir = tmp_path_factory.mktemp("wasm-freestanding")
     output = output_dir / "output.wasm"
     linked = output_dir / "output_linked.wasm"
+    build_env = wasm_test_build_env(PROJECT_ROOT, linked=True)
+    # An unavailable explicit host must not prevent plain WASM emission.
+    build_env["MOLT_WASM_HOST_BIN"] = str(output_dir / "absent-wasm-host")
     result = _run_wasm_test_process(
         [
             sys.executable,
@@ -644,14 +647,14 @@ def freestanding_build(
             str(output),
             "--linked-output",
             str(linked),
-            "--precompile",
         ],
         cwd=PROJECT_ROOT,
-        env=wasm_test_build_env(PROJECT_ROOT, linked=True),
+        env=build_env,
     )
     assert result.returncode == 0, (
         f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
+    assert not linked.with_suffix(".molt.cwasm").exists()
     return linked, result.stderr or ""
 
 

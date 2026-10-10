@@ -2,8 +2,35 @@
 
 mod bridge;
 
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+mod descriptor_admission;
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+mod kernel_storage;
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+use kernel_storage::{KernelStoragePlan, PreparedKernelOutputs};
+
 use bridge::*;
 use molt_gpu::runtime_backend::{GpuBackend, requested_gpu_backend};
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+use molt_runtime_core::OwnedRuntimeValue;
 use molt_runtime_core::prelude::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, obj_from_bits,
@@ -14,7 +41,7 @@ use molt_runtime_core::prelude::{
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 use serde_json::Value as JsonValue;
-use std::cell::RefCell;
+use std::cell::Cell;
 #[cfg(any(
     target_arch = "wasm32",
     all(target_os = "macos", feature = "metal-backend"),
@@ -32,9 +59,9 @@ use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use objc2_metal::{
-    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
-    MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
-    MTLResourceOptions, MTLSize,
+    MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLComputeCommandEncoder, MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice,
+    MTLLibrary, MTLResourceOptions, MTLSize,
 };
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 type MetalBuffer = Retained<ProtocolObject<dyn MTLBuffer>>;
@@ -102,7 +129,26 @@ struct ByteView {
     len: usize,
 }
 
-#[derive(Copy, Clone)]
+/// Operation admission for configured Python kernels. Tensor backends have
+/// separate implementations and do not establish descriptor execution support.
+enum PythonKernelExecutor {
+    Sequential,
+    Metal,
+    WebGpu,
+}
+
+impl PythonKernelExecutor {
+    fn for_backend(backend: Option<GpuBackend>) -> Result<Self, GpuBackend> {
+        match backend {
+            None => Ok(Self::Sequential),
+            Some(GpuBackend::Metal) => Ok(Self::Metal),
+            Some(GpuBackend::WebGpu) => Ok(Self::WebGpu),
+            Some(backend @ (GpuBackend::Cuda | GpuBackend::Hip)) => Err(backend),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct GpuLaunchContext {
     thread_id: i64,
     block_id: i64,
@@ -122,22 +168,24 @@ impl Default for GpuLaunchContext {
 }
 
 thread_local! {
-    static GPU_LAUNCH_CONTEXT_STACK: RefCell<Vec<GpuLaunchContext>> = const { RefCell::new(Vec::new()) };
+    static GPU_LAUNCH_CONTEXT: Cell<GpuLaunchContext> = Cell::new(GpuLaunchContext::default());
+}
+
+struct GpuLaunchContextGuard(GpuLaunchContext);
+
+impl Drop for GpuLaunchContextGuard {
+    fn drop(&mut self) {
+        GPU_LAUNCH_CONTEXT.set(self.0);
+    }
 }
 
 fn with_gpu_launch_context<R>(ctx: GpuLaunchContext, body: impl FnOnce() -> R) -> R {
-    GPU_LAUNCH_CONTEXT_STACK.with(|stack| {
-        stack.borrow_mut().push(ctx);
-        let out = body();
-        let _ = stack.borrow_mut().pop();
-        out
-    })
+    let _context = GpuLaunchContextGuard(GPU_LAUNCH_CONTEXT.replace(ctx));
+    body()
 }
 
 fn current_gpu_launch_context() -> GpuLaunchContext {
-    GPU_LAUNCH_CONTEXT_STACK
-        .with(|stack| stack.borrow().last().copied())
-        .unwrap_or_default()
+    GPU_LAUNCH_CONTEXT.get()
 }
 
 fn trace_gpu_kernel_launch_enabled() -> bool {
@@ -252,6 +300,13 @@ pub extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(data_bits: u64) -> u
 }
 
 fn parse_i64_launch_arg(_py: &PyToken, bits: u64, role: &str) -> Result<i64, u64> {
+    if obj_from_bits(bits).is_bool() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("GPU launch {role} must be a positive integer"),
+        ));
+    }
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
@@ -259,9 +314,21 @@ fn parse_i64_launch_arg(_py: &PyToken, bits: u64, role: &str) -> Result<i64, u64
             &format!("{role} must be an integer"),
         ));
     };
+    if value <= 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            &format!("GPU launch {role} must be positive"),
+        ));
+    }
     Ok(value)
 }
 
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
 unsafe fn try_object_attr_bits(
     _py: &PyToken,
     obj_bits: u64,
@@ -273,13 +340,7 @@ unsafe fn try_object_attr_bits(
     let out = molt_get_attr_name(obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
-        let exc_bits = molt_exception_last();
-        let kind_bits = molt_exception_kind(exc_bits);
-        let kind =
-            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
-        dec_ref_bits(_py, kind_bits);
-        if kind == "AttributeError" {
-            let _ = molt_exception_clear();
+        if clear_attribute_error_if_pending() {
             return Ok(None);
         }
         return Err(out);
@@ -288,13 +349,6 @@ unsafe fn try_object_attr_bits(
         return Ok(None);
     }
     Ok(Some(out))
-}
-
-unsafe fn gpu_kernel_callable_bits(_py: &PyToken, launcher_bits: u64) -> Result<u64, u64> {
-    if let Some(func_bits) = unsafe { try_object_attr_bits(_py, launcher_bits, b"_func")? } {
-        return Ok(func_bits);
-    }
-    Ok(launcher_bits)
 }
 
 #[cfg(any(
@@ -306,7 +360,11 @@ unsafe fn gpu_kernel_descriptor_bits(
     _py: &PyToken,
     callable_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    unsafe { try_object_attr_bits(_py, callable_bits, b"__molt_gpu_descriptor__") }
+    let bits = kernel_descriptor(callable_bits);
+    if exception_pending(_py) {
+        return Err(bits);
+    }
+    Ok((!obj_from_bits(bits).is_none()).then_some(bits))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
@@ -323,6 +381,9 @@ struct RuntimeWebGpuDevice {
     queue: wgpu::Queue,
     buffers: RuntimeWebGpuBufferRegistry,
     next_id: WgpuMutex<u64>,
+    // This invocation-owned device is never shared between guest launches.
+    // Callback failures remain sticky through its last readback/publication gate.
+    failure: WgpuArc<WgpuMutex<Option<String>>>,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
@@ -339,13 +400,65 @@ impl RuntimeWebGpuDevice {
                 .request_device(&wgpu::DeviceDescriptor::default())
                 .await
                 .map_err(|err| err.to_string())?;
+            let failure = WgpuArc::new(WgpuMutex::new(None));
+            let uncaptured = failure.clone();
+            device.on_uncaptured_error(WgpuArc::new(move |error: wgpu::Error| {
+                uncaptured
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .get_or_insert_with(|| format!("uncaptured WebGPU error: {error}"));
+            }));
+            let lost = failure.clone();
+            device.set_device_lost_callback(move |reason, message| {
+                lost.lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .get_or_insert_with(|| format!("WebGPU device lost ({reason:?}): {message}"));
+            });
             Ok(Self {
                 device,
                 queue,
+                failure,
                 buffers: WgpuArc::new(WgpuMutex::new(std::collections::HashMap::new())),
                 next_id: WgpuMutex::new(1),
             })
         })
+    }
+
+    fn check_failure(&self) -> Result<(), String> {
+        match self
+            .failure
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+        {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn checked<T>(
+        &self,
+        stage: &str,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.check_failure()?;
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let result = operation();
+        // Pop in reverse order even when operation returned an error. ErrorScopeGuard
+        // also pops on unwind; no retry or successful fallback follows an error.
+        let mut scoped_error = None;
+        for scope in [validation, memory, internal] {
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                scoped_error.get_or_insert_with(|| format!("WebGPU {stage}: {error}"));
+            }
+        }
+        self.check_failure()?;
+        if let Some(error) = scoped_error {
+            return Err(error);
+        }
+        result
     }
 
     fn compile_pipeline(
@@ -353,51 +466,53 @@ impl RuntimeWebGpuDevice {
         name: &str,
         source: &str,
     ) -> Result<WgpuArc<RuntimeWebGpuPipeline>, String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        if let Some(err) = pollster::block_on(scope.pop()) {
-            return Err(err.to_string());
-        }
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: None,
-                module: &shader,
-                entry_point: Some(name),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-        if let Some(err) = pollster::block_on(scope.pop()) {
-            return Err(err.to_string());
-        }
-        Ok(WgpuArc::new(RuntimeWebGpuPipeline { pipeline }))
+        self.checked("pipeline", || {
+            let shader = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                });
+            let pipeline = self
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some(name),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                });
+            Ok(WgpuArc::new(RuntimeWebGpuPipeline { pipeline }))
+        })
     }
 
-    fn alloc_buffer(&self, size_bytes: usize) -> (u64, wgpu::Buffer) {
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size_bytes as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+    fn alloc_buffer(&self, size_bytes: usize) -> Result<(u64, wgpu::Buffer), String> {
+        let buffer = self.checked("allocation", || {
+            if size_bytes as u64 > self.device.limits().max_buffer_size {
+                return Err("WebGPU buffer exceeds device max_buffer_size".into());
+            }
+            Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: size_bytes as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }))
+        })?;
         let mut next_id = self.next_id.lock().unwrap();
         let id = *next_id;
         *next_id += 1;
         self.buffers.lock().unwrap().insert(id, buffer.clone());
-        (id, buffer)
+        Ok((id, buffer))
     }
 
-    fn copy_to_buffer(&self, buffer: &wgpu::Buffer, data: &[u8]) {
-        self.queue.write_buffer(buffer, 0, data);
+    fn copy_to_buffer(&self, buffer: &wgpu::Buffer, data: &[u8]) -> Result<(), String> {
+        self.checked("upload", || {
+            self.queue.write_buffer(buffer, 0, data);
+            Ok(())
+        })
     }
 
     fn copy_from_buffer(
@@ -405,34 +520,47 @@ impl RuntimeWebGpuDevice {
         buffer: &wgpu::Buffer,
         size_bytes: usize,
     ) -> Result<Vec<u8>, String> {
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("runtime_webgpu_staging"),
-            size: size_bytes as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size_bytes as u64);
-        self.queue.submit(Some(encoder.finish()));
-        let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = tx.send(res);
-        });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|err| err.to_string())?;
-        rx.recv()
-            .map_err(|_| "map channel dropped".to_string())?
-            .map_err(|err| err.to_string())?;
-        let mapped = slice.get_mapped_range().map_err(|err| err.to_string())?;
-        let mut out = vec![0u8; size_bytes];
-        out.copy_from_slice(&mapped[..size_bytes]);
-        drop(mapped);
-        staging.unmap();
-        Ok(out)
+        self.checked("readback", || {
+            // Dispatch has already established completion even for zero outputs.
+            if size_bytes == 0 {
+                return Ok(Vec::new());
+            }
+            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("runtime_webgpu_staging"),
+                size: size_bytes as u64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size_bytes as u64);
+            self.queue.submit(Some(encoder.finish()));
+            let slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |res| {
+                let _ = tx.send(res);
+            });
+            self.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|err| err.to_string())?;
+            rx.recv()
+                .map_err(|_| "map channel dropped".to_string())?
+                .map_err(|err| err.to_string())?;
+            let result = (|| {
+                let mapped = slice.get_mapped_range().map_err(|err| err.to_string())?;
+                if mapped.len() != size_bytes {
+                    return Err("WebGPU readback extent mismatch".into());
+                }
+                let mut out = Vec::new();
+                out.try_reserve_exact(size_bytes)
+                    .map_err(|_| "WebGPU host readback allocation failed".to_string())?;
+                out.extend_from_slice(&mapped);
+                Ok(out)
+            })();
+            staging.unmap();
+            result
+        })
     }
 
     fn dispatch(
@@ -441,43 +569,45 @@ impl RuntimeWebGpuDevice {
         grid: u32,
         buffers: &[&wgpu::Buffer],
     ) -> Result<(), String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline.pipeline);
-            if !buffers.is_empty() {
-                let layout = pipeline.pipeline.get_bind_group_layout(0);
-                let entries: Vec<wgpu::BindGroupEntry<'_>> = buffers
-                    .iter()
-                    .enumerate()
-                    .map(|(index, buffer)| wgpu::BindGroupEntry {
-                        binding: index as u32,
-                        resource: buffer.as_entire_binding(),
-                    })
-                    .collect();
-                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &layout,
-                    entries: &entries,
-                });
-                pass.set_bind_group(0, &bind_group, &[]);
+        self.checked("dispatch", || {
+            if grid > self.device.limits().max_compute_workgroups_per_dimension {
+                return Err("WebGPU grid exceeds device dispatch capability".into());
             }
-            pass.dispatch_workgroups(grid, 1, 1);
-        }
-        self.queue.submit(Some(encoder.finish()));
-        if let Some(err) = pollster::block_on(scope.pop()) {
-            return Err(err.to_string());
-        }
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|err| err.to_string())?;
-        Ok(())
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&pipeline.pipeline);
+                if !buffers.is_empty() {
+                    let layout = pipeline.pipeline.get_bind_group_layout(0);
+                    let entries: Vec<wgpu::BindGroupEntry<'_>> = buffers
+                        .iter()
+                        .enumerate()
+                        .map(|(index, buffer)| wgpu::BindGroupEntry {
+                            binding: index as u32,
+                            resource: buffer.as_entire_binding(),
+                        })
+                        .collect();
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout: &layout,
+                        entries: &entries,
+                    });
+                    pass.set_bind_group(0, &bind_group, &[]);
+                }
+                pass.dispatch_workgroups(grid, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
+            // Completion does not depend on there being any writable/readback bindings.
+            self.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|err| err.to_string())?;
+            Ok(())
+        })
     }
 }
 
@@ -486,12 +616,14 @@ impl RuntimeWebGpuDevice {
     all(target_os = "macos", feature = "metal-backend"),
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-#[derive(Clone)]
-struct RuntimeKernelBufferArg {
+struct RuntimeKernelBufferArg<'py> {
+    // Attribute lookup transfers this owner. Keep the selected bytes alive even
+    // if subsequent argument descriptors replace the source object's _data.
+    data: OwnedRuntimeValue<'py>,
     object_ptr: *mut u8,
-    data_bits: u64,
     original_format: String,
     size: usize,
+    float_elements: bool,
 }
 
 #[cfg(any(
@@ -499,9 +631,8 @@ struct RuntimeKernelBufferArg {
     all(target_os = "macos", feature = "metal-backend"),
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-#[derive(Clone)]
-enum RuntimeKernelArg {
-    Buffer(RuntimeKernelBufferArg),
+enum RuntimeKernelArg<'py> {
+    Buffer(RuntimeKernelBufferArg<'py>),
     Int(i64),
     Float(f64),
     Bool(bool),
@@ -531,6 +662,37 @@ struct RuntimeKernelDescriptor {
     name: String,
     params: Vec<String>,
     ops: Vec<RuntimeKernelOp>,
+    code_slot: u64,
+    query_bindings: Vec<RuntimeKernelQuery>,
+    requirements: Vec<JsonValue>,
+    python_bodies: BTreeMap<String, RuntimeKernelBody>,
+    numeric: JsonValue,
+    query_magnitude: u64,
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[derive(Clone)]
+struct RuntimeKernelBody {
+    symbol: String,
+    arity: u64,
+    code_slot: u64,
+    defaults: Vec<u64>,
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[derive(Clone)]
+struct RuntimeKernelQuery {
+    out: String,
+    path: Vec<String>,
+    conditional: bool,
 }
 
 #[cfg(any(
@@ -543,6 +705,12 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
     let obj = root
         .as_object()
         .ok_or_else(|| "kernel descriptor must be an object".to_string())?;
+    if obj.get("schema_version").and_then(JsonValue::as_u64) != Some(3) {
+        return Err("unsupported kernel descriptor schema".into());
+    }
+    if let Some(reason) = obj.get("unsupported").and_then(JsonValue::as_str) {
+        return Err(format!("hardware kernel capability unavailable: {reason}"));
+    }
     let kind = obj
         .get("kind")
         .and_then(JsonValue::as_str)
@@ -611,7 +779,116 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(RuntimeKernelDescriptor { name, params, ops })
+    let code_slot = obj
+        .get("code_slot")
+        .and_then(JsonValue::as_u64)
+        .ok_or("kernel descriptor lacks a code slot")?;
+    let query_bindings = obj
+        .get("query_bindings")
+        .and_then(JsonValue::as_array)
+        .ok_or("kernel lacks binding obligations")?
+        .iter()
+        .map(|binding| {
+            let out = binding
+                .get("out")
+                .and_then(JsonValue::as_str)
+                .ok_or("query lacks output")?
+                .to_string();
+            let path = binding
+                .get("path")
+                .and_then(JsonValue::as_array)
+                .ok_or("query lacks path")?
+                .iter()
+                .map(|name| {
+                    name.as_str()
+                        .map(str::to_string)
+                        .ok_or("query path is not a name")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let conditional = binding
+                .get("conditional")
+                .and_then(JsonValue::as_bool)
+                .ok_or("query lacks participation fact")?;
+            Ok(RuntimeKernelQuery {
+                out,
+                path,
+                conditional,
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let python_bodies = obj
+        .get("python_bodies")
+        .and_then(JsonValue::as_object)
+        .ok_or("kernel lacks Python body identities")?
+        .iter()
+        .map(|(role, body)| {
+            let symbol = body
+                .get("symbol")
+                .and_then(JsonValue::as_str)
+                .ok_or("Python body lacks executable symbol")?
+                .to_owned();
+            let arity = body
+                .get("arity")
+                .and_then(JsonValue::as_u64)
+                .ok_or("Python body lacks arity")?;
+            let code_slot = body
+                .get("code_slot")
+                .and_then(JsonValue::as_u64)
+                .ok_or("Python body lacks code slot")?;
+            let defaults = body
+                .get("defaults")
+                .and_then(JsonValue::as_array)
+                .ok_or("Python body lacks defaults")?
+                .iter()
+                .map(|value| {
+                    if value.is_null() {
+                        return Ok(MoltObject::none().bits());
+                    }
+                    if let Some(value) = value.as_bool() {
+                        return Ok(MoltObject::from_bool(value).bits());
+                    }
+                    let value = value.as_i64().ok_or("unsupported Python body default")?;
+                    // Reference defaults are small immediate integers; no
+                    // allocation or fallible guest conversion during admission.
+                    let bits = MoltObject::from_int(value).bits();
+                    if obj_from_bits(bits).as_int() != Some(value) {
+                        return Err("Python body default is not an immediate integer");
+                    }
+                    Ok(bits)
+                })
+                .collect::<Result<Vec<_>, &'static str>>()?;
+            Ok((
+                role.clone(),
+                RuntimeKernelBody {
+                    symbol,
+                    arity,
+                    code_slot,
+                    defaults,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, &'static str>>()?;
+    let requirements = obj
+        .get("requirements")
+        .and_then(JsonValue::as_array)
+        .ok_or("kernel lacks dynamic obligations")?
+        .clone();
+    let numeric = obj
+        .get("numeric")
+        .filter(|value| value.is_object())
+        .ok_or("kernel lacks its compiler numeric certificate")?
+        .clone();
+    Ok(RuntimeKernelDescriptor {
+        name,
+        params,
+        ops,
+        code_slot,
+        query_bindings,
+        requirements,
+        python_bodies,
+        numeric,
+        query_magnitude: 0,
+    })
 }
 
 fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
@@ -650,8 +927,34 @@ fn parse_usize_arg(_py: &PyToken, bits: u64, role: &str) -> Result<usize, u64> {
     all(target_os = "macos", feature = "metal-backend"),
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-fn kernel_arg_from_bits(_py: &PyToken, name: &str, bits: u64) -> Result<RuntimeKernelArg, u64> {
+fn kernel_arg_from_bits<'py>(
+    _py: &'py PyToken,
+    name: &str,
+    bits: u64,
+) -> Result<RuntimeKernelArg<'py>, u64> {
     let obj = obj_from_bits(bits);
+    let unsupported = || {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("GPU scalar parameter {name:?} requires an exact builtin numeric protocol"),
+        )
+    };
+    match exact_scalar_kind(bits) {
+        1 => {
+            return to_i64(obj)
+                .map(RuntimeKernelArg::Int)
+                .ok_or_else(unsupported);
+        }
+        2 => {
+            return to_f64(obj)
+                .map(RuntimeKernelArg::Float)
+                .ok_or_else(unsupported);
+        }
+        3 => return Ok(RuntimeKernelArg::Bool(obj.as_bool().unwrap_or(false))),
+        -1 => return Err(unsupported()),
+        _ => {}
+    }
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
         if type_id == TYPE_ID_TYPE {
@@ -663,83 +966,56 @@ fn kernel_arg_from_bits(_py: &PyToken, name: &str, bits: u64) -> Result<RuntimeK
         }
         let maybe_data_bits = unsafe { try_object_attr_bits(_py, bits, b"_data")? };
         if let Some(data_bits) = maybe_data_bits {
-            let format_bits =
-                unsafe { object_attr_bits(_py, bits, b"_format_char", "_format_char")? };
-            let size_bits = unsafe { object_attr_bits(_py, bits, b"_size", "_size")? };
-            let format = string_obj_to_owned(obj_from_bits(format_bits)).ok_or_else(|| {
+            let data = unsafe { OwnedRuntimeValue::from_owned_bits(_py, data_bits) };
+            let format = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    object_attr_bits(_py, bits, b"_format_char", "_format_char")?,
+                )
+            };
+            let size = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    object_attr_bits(_py, bits, b"_size", "_size")?,
+                )
+            };
+            let format = string_obj_to_owned(obj_from_bits(format.bits())).ok_or_else(|| {
                 raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
             })?;
-            let size = parse_usize_arg(_py, size_bits, "_size")?;
+            let size = parse_usize_arg(_py, size.bits(), "_size")?;
+            let scalar_format = scalar_format_from_text(&format).ok_or_else(|| {
+                raise_exception::<u64>(_py, "RuntimeError", "unsupported GPU buffer format")
+            })?;
+            let required_bytes = size.checked_mul(scalar_format.itemsize()).ok_or_else(|| {
+                raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "GPU buffer size exceeds address space",
+                )
+            })?;
+            let view = bytes_like_view(_py, data.bits(), "_data")?;
+            if view.len < required_bytes {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "GPU buffer payload is shorter than its declared size",
+                ));
+            }
+
             return Ok(RuntimeKernelArg::Buffer(RuntimeKernelBufferArg {
                 object_ptr: ptr,
-                data_bits,
+                data,
                 original_format: format,
                 size,
+                float_elements: false,
             }));
         }
-    }
-    if let Some(value) = to_i64(obj) {
-        return Ok(RuntimeKernelArg::Int(value));
-    }
-    if let Some(value) = to_f64(obj) {
-        return Ok(RuntimeKernelArg::Float(value));
-    }
-    if obj.is_bool() {
-        return Ok(RuntimeKernelArg::Bool(obj.as_bool().unwrap_or(false)));
     }
     Err(raise_exception::<_>(
         _py,
         "RuntimeError",
         &format!("unsupported gpu kernel argument for parameter {:?}", name),
     ))
-}
-
-#[cfg(all(target_os = "macos", feature = "metal-backend"))]
-fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), String> {
-    match format {
-        "f" | "d" => Ok(("float", 4)),
-        "q" => Ok(("int64_t", 8)),
-        _ => Err(format!(
-            "unsupported buffer format for metal backend: {format}"
-        )),
-    }
-}
-
-#[cfg(all(target_os = "macos", feature = "metal-backend"))]
-fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Vec<u8>), String> {
-    match arg {
-        RuntimeKernelArg::Int(v) => Ok(("int64_t", v.to_le_bytes().to_vec())),
-        RuntimeKernelArg::Float(v) => Ok(("float", (*v as f32).to_le_bytes().to_vec())),
-        RuntimeKernelArg::Bool(v) => Ok(("bool", vec![u8::from(*v)])),
-        RuntimeKernelArg::Buffer(_) => Err("buffer passed as scalar param".to_string()),
-    }
-}
-
-#[cfg(any(
-    all(target_os = "macos", feature = "metal-backend"),
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-))]
-fn buffer_host_bytes_for_gpu_compute(
-    _py: &PyToken,
-    arg: &RuntimeKernelBufferArg,
-) -> Result<Vec<u8>, String> {
-    let view = bytes_like_view(_py, arg.data_bits, "_data")
-        .map_err(|_| "buffer _data must be bytes-like".to_string())?;
-    let raw = unsafe { std::slice::from_raw_parts(view.ptr, view.len) };
-    match arg.original_format.as_str() {
-        "f" | "q" => Ok(raw.to_vec()),
-        "d" => {
-            let mut out = Vec::with_capacity(arg.size * 4);
-            for &chunk in raw.as_chunks::<8>().0 {
-                let val = f64::from_le_bytes(chunk);
-                out.extend_from_slice(&(val as f32).to_le_bytes());
-            }
-            Ok(out)
-        }
-        other => Err(format!(
-            "unsupported buffer format for metal backend: {other}"
-        )),
-    }
 }
 
 #[cfg(any(
@@ -784,53 +1060,6 @@ fn bytes_like_view_to_webgpu_bytes(
     encode_webgpu_buffer_bytes(raw, format)
 }
 
-#[cfg(target_arch = "wasm32")]
-fn buffer_host_bytes_for_webgpu_compute(
-    _py: &PyToken,
-    arg: &RuntimeKernelBufferArg,
-) -> Result<Vec<u8>, String> {
-    let view = bytes_like_view(_py, arg.data_bits, "_data")
-        .map_err(|_| "buffer _data must be bytes-like".to_string())?;
-    let format = scalar_format_from_text(arg.original_format.as_str()).ok_or_else(|| {
-        format!(
-            "unsupported buffer format for webgpu backend: {}",
-            arg.original_format
-        )
-    })?;
-    bytes_like_view_to_webgpu_bytes(view, format)
-}
-
-#[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "metal-backend"),
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-))]
-fn copy_gpu32_output_back_to_buffer(
-    _py: &PyToken,
-    arg: &RuntimeKernelBufferArg,
-    gpu_output: &[u8],
-) -> Result<(), u64> {
-    let format = scalar_format_from_text(arg.original_format.as_str()).ok_or_else(|| {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            &format!(
-                "unsupported buffer format for gpu output: {}",
-                arg.original_format
-            ),
-        )
-    })?;
-    let rebuilt = rebuild_host_bytes_from_gpu32_output(_py, format, arg.size, gpu_output)?;
-    let data_ptr = alloc_bytearray(_py, rebuilt.as_slice());
-    if data_ptr.is_null() {
-        return Err(MoltObject::none().bits());
-    }
-    let data_bits = MoltObject::from_ptr(data_ptr).bits();
-    unsafe { set_object_attr_bytes(_py, arg.object_ptr, b"_data", "_data", data_bits)? };
-    dec_ref_bits(_py, data_bits);
-    Ok(())
-}
-
 #[cfg(any(
     target_arch = "wasm32",
     all(target_os = "macos", feature = "metal-backend"),
@@ -868,358 +1097,201 @@ fn rebuild_host_bytes_from_gpu32_output(
 
 #[cfg(any(
     target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-fn webgpu_scalar_bytes_for_arg(arg: &RuntimeKernelArg) -> Result<Vec<u8>, String> {
-    match arg {
-        RuntimeKernelArg::Int(v) => Ok((*v as i32).to_le_bytes().to_vec()),
-        RuntimeKernelArg::Float(v) => Ok((*v as f32).to_le_bytes().to_vec()),
-        RuntimeKernelArg::Bool(v) => Ok(u32::from(*v).to_le_bytes().to_vec()),
-        RuntimeKernelArg::Buffer(_) => Err("buffer passed as scalar param".to_string()),
-    }
+#[derive(Clone, Copy)]
+enum KernelShaderDialect {
+    #[cfg(all(target_os = "macos", feature = "metal-backend"))]
+    Metal,
+    #[cfg(any(target_arch = "wasm32", feature = "webgpu-backend"))]
+    Wgsl,
 }
 
-#[cfg(all(target_os = "macos", feature = "metal-backend"))]
-fn render_metal_source(
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+fn render_kernel_source(
     desc: &RuntimeKernelDescriptor,
-    args: &BTreeMap<String, RuntimeKernelArg>,
-) -> Result<RenderedKernelSource, String> {
-    let mut write_buffers = BTreeSet::new();
-    let mut read_buffers = BTreeSet::new();
-    for op in &desc.ops {
-        match op.kind.as_str() {
-            "index" => {
-                if let Some(name) = op.args.first() {
-                    read_buffers.insert(name.clone());
-                }
-            }
-            "store_index" => {
-                if let Some(name) = op.args.first() {
-                    write_buffers.insert(name.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut source = String::from("#include <metal_stdlib>\nusing namespace metal;\n\n");
-    source.push_str(&format!("kernel void {}(\n", desc.name));
-
-    let mut buffer_names = Vec::new();
-    let mut scalar_names = Vec::new();
-    let mut param_lines = Vec::new();
-    let mut binding_index = 0usize;
-    for name in &desc.params {
-        match args.get(name) {
-            Some(RuntimeKernelArg::Buffer(buf)) => {
-                let (ty, _) = metal_scalar_type_for_buffer(buf.original_format.as_str())?;
-                let qualifier = if write_buffers.contains(name) {
-                    "device"
-                } else {
-                    "device const"
-                };
-                param_lines.push(format!(
-                    "    {qualifier} {ty}* {name} [[buffer({binding_index})]]"
-                ));
-                buffer_names.push(name.clone());
-                binding_index += 1;
-            }
-            Some(arg) => {
-                let (ty, _) = metal_scalar_type_for_arg(arg)?;
-                param_lines.push(format!(
-                    "    constant {ty}& {name} [[buffer({binding_index})]]"
-                ));
-                scalar_names.push(name.clone());
-                binding_index += 1;
-            }
-            None => return Err(format!("missing kernel arg for parameter {name}")),
-        }
-    }
-    param_lines.push("    uint tid [[thread_position_in_grid]]".to_string());
-    source.push_str(&param_lines.join(",\n"));
-    source.push_str("\n) {\n");
-
-    let mut exprs: BTreeMap<String, String> = BTreeMap::new();
-    let mut if_stack: Vec<String> = Vec::new();
-    for op in &desc.ops {
-        match op.kind.as_str() {
-            "missing" | "line" | "const_none" | "ret" => {}
-            "store_var" => {
-                if let (Some(var), Some(src)) = (op.var.as_ref(), op.args.first()) {
-                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
-                    exprs.insert(var.clone(), src_expr);
-                }
-            }
-            "load_var" => {
-                if let (Some(out), Some(var)) = (op.out.as_ref(), op.var.as_ref()) {
-                    let src = exprs.get(var).cloned().unwrap_or_else(|| var.clone());
-                    exprs.insert(out.clone(), src);
-                }
-            }
-            "gpu_thread_id" => {
-                if let Some(out) = op.out.as_ref() {
-                    exprs.insert(out.clone(), "tid".to_string());
-                }
-            }
-            "const" => {
-                if let Some(out) = op.out.as_ref() {
-                    let value = op
-                        .value
-                        .ok_or_else(|| "const op missing value".to_string())?;
-                    exprs.insert(out.clone(), value.to_string());
-                }
-            }
-            "lt" | "add" | "sub" | "mul" | "div" => {
-                if let (Some(out), Some(lhs), Some(rhs)) =
-                    (op.out.as_ref(), op.args.first(), op.args.get(1))
-                {
-                    let lhs_expr = exprs.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
-                    let rhs_expr = exprs.get(rhs).cloned().unwrap_or_else(|| rhs.clone());
-                    let op_str = match op.kind.as_str() {
-                        "lt" => "<",
-                        "add" => "+",
-                        "sub" => "-",
-                        "mul" => "*",
-                        "div" => "/",
-                        _ => unreachable!(),
-                    };
-                    source.push_str(&format!(
-                        "    auto {out} = {lhs_expr} {op_str} {rhs_expr};\n"
-                    ));
-                    exprs.insert(out.clone(), out.clone());
-                }
-            }
-            "index" => {
-                if let (Some(out), Some(buf), Some(idx)) =
-                    (op.out.as_ref(), op.args.first(), op.args.get(1))
-                {
-                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
-                    source.push_str(&format!("    auto {out} = {buf}[{idx_expr}];\n"));
-                    exprs.insert(out.clone(), out.clone());
-                }
-            }
-            "if" => {
-                if let Some(cond_name) = op.args.first() {
-                    let cond_expr = exprs
-                        .get(cond_name)
-                        .cloned()
-                        .unwrap_or_else(|| cond_name.clone());
-                    source.push_str(&format!("    if ({cond_expr}) {{\n"));
-                    if_stack.push(cond_expr);
-                }
-            }
-            "end_if" => {
-                if if_stack.pop().is_some() {
-                    source.push_str("    }\n");
-                }
-            }
-            "store_index" => {
-                if let (Some(buf), Some(idx), Some(src)) =
-                    (op.args.first(), op.args.get(1), op.args.get(2))
-                {
-                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
-                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
-                    source.push_str(&format!("        {buf}[{idx_expr}] = {src_expr};\n"));
-                }
-            }
-            other => return Err(format!("unsupported metal kernel op: {other}")),
-        }
-    }
-    while if_stack.pop().is_some() {
-        source.push_str("    }\n");
-    }
-    source.push_str("}\n");
-    Ok((
-        source,
-        buffer_names,
-        scalar_names,
-        write_buffers.into_iter().collect(),
-    ))
-}
-
-#[cfg(any(
-    target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-))]
-fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
-    match format {
-        "f" | "d" => Ok("f32"),
-        "q" => Ok("i32"),
-        _ => Err(format!(
-            "unsupported buffer format for webgpu backend: {format}"
-        )),
-    }
-}
-
-/// A rendered kernel: shader source, bound buffer names, scalar argument
-/// names, and the buffers the kernel writes. Shared by every GPU renderer.
-#[cfg(any(
-    target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend"),
-    all(target_os = "macos", feature = "metal-backend")
-))]
-type RenderedKernelSource = (String, Vec<String>, Vec<String>, Vec<String>);
-
-#[cfg(any(
-    target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-))]
-fn render_webgpu_source(
-    desc: &RuntimeKernelDescriptor,
-    args: &BTreeMap<String, RuntimeKernelArg>,
-    workgroup_size: u32,
-) -> Result<RenderedKernelSource, String> {
-    let mut write_buffers = BTreeSet::new();
-    for op in &desc.ops {
-        if op.kind == "store_index"
-            && let Some(name) = op.args.first()
-        {
-            write_buffers.insert(name.clone());
-        }
-    }
-
+    plan: &KernelStoragePlan,
+    grid: i64,
+    threads: i64,
+    dialect: KernelShaderDialect,
+) -> Result<String, String> {
+    let metal = match dialect {
+        #[cfg(all(target_os = "macos", feature = "metal-backend"))]
+        KernelShaderDialect::Metal => true,
+        #[cfg(any(target_arch = "wasm32", feature = "webgpu-backend"))]
+        KernelShaderDialect::Wgsl => false,
+    };
     let mut source = String::new();
-    let mut buffer_names = Vec::new();
-    let mut scalar_names = Vec::new();
-    let mut binding = 0usize;
-    for name in &desc.params {
-        match args.get(name) {
-            Some(RuntimeKernelArg::Buffer(buf)) => {
-                let ty = webgpu_scalar_type_for_buffer(buf.original_format.as_str())?;
-                let access = if write_buffers.contains(name) {
-                    "read_write"
-                } else {
-                    "read"
-                };
-                source.push_str(&format!(
-                    "@group(0) @binding({binding}) var<storage, {access}> {name}: array<{ty}>;\n"
-                ));
-                buffer_names.push(name.clone());
-                binding += 1;
-            }
-            Some(_) => {
-                let ty = match args.get(name).expect("scalar arg missing") {
-                    RuntimeKernelArg::Int(_) => "i32",
-                    RuntimeKernelArg::Float(_) => "f32",
-                    RuntimeKernelArg::Bool(_) => "u32",
-                    RuntimeKernelArg::Buffer(_) => unreachable!(),
-                };
-                source.push_str(&format!(
-                    "@group(0) @binding({binding}) var<storage, read> {name}: array<{ty}>;\n"
-                ));
-                scalar_names.push(name.clone());
-                binding += 1;
-            }
-            None => return Err(format!("missing kernel arg for parameter {name}")),
+    let mut headers = Vec::new();
+    for index in 0..plan.binding_count() {
+        let name = format!("molt_binding_{index}");
+        let flag = index >= plan.groups.len();
+        let writable = plan.writable(index);
+        if metal {
+            let ty = if flag { "atomic_uint" } else { "int" };
+            let qualifier = if writable { "device" } else { "device const" };
+            headers.push(format!("    {qualifier} {ty}* {name} [[buffer({index})]]"));
+        } else {
+            let ty = if flag { "atomic<u32>" } else { "i32" };
+            let access = if writable { "read_write" } else { "read" };
+            source.push_str(&format!(
+                "@group(0) @binding({index}) var<storage, {access}> {name}: array<{ty}>;\n"
+            ));
         }
     }
-    source.push_str(&format!(
-        "\n@compute @workgroup_size({workgroup_size})\nfn {}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n",
-        desc.name
-    ));
-    source.push_str("    let tid = i32(gid.x);\n");
-
-    let mut exprs = BTreeMap::new();
-    for name in &scalar_names {
-        exprs.insert(name.clone(), format!("{name}[0]"));
+    if metal {
+        source.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+        headers.push("    uint molt_raw_tid [[thread_position_in_grid]]".to_string());
+        source.push_str(&format!(
+            "kernel void {}(\n{}\n) {{\n    const int molt_tid = int(molt_raw_tid);\n",
+            desc.name,
+            headers.join(",\n")
+        ));
+    } else {
+        source.push_str(&format!("\n@compute @workgroup_size({threads})\nfn {}(@builtin(global_invocation_id) molt_gid: vec3<u32>) {{\n    let molt_tid = i32(molt_gid.x);\n", desc.name));
     }
-    let mut if_depth = 0usize;
-    for op in &desc.ops {
+    for group in &plan.groups {
+        if let Some(flag) = group.store_flag {
+            source.push_str(&if metal {
+                format!("    bool molt_dirty_{flag} = false;\n")
+            } else {
+                format!("    var molt_dirty_{flag}: bool = false;\n")
+            });
+        }
+    }
+    let mut exprs = BTreeMap::new();
+    for (name, &index) in &plan.bindings {
+        let value = if plan.groups[index].format.is_some() {
+            format!("molt_binding_{index}")
+        } else {
+            format!("molt_binding_{index}[0]")
+        };
+        exprs.insert(name.clone(), value);
+    }
+    let mut depth = 0usize;
+    for (ordinal, op) in desc.ops.iter().enumerate() {
+        let lookup = |name: &str| {
+            exprs
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("GPU operand has no admitted definition: {name}"))
+        };
+        let operand = |index: usize| {
+            op.args
+                .get(index)
+                .ok_or_else(|| format!("GPU {} operand missing", op.kind))
+                .and_then(|name| lookup(name))
+        };
+        let output = || {
+            op.out
+                .as_ref()
+                .ok_or_else(|| format!("GPU {} output missing", op.kind))
+        };
         match op.kind.as_str() {
-            "missing" | "line" | "const_none" | "ret" => {}
             "store_var" => {
-                if let (Some(var), Some(src)) = (op.var.as_ref(), op.args.first()) {
-                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
-                    exprs.insert(var.clone(), src_expr);
-                }
+                let value = operand(0)?;
+                exprs.insert(
+                    op.var.clone().ok_or("GPU variable store lacks target")?,
+                    value,
+                );
             }
             "load_var" => {
-                if let (Some(out), Some(var)) = (op.out.as_ref(), op.var.as_ref()) {
-                    let src_expr = exprs.get(var).cloned().unwrap_or_else(|| var.clone());
-                    exprs.insert(out.clone(), src_expr);
-                }
+                let value = lookup(op.var.as_ref().ok_or("GPU variable load lacks target")?)?;
+                exprs.insert(output()?.clone(), value);
             }
-            "gpu_thread_id" => {
-                if let Some(out) = op.out.as_ref() {
-                    exprs.insert(out.clone(), "tid".to_string());
-                }
+            "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
+                let value = match op.kind.as_str() {
+                    "gpu_thread_id" => "molt_tid".to_string(),
+                    "gpu_block_id" => format!("(molt_tid / {threads})"),
+                    "gpu_block_dim" => threads.to_string(),
+                    _ => grid.to_string(),
+                };
+                exprs.insert(output()?.clone(), value);
             }
+            "gpu_barrier" => source.push_str(if metal {
+                "    threadgroup_barrier(mem_flags::mem_device);\n"
+            } else {
+                "    storageBarrier();\n    workgroupBarrier();\n"
+            }),
             "const" => {
-                if let Some(out) = op.out.as_ref() {
-                    let value = op
-                        .value
-                        .ok_or_else(|| "const op missing value".to_string())?;
-                    exprs.insert(out.clone(), value.to_string());
-                }
+                exprs.insert(
+                    output()?.clone(),
+                    op.value.ok_or("GPU constant lacks value")?.to_string(),
+                );
             }
-            "lt" | "add" | "sub" | "mul" | "div" => {
-                if let (Some(out), Some(lhs), Some(rhs)) =
-                    (op.out.as_ref(), op.args.first(), op.args.get(1))
-                {
-                    let lhs_expr = exprs.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
-                    let rhs_expr = exprs.get(rhs).cloned().unwrap_or_else(|| rhs.clone());
-                    let op_str = match op.kind.as_str() {
-                        "lt" => "<",
-                        "add" => "+",
-                        "sub" => "-",
-                        "mul" => "*",
-                        "div" => "/",
-                        _ => unreachable!(),
-                    };
-                    source.push_str(&format!(
-                        "    let {out} = {lhs_expr} {op_str} {rhs_expr};\n"
-                    ));
-                    exprs.insert(out.clone(), out.clone());
-                }
-            }
-            "index" => {
-                if let (Some(out), Some(buf), Some(idx)) =
-                    (op.out.as_ref(), op.args.first(), op.args.get(1))
-                {
-                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
-                    source.push_str(&format!("    let {out} = {buf}[{idx_expr}];\n"));
-                    exprs.insert(out.clone(), out.clone());
-                }
+            "lt" | "add" | "sub" | "mul" | "index" => {
+                let lhs = operand(0)?;
+                let rhs = operand(1)?;
+                let expression = if op.kind == "index" {
+                    format!("{lhs}[{rhs}]")
+                } else {
+                    format!(
+                        "{lhs} {} {rhs}",
+                        match op.kind.as_str() {
+                            "lt" => "<",
+                            "add" => "+",
+                            "sub" => "-",
+                            "mul" => "*",
+                            _ => unreachable!(),
+                        }
+                    )
+                };
+                let name = format!("molt_value_{ordinal}");
+                // Loads are real SSA definitions, never deferred expressions:
+                // later aliased writes must not change a previously loaded value.
+                source.push_str(&format!(
+                    "    {} {name} = {expression};\n",
+                    if metal { "const auto" } else { "let" }
+                ));
+                exprs.insert(output()?.clone(), name);
             }
             "if" => {
-                if let Some(cond_name) = op.args.first() {
-                    let cond_expr = exprs
-                        .get(cond_name)
-                        .cloned()
-                        .unwrap_or_else(|| cond_name.clone());
-                    source.push_str(&format!("    if ({cond_expr}) {{\n"));
-                    if_depth += 1;
-                }
+                source.push_str(&format!("    if ({}) {{\n", operand(0)?));
+                depth += 1;
             }
             "end_if" => {
-                if if_depth > 0 {
-                    if_depth -= 1;
-                    source.push_str("    }\n");
-                }
+                depth = depth.checked_sub(1).ok_or("GPU unbalanced branch")?;
+                source.push_str("    }\n");
             }
             "store_index" => {
-                if let (Some(buf), Some(idx), Some(src)) =
-                    (op.args.first(), op.args.get(1), op.args.get(2))
-                {
-                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
-                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
-                    source.push_str(&format!("        {buf}[{idx_expr}] = {src_expr};\n"));
+                let buffer = op.args.first().ok_or("GPU store lacks buffer")?;
+                let index = *plan
+                    .bindings
+                    .get(buffer)
+                    .ok_or("GPU store has no physical binding")?;
+                source.push_str(&format!(
+                    "        {}[{}] = {};\n",
+                    operand(0)?,
+                    operand(1)?,
+                    operand(2)?
+                ));
+                if let Some(flag) = plan.groups[index].store_flag {
+                    source.push_str(&format!("        molt_dirty_{flag} = true;\n"));
                 }
             }
-            other => return Err(format!("unsupported webgpu kernel op: {other}")),
+            other => return Err(format!("unsupported projected GPU operation: {other}")),
         }
     }
-    while if_depth > 0 {
-        if_depth -= 1;
-        source.push_str("    }\n");
+    if depth != 0 {
+        return Err("GPU branch has no normal exit".to_string());
+    }
+    let flag_binding = plan.groups.len();
+    // One relaxed publication per participating invocation/COW group, never
+    // an atomic per element and never a racy non-atomic multiwriter flag.
+    for group in &plan.groups {
+        if let Some(flag) = group.store_flag {
+            source.push_str(&if metal {
+                format!("    if (molt_dirty_{flag}) {{ atomic_store_explicit(&molt_binding_{flag_binding}[{flag}], 1u, memory_order_relaxed); }}\n")
+            } else { format!("    if (molt_dirty_{flag}) {{ atomicStore(&molt_binding_{flag_binding}[{flag}], 1u); }}\n") });
+        }
     }
     source.push_str("}\n");
-    Ok((
-        source,
-        buffer_names,
-        scalar_names,
-        write_buffers.into_iter().collect(),
-    ))
+    Ok(source)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1623,6 +1695,18 @@ struct RuntimeMetalDevice {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
+fn require_metal_completed(
+    status: MTLCommandBufferStatus,
+    error: impl FnOnce() -> Option<String>,
+) -> Result<(), String> {
+    if status == MTLCommandBufferStatus::Completed {
+        return Ok(());
+    }
+    let detail = error().unwrap_or_else(|| format!("terminal status {status:?}"));
+    Err(format!("Metal command execution failed: {detail}"))
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 impl RuntimeMetalDevice {
     fn new() -> Result<Self, String> {
         let device =
@@ -1668,17 +1752,27 @@ impl RuntimeMetalDevice {
             .ok_or_else(|| format!("Metal buffer allocation of {size_bytes} bytes failed"))
     }
 
-    fn copy_to_buffer(&self, buffer: &MetalBuffer, data: &[u8]) {
+    fn copy_to_buffer(&self, buffer: &MetalBuffer, data: &[u8]) -> Result<(), String> {
+        if data.len() > buffer.length() {
+            return Err("Metal upload exceeds buffer allocation".into());
+        }
         let contents = buffer.contents().as_ptr().cast::<u8>();
         // SAFETY: the shared-mode buffer is CPU-visible for its whole lifetime,
         // and every caller allocated it for at least `data.len()` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
         }
+        Ok(())
     }
 
-    fn copy_from_buffer(&self, buffer: &MetalBuffer, size_bytes: usize) -> Vec<u8> {
-        let mut out = vec![0u8; size_bytes];
+    fn copy_from_buffer(&self, buffer: &MetalBuffer, size_bytes: usize) -> Result<Vec<u8>, String> {
+        if size_bytes > buffer.length() {
+            return Err("Metal readback exceeds buffer allocation".into());
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(size_bytes)
+            .map_err(|_| "Metal host readback allocation failed".to_string())?;
+        out.resize(size_bytes, 0);
         let contents = buffer.contents().as_ptr().cast::<u8>().cast_const();
         // SAFETY: the shared-mode buffer is CPU-visible for its whole lifetime;
         // `dispatch` waited for the command buffer, so every GPU write landed,
@@ -1686,15 +1780,19 @@ impl RuntimeMetalDevice {
         unsafe {
             std::ptr::copy_nonoverlapping(contents, out.as_mut_ptr(), size_bytes);
         }
-        out
+        Ok(out)
     }
 
     fn dispatch(
         &self,
         pipeline: &Arc<RuntimeMetalPipeline>,
         grid_threads: usize,
+        group_threads: usize,
         buffers: &[&MetalBuffer],
     ) -> Result<(), String> {
+        if group_threads == 0 || group_threads > pipeline.pipeline.maxTotalThreadsPerThreadgroup() {
+            return Err("Metal launch workgroup exceeds pipeline capability".into());
+        }
         let command_buffer = self
             .command_queue
             .commandBuffer()
@@ -1715,7 +1813,7 @@ impl RuntimeMetalDevice {
                 depth: 1,
             },
             MTLSize {
-                width: 1,
+                width: group_threads,
                 height: 1,
                 depth: 1,
             },
@@ -1723,46 +1821,59 @@ impl RuntimeMetalDevice {
         encoder.endEncoding();
         command_buffer.commit();
         command_buffer.waitUntilCompleted();
-        Ok(())
+        require_metal_completed(command_buffer.status(), || {
+            command_buffer
+                .error()
+                .map(|error| error.localizedDescription().to_string())
+        })
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-fn try_dispatch_metal_kernel(
+fn dispatch_metal_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::Metal) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] metal");
     }
+    let total_threads = grid
+        .checked_mul(threads)
+        .and_then(|total| usize::try_from(total).ok())
+        .ok_or_else(|| {
+            raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "Metal launch geometry is not representable",
+            )
+        })?;
     let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
         Ok(Some(bits)) => bits,
         Ok(None) => {
             return Err(raise_exception::<_>(
                 _py,
                 "RuntimeError",
-                "metal gpu backend requires __molt_gpu_descriptor__ metadata",
+                "metal gpu backend requires compiler-published code descriptor metadata",
             ));
         }
         Err(err) => return Err(err),
     };
-    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
-        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
-    })?;
-    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+    let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
+    let descriptor_json =
+        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+        })?;
+    let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { bound_kernel_arguments(_py, callable_bits, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<_>(
             _py,
@@ -1772,138 +1883,128 @@ fn try_dispatch_metal_kernel(
     }
     let mut args_map = BTreeMap::new();
     for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
-        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        if descriptor.ops.iter().any(|op| op.args.contains(name)) {
+            args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        }
     }
-    let (source, buffer_names, scalar_names, output_buffers) =
-        render_metal_source(&descriptor, &args_map).map_err(|msg| {
-            raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                &format!("metal kernel render failed: {msg}"),
-            )
-        })?;
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
+    let _admitted_bindings = descriptor_admission::admit(
+        _py,
+        callable_bits,
+        descriptor_bits,
+        &mut descriptor,
+        &mut args_map,
+        grid,
+        threads,
+    )?;
+    let mut plan = KernelStoragePlan::capture(_py, &descriptor, &args_map, &prepared_outputs)?;
+    let source = render_kernel_source(
+        &descriptor,
+        &plan,
+        grid,
+        threads,
+        KernelShaderDialect::Metal,
+    )
+    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
     let device = RuntimeMetalDevice::new()
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
     let pipeline = device
         .compile_pipeline(&descriptor.name, &source)
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-
-    let mut owned_buffers: Vec<MetalBuffer> = Vec::new();
-    let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
-    for name in &buffer_names {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "expected buffer arg",
-            ));
-        };
-        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+    let mut owned_buffers = Vec::new();
+    for index in 0..plan.binding_count() {
+        let bytes = plan.bytes(index);
+        let buffer = device
+            .alloc_buffer(bytes.len())
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let metal_buf = device
-            .alloc_buffer(host_bytes.len())
+        device
+            .copy_to_buffer(&buffer, bytes)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        if !host_bytes.is_empty() {
-            device.copy_to_buffer(&metal_buf, &host_bytes);
-        }
-        buffer_index_map.insert(name.clone(), owned_buffers.len());
-        owned_buffers.push(metal_buf);
-    }
-    for name in &scalar_names {
-        let arg = args_map.get(name).expect("scalar arg missing");
-        let (_, scalar_bytes) = metal_scalar_type_for_arg(arg)
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let metal_buf = device
-            .alloc_buffer(scalar_bytes.len())
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        if !scalar_bytes.is_empty() {
-            device.copy_to_buffer(&metal_buf, &scalar_bytes);
-        }
-        owned_buffers.push(metal_buf);
+        owned_buffers.push(buffer);
     }
     let refs: Vec<&MetalBuffer> = owned_buffers.iter().collect();
     device
-        .dispatch(&pipeline, (grid.saturating_mul(threads)) as usize, &refs)
+        .dispatch(&pipeline, total_threads, threads as usize, &refs)
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-
-    for name in &output_buffers {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing")
-        else {
-            continue;
-        };
-        let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
-        let output_size = match buf.original_format.as_str() {
-            "f" => buf.size * 4,
-            "d" => buf.size * 4,
-            "q" => buf.size * 8,
-            other => {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "RuntimeError",
-                    &format!("unsupported output buffer format for metal backend: {other}"),
-                ));
-            }
-        };
-        let gpu_output = device.copy_from_buffer(&owned_buffers[buffer_idx], output_size);
-        copy_gpu32_output_back_to_buffer(_py, buf, &gpu_output)?;
+    let mut outputs = BTreeMap::new();
+    for index in 0..plan.binding_count() {
+        if plan.writable(index) {
+            outputs.insert(
+                index,
+                device
+                    .copy_from_buffer(&owned_buffers[index], plan.bytes(index).len())
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+            );
+        }
     }
-    Ok(Some(MoltObject::none().bits()))
+    plan.publish(_py, &outputs, &args_map)?;
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
-fn try_dispatch_metal_kernel(
+fn dispatch_metal_kernel(
     _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
     _builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() == Some(GpuBackend::Metal) {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "metal gpu backend requested but molt-gpu was built without metal-backend",
-        ));
-    }
-    Ok(None)
+) -> Result<u64, u64> {
+    Err(raise_exception::<_>(
+        _py,
+        "RuntimeError",
+        "metal gpu backend requested but molt-gpu was built without metal-backend",
+    ))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] webgpu");
     }
+    let grid = u32::try_from(grid).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "WebGPU grid exceeds unsigned 32-bit geometry",
+        )
+    })?;
+    let threads = u32::try_from(threads).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "WebGPU threads exceeds unsigned 32-bit geometry",
+        )
+    })?;
     let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
         Ok(Some(bits)) => bits,
         Ok(None) => {
             return Err(raise_exception::<u64>(
                 _py,
                 "RuntimeError",
-                "webgpu backend requires __molt_gpu_descriptor__ metadata",
+                "webgpu backend requires compiler-published code descriptor metadata",
             ));
         }
         Err(err) => return Err(err),
     };
-    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
-        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
-    })?;
-    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+    let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
+    let descriptor_json =
+        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+        })?;
+    let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { bound_kernel_arguments(_py, callable_bits, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
@@ -1913,116 +2014,114 @@ fn try_dispatch_webgpu_kernel(
     }
     let mut args_map = BTreeMap::new();
     for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
-        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        if descriptor.ops.iter().any(|op| op.args.contains(name)) {
+            args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        }
     }
-    let (source, buffer_names, scalar_names, output_buffers) =
-        render_webgpu_source(&descriptor, &args_map, threads as u32).map_err(|msg| {
-            raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                &format!("webgpu kernel render failed: {msg}"),
-            )
-        })?;
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
+    let _admitted_bindings = descriptor_admission::admit(
+        _py,
+        callable_bits,
+        descriptor_bits,
+        &mut descriptor,
+        &mut args_map,
+        grid as i64,
+        threads as i64,
+    )?;
+    let mut plan = KernelStoragePlan::capture(_py, &descriptor, &args_map, &prepared_outputs)?;
+    let source = render_kernel_source(
+        &descriptor,
+        &plan,
+        i64::from(grid),
+        i64::from(threads),
+        KernelShaderDialect::Wgsl,
+    )
+    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
     let device = RuntimeWebGpuDevice::new()
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
     let pipeline = device
         .compile_pipeline(&descriptor.name, &source)
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-
-    let mut owned_buffers: Vec<wgpu::Buffer> = Vec::new();
-    let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
-    for name in &buffer_names {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "expected buffer arg",
-            ));
-        };
-        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+    let mut owned_buffers = Vec::new();
+    for index in 0..plan.binding_count() {
+        let bytes = plan.bytes(index);
+        let (_, buffer) = device
+            .alloc_buffer(bytes.len())
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let (_, gpu_buf) = device.alloc_buffer(host_bytes.len().max(1));
-        if !host_bytes.is_empty() {
-            device.copy_to_buffer(&gpu_buf, &host_bytes);
-        }
-        buffer_index_map.insert(name.clone(), owned_buffers.len());
-        owned_buffers.push(gpu_buf);
-    }
-    for name in &scalar_names {
-        let arg = args_map.get(name).expect("scalar arg missing");
-        let scalar_bytes = webgpu_scalar_bytes_for_arg(arg)
+        device
+            .copy_to_buffer(&buffer, bytes)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let (_, gpu_buf) = device.alloc_buffer(scalar_bytes.len().max(1));
-        device.copy_to_buffer(&gpu_buf, &scalar_bytes);
-        owned_buffers.push(gpu_buf);
+        owned_buffers.push(buffer);
     }
     let refs: Vec<&wgpu::Buffer> = owned_buffers.iter().collect();
     device
-        .dispatch(&pipeline, grid as u32, &refs)
+        .dispatch(&pipeline, grid, &refs)
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-
-    for name in &output_buffers {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing")
-        else {
-            continue;
-        };
-        let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
-        let output_size = match buf.original_format.as_str() {
-            "f" => buf.size * 4,
-            "d" => buf.size * 4,
-            "q" => buf.size * 4,
-            other => {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "RuntimeError",
-                    &format!("unsupported output buffer format for webgpu backend: {other}"),
-                ));
-            }
-        };
-        let gpu_output = device
-            .copy_from_buffer(&owned_buffers[buffer_idx], output_size)
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        copy_gpu32_output_back_to_buffer(_py, buf, &gpu_output)?;
+    let mut outputs = BTreeMap::new();
+    for index in 0..plan.binding_count() {
+        if plan.writable(index) {
+            let bytes = device
+                .copy_from_buffer(&owned_buffers[index], plan.bytes(index).len())
+                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+            outputs.insert(index, bytes);
+        }
     }
-    Ok(Some(MoltObject::none().bits()))
+    device
+        .check_failure()
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    plan.publish(_py, &outputs, &args_map)?;
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(target_arch = "wasm32")]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] webgpu");
     }
+    let grid = u32::try_from(grid).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "WebGPU grid exceeds unsigned 32-bit geometry",
+        )
+    })?;
+    let threads = u32::try_from(threads).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "WebGPU threads exceeds unsigned 32-bit geometry",
+        )
+    })?;
     let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
         Ok(Some(bits)) => bits,
         Ok(None) => {
             return Err(raise_exception::<u64>(
                 _py,
                 "RuntimeError",
-                "webgpu backend requires __molt_gpu_descriptor__ metadata",
+                "webgpu backend requires compiler-published code descriptor metadata",
             ));
         }
         Err(err) => return Err(err),
     };
-    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
-        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
-    })?;
-    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+    let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
+    let descriptor_json =
+        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+        })?;
+    let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
             "RuntimeError",
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
-    let arg_bits = unsafe { callargs_positional_snapshot(_py, builder_bits) }?;
+    let arg_bits = unsafe { bound_kernel_arguments(_py, callable_bits, builder_bits) }?;
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
@@ -2032,114 +2131,76 @@ fn try_dispatch_webgpu_kernel(
     }
     let mut args_map = BTreeMap::new();
     for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
-        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        if descriptor.ops.iter().any(|op| op.args.contains(name)) {
+            args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+        }
     }
-    let (source, buffer_names, scalar_names, output_buffers) =
-        render_webgpu_source(&descriptor, &args_map, threads as u32).map_err(|msg| {
-            raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                &format!("webgpu kernel render failed: {msg}"),
-            )
-        })?;
-    let output_buffer_names: BTreeSet<String> = output_buffers.iter().cloned().collect();
-    let mut staging_buffers: Vec<Vec<u8>> = Vec::new();
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
+    let _admitted_bindings = descriptor_admission::admit(
+        _py,
+        callable_bits,
+        descriptor_bits,
+        &mut descriptor,
+        &mut args_map,
+        grid as i64,
+        threads as i64,
+    )?;
+    let mut plan = KernelStoragePlan::capture(_py, &descriptor, &args_map, &prepared_outputs)?;
+    let source = render_kernel_source(
+        &descriptor,
+        &plan,
+        i64::from(grid),
+        i64::from(threads),
+        KernelShaderDialect::Wgsl,
+    )
+    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    let mut staging: Vec<Vec<u8>> = (0..plan.binding_count())
+        .map(|index| plan.bytes(index).to_vec())
+        .collect();
     let mut launch_bindings = Vec::new();
-    let mut output_records: Vec<(RuntimeKernelBufferArg, usize)> = Vec::new();
-    let mut binding_index = 0usize;
-
-    for name in &buffer_names {
-        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "expected buffer arg",
-            ));
-        };
-        let bytes = buffer_host_bytes_for_webgpu_compute(_py, buf)
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let staging_index = staging_buffers.len();
-        staging_buffers.push(bytes);
-        let staging = &staging_buffers[staging_index];
-        let ptr = if staging.is_empty() {
-            0
-        } else {
-            staging.as_ptr() as usize as u32
-        };
-        let access = if output_buffer_names.contains(name) {
-            output_records.push((buf.clone(), staging_index));
-            "read_write"
-        } else {
-            "read"
-        };
+    for (index, bytes) in staging.iter_mut().enumerate() {
         launch_bindings.push(serde_json::json!({
-            "binding": binding_index,
-            "name": name,
+            "binding": index,
+            "name": format!("molt_binding_{index}"),
             "kind": "buffer",
-            "access": access,
-            "ptr": ptr,
-            "len": staging.len() as u32,
+            "access": if plan.writable(index) { "read_write" } else { "read" },
+            "ptr": bytes.as_mut_ptr() as usize as u32,
+            "len": u32::try_from(bytes.len()).map_err(|_| raise_exception::<u64>(_py, "OverflowError", "GPU browser binding exceeds WASM32 extent"))?,
         }));
-        binding_index += 1;
     }
-
-    for name in &scalar_names {
-        let arg = args_map.get(name).expect("scalar arg missing");
-        let staging_index = staging_buffers.len();
-        staging_buffers.push(
-            webgpu_scalar_bytes_for_arg(arg)
-                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
-        );
-        let staging = &staging_buffers[staging_index];
-        let ptr = if staging.is_empty() {
-            0
-        } else {
-            staging.as_ptr() as usize as u32
-        };
-        launch_bindings.push(serde_json::json!({
-            "binding": binding_index,
-            "name": name,
-            "kind": "scalar",
-            "access": "read",
-            "ptr": ptr,
-            "len": staging.len() as u32,
-        }));
-        binding_index += 1;
-    }
-
     dispatch_browser_webgpu_bindings(
         _py,
-        source.as_str(),
-        descriptor.name.as_str(),
+        &source,
+        &descriptor.name,
         launch_bindings,
-        grid as u32,
-        threads as u32,
+        grid,
+        threads,
     )?;
-    for (buf, staging_index) in output_records {
-        copy_gpu32_output_back_to_buffer(_py, &buf, &staging_buffers[staging_index])?;
-    }
-    Ok(Some(MoltObject::none().bits()))
+    let outputs = staging
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| plan.writable(*index))
+        .collect();
+    plan.publish(_py, &outputs, &args_map)?;
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(not(any(
     target_arch = "wasm32",
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 )))]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
     _builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
-        return Err(raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "webgpu backend requested but molt-gpu was built without webgpu-backend",
-        ));
-    }
-    Ok(None)
+) -> Result<u64, u64> {
+    Err(raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        "webgpu backend requested but molt-gpu was built without webgpu-backend",
+    ))
 }
 
 fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64> {
@@ -2356,39 +2417,47 @@ pub extern "C" fn molt_gpu_thread_id() -> u64 {
         if trace_gpu_thread_id_enabled() {
             eprintln!("[molt gpu thread_id] tid={tid}");
         }
-        MoltObject::from_int(tid).bits()
+        molt_runtime_core::rt_int(tid)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_id() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        MoltObject::from_int(current_gpu_launch_context().block_id).bits()
+        molt_runtime_core::rt_int(current_gpu_launch_context().block_id)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_block_dim() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        MoltObject::from_int(current_gpu_launch_context().block_dim).bits()
+        molt_runtime_core::rt_int(current_gpu_launch_context().block_dim)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_grid_dim() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        MoltObject::from_int(current_gpu_launch_context().grid_dim).bits()
+        molt_runtime_core::rt_int(current_gpu_launch_context().grid_dim)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_barrier() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, MoltObject::none().bits())
+    // This callable runs on the sequential host executor. Admitted hardware
+    // descriptors lower gpu_barrier to the device's real collective operation.
+    molt_runtime_core::with_core_gil!(_py, {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "GPU barrier requires a parallel hardware kernel execution context",
+        )
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_kernel_launch(
-    launcher_bits: u64,
+    callable_bits: u64,
     grid_bits: u64,
     threads_bits: u64,
     builder_bits: u64,
@@ -2403,27 +2472,42 @@ pub extern "C" fn molt_gpu_kernel_launch(
             Ok(value) => value,
             Err(err) => return err,
         };
-        let callable_bits = match unsafe { gpu_kernel_callable_bits(_py, launcher_bits) } {
-            Ok(bits) => bits,
-            Err(err) => return err,
+        let Some(total_threads) = grid.checked_mul(threads) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "GPU launch geometry exceeds signed 64-bit indices",
+            );
         };
-        match try_dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits) {
-            Ok(Some(bits)) => return bits,
-            Ok(None) => {}
-            Err(err) => return err,
+        // Geometry errors retain precedence. Capture the operation's target
+        // once, before any kernel argument binding or device work. Dispatch
+        // cannot reread selection or turn a failed explicit request into CPU.
+        let executor = match PythonKernelExecutor::for_backend(requested_gpu_backend()) {
+            Ok(executor) => executor,
+            Err(backend) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!(
+                        "requested {backend:?} Python-kernel descriptor execution is unavailable; tensor device support is separate"
+                    ),
+                );
+            }
+        };
+        match executor {
+            PythonKernelExecutor::Metal => {
+                return dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits)
+                    .unwrap_or_else(std::convert::identity);
+            }
+            PythonKernelExecutor::WebGpu => {
+                return dispatch_webgpu_kernel(_py, callable_bits, grid, threads, builder_bits)
+                    .unwrap_or_else(std::convert::identity);
+            }
+            PythonKernelExecutor::Sequential => {}
         }
-        match try_dispatch_webgpu_kernel(_py, callable_bits, grid, threads, builder_bits) {
-            Ok(Some(bits)) => return bits,
-            Ok(None) => {}
-            Err(err) => return err,
-        }
-        let total_threads = grid.saturating_mul(threads);
-        if total_threads <= 0 {
-            return MoltObject::none().bits();
-        }
-        let block_dim = if threads <= 0 { 1 } else { threads };
+        let block_dim = threads;
         for tid in 0..total_threads {
-            let block_id = if block_dim <= 0 { 0 } else { tid / block_dim };
+            let block_id = tid / block_dim;
             if trace_launch {
                 eprintln!(
                     "[molt gpu launch] tid={} block_id={} block_dim={} grid_dim={}",
@@ -2446,17 +2530,8 @@ pub extern "C" fn molt_gpu_kernel_launch(
                 || molt_call_bind(callable_bits, call_builder_bits),
             );
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
-                let kind_bits = molt_exception_kind(exc_bits);
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                    .unwrap_or_else(|| "<exc>".to_string());
-                dec_ref_bits(_py, kind_bits);
                 if trace_launch {
-                    eprintln!("[molt gpu launch] tid={} exception={}", tid, kind);
-                }
-                if kind == "IndexError" {
-                    let _ = molt_exception_clear();
-                    continue;
+                    eprintln!("[molt gpu launch] tid={} exception_pending", tid);
                 }
                 return out_bits;
             }
@@ -2467,4 +2542,166 @@ pub extern "C" fn molt_gpu_kernel_launch(
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod launch_context_tests {
+    use super::{GpuLaunchContext, current_gpu_launch_context, with_gpu_launch_context};
+
+    #[test]
+    fn launch_context_restores_nested_and_unwinding_scopes() {
+        let outer = GpuLaunchContext {
+            thread_id: 5,
+            block_id: 1,
+            block_dim: 4,
+            grid_dim: 2,
+        };
+        let inner = GpuLaunchContext {
+            thread_id: 0,
+            block_id: 0,
+            block_dim: 3,
+            grid_dim: 1,
+        };
+        assert_eq!(current_gpu_launch_context(), GpuLaunchContext::default());
+        with_gpu_launch_context(outer, || {
+            let failure = std::panic::catch_unwind(|| {
+                with_gpu_launch_context(inner, || {
+                    assert_eq!(current_gpu_launch_context(), inner);
+                    panic!("kernel unwind");
+                })
+            });
+            assert!(failure.is_err());
+            assert_eq!(current_gpu_launch_context(), outer);
+        });
+        assert_eq!(current_gpu_launch_context(), GpuLaunchContext::default());
+    }
+
+    #[test]
+    fn launch_context_is_local_to_each_overlapping_thread() {
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for thread_id in [3, 7] {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let expected = GpuLaunchContext {
+                        thread_id,
+                        ..GpuLaunchContext::default()
+                    };
+                    with_gpu_launch_context(expected, || {
+                        barrier.wait();
+                        assert_eq!(current_gpu_launch_context(), expected);
+                        barrier.wait();
+                    });
+                    assert_eq!(current_gpu_launch_context(), GpuLaunchContext::default());
+                });
+            }
+        });
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "webgpu-backend"))]
+mod webgpu_device_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an admitted native WebGPU adapter; run explicitly in the hardware cell"]
+    fn actual_device_errors_precede_readback_publication() {
+        let device = RuntimeWebGpuDevice::new().expect("admitted WebGPU adapter");
+        let source = "@group(0) @binding(0) var<storage, read_write> a: array<i32>; @group(0) @binding(1) var<storage, read_write> b: array<i32>; @compute @workgroup_size(1) fn main() { a[0] = 42; b[0] = 17; }";
+        let pipeline = device.compile_pipeline("main", source).unwrap();
+        let (_, a) = device.alloc_buffer(4).unwrap();
+        let (_, b) = device.alloc_buffer(4).unwrap();
+        device.copy_to_buffer(&a, &9i32.to_le_bytes()).unwrap();
+        device.copy_to_buffer(&b, &8i32.to_le_bytes()).unwrap();
+        device.dispatch(&pipeline, 1, &[&a, &b]).unwrap();
+        assert_eq!(device.copy_from_buffer(&a, 4).unwrap(), 42i32.to_le_bytes());
+        assert_eq!(device.copy_from_buffer(&b, 4).unwrap(), 17i32.to_le_bytes());
+        assert!(device.compile_pipeline("main", "invalid WGSL").is_err());
+        assert!(device.copy_to_buffer(&a, &[0; 8]).is_err());
+        let limit = device.device.limits().max_compute_workgroups_per_dimension;
+        assert!(
+            device
+                .dispatch(&pipeline, limit.checked_add(1).unwrap(), &[&a, &b])
+                .is_err()
+        );
+        // First readback succeeds; the second fails. The transaction may not
+        // publish even its first output. This is the same Result propagation
+        // used before KernelStoragePlan::publish by the production caller.
+        let mut published = (vec![9; 4], vec![8; 4]);
+        let readbacks = (|| -> Result<_, String> {
+            let first = device.copy_from_buffer(&a, 4)?;
+            let second = device.copy_from_buffer(&b, 8)?;
+            Ok((first, second))
+        })();
+        assert!(readbacks.is_err());
+        if let Ok(result) = readbacks {
+            published = result;
+        }
+        assert_eq!(published, (vec![9; 4], vec![8; 4]));
+        // Empty/no-write execution still drains the queue and checks all scopes.
+        let empty = device
+            .compile_pipeline("main", "@compute @workgroup_size(1) fn main() {}")
+            .unwrap();
+        device.dispatch(&empty, 1, &[]).unwrap();
+        device.device.destroy();
+        let _ = device.device.poll(wgpu::PollType::wait_indefinitely());
+        assert!(device.dispatch(&empty, 1, &[]).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "metal-backend"))]
+mod metal_device_tests {
+    use super::*;
+
+    #[test]
+    fn only_successful_terminal_status_allows_readback_continuation() {
+        for status in [
+            MTLCommandBufferStatus::NotEnqueued,
+            MTLCommandBufferStatus::Enqueued,
+            MTLCommandBufferStatus::Committed,
+            MTLCommandBufferStatus::Scheduled,
+            MTLCommandBufferStatus::Error,
+        ] {
+            let mut readback_ran = false;
+            let result =
+                require_metal_completed(status, || Some("controlled device failure".into())).map(
+                    |()| {
+                        readback_ran = true;
+                    },
+                );
+            assert!(result.unwrap_err().contains("controlled device failure"));
+            assert!(!readback_ran);
+        }
+        assert!(
+            require_metal_completed(MTLCommandBufferStatus::Completed, || panic!(
+                "success needs no error materialization"
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an admitted Metal device; run explicitly in the hardware cell"]
+    fn actual_device_success_and_capability_error_preserve_outputs() {
+        let device = RuntimeMetalDevice::new().expect("admitted Metal device");
+        let source = "#include <metal_stdlib>\nusing namespace metal; kernel void main0(device int* a [[buffer(0)]], device int* b [[buffer(1)]]) { a[0] = 42; b[0] = 17; }";
+        let pipeline = device.compile_pipeline("main0", source).unwrap();
+        let a = device.alloc_buffer(4).unwrap();
+        let b = device.alloc_buffer(4).unwrap();
+        device.copy_to_buffer(&a, &9i32.to_ne_bytes()).unwrap();
+        device.copy_to_buffer(&b, &8i32.to_ne_bytes()).unwrap();
+        device.dispatch(&pipeline, 1, 1, &[&a, &b]).unwrap();
+        assert_eq!(device.copy_from_buffer(&a, 4).unwrap(), 42i32.to_ne_bytes());
+        assert_eq!(device.copy_from_buffer(&b, 4).unwrap(), 17i32.to_ne_bytes());
+        let invalid = pipeline.pipeline.maxTotalThreadsPerThreadgroup() + 1;
+        assert!(
+            device
+                .dispatch(&pipeline, invalid, invalid, &[&a, &b])
+                .is_err()
+        );
+        assert!(device.copy_to_buffer(&a, &[0; 8]).is_err());
+        assert!(device.copy_from_buffer(&b, 8).is_err());
+        assert_eq!(device.copy_from_buffer(&a, 4).unwrap(), 42i32.to_ne_bytes());
+        assert_eq!(device.copy_from_buffer(&b, 4).unwrap(), 17i32.to_ne_bytes());
+    }
 }

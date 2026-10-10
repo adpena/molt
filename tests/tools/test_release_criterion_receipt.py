@@ -236,7 +236,9 @@ def _verified_execution(
         }
     return {
         "backend": backend,
-        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
+        "profiles": verified_subset.execution_profiles(
+            coordinate.build_profile, backend=coordinate.backend
+        ),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",
@@ -294,12 +296,13 @@ def _verified_receipt(
     expected_failure: bool = False,
     raw_status: str = "pass",
     backend: str = "native",
+    build_profile: str = "dev",
 ) -> tuple[receipt.Receipt, verified_authority.VerifiedSubsetCoordinate]:
     policy = verified_authority.load_verified_subset_policy()
     coordinate = next(
         cell
         for cell in verified_authority.verified_subset_coordinates(policy)
-        if cell.backend == backend
+        if cell.backend == backend and cell.build_profile == build_profile
     )
     projection = _verified_projection(
         coordinate,
@@ -942,7 +945,9 @@ def test_verified_receipt_profiles_cannot_be_absent_or_disagree_with_coordinate(
     if mutation == "missing":
         del execution["profiles"]
     elif mutation == "wrong":
-        execution["profiles"] = verified_subset.execution_profiles("release")
+        execution["profiles"] = verified_subset.execution_profiles(
+            "release", backend="native"
+        )
     else:
         execution["profiles"]["build"] = []
     assert any("execution" in item for item in _validate_verified(payload))
@@ -1214,3 +1219,23 @@ def test_wasm_receipt_rejects_process_identity(monkeypatch):
     assert any(
         "execution.backend" in problem for problem in _validate_verified(payload)
     )
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected", "other_target"),
+    [
+        ("native", "release-output", "wasm-release"),
+        ("wasm", "wasm-release", "release-output"),
+    ],
+)
+def test_verified_release_receipt_requires_target_runtime_profile(
+    monkeypatch, backend, expected, other_target
+):
+    payload, _ = _verified_receipt(
+        monkeypatch, backend=backend, build_profile="release"
+    )
+    profiles = payload["facts"]["execution"]["profiles"]
+    assert profiles["runtime"] == expected
+    assert _validate_verified(payload) == ()
+    profiles["runtime"] = other_target
+    assert any("execution.profiles" in item for item in _validate_verified(payload))

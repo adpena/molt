@@ -24,6 +24,12 @@ name: Perf Gate (canonical CPython-floor scoreboard)
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Controlled measurement purpose
+        type: choice
+        default: canonical
+        options: [canonical, candidate-runtime-costs]
   schedule:
     # Weekly canonical re-measure (Mondays 06:00 UTC) so the citable board stays
     # fresh even between perf-touching PRs.
@@ -42,6 +48,7 @@ env:
 
 jobs:
   cpython-floor:
+    if: github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'
     name: CPython-floor scoreboard (${{ matrix.backend }} / release-fast)
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -155,6 +162,48 @@ jobs:
             bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
             bench/scoreboard/plane_${{ matrix.backend }}/
             bench/scoreboard/logs_*/
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
+
+  candidate-runtime-costs:
+    name: Candidate runtime costs (evidence only)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate-runtime-costs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MOLT_SESSION_ID: candidate-cost-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup candidate cost toolchains
+        uses: ./.github/actions/setup-project
+        with:
+          rust-toolchain: pinned
+          cache-cargo: "true"
+          cache-namespace: candidate-runtime-costs
+          sync: "true"
+          sync-frozen: "true"
+      - name: Setup canonical native linker
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: full
+      - name: Collect candidate costs without a comparative or release claim
+        run: python3 tools/proof_plan.py --tier scheduled --run-family runtime_candidate_costs --receipt proof-receipts/candidate-runtime-costs.json
+      - name: Upload candidate cost evidence and rejected measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-runtime-costs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            proof-receipts/candidate-runtime-costs.json
+            proof-receipts/evidence/candidate-runtime-costs/
+            logs/benchmarks/l7_numeric_attestation/custody/
+            logs/benchmarks/sequence_container_attestation/custody/
+            ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT }}/tmp/harness_memory_guard/
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Save Cargo dependency cache
         if: ${{ !cancelled() }}
         uses: ./.github/actions/save-cargo-cache

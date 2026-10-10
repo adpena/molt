@@ -23,6 +23,7 @@ else:
 
 ROOT = bind_repository_imports(__file__)
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
 from tools import check_suite_honesty  # noqa: E402
 from tools import runtime_descendant_receipts  # noqa: E402
@@ -631,6 +632,10 @@ def run_streamed(
     retain_cargo_artifacts: bool = False,
     timeout_seconds: float = WORKSPACE_TEST_TIMEOUT_SECONDS,
 ) -> StreamedCommandResult:
+    try:
+        admit_cargo_build(command, cwd=ROOT, env=None)
+    except ValueError as exc:  # each phase records a RuntimeError as its verdict
+        raise RuntimeError(f"Cargo was not started: {exc}") from exc
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = evidence_path.with_suffix(evidence_path.suffix + ".guard.json")
     process = _COMMANDS.start_guarded(

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from molt.cargo_execution_policy import admit_cargo_build
 from molt.cargo_workspace import workspace_package_names
 from molt.dx import development_artifact_env
 from molt.harness_report import LayerResult, LayerStatus
@@ -129,6 +130,15 @@ def _run_cmd(
         run_env,
         explicit=timeout_s,
     )
+    try:
+        admit_cargo_build(args, cwd=cwd, env=run_env)
+    except ValueError as exc:  # DiskCapacityError, or an inconsistent target
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=2,
+            stdout="",
+            stderr=f"Cargo not started: {exc}",
+        )
 
     try:
         result = guard.guarded_completed_process(

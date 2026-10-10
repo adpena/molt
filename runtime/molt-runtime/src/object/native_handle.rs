@@ -109,8 +109,8 @@ pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use crate::{dec_ref_bits, inc_ref_bits};
 
@@ -127,6 +127,92 @@ mod tests {
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    struct OrderedDrop {
+        id: usize,
+        trace: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl super::sealed::Sealed for OrderedDrop {}
+    unsafe impl NativeHandleNoMoltEdges for OrderedDrop {}
+
+    impl Drop for OrderedDrop {
+        fn drop(&mut self) {
+            self.trace.lock().unwrap().push(self.id);
+        }
+    }
+
+    #[test]
+    fn detached_aggregate_release_preserves_scalar_order_and_native_precedence() {
+        use crate::object::heap_lifecycle::{
+            DetachedEdgeSink, clear_cycle_edges_with_sink, detach_terminal_owned_edges,
+            terminal_detach_capacity,
+        };
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let trace = Arc::new(Mutex::new(Vec::new()));
+                let values: Vec<_> = (0..8)
+                    .map(|id| {
+                        let bits = native_handle_new(
+                            py,
+                            Arc::new(OrderedDrop {
+                                id,
+                                trace: Arc::clone(&trace),
+                            }),
+                        );
+                        assert_ne!(bits, 0);
+                        bits
+                    })
+                    .collect();
+                let dict = crate::alloc_dict_with_pairs(
+                    py,
+                    &[crate::MoltObject::from_int(0).bits(), values[2]],
+                );
+                let set = crate::object::builders::alloc_set_with_entries(py, &[values[4]]);
+                let frozen = crate::object::builders::alloc_set_like_with_entries(
+                    py,
+                    &[values[6]],
+                    crate::TYPE_ID_FROZENSET,
+                );
+                assert!(!dict.is_null() && !set.is_null() && !frozen.is_null());
+                assert!(!crate::exception_pending(py));
+                for index in [2, 4, 6] {
+                    dec_ref_bits(py, values[index]);
+                }
+                let native = crate::obj_from_bits(values[0]).as_ptr().unwrap();
+                let (edges, resources) = [dict, set, frozen, native]
+                    .into_iter()
+                    .map(|ptr| terminal_detach_capacity(py, ptr))
+                    .fold(
+                        (4, 0),
+                        |(edges, resources), (next_edges, next_resources)| {
+                            (edges + next_edges, resources + next_resources)
+                        },
+                    );
+                let mut sink = DetachedEdgeSink::terminal_with_capacities(edges, resources);
+                sink.detach_if_heap(values[1]);
+                clear_cycle_edges_with_sink(py, dict, &mut sink);
+                sink.detach_if_heap(values[3]);
+                clear_cycle_edges_with_sink(py, set, &mut sink);
+                sink.detach_if_heap(values[5]);
+                detach_terminal_owned_edges(py, frozen, &mut sink);
+                sink.detach_if_heap(values[7]);
+                // Native resources already precede all managed edges, even
+                // when detached last. Aggregate payloads must stay interleaved.
+                clear_cycle_edges_with_sink(py, native, &mut sink);
+                assert!(trace.lock().unwrap().is_empty());
+                sink.release_all(py);
+                assert_eq!(*trace.lock().unwrap(), [0, 1, 2, 3, 4, 5, 6, 7]);
+                for ptr in [dict, set, frozen, native] {
+                    dec_ref_bits(py, crate::MoltObject::from_ptr(ptr).bits());
+                }
+                assert_eq!(*trace.lock().unwrap(), [0, 1, 2, 3, 4, 5, 6, 7]);
+                assert!(!crate::exception_pending(py));
+            }
+        });
     }
 
     #[test]

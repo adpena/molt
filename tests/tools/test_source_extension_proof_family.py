@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.llvm_toolchain import capture_wasi_sdk_selection
+
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -297,9 +299,10 @@ def test_named_native_intent_reaches_host_compiler_selection(
     cxx = tmp_path / ("cxx-clang-cl.exe" if msvc else "host-cxx")
     compiler.write_bytes(b"fixture; never executed")
     cxx.write_bytes(b"fixture; never executed")
+    cxx_mode = "--driver-mode=cl" if msvc else "--driver-mode=g++"
     selected = {
         "CC": str(compiler),
-        "CXX": str(cxx) + (" --driver-mode=cl" if msvc else ""),
+        "CXX": f"{cxx} {cxx_mode}",
         "MOLT_CROSS_CC": str(tmp_path / "must-not-select-cross-cc"),
         "MOLT_CROSS_CXX": str(tmp_path / "must-not-select-cross-cxx"),
         "PATH": "",
@@ -334,7 +337,7 @@ def test_named_native_intent_reaches_host_compiler_selection(
     )
     assert resolved.compiler_kind == ("host-clang-cl" if msvc else "host")
     assert resolved.commands["c"] == (str(compiler),)
-    expected_cxx = (str(cxx), "--driver-mode=cl") if msvc else (str(cxx),)
+    expected_cxx = (str(cxx), cxx_mode)
     assert resolved.commands["cpp"] == expected_cxx
     assert seen == [{"cc": (str(compiler),), "cxx": expected_cxx}]
 
@@ -545,7 +548,21 @@ def test_target_derived_capture_receives_selected_environment(
     assert observed == [selected]
 
 
-def test_sysroot_directory_is_in_live_custody(tmp_path: Path) -> None:
+def test_sdk_resource_directories_are_in_live_custody(tmp_path: Path) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    from tools import proof_plan
+
+    selection = capture_wasi_sdk_selection(
+        root=proof_plan.ROOT, env={"WASI_SDK_PATH": str(sdk.sdk)}
+    )
     assert execution_environment._broad_toolchain_roots(
-        {"source-extension": {"sysroot_custody": {"root": str(tmp_path)}}}
-    ) == [tmp_path.resolve()]
+        {"source-extension": {"wasi_sdk": selection}}
+    ) == [
+        sdk.sdk / "lib",
+        sdk.sysroot,
+    ]

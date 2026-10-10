@@ -274,3 +274,185 @@ def test_direct_toolchain_library_path_is_macos_only(
     rustc, _library = _toolchain(tmp_path)
     install_module_view(monkeypatch, "sys", sys, rust_toolchain, platform="linux")
     assert rust_toolchain.rust_toolchain_library_environment(rustc, {}) == {}
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+def test_codegen_spans_preserve_opaque_values_and_original_path_indexes(spelling):
+    value = "linker=tool dir/cc=variant"
+    option = (
+        (spelling, value)
+        if spelling in {"-C", "--codegen"}
+        else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+    )
+    arguments = (
+        "--cfg",
+        "unrelated",
+        *option,
+        "-C",
+        "link-arg=--codegen=target-feature=-simd128",
+        "--",
+        "--codegen=linker=positional/file",
+    )
+    spans = list(rust_toolchain.rust_flag_spans(arguments))
+    selected = [span for span in spans if span.codegen is not None]
+    assert [(span.start, span.stop, span.codegen) for span in selected] == [
+        (2, 2 + len(option), value),
+        (
+            2 + len(option),
+            4 + len(option),
+            "link-arg=--codegen=target-feature=-simd128",
+        ),
+    ]
+    expected_index = 1 + len(option)
+    expected_prefix = option[-1].removesuffix("tool dir/cc=variant")
+    assert relative_rustc_tool_paths(arguments) == [
+        (expected_index, expected_prefix, "tool dir/cc=variant")
+    ]
+    canonical = rust_toolchain.canonical_rust_codegen_flags(arguments)
+    assert canonical == (
+        "--cfg",
+        "unrelated",
+        "-C",
+        value,
+        "-C",
+        "link-arg=--codegen=target-feature=-simd128",
+        "--",
+        "--codegen=linker=positional/file",
+    )
+    assert rust_toolchain.canonical_rust_codegen_flags(canonical) == canonical
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-C",),
+        ("--codegen",),
+        ("-C", ""),
+        ("--codegen=",),
+        ("-C=target-feature=+simd128",),
+        ("--codegen", "--"),
+    ],
+)
+def test_codegen_admission_rejects_incomplete_and_invalid_spelling(arguments):
+    with pytest.raises(ValueError, match="codegen option"):
+        rust_toolchain.canonical_rust_codegen_flags(arguments)
+
+
+@pytest.mark.parametrize(
+    "switch",
+    [
+        "--sysroot",
+        "-L",
+        "-o",
+        "--out-dir",
+        "--remap-path-prefix",
+        "--remap-path-scope",
+        "--cfg",
+        "--check-cfg",
+        "--extern",
+        "--crate-type",
+        "--target",
+        "--print",
+    ],
+)
+@pytest.mark.parametrize(
+    "operand", ["-Clinker=tools/root", "--codegen=linker=tools/root"]
+)
+def test_rust_outer_operands_are_opaque_to_codegen(switch, operand):
+    arguments = (switch, operand, "--codegen", "target-feature=+simd128")
+    spans = list(rust_toolchain.rust_flag_spans(arguments))
+    assert [(span.start, span.stop, span.codegen) for span in spans] == [
+        (0, 2, None),
+        (2, 4, "target-feature=+simd128"),
+    ]
+    assert rust_toolchain.canonical_rust_codegen_flags(arguments) == (
+        switch,
+        operand,
+        "-C",
+        "target-feature=+simd128",
+    )
+    assert relative_rustc_tool_paths(arguments) == (
+        [(1, "", operand)] if switch == "--sysroot" else []
+    )
+
+
+@pytest.mark.parametrize("output", ["-C", "-Lnative=opaque", "--codegen"])
+def test_codegen_projection_does_not_rescan_output_operand(output):
+    arguments = ("-o", output, "--codegen=linker=tools/real")
+    canonical = rust_toolchain.canonical_rust_codegen_flags(arguments)
+    assert canonical == ("-o", output, "-C", "linker=tools/real")
+    assert rust_toolchain.canonical_rust_codegen_flags(canonical) == canonical
+    assert relative_rustc_tool_paths(arguments) == [
+        (2, "--codegen=linker=", "tools/real")
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments,canonical,index,prefix",
+    [
+        (
+            ("-gClinker=tools/a_b=cc",),
+            ("-g", "-C", "linker=tools/a_b=cc"),
+            0,
+            "-gClinker=",
+        ),
+        (
+            ("-vC", "linker=tools/a_b=cc"),
+            ("-v", "-C", "linker=tools/a_b=cc"),
+            1,
+            "linker=",
+        ),
+        (
+            ("-gvOC", "linker=tools/a_b=cc"),
+            ("-gvO", "-C", "linker=tools/a_b=cc"),
+            1,
+            "linker=",
+        ),
+    ],
+)
+def test_short_codegen_clusters_preserve_prefix_and_original_tool_span(
+    arguments, canonical, index, prefix
+):
+    assert rust_toolchain.canonical_rust_codegen_flags(arguments) == canonical
+    assert relative_rustc_tool_paths(arguments) == [(index, prefix, "tools/a_b=cc")]
+    assert rust_toolchain.canonical_rust_codegen_flags(canonical) == canonical
+
+
+@pytest.mark.parametrize(
+    "cluster", ["-gL", "-vl", "-Oo", "-gZ", "-vW", "-gA", "-gD", "-gF"]
+)
+def test_short_value_option_consumes_remainder_or_next_opaque_token(cluster):
+    for arguments in (
+        (cluster, "--codegen=linker=opaque"),
+        (cluster + "-Clinker=opaque",),
+    ):
+        (span,) = rust_toolchain.rust_flag_spans(arguments)
+        assert span.leading == (cluster[:-1],)
+        assert span.option == "-" + cluster[-1]
+        assert span.value in {"--codegen=linker=opaque", "-Clinker=opaque"}
+        assert span.codegen is None
+        assert rust_toolchain.canonical_rust_codegen_flags(arguments) == arguments
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("link_arg=--path=with_under_score", "link-arg=--path=with_under_score"),
+        (
+            "target_feature=+simd128,-reference-types",
+            "target-feature=+simd128,-reference-types",
+        ),
+        ("link_self_contained=no", "link-self-contained=no"),
+        ("linker_flavor=wasm-ld", "linker-flavor=wasm-ld"),
+        ("link_args=opaque_1 opaque_2", "link-args=opaque_1 opaque_2"),
+    ],
+)
+def test_codegen_key_alias_normalization_preserves_value_bytes(value, expected):
+    arguments = ("-gC" + value,)
+    (span,) = rust_toolchain.rust_flag_spans(arguments)
+    assert span.value == value and span.codegen == expected
+    assert rust_toolchain.canonical_rust_codegen_flags(arguments) == (
+        "-g",
+        "-C",
+        expected,
+    )

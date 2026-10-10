@@ -1,5 +1,6 @@
 # Molt WASM Optimization Plan
-**Status:** Sections 1-5 DONE (2026-03-20)
+**Status:** Historical optimization milestones; current release qualification is tracked in
+[the V1 findings](../../../agent/V1_HANDOFF_FINDINGS.md).
 **Priority:** P1
 **Audience:** runtime engineers, compiler engineers, performance engineers
 **Goal:** Comprehensive plan for optimizing Molt's WASM compilation target across codegen quality, binary size, startup time, memory management, and interop.
@@ -17,7 +18,10 @@ instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significan
 architectural distinction from the native backend, which uses Cranelift's
 `ObjectModule`.
 
-The WASM host (`runtime/molt-wasm-host/src/main.rs`) runs on wasmtime, at the version `Cargo.lock` pins, with WASI Preview 1 support. It provides the intrinsic functions that the `[[import]]` rows of `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declare under the `molt_runtime` namespace, plus WASI syscalls and indirect call trampolines.
+The WASM host (`runtime/molt-wasm-host/src/main.rs`) uses Wasmtime at the
+version pinned by `Cargo.lock`, with WASI Preview 1 support. Dependencies are
+declared in `runtime/molt-wasm-host/Cargo.toml`; the generated ABI manifest
+owns the `molt_runtime` import surface and indirect-call trampoline contracts.
 
 Key characteristics of the current implementation:
 - **Direct WASM emission**: Custom `WasmBackend` struct builds WASM modules section by section (types, imports, functions, code, data, tables, exports).
@@ -31,9 +35,46 @@ Key characteristics of the current implementation:
   and linking sections are emitted, so Auto/Pure retention is owned by emitted
   use rather than a pre-emission dependency frontier.
 - **State machine lowering**: Generators, coroutines, and async generators use dispatch-block state machines with dense/sparse remap tables.
-- **Deterministic output**: BTreeMap used everywhere for iteration-order stability; NaN canonicalization available via `MOLT_DETERMINISTIC=1`.
+- **Determinism**: Compiler byte reproducibility and guest execution determinism
+  have separate [contracts](../core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md).
+  Ordered compiler collections and host NaN canonicalization are mechanisms;
+  they do not establish conformance across the release matrix.
 
 ---
+
+### 0.1 Runtime trampoline link identities and rejected artifacts
+
+Relocatable runtime `env::molt_call_indirect0..13` imports are the generated ABI
+identity. Their function indices join the runtime's undefined linking symbols to
+the app's exported, defined trampoline functions. Linker spellings are opaque:
+canonical, legacy Rust, Rust v0, and multiple aliases use the same typed join.
+Canonical trampoline definitions and their existing or appended linker aliases
+must have strong global binding: equal weak bindings do not preserve a shared
+target when the linker resolves the two names independently. Missing definitions
+or symbols, conflicting alias targets or binding, and types that disagree with
+the generated ABI fail before final link command execution. A runtime
+with no such imports requires no aliases; foreign namespaces and unsupported
+arities do not acquire ABI meaning from a symbol spelling. The primary linker
+input is always the trusted generation's relocatable member, admitted once by
+`wasm-ld -r`; its linking definitions also own native-provider planning. The
+shared member belongs only to the separate split deployment input and its export
+contract. There is no shared-primary linker mode.
+
+The complete alias set is appended in one existing symbol-table edit, ordered by
+app function index and alias name. Existing symbol ordinals, relocation payloads,
+and non-linking sections are preserved. This work belongs to the build apparatus;
+it adds no guest-time checks.
+
+Rejected facts-scan, linked-validation, and split-native-link bytes are published
+atomically under the invocation's failure evidence directory, using the rejection
+stage and content SHA-256 in the filename. The CLI passes a directory under the
+final deployment root so rejection evidence outlives private generation cleanup.
+Standalone `tools/wasm_link.py` defaults to `wasm-link-evidence` beside its output,
+or accepts `--failure-evidence-dir`. Evidence publication errors retain the
+original rejection and report the failed preservation. Rejected bytes never become
+accepted outputs or link-cache entries, and a failed link preserves prior outputs.
+The evidence destination is diagnostic only and does not partition artifact caches;
+the changed link-tool source closure still invalidates old implementations.
 
 ## 1. WASM Codegen Quality
 

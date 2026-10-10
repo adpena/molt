@@ -399,6 +399,8 @@ pub(crate) use crate::concurrency::locks::{
 pub(crate) use crate::concurrency::{
     GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil,
 };
+#[cfg(feature = "molt_gpu_primitives")]
+pub use crate::gpu_bridge::{molt_gpu_kernel_descriptor_set, molt_gpu_kernel_launch_python};
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
 pub use crate::wasm_abi_exports::{
@@ -423,10 +425,10 @@ pub use molt_gpu::primitives_ffi::{
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub use molt_gpu_runtime::{
-    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
-    molt_gpu_interop__load_safetensors, molt_gpu_interop_decode_bf16_bytes_to_f32,
-    molt_gpu_interop_decode_f16_bytes_to_f32, molt_gpu_linear_contiguous,
-    molt_gpu_linear_split_last_dim_contiguous,
+    molt_gpu_barrier, molt_gpu_block_dim, molt_gpu_block_id, molt_gpu_broadcast_binary_contiguous,
+    molt_gpu_buffer_to_list, molt_gpu_grid_dim, molt_gpu_interop__load_safetensors,
+    molt_gpu_interop_decode_bf16_bytes_to_f32, molt_gpu_interop_decode_f16_bytes_to_f32,
+    molt_gpu_linear_contiguous, molt_gpu_linear_split_last_dim_contiguous,
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
     molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
     molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
@@ -438,7 +440,7 @@ pub use molt_gpu_runtime::{
     molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
     molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
     molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
-    molt_gpu_turboquant_attention_packed,
+    molt_gpu_thread_id, molt_gpu_turboquant_attention_packed,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
@@ -544,11 +546,11 @@ pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::concurrent::*;
 pub(crate) use crate::builtins::containers::{
-    dict_hashes, dict_hashes_ptr, dict_len, dict_method_bits, dict_order, dict_order_ptr,
-    dict_table, dict_table_ptr, dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry,
-    dict_view_len, frozenset_method_bits, is_set_inplace_rhs_type, is_set_like_type,
-    is_set_view_type, list_len, list_method_bits, set_hashes, set_hashes_ptr, set_len,
-    set_method_bits, set_order, set_order_ptr, set_table, set_table_ptr, tuple_len,
+    DictEntry, HashStorage, SetEntry, StoredHash, dict_entries, dict_entries_ptr, dict_len,
+    dict_live_entries, dict_method_bits, dict_next_entry, dict_storage, dict_table, dict_table_ptr,
+    dict_view_dict_bits, dict_view_len, frozenset_method_bits, is_set_like_type, is_set_view_type,
+    list_len, list_method_bits, set_entries, set_entries_ptr, set_len, set_method_bits,
+    set_next_entry, set_storage, set_table, set_table_ptr, tuple_len,
 };
 pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_item};
 pub use crate::builtins::containers_alloc::{
@@ -560,6 +562,7 @@ pub(crate) use crate::builtins::context::{
     generator_context_stack_take,
 };
 pub use crate::builtins::contextlib::*;
+pub use crate::builtins::contextvars::*;
 pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
@@ -582,15 +585,14 @@ pub(crate) use crate::builtins::exceptions::{
     molt_exception_last_pending, molt_exception_match_handler, molt_exception_pending,
     molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
-    raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
-    raise_unsupported_inplace, record_exception, record_memory_error_without_allocation,
-    set_generator_raise, set_task_raise_active, sync_current_exception_pending,
-    task_exception_baseline_drop, task_exception_baseline_store, task_exception_baseline_take,
-    task_exception_depth_drop, task_exception_depth_store, task_exception_depth_take,
-    task_exception_handler_stack_drop, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
-    task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
-    task_raise_active,
+    raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
+    record_memory_error_without_allocation, set_generator_raise, set_task_raise_active,
+    sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
+    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_drop,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
+    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
 };
 #[cfg(test)]
 pub(crate) use crate::builtins::exceptions::{exception_args_bits, exception_args_payload_bits};
@@ -748,10 +750,10 @@ pub(crate) use crate::object::ops::{
     decode_value_list, dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place,
     dict_find_entry, dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place,
     dict_get_method, dict_items_method, dict_keys_method, dict_popitem_method, dict_set_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
-    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
-    is_truthy, list_from_iter_bits, set_add_in_place, set_clear_in_place, set_del_in_place,
-    set_find_entry, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits, type_name,
+    dict_setdefault_method, dict_update_method, dict_update_set_via_store, dict_values_method,
+    format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits, is_truthy,
+    list_from_iter_bits, set_add_in_place, set_clear_in_place, set_del_in_place, set_find_entry,
+    tuple_from_isize_slice, tuple_from_iter_bits, type_name,
 };
 pub use crate::object::ops_arith::*;
 pub use crate::object::ops_builtins::*;

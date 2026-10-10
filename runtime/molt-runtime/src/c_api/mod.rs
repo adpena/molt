@@ -890,7 +890,7 @@ fn c_api_method_kwargs_present(_py: &PyToken<'_>, kwargs_bits: u64) -> Result<bo
                 "keyword arguments must be dict or None",
             ));
         }
-        Ok(dict_order(kwargs_ptr).len() >= 2)
+        Ok(dict_len(kwargs_ptr) != 0)
     }
 }
 

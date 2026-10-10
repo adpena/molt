@@ -6,8 +6,10 @@ import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
+from molt.rust_toolchain import rust_flag_spans
 from molt.cli import atomic_io
 from molt.cli.runtime_paths import _build_state_root
+from molt.wasi_sdk_identity import WasiCAbiProjection
 
 
 def wasm_link_output_arguments(
@@ -26,6 +28,7 @@ def wasm_link_output_arguments(
 
 _RUNTIME_LINK_SWITCHES = frozenset(
     {
+        "--relocatable",
         "--import-memory",
         "--import-table",
         "--growable-table",
@@ -77,12 +80,35 @@ def validate_runtime_link_arguments(arguments: Sequence[str]) -> tuple[str, ...]
 
 
 def runtime_link_response_arguments(payload: bytes) -> tuple[str, ...]:
-    """Read exactly the producer grammar, not an inferred external linker dialect."""
+    """Decode the generated raw wasm-ld response grammar exactly."""
     try:
         text = payload.decode("utf-8", errors="strict")
     except UnicodeError as exc:
         raise ValueError("runtime linker response is not UTF-8") from exc
     return validate_runtime_link_arguments(text.splitlines())
+
+
+def wasi_external_libc_rustflags(
+    flags: Sequence[str],
+    *,
+    plan: WasiCAbiProjection,
+    include_search: bool = True,
+) -> tuple[str, ...]:
+    """Admit raw WASM arguments and the selected external-libc Rust mode."""
+    result = plan.rustflags(flags, include_search=include_search)
+    for span in rust_flag_spans(result):
+        option = span.codegen
+        if option is None:
+            continue
+        if option.startswith("link-arg="):
+            operand = option.removeprefix("link-arg=")
+            if not operand.startswith("@"):
+                validate_runtime_link_arguments((operand,))
+        elif option.startswith("link-args="):
+            raise ValueError(
+                "WASI linking requires individually admitted link-arg operands"
+            )
+    return result
 
 
 def wasm_link_args_from_rustflags(flags: str) -> list[str]:
@@ -91,20 +117,11 @@ def wasm_link_args_from_rustflags(flags: str) -> list[str]:
         tokens = shlex.split(flags, posix=True)
     except ValueError as exc:
         raise ValueError(f"invalid Rust flags: {exc}") from exc
-    link_args: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "-C" and index + 1 < len(tokens):
-            value = tokens[index + 1]
-            if value.startswith("link-arg="):
-                link_args.append(value.removeprefix("link-arg="))
-                index += 2
-                continue
-        if token.startswith("-Clink-arg="):
-            link_args.append(token.removeprefix("-Clink-arg="))
-        index += 1
-    return link_args
+    return [
+        span.codegen.removeprefix("link-arg=")
+        for span in rust_flag_spans(tokens)
+        if span.codegen is not None and span.codegen.startswith("link-arg=")
+    ]
 
 
 def write_wasm_link_args_response_file(
@@ -115,10 +132,10 @@ def write_wasm_link_args_response_file(
 ) -> Path:
     """Publish one content-addressed, byte-stable linker response file."""
     link_args = validate_runtime_link_arguments(link_args)
-    digest = hashlib.sha256("\0".join(link_args).encode("utf-8")).hexdigest()
+    payload = ("\n".join(link_args) + "\n").encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or "runtime"
     response_path = response_root / f"{safe_label}.{digest}.rsp"
-    payload = ("\n".join(link_args) + "\n").encode("utf-8")
     try:
         current = response_path.read_bytes()
     except OSError:

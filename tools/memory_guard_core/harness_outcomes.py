@@ -207,6 +207,7 @@ def guarded_command_status(
     orphaned_process_groups: Sequence[int],
     guard_signal: int | None = None,
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
+    cancelled: bool = False,
 ) -> str:
     if violation is not None:
         return "rss_limit_exceeded"
@@ -216,6 +217,8 @@ def guarded_command_status(
         return "guard_interrupted"
     if infrastructure_failure is not None:
         return "infrastructure_error"
+    if cancelled:
+        return "cancelled"
     if memory_guard.exit_signal_payload(returncode) is not None:
         return "signal_exit"
     if returncode != 0:

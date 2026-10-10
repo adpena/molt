@@ -135,21 +135,35 @@ def test_named_lane_cli_subcommand_is_registered() -> None:
 def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
     from tools.proof_queue_pkg import command_identity
 
-    payload = ["python", "-m", "molt", "extension", "produce-set", "--target", "wasm"]
-    assert command_identity._rust_target(payload, {}) is None
+    payload = ["python", "-c", "pass", "--target", "wasm"]
     assert (
-        command_identity._rust_target(payload, {"CARGO_BUILD_TARGET": "wasm32-wasip1"})
-        == "wasm32-wasip1"
+        command_identity._rust_target(
+            command_admission.envelope_for_command(payload), {}
+        )
+        is None
     )
     assert (
         command_identity._rust_target(
-            ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-tir"], {}
+            command_admission.envelope_for_command(payload),
+            {"CARGO_BUILD_TARGET": "wasm32-wasip1"},
         )
         == "wasm32-wasip1"
     )
     assert (
         command_identity._rust_target(
-            ["rustc", "--target=x86_64-pc-windows-msvc", "a.rs"], {}
+            command_admission.envelope_for_command(
+                ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-tir"]
+            ),
+            {},
+        )
+        == "wasm32-wasip1"
+    )
+    assert (
+        command_identity._rust_target(
+            command_admission.envelope_for_command(
+                ["rustc", "--target=x86_64-pc-windows-msvc", "a.rs"]
+            ),
+            {},
         )
         == "x86_64-pc-windows-msvc"
     )
@@ -269,17 +283,23 @@ def test_missing_declared_sdk_role_fails_without_native_path_fallback(
         )
 
 
-@pytest.mark.parametrize("version", ["22.1.0", "22.1.8"])
+@pytest.mark.parametrize("selected_sdk_version", [True, False])
 def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected_sdk_version: bool
 ) -> None:
     import hashlib
     import subprocess
     import molt.llvm_toolchain as llvm_toolchain
+    import tomllib
     from tools.proof_queue_pkg import command_identity
 
+    release = tomllib.loads(
+        (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8")
+    )
+    version = release["wasi_sdk"]["llvm_version"] if selected_sdk_version else "22.1.8"
     selected = tmp_path / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
     selected.write_bytes(b"SDK entrypoint")
+    selected.chmod(0o755)
     environment = {"MOLT_WASM_LD": str(selected), "PATH": "wrong-native-llvm"}
 
     def sdk_role(root, role, *, environ):
@@ -323,7 +343,7 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
         identity["executable_sha256"] == hashlib.sha256(b"SDK entrypoint").hexdigest()
     )
     assert calls == [(str(selected), "--version")]
-    if version == "22.1.0":
+    if selected_sdk_version:
         command_identity._validate_toolchain_identity(PLAN, "wasm-ld", identity)
     else:
         with pytest.raises(ValueError, match="violates canonical policy"):

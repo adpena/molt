@@ -15,17 +15,16 @@ use crate::{
     call_callable0, call_callable1, call_callable2, class_bases_bits, class_bases_vec,
     class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_vec,
     class_name_for_error, class_set_layout_version_bits, class_set_qualname_bits, clear_exception,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    dict_update_apply, dict_update_set_in_place, exception_pending, generic_alias_origin_bits,
-    inc_ref_bits, init_atomic_bits, instance_dict_bits, intern_static_name, is_truthy,
-    isinstance_runtime, issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind,
-    molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos, molt_contains,
-    molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin, molt_hash_builtin,
-    molt_index, molt_iter, molt_iter_next, molt_len, molt_repr_from_obj, molt_set_attr_name,
-    molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_from_bits,
-    object_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
-    raise_exception, raise_not_iterable, runtime_state, string_obj_to_owned, to_i64,
-    tuple_from_iter_bits, type_name, type_of_bits,
+    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_set_in_place, dict_update_apply,
+    dict_update_set_in_place, exception_pending, generic_alias_origin_bits, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, intern_static_name, is_truthy, isinstance_runtime,
+    issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind, molt_callargs_new,
+    molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
+    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
+    molt_repr_from_obj, molt_set_attr_name, molt_setitem_method, molt_str_from_obj,
+    molt_string_isidentifier, obj_from_bits, object_class_bits, object_type_id, property_del_bits,
+    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
+    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -50,7 +49,8 @@ pub use compiled_loader::*;
 pub use concrete_types::*;
 pub(crate) use concrete_types::{
     capsule_class, cell_class, frame_class_ready, frame_locals_proxy_class, mappingproxy_class,
-    mappingproxy_class_bits, mappingproxy_from_mapping, method_class, simplenamespace_class,
+    mappingproxy_class_bits, mappingproxy_from_mapping, method_class, method_ptr_from_bits,
+    simplenamespace_class,
 };
 pub use dataclasses::*;
 pub use descriptor_objects::*;
@@ -96,6 +96,14 @@ macro_rules! define_types_runtime_state {
 }
 
 define_types_runtime_state! {
+    context_class,
+    context_var_class,
+    context_token_class,
+    context_missing_class,
+    context_missing,
+    context_keys_iterator_class,
+    context_values_iterator_class,
+    context_items_iterator_class,
     mappingproxy_class,
     simplenamespace_class,
     capsule_class,
@@ -204,7 +212,7 @@ pub(crate) struct RuntimeClassLayout {
     pub native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
 }
 
-fn init_cached_runtime_class_configured(
+pub(crate) fn init_cached_runtime_class_configured(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
@@ -1254,6 +1262,173 @@ mod tests {
                 dec_ref_bits(_py, code_bits);
                 dec_ref_bits(_py, empty_bits);
                 dec_ref_bits(_py, name_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn method_comparison_hash_and_dictionary_keys_share_the_declared_protocol() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let function = MoltObject::from_ptr(crate::alloc_function_obj(py, 0x505, 1)).bits();
+            // Equal, unhashable receivers must remain distinct identities.
+            let receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            let other_receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            let make = |value| molt_types_method_new(method_class(py), function, value);
+            let first = make(receiver);
+            let same = make(receiver);
+            let different = make(other_receiver);
+            assert!(!exception_pending(py));
+            assert_ne!(first, same);
+            assert_eq!(molt_eq(first, same), MoltObject::from_bool(true).bits());
+            assert_eq!(
+                molt_eq(first, different),
+                MoltObject::from_bool(false).bits()
+            );
+            assert_eq!(
+                crate::molt_ne(first, different),
+                MoltObject::from_bool(true).bits()
+            );
+
+            // CPython classobject.c uses object identity hash for the receiver,
+            // then XORs the function's Python hash and normalizes the sentinel.
+            let identity = crate::molt_object_hash(receiver);
+            let function_hash = molt_hash_builtin(function);
+            let expected = to_i64(obj_from_bits(identity)).unwrap()
+                ^ to_i64(obj_from_bits(function_hash)).unwrap();
+            let expected = if expected == -1 { -2 } else { expected };
+            let hashed = molt_hash_builtin(first);
+            assert!(!exception_pending(py), "receiver __hash__ must not run");
+            assert_eq!(to_i64(obj_from_bits(hashed)), Some(expected));
+
+            let dict = alloc_dict_with_pairs(py, &[first, function]);
+            assert!(!dict.is_null());
+            assert_eq!(unsafe { dict_get_in_place(py, dict, same) }, Some(function));
+            assert_eq!(unsafe { dict_get_in_place(py, dict, different) }, None);
+            assert!(!exception_pending(py));
+
+            let class = obj_from_bits(method_class(py)).as_ptr().unwrap();
+            let class_dict = obj_from_bits(unsafe { class_dict_bits(class) })
+                .as_ptr()
+                .unwrap();
+            for name in [b"__eq__".as_slice(), b"__ne__".as_slice()] {
+                let key = attr_name_bits_from_bytes(py, name).unwrap();
+                let descriptor = unsafe { dict_get_in_place(py, class_dict, key) }.unwrap();
+                let declined = unsafe { call_callable2(py, descriptor, first, receiver) };
+                assert!(crate::is_not_implemented_bits(py, declined));
+                dec_ref_bits(py, declined);
+                let invalid = unsafe { call_callable2(py, descriptor, receiver, first) };
+                dec_ref_bits(py, invalid);
+                assert!(exception_pending(py));
+                clear_exception(py);
+                dec_ref_bits(py, key);
+            }
+            for bits in [
+                MoltObject::from_ptr(dict).bits(),
+                hashed,
+                function_hash,
+                identity,
+                different,
+                same,
+                first,
+                other_receiver,
+                receiver,
+                function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    extern "C" fn method_operand_failure(_self: u64, _other: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            raise_exception(py, "ValueError", "method function equality witness")
+        })
+    }
+
+    #[test]
+    fn method_function_equality_and_hash_errors_use_python_protocols() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // The C constructor permits noncallable function operands. Equal
+            // lists distinguish Python function equality from pointer equality,
+            // and their disabled hash must propagate through the method.
+            let value = MoltObject::from_int(9).bits();
+            let left = MoltObject::from_ptr(alloc_list(py, &[value])).bits();
+            let right = MoltObject::from_ptr(alloc_list(py, &[value])).bits();
+            let receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            let first = crate::builtins::functions::explicit_bound_method_new(py, left, receiver);
+            let second = crate::builtins::functions::explicit_bound_method_new(py, right, receiver);
+            assert!(!exception_pending(py));
+            assert_eq!(molt_eq(first, second), MoltObject::from_bool(true).bits());
+            assert_eq!(
+                crate::molt_ne(first, second),
+                MoltObject::from_bool(false).bits()
+            );
+            let hashed = molt_hash_builtin(first);
+            dec_ref_bits(py, hashed);
+            assert!(exception_pending(py));
+            let error = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            clear_exception(py);
+            dec_ref_bits(py, error);
+            for bits in [second, first, receiver, right, left] {
+                dec_ref_bits(py, bits);
+            }
+
+            let name = attr_name_bits_from_bytes(py, b"MethodFunctionOperand").unwrap();
+            let class = crate::molt_class_new(name);
+            dec_ref_bits(py, name);
+            let name = attr_name_bits_from_bytes(py, b"__eq__").unwrap();
+            let function =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "method_operand_failure",
+                        method_operand_failure as *const (),
+                    ),
+                    2,
+                ))
+                .bits();
+            let assigned = molt_set_attr_name(class, name, function);
+            dec_ref_bits(py, assigned);
+            dec_ref_bits(py, function);
+            dec_ref_bits(py, name);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
+            let left = unsafe { alloc_instance_for_class(py, class_ptr) };
+            let right = unsafe { alloc_instance_for_class(py, class_ptr) };
+            assert!(!exception_pending(py));
+            let first = crate::builtins::functions::explicit_bound_method_new(
+                py,
+                left,
+                MoltObject::from_int(1).bits(),
+            );
+            let second = crate::builtins::functions::explicit_bound_method_new(
+                py,
+                right,
+                MoltObject::from_int(2).bits(),
+            );
+            let result = molt_eq(first, second);
+            dec_ref_bits(py, result);
+            assert!(
+                exception_pending(py),
+                "different receivers must not bypass function equality"
+            );
+            let error = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "ValueError"
+            ));
+            clear_exception(py);
+            dec_ref_bits(py, error);
+            for bits in [second, first, right, left, class] {
+                dec_ref_bits(py, bits);
             }
         });
     }

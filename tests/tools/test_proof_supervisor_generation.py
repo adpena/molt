@@ -96,6 +96,7 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
     return {"CARGO_TARGET_DIR": str(target)}, source, binary, calls
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_distinct_results_share_cargo_freshness_and_immutable_image(
     tmp_path, monkeypatch
 ):
@@ -131,6 +132,7 @@ def test_distinct_results_share_cargo_freshness_and_immutable_image(
         )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_source_and_environment_bind_generation_without_selecting_a_new_target(
     tmp_path, monkeypatch
 ):
@@ -157,6 +159,7 @@ def test_source_and_environment_bind_generation_without_selecting_a_new_target(
     )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_mutating_input_cannot_publish_a_generation(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(
         tmp_path,
@@ -168,6 +171,7 @@ def test_mutating_input_cannot_publish_a_generation(tmp_path, monkeypatch):
     assert not (mutable.parents[2] / "custody-cas").exists()
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_failed_cargo_cannot_reuse_a_prior_generation(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(tmp_path, monkeypatch)
     image, receipt = generation.provision(cwd=tmp_path, env=env)
@@ -183,6 +187,7 @@ def test_failed_cargo_cannot_reuse_a_prior_generation(tmp_path, monkeypatch):
     assert image.read_bytes() == b"immutable supervisor image"
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_substituted_generation_cannot_bind_another_executable(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(tmp_path, monkeypatch)
     image, telemetry = generation.provision(cwd=tmp_path, env=env)
@@ -203,6 +208,7 @@ def test_substituted_generation_cannot_bind_another_executable(tmp_path, monkeyp
         )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_shared_cargo_target_has_one_provision_owner(tmp_path, monkeypatch):
     lock = threading.Lock()
     active = maximum = 0
@@ -293,6 +299,7 @@ def test_provision_scope_reuses_one_observer_and_keeps_each_child_guard(
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -456,3 +463,44 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
         {"RUSTFLAGS": "-C opt-level=2", "COMPILED_VALUE": "two"},
     ):
         assert all(value != capture(changed)[key] for key, value in first.items())
+
+
+def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monkeypatch):
+    from tools.proof_queue_pkg import toolchain_capture
+
+    selected, decoy = tmp_path / "selected", tmp_path / "path"
+    for directory in (selected, decoy):
+        directory.mkdir()
+        for role in ("cargo", "rustc"):
+            image = directory / (role + (".exe" if os.name == "nt" else ""))
+            image.write_bytes((directory.name + role).encode())
+            image.chmod(0o755)
+    suffix = ".exe" if os.name == "nt" else ""
+    cargo = selected / ("cargo" + suffix)
+    rustc = selected / ("rustc" + suffix)
+    environment = {"CARGO": str(cargo), "RUSTC": str(rustc), "PATH": str(decoy)}
+    version_commands, link_commands = [], []
+
+    def version(argv, **kwargs):
+        version_commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "selected tool version", "")
+
+    def link_probe(**kwargs):
+        link_commands.append(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    monkeypatch.setattr(
+        toolchain_capture, "capture_rust_link_process_images", link_probe
+    )
+    inputs, identities = generation._build_inputs(environment, profile="debug")
+    assert inputs["command"][0] == str(cargo)
+    assert inputs["toolchains"]["cargo"]["path"] == str(cargo)
+    assert version_commands == [
+        [str(cargo), "--version"],
+        [str(rustc), "--version", "--verbose"],
+    ]
+    assert len(link_commands) == 1
+    assert link_commands[0]["cargo"] == cargo
+    assert link_commands[0]["command_argv"] == inputs["command"]
+    assert identities

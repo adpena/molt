@@ -90,9 +90,11 @@ def test_backend_selection_reports_conflicts_without_selecting() -> None:
 
 
 def _dispatch_build(argv: list[str], build_fn: Any) -> int:
-    args = entrypoint_parser._build_entrypoint_parser().parse_args(argv)
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(argv)
     return entrypoint_dispatch._dispatch_entrypoint_command(
         args,
+        parser=parser,
         build_fn=build_fn,
         config_root=_find_project_root(Path.cwd()),
         config={},

@@ -681,7 +681,7 @@ def _source_build_config_tools(
 
 
 def _ensure_meson_pkg_config(
-    source_root: Path, environment: _SourceBuildEnvironment
+    build_root: Path, environment: _SourceBuildEnvironment
 ) -> _SourceBuildConfigTool:
     inventory = environment.inventory
     requirement = Requirement(MOLT_PKGCONF_REQUIREMENT)
@@ -695,7 +695,7 @@ def _ensure_meson_pkg_config(
     image = inventory.executable("pkg-config", distribution=resolved.distribution)
     path = image.path
     with stable_executable_probe(path, label="pkg-config", identity=image.content):
-        version = _run_process((str(path), "--version"), cwd=source_root)
+        version = _run_process((str(path), "--version"), cwd=build_root)
     if (
         version.returncode != 0
         or version.stdout.strip() != resolved.version.removesuffix(".post0")
@@ -764,7 +764,9 @@ def _run_meson_setup(
     argv.append(f"--prefix={MESON_INSTALL_PREFIX}")
     argv.extend(setup_args)
     environment = {**os.environ, "NINJA": backend.command[0]}
-    result = _run_process(argv, cwd=source_root, env=environment)
+    # Compiler detection can create a.out even when querying a linker version.
+    # The existing build directory owns all Meson subprocess scratch output.
+    result = _run_process(argv, cwd=build_root, env=environment)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise SourceExtensionProducerError(
@@ -828,7 +830,7 @@ def _source_meson_driver(
 
 
 def _source_ninja_driver(
-    source_root: Path, environment: _SourceBuildEnvironment
+    build_root: Path, environment: _SourceBuildEnvironment
 ) -> _SourceNinjaDriver:
     inventory = environment.inventory
     distribution = inventory.distribution("ninja")
@@ -840,7 +842,7 @@ def _source_ninja_driver(
     path = image.path
     command = (str(path),)
     with stable_executable_probe(path, label="Ninja", identity=image.content):
-        result = _run_process((*command, "--version"), cwd=source_root)
+        result = _run_process((*command, "--version"), cwd=build_root)
     reported_version = result.stdout.strip()
     if result.returncode != 0 or not reported_version:
         detail = (result.stderr or result.stdout).strip()
@@ -1962,18 +1964,16 @@ def _producer_location_roots(
                         (parent.parent, f"{namespace}-{role}-prefix")
                     )
         archives = toolchain.get("link_probe_archives")
-        compiler_builtins = (
-            archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
+        compiler_rt = (
+            archives.get("compiler_rt") if isinstance(archives, Mapping) else None
         )
-        compiler_builtins_path = (
-            compiler_builtins.get("path")
-            if isinstance(compiler_builtins, Mapping)
-            else None
+        compiler_rt_path = (
+            compiler_rt.get("path") if isinstance(compiler_rt, Mapping) else None
         )
-        if isinstance(compiler_builtins_path, str) and compiler_builtins_path:
-            builtins_path = Path(compiler_builtins_path)
-            roots.append((builtins_path, "@compiler-builtins"))
-            roots.append((builtins_path.parent, "@rust-target-libdir"))
+        if isinstance(compiler_rt_path, str) and compiler_rt_path:
+            builtins_path = Path(compiler_rt_path)
+            roots.append((builtins_path, "@compiler-rt"))
+            roots.append((builtins_path.parent, "@sdk-compiler-runtime"))
         wasi_sysroot = toolchain.get("wasi_sysroot")
         if isinstance(wasi_sysroot, str) and wasi_sysroot:
             roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
@@ -2186,7 +2186,7 @@ def _materialize_generated_inputs(
     )
     result = _run_process(
         (*backend.command, "-C", str(build_root), *relative_targets),
-        cwd=source_root,
+        cwd=build_root,
     )
     if result.returncode != 0:
         detail = "\n".join(
@@ -2401,14 +2401,18 @@ def _build_source_extension_set(
             raise SourceExtensionProducerError(
                 "--expected-identity-sha256 requires an incumbent canonical seal"
             )
+        _require_fresh_build_root(resolved_build_root)
+        resolved_build_root.mkdir(parents=True, exist_ok=True)
         build_environment = _ensure_source_build_environment(
             source_root, custody=locked_environment.custody
         )
         meson_driver = _source_meson_driver(source_root, build_environment)
-        ninja_driver = _source_ninja_driver(source_root, build_environment)
+        ninja_driver = _source_ninja_driver(resolved_build_root, build_environment)
         discovered_config_tools = _source_build_config_tools(build_environment)
         if extension_set.use_pkg_config:
-            pkg_config_tool = _ensure_meson_pkg_config(source_root, build_environment)
+            pkg_config_tool = _ensure_meson_pkg_config(
+                resolved_build_root, build_environment
+            )
             if any(
                 tool.name == pkg_config_tool.name for tool in discovered_config_tools
             ):
@@ -2431,9 +2435,6 @@ def _build_source_extension_set(
                 f"authority: expected {extension_set.required_config_tools!r}, "
                 f"got {actual_config_tools!r}"
             )
-        _require_fresh_build_root(resolved_build_root)
-        resolved_build_root.parent.mkdir(parents=True, exist_ok=True)
-
         transaction_root = Path(
             tempfile.mkdtemp(
                 prefix=(

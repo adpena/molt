@@ -12,12 +12,12 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-import tomllib
 
 from molt.verified_subset import (
     capture_verified_subset_policy,
     verified_subset_coordinates,
 )
+from molt.release_lanes import SCHEMA, capture_release_lanes
 from molt.release_matrix import RELEASE_TARGETS
 from molt.toolchain_identity import (
     capture_stable_regular_file,
@@ -25,8 +25,7 @@ from molt.toolchain_identity import (
 )
 from tools import bench_suites
 
-SCHEMA = "molt.release-acceptance-matrix.v1"
-SHARD_SCHEMA = "molt.release-performance-shard.v1"
+SHARD_SCHEMA = "molt.release-performance-shard.v2"
 _ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -66,26 +65,10 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
     if len(source_sha) != 40 or any(c not in "0123456789abcdef" for c in source_sha):
         raise ValueError("release matrix requires an exact Git source SHA")
     root = root.resolve(strict=True)
-    config_path = root / "config/release_acceptance_matrix.toml"
-    config_identity, config_bytes = capture_stable_regular_file(
-        config_path, label="release matrix config"
-    )
-    config = tomllib.loads(config_bytes.decode("utf-8"))
-    if (
-        set(config)
-        != {
-            "schema",
-            "lane",
-            "excluded_backend",
-            "required_metric",
-            "required_semantic_backends",
-        }
-        or config["schema"] != SCHEMA
-    ):
-        raise ValueError("release matrix config keys/schema are not exact")
-    policy, policy_identity = capture_verified_subset_policy(
-        root / "config/verified_subset.toml"
-    )
+    inventory = capture_release_lanes(root)
+    config = inventory.configuration
+    policy = inventory.semantic_policy
+    lanes = inventory.lanes
     semantic = tuple(sorted(c.id for c in verified_subset_coordinates(policy)))
     # Primary runnable suites, not the smoke alias. Typed exclusions remain
     # visible below until an appropriate measurement authority is implemented.
@@ -109,50 +92,6 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
         raise ValueError(
             "canonical benchmark ownership is incomplete or narrows source inventory"
         )
-    cargo_identity, cargo_bytes = capture_stable_regular_file(
-        root / "Cargo.toml", label="release matrix Cargo profiles"
-    )
-    cargo = tomllib.loads(cargo_bytes.decode("utf-8"))
-    profiles = cargo["profile"]
-    lanes = config["lane"]
-    if not isinstance(lanes, list) or not lanes:
-        raise ValueError("release matrix needs explicit applicable lanes")
-    keys = {
-        "backend",
-        "guest_profile",
-        "runtime_profile",
-        "compiler_profile",
-        "authority",
-    }
-    seen = set()
-    for lane in lanes:
-        if (
-            not isinstance(lane, dict)
-            or set(lane) != keys
-            or any(not isinstance(v, str) or not v for v in lane.values())
-        ):
-            raise ValueError("release matrix lane is not exact")
-        key = tuple(lane[k] for k in sorted(keys - {"authority"}))
-        if key in seen:
-            raise ValueError("duplicate release matrix lane")
-        seen.add(key)
-        if (
-            lane["backend"] not in {"native", "llvm", "wasm"}
-            or lane["guest_profile"] not in policy.build_profiles
-        ):
-            raise ValueError("release matrix lane is outside declared runtime support")
-        for field in ("runtime_profile", "compiler_profile"):
-            if lane[field] not in profiles:
-                raise ValueError(f"release matrix unknown {field}")
-        if not (root / lane["authority"]).is_file():
-            raise ValueError("release matrix applicability authority is missing")
-    minimum = {(b, p) for b in policy.backends for p in policy.build_profiles}
-    present = {(lane["backend"], lane["guest_profile"]) for lane in lanes}
-    if not minimum <= present or not any(
-        lane["backend"] == "llvm" and lane["runtime_profile"] == "release-fast"
-        for lane in lanes
-    ):
-        raise ValueError("release matrix drops verified-subset or daily LLVM coverage")
     cells = []
     for target in RELEASE_TARGETS:
         for minor, reference in zip(
@@ -166,7 +105,7 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
                         "platform": target["platform"],
                         "arch": target["arch"],
                         "rust_target": target["rust_target"],
-                        **{k: lane[k] for k in keys - {"authority"}},
+                        **lane.as_record(),
                         "benchmark": benchmark,
                     }
                     coordinate["id"] = "perf:" + ":".join(
@@ -192,6 +131,7 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
         "tools/PERF_AUTHORITY.md",
         "src/molt/verified_subset.py",
         "src/molt/release_matrix.py",
+        "src/molt/release_lanes.py",
         "tools/release_matrix_acceptance.py",
         "tools/perf_authority.py",
         "tools/perf_scoreboard_build_profiles.py",
@@ -223,10 +163,10 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
             or any(not isinstance(v, str) or not v for v in exclusion.values())
         ):
             raise ValueError("backend applicability exclusion is not exact")
-        if exclusion["backend"] in {lane["backend"] for lane in lanes}:
+        if exclusion["backend"] in {lane.backend for lane in lanes}:
             raise ValueError("backend exclusion conflicts with required coverage")
         authorities.add(exclusion["authority"])
-    for lane in lanes:
+    for lane in config["lane"]:
         authorities.add(lane["authority"])
     for metric in config["required_metric"]:
         if (
@@ -246,7 +186,7 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
     # future transitive imports. Do not recursively analyze this resolver's own
     # compiler implementation just to identify an immutable source snapshot.
     hashes = {}
-    identities = [config_identity, policy_identity, cargo_identity]
+    identities = list(inventory.identities)
     for path in sorted(authorities):
         candidate = root / path
         if (
@@ -388,7 +328,13 @@ def performance_matrix_problems(
                 )
             profile = {
                 k: expected[identity][k]
-                for k in ("guest_profile", "runtime_profile", "compiler_profile")
+                for k in (
+                    "backend",
+                    "target",
+                    "guest_profile",
+                    "runtime_profile",
+                    "compiler_profile",
+                )
             }
             if row["observed_profiles"] != profile:
                 problems.append(f"{identity}: observed profile facts mismatch")
@@ -402,10 +348,7 @@ def performance_matrix_problems(
                     if isinstance(observation, Mapping)
                     else None
                 )
-                expected_selected = {
-                    **profile,
-                    "target": "wasm" if coordinate["backend"] == "wasm" else "native",
-                }
+                expected_selected = profile
                 if selected != expected_selected:
                     problems.append(
                         f"{identity}: measured build profile observation is missing/mismatched; "

@@ -46,7 +46,8 @@ pub fn scan_and_write_callable_table_attestation(
     // A pre-link app layout section can survive wasm-ld and optimization, but
     // native objects add callable entries during the final link. Preserve the
     // executable-runtime boundary while replacing the stale count from the
-    // final app itself; the runtime then consumes that published final layout.
+    // final app itself. The shared runtime owns no app entries, so its layout
+    // must not retain the count of whichever application is being linked.
     let layout = match (layout, role) {
         (Some(mut layout), CallableTableArtifactRole::Monolithic) => {
             let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
@@ -61,7 +62,10 @@ pub fn scan_and_write_callable_table_attestation(
                 .map_err(|_| "callable-table entry count exceeds u32")?;
             layout
         }
-        (Some(layout), _) => layout,
+        (Some(mut layout), CallableTableArtifactRole::Runtime) => {
+            layout.app_entry_count = 0;
+            layout
+        }
         (None, CallableTableArtifactRole::Monolithic) => CallableTableLayout {
             fixed_prefix_base: 0,
             fixed_prefix_len: 0,

@@ -151,11 +151,11 @@ class TestCheckPureOpPreservation:
         before = [
             _op("CONST", [1], "v0"),
             _op("CONST", [2], "v1"),
-            _op("RETURN", [_val("v0")]),
+            _op("ret", [_val("v0")]),
         ]
         after = [
             _op("CONST", [1], "v0"),
-            _op("RETURN", [_val("v0")]),
+            _op("ret", [_val("v0")]),
         ]
         r = TranslationValidator.check_pure_op_preservation(before, after)
         assert r.passed
@@ -164,12 +164,12 @@ class TestCheckPureOpPreservation:
         before = [
             _op("CONST", [1], "v0"),
             _op("ADD", [_val("v0")], "v1"),
-            _op("RETURN", [_val("v1")]),
+            _op("ret", [_val("v1")]),
         ]
         # v0 removed but v0 is still used in ADD's args in after
         after = [
             _op("ADD", [_val("v0")], "v1"),
-            _op("RETURN", [_val("v1")]),
+            _op("ret", [_val("v1")]),
         ]
         r = TranslationValidator.check_pure_op_preservation(before, after)
         assert not r.passed
@@ -192,13 +192,13 @@ class TestValidateDCE:
             _op("ADD", [_val("v0"), _val("v1")], "v2"),
             _op("CONST", [99], "v3"),  # dead -- unused
             _op("MUL", [_val("v3"), _val("v0")], "v4"),  # dead -- unused
-            _op("RETURN", [_val("v2")]),
+            _op("ret", [_val("v2")]),
         ]
         after = [
             _op("CONST", [10], "v0"),
             _op("CONST", [20], "v1"),
             _op("ADD", [_val("v0"), _val("v1")], "v2"),
-            _op("RETURN", [_val("v2")]),
+            _op("ret", [_val("v2")]),
         ]
         report = self.tv.validate_dce(before, after)
         assert report.passed
@@ -207,11 +207,11 @@ class TestValidateDCE:
         before = [
             _op("CONST", [1], "v0"),
             _op("CALL", [_val("v0")], "v1"),  # impure, result used
-            _op("RETURN", [_val("v1")]),
+            _op("ret", [_val("v1")]),
         ]
         after = [
             _op("CONST", [1], "v0"),
-            _op("RETURN", [_val("v1")]),  # v1 used but its def was removed
+            _op("ret", [_val("v1")]),  # v1 used but its def was removed
         ]
         report = self.tv.validate_dce(before, after)
         assert not report.passed

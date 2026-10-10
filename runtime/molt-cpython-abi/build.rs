@@ -82,7 +82,11 @@ fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let mut freestanding_libc_dir = None;
+    let wasi_plan = if target_arch == "wasm32" && matches!(target_os.as_str(), "wasi" | "unknown") {
+        Some(wasi_sysroot::WasiCAbiPlan::from_environment())
+    } else {
+        None
+    };
     unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &build_python::resolve());
 
     // Compile the C variadic shim into a static library.
@@ -106,38 +110,20 @@ fn main() {
     c_codegen::apply_codegen_policy(&mut build, &target_os);
     if target_arch == "wasm32" {
         match target_os.as_str() {
-            "wasi" => {
-                let sysroot = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
-                    panic!(
-                        "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
-                         WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
-                         wasm32-wasip1 CPython ABI provider shims can compile."
-                    )
-                });
-                build.flag("--sysroot").flag(&sysroot.root);
-                if let Some(include_dir) = sysroot.include_dir.as_deref() {
-                    build.include(include_dir);
+            "wasi" | "unknown" => {
+                // Pure wasm32-unknown extensions remain freestanding. This
+                // explicit CPython-ABI provider needs the one SDK C ABI for
+                // FILE, allocation and errno even on the unknown Rust target.
+                let provider = wasi_plan.as_ref().expect("selected WASI C ABI");
+                build.compiler(&provider.driver);
+                build
+                    .flag("--no-default-config")
+                    .flag("--sysroot")
+                    .flag(&provider.root);
+                build.include(&provider.include_dir);
+                if target_os == "unknown" {
+                    emit_freestanding_errno_authority(&mut build, &out_dir);
                 }
-            }
-            "unknown" => {
-                // CPython's C ABI cannot be split across Rust allocation and an
-                // extension's C allocation/FILE/errno provider. Freestanding
-                // runtime artifacts therefore use the canonical WASI libc as
-                // their one C-runtime provider; its syscall surface remains the
-                // generated, admitted host-import boundary in the final module.
-                let provider = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
-                    panic!(
-                        "freestanding wasm C ABI provider not found: configure the canonical \
-                         WASI SDK sysroot via MOLT_WASI_SYSROOT, WASI_SYSROOT, \
-                         WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT"
-                    )
-                });
-                build.flag("--sysroot").flag(&provider.root);
-                if let Some(include_dir) = provider.include_dir.as_deref() {
-                    build.include(include_dir);
-                }
-                freestanding_libc_dir = Some(provider.lib_dir("wasm32-wasip1"));
-                emit_freestanding_errno_authority(&mut build, &out_dir);
             }
             "emscripten" => {
                 // emcc owns its sysroot and CRT selection. Injecting WASI flags
@@ -160,30 +146,20 @@ fn main() {
     // references. Fix: suppress cc's metadata (kills the duplicate lazy pull) and
     // emit ONE propagating `static:+whole-archive` link-lib, so the shim is linked
     // exactly once and still propagates to this crate's cdylib and the discovery
-    // harness cdylib. (wasm32 already suppresses cc metadata above for the same
-    // double-pull reason.) NB: `nm` still lists ~20 weak/lazy Py* as "missing"
+    // harness cdylib. WASM instead keeps cc's normal archive bundling. NB:
+    // `nm` still lists ~20 weak/lazy Py* as "missing"
     // from the harness — those bind at array-op runtime, not init, and do NOT
     // block PyInit (the native drive reaches `numpy.exceptions` regardless).
-    if target_os == "linux" {
-        build.cargo_metadata(false);
-    }
     build.compile("molt_pyarg_shims");
-    if let Some(lib_dir) = freestanding_libc_dir {
-        let libc = lib_dir.join("libc.a");
-        if !libc.is_file() {
-            panic!(
-                "freestanding wasm C ABI provider is incomplete: {} is missing",
-                libc.display()
-            );
-        }
-        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    if target_arch == "wasm32" && target_os == "unknown" {
+        // The admitted target flags supply the SDK search context. This
+        // provider owns the library obligation, not a second path projection.
         println!("cargo:rustc-link-lib=static=c");
     }
     if owns_archive_link {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
     }
     if target_arch != "wasm32" && owns_archive_link {
-        println!("cargo:rustc-link-search=native={}", out_dir.display());
         println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
     }
 

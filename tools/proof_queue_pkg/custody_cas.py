@@ -247,6 +247,9 @@ def put_json(root: Path, payload: Mapping[str, object]) -> ArtifactRef:
         compressed_bytes=len(compressed),
         uncompressed_bytes=len(canonical),
     )
+    # Publication no longer needs the encoder buffers. The receiver owns its
+    # own bounded read, including when a concurrent writer won publication.
+    del canonical, compressed
     verify_ref(reference.as_dict(), expected_root=root)
     return reference
 
@@ -346,7 +349,9 @@ def parse_ref(raw: Mapping[str, object]) -> ArtifactRef:
     )
 
 
-def _read_compressed_artifact(path: Path, reference: ArtifactRef) -> tuple[bytes, str]:
+def _read_compressed_artifact(
+    path: Path, reference: ArtifactRef
+) -> tuple[bytearray, str]:
     stat_size = path.stat().st_size
     if stat_size != reference.compressed_bytes:
         raise ValueError("proof custody artifact compressed size changed")
@@ -422,7 +427,7 @@ def _read_compressed_artifact(path: Path, reference: ArtifactRef) -> tuple[bytes
         )
     if len(output) > MAX_UNCOMPRESSED_BYTES:
         raise ValueError("proof custody artifact exceeds the size ceiling")
-    return bytes(output), compressed_digest.hexdigest()
+    return output, compressed_digest.hexdigest()
 
 
 def read_ref(raw: Mapping[str, object], *, expected_root: Path) -> dict[str, object]:

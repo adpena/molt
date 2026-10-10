@@ -2492,22 +2492,8 @@ def _run_subprocess(
         cwd=Path(_repo_root()),
         timeout=timeout,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
+        text=False,
     )
-    stdout = "" if result.stdout is None else result.stdout
-    stderr = "" if result.stderr is None else result.stderr
-    if (
-        getattr(result, "timed_out", False)
-        and getattr(result, "infrastructure_failure", None) is None
-    ):
-        raise subprocess.TimeoutExpired(
-            cmd=cmd,
-            timeout=timeout,
-            output=stdout,
-            stderr=stderr,
-        )
     outcome = compat_backends.merge_suite_trip_result(
         compat_backends.BackendResult.from_process(result),
         result,
@@ -3018,14 +3004,11 @@ def _molt_diff_execute_script():
 _molt_diff_execute_script()
 """
     timeout = _diff_timeout()
-    try:
-        result = _run_subprocess(
-            [*python_command, "-c", bootstrap, file_path],
-            env=env,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return compat_backends.BackendResult.from_timeout(exc)
+    result = _run_subprocess(
+        [*python_command, "-c", bootstrap, file_path],
+        env=env,
+        timeout=timeout,
+    )
     return compat_backends.BackendResult.from_process(result)
 
 
@@ -3350,28 +3333,12 @@ def _run_molt_owned(
     if codec:
         build_cmd.extend(["--codec", codec])
     if not build_via_batch_server:
-        try:
-            build_res = _run_with_optional_time(
-                build_cmd,
-                env=env,
-                timeout=build_timeout,
-                time_path=build_time_path,
-            )
-        except subprocess.TimeoutExpired as exc:
-            build_metrics = (
-                _parse_time_metrics(build_time_path)
-                if build_time_path is not None
-                else None
-            )
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=124,
-                run_rc=None,
-                status="build_timeout",
-            )
-            return compat_backends.BackendResult.from_timeout(exc, build_failed=True)
+        build_res = _run_with_optional_time(
+            build_cmd,
+            env=env,
+            timeout=build_timeout,
+            time_path=build_time_path,
+        )
         if build_time_path is not None:
             build_metrics = _parse_time_metrics(build_time_path)
         if getattr(build_res, "infrastructure_failure", None) is not None:
@@ -3383,6 +3350,18 @@ def _run_molt_owned(
             )
         build_rc = build_res.returncode
         build_outcome = compat_backends.BackendResult.from_process(build_res)
+        if build_outcome.timed_out:
+            _record_rss_metrics(
+                file_path,
+                build_metrics=build_metrics,
+                run_metrics=None,
+                build_rc=build_rc,
+                run_rc=None,
+                status="build_timeout",
+            )
+            return build_outcome.as_build_failure(
+                detail="build timed out", fallback="build timed out"
+            )
     exceeded, detail = _rss_exceeded(build_metrics, rss_limit_kb)
     if exceeded:
         message = f"Build RSS limit exceeded: {detail}"
@@ -3442,30 +3421,27 @@ def _run_molt_owned(
         return compat_backends.BackendResult("", "", 0)
 
     # Run
-    try:
-        run_res = _run_with_optional_time(
-            [str(output_binary)],
-            env=env,
-            timeout=timeout,
-            time_path=run_time_path,
-        )
-    except subprocess.TimeoutExpired as exc:
-        run_metrics = (
-            _parse_time_metrics(run_time_path) if run_time_path is not None else None
-        )
+    run_res = _run_with_optional_time(
+        [str(output_binary)],
+        env=env,
+        timeout=timeout,
+        time_path=run_time_path,
+    )
+    if run_time_path is not None:
+        run_metrics = _parse_time_metrics(run_time_path)
+    outcome = compat_backends.BackendResult.from_process(run_res)
+    if outcome.infrastructure_failure is not None:
+        return outcome
+    if outcome.timed_out:
         _record_rss_metrics(
             file_path,
             build_metrics=build_metrics,
             run_metrics=run_metrics,
             build_rc=build_rc,
-            run_rc=124,
+            run_rc=outcome.returncode,
             status="run_timeout",
         )
-        return compat_backends.BackendResult.from_timeout(exc)
-    if run_time_path is not None:
-        run_metrics = _parse_time_metrics(run_time_path)
-    if getattr(run_res, "infrastructure_failure", None) is not None:
-        return compat_backends.BackendResult.from_process(run_res)
+        return outcome
     exceeded, detail = _rss_exceeded(run_metrics, rss_limit_kb)
     if exceeded:
         message = f"Run RSS limit exceeded: {detail}"
@@ -3477,7 +3453,6 @@ def _run_molt_owned(
             run_rc=125,
             status="run_rss_exceeded",
         )
-        outcome = compat_backends.BackendResult.from_process(run_res)
         return replace(
             outcome,
             stderr="\n".join(part for part in (outcome.stderr, message) if part),
@@ -3493,7 +3468,7 @@ def _run_molt_owned(
         run_rc=run_res.returncode,
         status=run_status,
     )
-    return compat_backends.BackendResult.from_process(run_res)
+    return outcome
 
 
 def _is_dyld_unknown_imports(stderr: str) -> bool:
@@ -3896,7 +3871,7 @@ def _run_native_backend(
         return outcome
     saw_dyld_retry = False
     if _diff_retry_dyld_default() and _is_dyld_unknown_imports(
-        outcome.diagnostic_stderr or ""
+        outcome.child_stderr or ""
     ):
         _mark_dyld_guard(file_path)
         saw_dyld_retry = True
@@ -3913,7 +3888,7 @@ def _run_native_backend(
             execution_context=context,
         )
         if not outcome.blocks_build_recovery and _is_dyld_unknown_imports(
-            outcome.diagnostic_stderr or ""
+            outcome.child_stderr or ""
         ):
             print(
                 "[RETRY] "
@@ -3929,7 +3904,7 @@ def _run_native_backend(
             )
         if (
             not outcome.blocks_build_recovery
-            and _is_dyld_unknown_imports(outcome.diagnostic_stderr or "")
+            and _is_dyld_unknown_imports(outcome.child_stderr or "")
             and _diff_force_rebuild_on_dyld()
         ):
             print(
@@ -3947,7 +3922,7 @@ def _run_native_backend(
             )
         if (
             not outcome.blocks_build_recovery
-            and _is_dyld_unknown_imports(outcome.diagnostic_stderr or "")
+            and _is_dyld_unknown_imports(outcome.child_stderr or "")
             and _diff_retry_isolated_default()
         ):
             use_local_retry = _diff_dyld_local_fallback()
@@ -3998,7 +3973,7 @@ def _run_native_backend(
     if (
         not outcome.blocks_build_recovery
         and outcome.stdout is None
-        and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
+        and _is_backend_daemon_build_error(outcome.child_stderr or "")
     ):
         print(
             "[RETRY] "
@@ -4015,7 +3990,7 @@ def _run_native_backend(
         if (
             not outcome.blocks_build_recovery
             and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
+            and _is_backend_daemon_build_error(outcome.child_stderr or "")
             and _diff_retry_isolated_default()
         ):
             print(
@@ -4037,7 +4012,7 @@ def _run_native_backend(
         if (
             not outcome.blocks_build_recovery
             and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
+            and _is_backend_daemon_build_error(outcome.child_stderr or "")
         ):
             os.environ["MOLT_BACKEND_DAEMON"] = "0"
             print(
@@ -4109,10 +4084,10 @@ def _cross_backend_divergence(
         candidate = ran[name]
         verdict = compat_comparison.compare_outputs(
             compat_comparison.Outputs(
-                reference.stdout, reference.stderr, reference.returncode
+                reference.stdout, reference.child_stderr or "", reference.returncode
             ),
             compat_comparison.Outputs(
-                candidate.stdout, candidate.stderr, candidate.returncode
+                candidate.stdout, candidate.child_stderr or "", candidate.returncode
             ),
             mode=stdout_mode,
             stderr_mode=stderr_mode,
@@ -4187,7 +4162,7 @@ def _record_backend_result(
             "guard_signal": outcome.guard_signal,
             "detail": outcome.detail,
         }
-        stdout, stderr = outcome.stdout or "", outcome.stderr
+        stdout, stderr = outcome.stdout or "", outcome.child_stderr or ""
     else:
         facts = {
             "returncode": None,
@@ -4212,8 +4187,12 @@ def _record_backend_result(
             "raw_status": raw_status,
             "expect_molt_fail": expect_molt_fail,
             **facts,
-            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
-            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+            "stdout_sha256": hashlib.sha256(
+                stdout.encode("utf-8", errors="surrogateescape")
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(
+                stderr.encode("utf-8", errors="surrogateescape")
+            ).hexdigest(),
         }
     )
 
@@ -4323,7 +4302,7 @@ def diff_test(
         cpython = run_cpython(file_path, python_exe)
         cp_out, cp_err, cp_ret = (
             cpython.stdout or "",
-            cpython.stderr,
+            cpython.child_stderr or "",
             cpython.returncode,
         )
         record["cpython_returncode"] = cp_ret
@@ -4354,21 +4333,21 @@ def diff_test(
 
         if cpython.infrastructure_failure is not None:
             print(f"[UNCALIBRATED] {file_path} (cpython infrastructure failed)")
-            print(cp_err)
+            print(cpython.stderr)
             print(cpython.detail)
             record["raw_status"] = record["resolved_status"] = "uncalibrated"
             record["reason_tag"] = "infrastructure_error"
             return "uncalibrated"
         if cpython.timed_out:
             print(f"[FAIL] {file_path} (cpython timed out)")
-            print(cp_err)
+            print(cpython.stderr)
             record["raw_status"] = "fail"
             record["resolved_status"] = "fail"
             record["reason_tag"] = "timeout"
             return "fail"
         if cpython.resource_failure is not None:
             print(f"[OOM] {file_path} (cpython)")
-            print(cp_err)
+            print(cpython.stderr)
             record["raw_status"] = "oom"
             record["resolved_status"] = "oom"
             return "oom"
@@ -4381,10 +4360,10 @@ def diff_test(
             record["resolved_status"] = "skip"
             return "skip"
         record["cpython_stdout_sha256"] = hashlib.sha256(
-            cp_out.encode("utf-8")
+            cp_out.encode("utf-8", errors="surrogateescape")
         ).hexdigest()
         record["cpython_stderr_sha256"] = hashlib.sha256(
-            cp_err.encode("utf-8")
+            cp_err.encode("utf-8", errors="surrogateescape")
         ).hexdigest()
         record["comparison_law"] = compat_comparison.COMPARISON_LAW_VERSION
 
@@ -4412,7 +4391,7 @@ def diff_test(
             verdict = compat_comparison.compare_outputs(
                 compat_comparison.Outputs(cp_out, cp_err, cp_ret),
                 compat_comparison.Outputs(
-                    outcome.stdout, outcome.stderr, outcome.returncode
+                    outcome.stdout, outcome.child_stderr or "", outcome.returncode
                 ),
                 mode=stdout_mode,
                 stderr_mode=stderr_mode,

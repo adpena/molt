@@ -70,7 +70,7 @@ impl NativePayload {
                 .checked_sub(size_of::<MoltHeader>()),
             Self::String | Self::Bytes => super::layout::InlineBytesStorage::payload_size(length),
             Self::Bytearray => Some(size_of::<*mut Vec<u8>>() + size_of::<u64>()),
-            Self::Set | Self::Frozenset => Some(3 * size_of::<*mut Vec<u64>>()),
+            Self::Set | Self::Frozenset => Some(size_of::<HashStorage<SetEntry>>()),
             Self::Complex => Some(size_of::<crate::builtins::numbers::ComplexParts>()),
         }
     }
@@ -209,8 +209,15 @@ pub(crate) unsafe fn alloc_unpublished(
             return std::ptr::null_mut();
         };
         let aux = if !subtype {
-            super::ObjectAuxPreselection::Default
-        } else if matches!(kind, NativePayload::String | NativePayload::Bytes) {
+            if kind == NativePayload::Frozenset {
+                super::ObjectAuxPreselection::StateInline
+            } else {
+                super::ObjectAuxPreselection::Default
+            }
+        } else if matches!(
+            kind,
+            NativePayload::String | NativePayload::Bytes | NativePayload::Frozenset
+        ) {
             super::ObjectAuxPreselection::Sidecar // Hash state and class share existing sidecar.
         } else {
             super::ObjectAuxPreselection::ClassInline

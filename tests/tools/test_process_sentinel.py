@@ -1174,7 +1174,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
     assert skipped[0].pids == [777]
 
 
-def test_process_groups_exclude_windows_codex_claude_control_plane_paths(
+def test_process_groups_exclude_windows_codex_claude_helper_paths(
     monkeypatch,
 ) -> None:
     module = _load_process_sentinel()
@@ -1197,7 +1197,7 @@ def test_process_groups_exclude_windows_codex_claude_control_plane_paths(
             pgid=None,
             rss_kb=100,
             command=(
-                r"C:\Users\adpen\.codex\tmp\python.exe "
+                r"C:\Users\adpen\.codex\plugins\cache\helper\python.exe "
                 r"C:\Users\adpen\OneDrive\Documents\molt\tests\molt_diff.py"
             ),
         ),
@@ -1207,8 +1207,8 @@ def test_process_groups_exclude_windows_codex_claude_control_plane_paths(
             pgid=None,
             rss_kb=100,
             command=(
-                r"C:\Users\adpen\.claude\worktrees\e2e-stable"
-                r"\tests\molt_diff.py --jobs 2"
+                r"C:\Users\adpen\.claude\plugins\cache\helper\python.exe "
+                r"C:\Users\adpen\OneDrive\Documents\molt\tests\molt_diff.py --jobs 2"
             ),
         ),
         200: module.memory_guard.ProcessSample(
@@ -1229,6 +1229,55 @@ def test_process_groups_exclude_windows_codex_claude_control_plane_paths(
     groups = module.process_groups(samples, root=root, self_pid=999)
 
     assert [group.pgid for group in groups] == [200]
+
+
+def test_process_groups_keep_admitted_worktree_child_and_refuse_unowned_peers() -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample
+    for agent_home in (".codex", ".claude"):
+        root = Path(f"/home/operator/{agent_home}/worktrees/molt")
+        command = f"{root}/target/dev-fast/molt-backend --owned"
+        samples = {
+            50: sample(50, 1, 1, "codex app-server", pgid=50, started_at_ns=50),
+            100: sample(
+                100,
+                50,
+                1,
+                f"{root}/.venv/bin/python tools/memory_guard.py",
+                pgid=100,
+                started_at_ns=100,
+            ),
+            200: sample(200, 100, 1, command, pgid=200, started_at_ns=200),
+            201: sample(201, 50, 1, command, pgid=201, started_at_ns=201),
+            202: sample(202, 777, 1, command, pgid=202, started_at_ns=202),
+            300: sample(
+                300,
+                100,
+                1,
+                f"/home/operator/{agent_home}/plugins/cache/host/python {root}/tests/molt_diff.py",
+                pgid=300,
+                started_at_ns=300,
+            ),
+        }
+        groups = module.process_groups(
+            samples,
+            root=root,
+            self_pid=100,
+            self_pgid=100,
+            owned_pids={200, 300},
+        )
+        assert [group.pgid for group in groups] == [200], agent_home
+        assert groups[0].pids == [200], agent_home
+        assert (
+            module.process_groups(
+                samples,
+                root=root,
+                self_pid=100,
+                self_pgid=100,
+                owned_pids=set(),
+            )
+            == []
+        ), agent_home
 
 
 def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> (

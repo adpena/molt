@@ -177,6 +177,7 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
                     "consumer must not retry or suppress an override failure"
                 );
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert!(!raised.is_null());
                 assert_ne!(
                     errors::PyErr_GivenExceptionMatches(
@@ -186,12 +187,16 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
                     0
                 );
                 let message = typeobj::PyObject_Str(raised);
+                let message_owner = refcount::OwnedPyObject::from_owned(message);
+                assert!(!message.is_null());
+                let utf8 = strings::PyUnicode_AsUTF8(message);
+                assert!(!utf8.is_null());
                 assert_eq!(
-                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(message)).to_bytes(),
+                    std::ffi::CStr::from_ptr(utf8).to_bytes(),
                     b"native mutation sentinel"
                 );
-                refcount::Py_DECREF(message);
-                refcount::Py_DECREF(raised);
+                drop(message_owner);
+                drop(raised_owner);
             }
             for value in [empty, assigned, source, slot_state, state, name, bits] {
                 dec_ref_bits(py, value);

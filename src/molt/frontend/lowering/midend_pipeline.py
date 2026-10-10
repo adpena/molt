@@ -174,7 +174,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         filtered_aliases: dict[str, MoltValue] = {}
                         for _ak, _av in in_state["aliases"].items():
                             _target_block = _value_def_block.get(_av.name)
-                            if _target_block is None or round_cfg.dominates(
+                            if _target_block is None or round_cfg.dominance.dominates(
                                 _target_block, block_id
                             ):
                                 filtered_aliases[_ak] = _av
@@ -182,7 +182,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         filtered_avail: dict[tuple[Any, ...], MoltValue] = {}
                         for _vk, _vv in in_state["available_values"].items():
                             _target_block = _value_def_block.get(_vv.name)
-                            if _target_block is None or round_cfg.dominates(
+                            if _target_block is None or round_cfg.dominance.dominates(
                                 _target_block, block_id
                             ):
                                 filtered_avail[_vk] = _vv

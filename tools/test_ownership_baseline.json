@@ -1,10 +1,8 @@
 {
  "schema": 1,
  "unowned": [
-  "tests/cli/test_cli_import_collection.py",
   "tests/cli/test_cli_memory_guard_launches.py",
   "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
-  "tests/cli/test_cli_smoke.py",
   "tests/cli/test_compiler_source_root.py",
   "tests/cli/test_llvm_wasi_tools.py",
   "tests/cli/test_source_extension_reproducibility.py",
@@ -107,7 +105,6 @@
   "tests/test_wasm_browser_gpu_host.py",
   "tests/test_wasm_determinism.py",
   "tests/test_wasm_importlib_package_bootstrap.py",
-  "tests/test_wasm_linked_runner_node_flags.py",
   "tests/test_wasm_optimization.py",
   "tests/test_wasm_performance.py",
   "tests/test_wasm_pipeline_e2e.py",
@@ -117,9 +114,6 @@
   "tests/tools/test_artifact_cleanup.py",
   "tests/tools/test_named_lanes.py",
   "tests/tools/test_orphan_reaper.py",
-  "tests/tools/test_perf_history.py",
-  "tests/tools/test_perf_release_integrity.py",
-  "tests/tools/test_proof_supervisor_generation.py",
-  "tests/tools/test_target_derived_toolchains.py"
+  "tests/tools/test_perf_history.py"
  ]
 }

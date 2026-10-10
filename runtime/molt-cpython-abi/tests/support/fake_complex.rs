@@ -1,19 +1,9 @@
 use molt_cpython_abi::hooks::OwnedHandleResult;
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
-static COMPLEXES: LazyLock<Mutex<HashMap<u64, (f64, f64)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 pub fn allocate(real: f64, imag: f64) -> u64 {
-    let bits = MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
-    COMPLEXES.lock().unwrap().insert(bits, (real, imag));
-    bits
+    super::fake_runtime::heap_complex(real, imag)
 }
-
 pub fn contains(bits: u64) -> bool {
-    COMPLEXES.lock().unwrap().contains_key(&bits)
+    super::fake_runtime::complex_value(bits).is_some()
 }
 
 pub unsafe extern "C" fn from_doubles(real: f64, imag: f64) -> OwnedHandleResult {
@@ -21,7 +11,7 @@ pub unsafe extern "C" fn from_doubles(real: f64, imag: f64) -> OwnedHandleResult
 }
 
 pub unsafe extern "C" fn parts(bits: u64, real: *mut f64, imag: *mut f64) -> i32 {
-    let Some((real_value, imag_value)) = COMPLEXES.lock().unwrap().get(&bits).copied() else {
+    let Some((real_value, imag_value)) = super::fake_runtime::complex_value(bits) else {
         return -1;
     };
     if real.is_null() || imag.is_null() {
@@ -35,7 +25,7 @@ pub unsafe extern "C" fn parts(bits: u64, real: *mut f64, imag: *mut f64) -> i32
 }
 
 pub unsafe extern "C" fn hash(bits: u64) -> i64 {
-    let Some((real, imag)) = COMPLEXES.lock().unwrap().get(&bits).copied() else {
+    let Some((real, imag)) = super::fake_runtime::complex_value(bits) else {
         return -1;
     };
     let real_hash =

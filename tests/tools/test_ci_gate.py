@@ -15,7 +15,10 @@ import subprocess
 
 # The gate tests patch subprocess and resolve default guard limits, so they
 # run outside hosted custody (which asks git for the checkout) and CI caps.
-pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
+# Cargo checks here run fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures(
+    "developer_host_context", "no_ambient_guard_caps", "admitted_build_capacity"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_GATE = REPO_ROOT / "tools" / "ci_gate.py"
@@ -43,6 +46,7 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
             "ok\n",
             "",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -117,6 +121,7 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
             "adaptive\n",
             "",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -163,7 +168,6 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
         "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
         "MOLT_PREFER_EXTERNAL_ARTIFACTS",
         "MOLT_EXTERNAL_ARTIFACT_ROOTS",
-        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
@@ -225,6 +229,7 @@ def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
             "guarded\n",
             "",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -480,6 +485,7 @@ def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
             "rust ok\n",
             "",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(module.compile_governor, "compile_slot", fake_compile_slot)

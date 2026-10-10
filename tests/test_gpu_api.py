@@ -181,9 +181,8 @@ def test_kernel_simulation_exposes_launch_geometry(monkeypatch):
     import molt.gpu as gpu
     from molt.gpu import thread_id as imported_thread_id
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None, raising=False)
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: False)
 
     @gpu.kernel
     def capture(tids, block_ids, block_dims, grid_dims, n):
@@ -208,6 +207,23 @@ def test_kernel_simulation_exposes_launch_geometry(monkeypatch):
     assert gpu.from_device(grid_dims) == [2, 2, 2, 2, 2, 2]
 
 
+def _install_native_launch_family(monkeypatch, gpu, launch):
+    family = {
+        "molt_gpu_kernel_launch_python": launch,
+        "molt_gpu_thread_id": lambda: 9,
+        "molt_gpu_block_id": lambda: 3,
+        "molt_gpu_block_dim": lambda: 3,
+        "molt_gpu_grid_dim": lambda: 4,
+        "molt_gpu_barrier": lambda: None,
+    }
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None, raising=False)
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: True)
+    monkeypatch.setattr(gpu, "_require_intrinsic", family.__getitem__)
+    for name in ("thread_id", "block_id", "block_dim", "grid_dim", "barrier"):
+        monkeypatch.setattr(gpu, name, family["molt_gpu_" + name])
+    return family
+
+
 def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
     import molt.gpu as gpu
 
@@ -225,7 +241,7 @@ def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
         calls.append((func.__name__, grid, threads, len(args)))
         return None
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+    _install_native_launch_family(monkeypatch, gpu, fake_launch)
 
     a = gpu.to_device([1.0, 2.0, 3.0, 4.0])
     b = gpu.to_device([10.0, 20.0, 30.0, 40.0])
@@ -254,18 +270,27 @@ def test_kernel_launcher_resolves_backend_intrinsic_lazily(monkeypatch):
     def fake_launch(func, grid, threads, args):
         calls.append((func.__name__, grid, threads, len(args)))
 
-    def fake_load(name):
-        assert name == "molt_gpu_kernel_launch"
-        return fake_launch
+    loads = []
+    _install_native_launch_family(monkeypatch, gpu, fake_launch)
+    original_loader = gpu._require_intrinsic
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", fake_load)
+    def fake_load(name):
+        loads.append(name)
+        return original_loader(name)
+
+    monkeypatch.setattr(gpu, "_require_intrinsic", fake_load)
+    assert loads == []
 
     a = gpu.to_device([1.0])
     b = gpu.to_device([2.0])
     c = gpu.alloc(1, float)
     vector_add[1, 1](a, b, c, 1)
 
+    assert loads == ["molt_gpu_kernel_launch_python"]
+    assert gpu.thread_id() == 9
+    assert loads == ["molt_gpu_kernel_launch_python"]
+    assert gpu.thread_id() == 9
+    assert len(loads) == 1
     assert calls == [("vector_add", 1, 1, 4)]
     assert executed == []
     assert gpu.from_device(c) == [0.0]
@@ -283,7 +308,7 @@ def test_kernel_launcher_normalizes_single_int_and_dict_configs(monkeypatch):
     def fake_launch(func, grid, threads, args):
         calls.append((func.__name__, grid, threads, len(args)))
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+    _install_native_launch_family(monkeypatch, gpu, fake_launch)
 
     noop[7]()
     noop[{"grid": 3, "threads": 5}]()
@@ -308,7 +333,7 @@ def test_kernel_launcher_config_does_not_leak_between_calls(monkeypatch):
     def fake_launch(func, grid, threads, args):
         calls.append((func.__name__, grid, threads, len(args)))
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+    _install_native_launch_family(monkeypatch, gpu, fake_launch)
 
     configured = noop[2, 3]
     configured()
@@ -347,7 +372,7 @@ def test_kernel_launcher_rejects_invalid_launch_configs(config, exc_type, messag
         noop[config]
 
 
-def test_kernel_launcher_runtime_active_missing_intrinsic_uses_interpreter(monkeypatch):
+def test_kernel_launcher_runtime_active_missing_intrinsic_refuses(monkeypatch):
     import molt.gpu as gpu
 
     executed = []
@@ -359,12 +384,11 @@ def test_kernel_launcher_runtime_active_missing_intrinsic_uses_interpreter(monke
         if tid < n:
             c[tid] = a[tid] + b[tid]
 
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: True)
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None, raising=False)
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: True)
     monkeypatch.setattr(
-        gpu._molt_intrinsics,
-        "require_intrinsic",
+        gpu,
+        "_require_intrinsic",
         lambda name: (_ for _ in ()).throw(
             RuntimeError(f"intrinsic unavailable: {name}")
         ),
@@ -374,10 +398,12 @@ def test_kernel_launcher_runtime_active_missing_intrinsic_uses_interpreter(monke
     b = gpu.to_device([2.0])
     c = gpu.alloc(1, float)
 
-    vector_add[1, 1](a, b, c, 1)
-
-    assert executed == ["ran"]
-    assert gpu.from_device(c) == [3.0]
+    with pytest.raises(
+        RuntimeError, match="intrinsic unavailable: molt_gpu_kernel_launch_python"
+    ):
+        vector_add[1, 1](a, b, c, 1)
+    assert executed == []
+    assert gpu.from_device(c) == [0.0]
 
 
 def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
@@ -387,9 +413,8 @@ def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
     original_block_id = gpu.block_id
     original_block_dim = gpu.block_dim
     original_grid_dim = gpu.grid_dim
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None, raising=False)
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: False)
 
     @gpu.kernel
     def explode():
@@ -422,9 +447,8 @@ def test_kernel_simulation_propagates_out_of_bounds_index(monkeypatch):
     original_block_id = gpu.block_id
     original_block_dim = gpu.block_dim
     original_grid_dim = gpu.grid_dim
-    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
-    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None, raising=False)
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: False)
 
     @gpu.kernel
     def unguarded_write(out):
@@ -2360,3 +2384,158 @@ if __name__ == "__main__":
                 failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_kernel_reference_context_is_lazy_and_isolated(monkeypatch):
+    import molt.gpu as gpu
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: False)
+    monkeypatch.delattr(gpu, "_MOLT_GPU_REFERENCE_CONTEXT", raising=False)
+    assert gpu.thread_id() == 0
+    assert not hasattr(gpu, "_MOLT_GPU_REFERENCE_CONTEXT")
+    rendezvous = Barrier(2)
+
+    @gpu.kernel
+    def capture(expected, result):
+        rendezvous.wait(timeout=10)
+        result.append((gpu.thread_id(), gpu.block_dim(), gpu.grid_dim()))
+        rendezvous.wait(timeout=10)
+        assert gpu.grid_dim() == expected
+
+    def run(grid):
+        result = []
+
+        # First callback overlaps; later callbacks need no rendezvous.
+        @gpu.kernel
+        def outer():
+            if gpu.thread_id() == 0:
+                capture._func(grid, result)
+
+        outer[grid, 1]()
+        assert gpu.thread_id() == 0
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.submit(run, 1), pool.submit(run, 2)
+        assert first.result() == [(0, 1, 1)]
+        assert second.result() == [(0, 1, 2)]
+
+
+def _load_gpu_with_runtime(monkeypatch, *, active, symbols, loads):
+    # Execute the actual module against the existing intrinsic import boundary.
+    # Keep this module private so unrelated GPU tests retain their CPython API.
+    import importlib.util
+    import types
+    import molt.gpu as gpu
+
+    def require(name):
+        loads.append(name)
+        if name not in symbols:
+            raise RuntimeError("intrinsic unavailable: " + name)
+        return symbols[name]
+
+    provider = types.ModuleType("_intrinsics")
+    provider.runtime_active = lambda: active
+    provider.require_intrinsic = require
+    spec = importlib.util.spec_from_file_location("_gpu_publication_test", gpu.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    with monkeypatch.context() as local:
+        local.setitem(sys.modules, "_intrinsics", provider)
+        spec.loader.exec_module(module)
+    return module
+
+
+def test_gpu_import_publishes_native_queries_and_keeps_launch_lazy(monkeypatch):
+    names = ("thread_id", "block_id", "block_dim", "grid_dim", "barrier")
+    calls = []
+    symbols = {"molt_gpu_" + name: (lambda: 19) for name in names}
+    symbols["molt_gpu_kernel_launch_python"] = lambda *args: calls.append(args)
+    loads = []
+    gpu = _load_gpu_with_runtime(monkeypatch, active=True, symbols=symbols, loads=loads)
+    assert loads == ["molt_gpu_" + name for name in names]
+    assert not hasattr(gpu, "_reference_launch")
+    assert not hasattr(gpu, "_reference_geometry")
+    assert not hasattr(gpu, "_MOLT_GPU_REFERENCE_CONTEXT")
+    for name in names:
+        assert getattr(gpu, name) is symbols["molt_gpu_" + name]
+        assert getattr(gpu, name)() == 19
+    assert len(loads) == 5
+
+    @gpu.kernel
+    def body():
+        raise AssertionError("active Molt must never enter a host reference body")
+
+    body[1, 2]()
+    body[2, 1]()
+    assert loads == ["molt_gpu_" + name for name in names] + [
+        "molt_gpu_kernel_launch_python"
+    ]
+    assert calls == [(body._func, 1, 2, ()), (body._func, 2, 1, ())]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "molt_gpu_kernel_launch_python",
+        "molt_gpu_thread_id",
+        "molt_gpu_block_id",
+        "molt_gpu_block_dim",
+        "molt_gpu_grid_dim",
+        "molt_gpu_barrier",
+    ],
+)
+def test_kernel_missing_native_intrinsic_does_not_enter_reference(monkeypatch, missing):
+    calls = []
+    symbols = {
+        "molt_gpu_" + name: (lambda: 0)
+        for name in ("thread_id", "block_id", "block_dim", "grid_dim", "barrier")
+    }
+    symbols["molt_gpu_kernel_launch_python"] = lambda *args: calls.append(args)
+    del symbols[missing]
+    with pytest.raises(RuntimeError, match="intrinsic unavailable: " + missing):
+        gpu = _load_gpu_with_runtime(
+            monkeypatch, active=True, symbols=symbols, loads=[]
+        )
+
+        @gpu.kernel
+        def body():
+            calls.append("reference")
+
+        body[1, 1]()
+    assert calls == []
+
+
+def test_inactive_gpu_import_does_not_materialize_native_or_reference_context(
+    monkeypatch,
+):
+    loads = []
+    gpu = _load_gpu_with_runtime(monkeypatch, active=False, symbols={}, loads=loads)
+    assert loads == []
+    assert not hasattr(gpu, "_MOLT_GPU_REFERENCE_CONTEXT")
+    assert (gpu.thread_id(), gpu.block_id(), gpu.block_dim(), gpu.grid_dim()) == (
+        0,
+        0,
+        1,
+        1,
+    )
+    seen = []
+
+    @gpu.kernel
+    def body():
+        seen.append(gpu.thread_id())
+
+    body[1, 2]()
+    assert seen == [0, 1]
+    assert loads == []
+
+
+def test_kernel_launch_semantics_reference(capsys, monkeypatch):
+    import molt.gpu as gpu
+    import runpy
+
+    monkeypatch.setattr(gpu, "_runtime_active", lambda: False)
+    runpy.run_path(str(Path(__file__).parent / "fixtures" / "gpu_launch_semantics.py"))
+    assert capsys.readouterr().out == "[11.0, 22.0, 33.0, 44.0]\nlaunch semantics ok\n"

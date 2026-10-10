@@ -2182,6 +2182,7 @@ class _PreparedFrontendRunTicket:
 
 @dataclass(frozen=True)
 class _PreparedBackendSetup:
+    backend: str
     runtime_state: _RuntimeArtifactState
     backend_bin: Path
     cache_setup: _BackendCacheSetup

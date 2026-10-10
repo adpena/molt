@@ -8,6 +8,9 @@ import pytest
 
 from tools import runtime_safety
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 def test_fuzz_workspace_for_runtime_target() -> None:
     workspace = runtime_safety._fuzz_workspace_for_target("string_ops")

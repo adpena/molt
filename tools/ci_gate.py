@@ -57,6 +57,7 @@ import tools.memory_guard as memory_guard  # noqa: E402
 import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
 import tools.compile_governor as compile_governor  # noqa: E402
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import CANONICAL_ROOT_ENV_KEYS, development_artifact_env  # noqa: E402
 
 # This gate captures and relays every check's subprocess stdout/stderr via
@@ -575,7 +576,6 @@ def _build_checks() -> list[Check]:
             name="apparatus-learning-protection-teeth",
             tier=1,
             cmd=_uv_pytest(
-                str(TESTS / "tools" / "test_forbidden_checkout_guard.py"),
                 str(TESTS / "tools" / "test_apparatus_agent_safety.py"),
                 str(TESTS / "tools" / "test_anti_recurrence_gate.py"),
                 str(TESTS / "tools" / "test_hooks_session_learning.py"),
@@ -1098,6 +1098,7 @@ def _run_check(
 
     start = time.monotonic()
     try:
+        admit_cargo_build(check.cmd, cwd=cwd, env=env)
         with slot_context:
             guarded = harness_memory_guard.guarded_completed_process(
                 check.cmd,

@@ -9,6 +9,122 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Int, {
 
 }, {
+        "__add__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__add__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_add_slot), 2,
+        )),
+        "__radd__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__radd__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_radd_slot), 2,
+        )),
+        "__sub__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__sub__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_sub_slot), 2,
+        )),
+        "__rsub__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rsub__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rsub_slot), 2,
+        )),
+        "__mul__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__mul__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_mul_slot), 2,
+        )),
+        "__rmul__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rmul__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rmul_slot), 2,
+        )),
+        "__truediv__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__truediv__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_truediv_slot), 2,
+        )),
+        "__rtruediv__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rtruediv__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rtruediv_slot), 2,
+        )),
+        "__floordiv__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__floordiv__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_floordiv_slot), 2,
+        )),
+        "__rfloordiv__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rfloordiv__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rfloordiv_slot), 2,
+        )),
+        "__mod__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__mod__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_mod_slot), 2,
+        )),
+        "__rmod__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rmod__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rmod_slot), 2,
+        )),
+        "__divmod__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__divmod__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_divmod_slot), 2,
+        )),
+        "__rdivmod__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rdivmod__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rdivmod_slot), 2,
+        )),
+        "__lshift__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__lshift__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_lshift_slot), 2,
+        )),
+        "__rlshift__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rlshift__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rlshift_slot), 2,
+        )),
+        "__rshift__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rshift__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rshift_slot), 2,
+        )),
+        "__rrshift__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rrshift__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rrshift_slot), 2,
+        )),
+        "__and__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__and__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_and_slot), 2,
+        )),
+        "__rand__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rand__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rand_slot), 2,
+        )),
+        "__or__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__or__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_or_slot), 2,
+        )),
+        "__ror__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__ror__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_ror_slot), 2,
+        )),
+        "__xor__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__xor__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_xor_slot), 2,
+        )),
+        "__rxor__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rxor__").with_text_signature("($self, value, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rxor_slot), 2,
+        )),
+        "__pow__" => Some(builtin_func_bits_with_defaults_tuple(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__pow__").with_text_signature("($self, value, mod=None, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_pow_slot), 3, &[MoltObject::none().bits()],
+        )),
+        "__rpow__" => Some(builtin_func_bits_with_defaults_tuple(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__rpow__").with_text_signature("($self, value, mod=None, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_rpow_slot), 3, &[MoltObject::none().bits()],
+        )),
+        "__neg__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__neg__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_neg_slot), 1,
+        )),
+        "__pos__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__pos__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_pos_slot), 1,
+        )),
+        "__invert__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__invert__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::int_invert_slot), 1,
+        )),
         "__round__" => Some(builtin_func_bits_with_defaults_tuple(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "__round__").with_text_signature(if runtime_python_at_least(_py, 3, 14) { "($self, ndigits=None, /)" } else { "($self, ndigits=<unrepresentable>, /)" }),
@@ -31,25 +147,13 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
         "__abs__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__abs__").with_text_signature("($self, /)"),
-            fn_addr!(molt_int_abs_method),
+            fn_addr!(crate::object::ops_arith::native_slots::int_abs_slot),
             1,
-        )),
-        "__add__" => Some(builtin_func_bits(
-            _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__add__").with_text_signature("($self, value, /)"),
-            fn_addr!(molt_int_add_method),
-            2,
-        )),
-        "__and__" => Some(builtin_func_bits(
-            _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__and__").with_text_signature("($self, value, /)"),
-            fn_addr!(molt_int_and_method),
-            2,
         )),
         "__bool__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__bool__").with_text_signature("($self, /)"),
-            fn_addr!(molt_int_bool_method),
+            fn_addr!(crate::object::ops_arith::native_slots::int_bool_slot),
             1,
         )),
         "__ceil__" => Some(builtin_func_bits(
@@ -57,12 +161,6 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "__ceil__"),
             fn_addr!(molt_int_ceil_method),
             1,
-        )),
-        "__divmod__" => Some(builtin_func_bits(
-            _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__divmod__").with_text_signature("($self, value, /)"),
-            fn_addr!(molt_int_divmod_method),
-            2,
         )),
         "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).int).with_text_signature("($type, *args, **kwargs)"),
@@ -147,6 +245,22 @@ crate::builtins::methods::native_method_table!(float_method_bits, publish_float_
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Float, {
 
 }, {
+        "__neg__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__neg__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::float_neg_slot), 1,
+        )),
+        "__pos__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__pos__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::float_pos_slot), 1,
+        )),
+        "__abs__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__abs__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::float_abs_slot), 1,
+        )),
+        "__int__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__int__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_arith::native_slots::float_int_slot), 1,
+        )),
         "__round__" => Some(builtin_func_bits_with_defaults_tuple(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).float, "__round__").with_text_signature("($self, ndigits=None, /)"),
@@ -381,4 +495,35 @@ crate::builtins::methods::native_method_table!(complex_method_bits, publish_comp
             fn_addr!(molt_complex_conjugate),
             1,
         )),
+});
+
+crate::builtins::methods::native_method_table!(bool_method_bits, publish_bool_methods, _py, name, [], {}, {
+    "__and__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__and__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_and_slot), 2,
+    )),
+    "__rand__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__rand__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_and_slot), 2,
+    )),
+    "__or__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__or__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_or_slot), 2,
+    )),
+    "__ror__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__ror__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_or_slot), 2,
+    )),
+    "__xor__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__xor__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_xor_slot), 2,
+    )),
+    "__rxor__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__rxor__").with_text_signature("($self, value, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_xor_slot), 2,
+    )),
+    "__invert__" => Some(builtin_func_bits(
+        _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bool, "__invert__").with_text_signature("($self, /)"),
+        fn_addr!(crate::object::ops_arith::native_slots::bool_invert_slot), 1,
+    )),
 });

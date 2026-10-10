@@ -23,8 +23,9 @@ mod http_exception_boundary_tests {
         assert_eq!(active.bits(), expected);
         unsafe {
             let active = errors::PyErr_GetHandledException();
+            let active_owner = refcount::OwnedPyObject::from_owned(active);
             assert_eq!(active, GLOBAL_BRIDGE.handle_to_borrowed_pyobj(expected));
-            refcount::Py_DECREF(active);
+            drop(active_owner);
         }
     }
 
@@ -543,13 +544,20 @@ fn native_error_roundtrip_retains_identity_and_owned_metadata() {
                 let mut value = ptr::null_mut();
                 let mut traceback = ptr::null_mut();
                 errors::PyErr_Fetch(&raw mut exc, &raw mut value, &raw mut traceback);
+                let exc_owner = refcount::OwnedPyObject::from_owned(exc);
+                let value_owner = refcount::OwnedPyObject::from_owned(value);
+                let traceback_owner = refcount::OwnedPyObject::from_owned(traceback);
                 assert_eq!(exc, class.cast());
                 assert_eq!(
                     value, native,
                     "C-to-runtime-to-C must not reconstruct the instance"
                 );
                 assert!(!exception_pending(py));
-                errors::PyErr_Restore(exc, value, traceback);
+                errors::PyErr_Restore(
+                    exc_owner.into_ptr(),
+                    value_owner.into_ptr(),
+                    traceback_owner.into_ptr(),
+                );
                 assert!(crate::cpython_abi_hooks::transfer_pending_cpython_exception());
                 assert_eq!(exception_last_bits_noinc(py), Some(bits));
                 exception_stack_push();
@@ -1535,10 +1543,13 @@ fn runtime_exception_initializers_dispatch_real_native_storage_without_wrapper_w
                 &raw mut error_value,
                 &raw mut traceback,
             );
+            let error_type_owner = refcount::OwnedPyObject::from_owned(error_type);
+            let error_value_owner = refcount::OwnedPyObject::from_owned(error_value);
+            let traceback_owner = refcount::OwnedPyObject::from_owned(traceback);
             assert_eq!(error_value, native.as_ptr());
-            refcount::Py_XDECREF(error_type);
-            refcount::Py_XDECREF(error_value);
-            refcount::Py_XDECREF(traceback);
+            drop(error_type_owner);
+            drop(error_value_owner);
+            drop(traceback_owner);
             assert!(!exception_pending(py));
             assert_eq!(
                 (*native.as_ptr().cast::<PyBaseExceptionObject>()).args,

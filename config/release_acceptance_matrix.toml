@@ -1,7 +1,8 @@
 schema = "molt.release-acceptance-matrix.v1"
 
-# All advertised executable backends require semantic admission. LLVM currently
-# has no canonical E3 coordinate producer; keep that absence as a release blocker.
+# All advertised executable backends require semantic admission. Canonical E3
+# coordinates exist for each; installed delivery and actual execution remain
+# separate release requirements, never consequences of this declaration.
 required_semantic_backends = ["llvm", "native", "wasm"]
 
 # Guest, runtime Cargo, and compiler Cargo profiles are separate observed facts.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime_import_abi::{
     MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ,
-    MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
+    MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
 };
 use molt_tir::trampolines::TaskCompletion;
 
@@ -96,14 +96,8 @@ impl SimpleBackend {
                 let payload_slots = arity + usize::from(has_closure);
                 let runtime_task_kind = crate::native_task_runtime_kind_bits(layout.runtime_kind());
 
-                let mut poll_sig = module.make_signature();
-                poll_sig.params.push(AbiParam::new(types::I64));
-                poll_sig.returns.push(AbiParam::new(types::I64));
-                let poll_id = module
-                    .declare_function(func_name, Linkage::Import, &poll_sig)
-                    .unwrap();
-                let poll_ref = module.declare_func_in_func(poll_id, builder.func);
-                let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+                let poll_addr =
+                    Self::task_poll_identity(module, &mut builder, func_name, Linkage::Import);
 
                 let task_callee =
                     Self::import_runtime_func_id_split(module, import_ids, MOLT_TASK_NEW);
@@ -182,10 +176,13 @@ impl SimpleBackend {
                         let reg_callee = Self::import_runtime_func_id_split(
                             module,
                             import_ids,
-                            MOLT_TASK_REGISTER_TOKEN_OWNED,
+                            MOLT_TASK_REGISTER_EXECUTION,
                         );
                         let reg_local = module.declare_func_in_func(reg_callee, builder.func);
-                        builder.ins().call(reg_local, &[task_obj, current_token]);
+                        let inherited = builder.ins().iconst(types::I64, box_none());
+                        builder
+                            .ins()
+                            .call(reg_local, &[task_obj, current_token, inherited]);
                         task_obj
                     }
                     TaskCompletion::WrapAsyncGen => {

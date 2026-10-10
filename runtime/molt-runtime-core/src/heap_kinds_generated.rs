@@ -58,10 +58,12 @@ pub const TYPE_ID_WEAKREF: u32 = 256;
 pub const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
 pub const TYPE_ID_CELL: u32 = 258;
 pub const TYPE_ID_FRAME_BINDINGS: u32 = 259;
+pub const TYPE_ID_CONTEXT_BITMAP_NODE: u32 = 260;
+pub const TYPE_ID_CONTEXT_COLLISION_NODE: u32 = 261;
 
 pub const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_FRAME_BINDINGS;
-pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
+pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CONTEXT_COLLISION_NODE;
+pub const ALL_HEAP_TYPE_IDS: [u32; 60] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -120,6 +122,8 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_NATIVE_DESCRIPTOR,
     TYPE_ID_CELL,
     TYPE_ID_FRAME_BINDINGS,
+    TYPE_ID_CONTEXT_BITMAP_NODE,
+    TYPE_ID_CONTEXT_COLLISION_NODE,
 ];
 
 #[repr(u16)]
@@ -168,6 +172,10 @@ pub enum ObjectShapeId {
     TypesMappingProxy = 73,
     TypesFrame = 74,
     TypesFrameLocalsProxy = 75,
+    Context = 76,
+    ContextVar = 77,
+    ContextToken = 78,
+    ContextIterator = 79,
     ItertoolsChain = 96,
     ItertoolsIslice = 97,
     ItertoolsRepeat = 98,
@@ -239,6 +247,10 @@ impl ObjectShapeId {
             73 => Self::TypesMappingProxy,
             74 => Self::TypesFrame,
             75 => Self::TypesFrameLocalsProxy,
+            76 => Self::Context,
+            77 => Self::ContextVar,
+            78 => Self::ContextToken,
+            79 => Self::ContextIterator,
             96 => Self::ItertoolsChain,
             97 => Self::ItertoolsIslice,
             98 => Self::ItertoolsRepeat,
@@ -268,6 +280,7 @@ impl ObjectShapeId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectShapeLifecycleFamily {
     BoxedFields,
+    Contextvars,
     DictSubclass,
     Functools,
     Itertools,
@@ -329,6 +342,10 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::TypesMappingProxy => ObjectShapeLifecycleFamily::Types,
         ObjectShapeId::TypesFrame => ObjectShapeLifecycleFamily::Types,
         ObjectShapeId::TypesFrameLocalsProxy => ObjectShapeLifecycleFamily::Types,
+        ObjectShapeId::Context => ObjectShapeLifecycleFamily::Contextvars,
+        ObjectShapeId::ContextVar => ObjectShapeLifecycleFamily::Contextvars,
+        ObjectShapeId::ContextToken => ObjectShapeLifecycleFamily::Contextvars,
+        ObjectShapeId::ContextIterator => ObjectShapeLifecycleFamily::Contextvars,
         ObjectShapeId::ItertoolsChain => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsIslice => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsRepeat => ObjectShapeLifecycleFamily::Itertools,
@@ -400,6 +417,10 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::TypesMappingProxy => ObjectShapeResourceSlot::None,
         ObjectShapeId::TypesFrame => ObjectShapeResourceSlot::None,
         ObjectShapeId::TypesFrameLocalsProxy => ObjectShapeResourceSlot::None,
+        ObjectShapeId::Context => ObjectShapeResourceSlot::None,
+        ObjectShapeId::ContextVar => ObjectShapeResourceSlot::None,
+        ObjectShapeId::ContextToken => ObjectShapeResourceSlot::None,
+        ObjectShapeId::ContextIterator => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsChain => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsIslice => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsRepeat => ObjectShapeResourceSlot::None,

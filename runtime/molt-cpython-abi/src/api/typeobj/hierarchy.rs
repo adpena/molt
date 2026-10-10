@@ -156,7 +156,7 @@ unsafe fn solid_owner(
                 GLOBAL_BRIDGE
                     .observed_handle_for_pyobj(tp.cast())
                     .filter(|value| {
-                        (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+                        crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                             == crate::abi_types::MoltTypeTag::Type as u8
                     })
             {
@@ -279,7 +279,7 @@ pub(super) unsafe fn assign_class(object: *mut PyObject, target: *mut PyTypeObje
         if GLOBAL_BRIDGE
             .observed_handle_for_pyobj(target.cast())
             .is_some_and(|value| {
-                (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+                crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                     == crate::abi_types::MoltTypeTag::Type as u8
             })
         {

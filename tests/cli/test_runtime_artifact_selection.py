@@ -98,3 +98,39 @@ def test_default_rlib_build_script_has_no_retired_native_cdylib_link_lane() -> N
     )
     assert host_example["crate-type"] == ["cdylib"]
     assert host_example["required-features"] == ["cext_loader"]
+
+
+@pytest.mark.parametrize(
+    "selection,links",
+    [
+        (RUNTIME_RLIB_ARTIFACTS, False),
+        (RUNTIME_STATICLIB_ARTIFACTS, False),
+        (RUNTIME_CDYLIB_ARTIFACTS, True),
+        (RUNTIME_WASM_COMBINED_ARTIFACTS, True),
+    ],
+)
+def test_runtime_artifact_producer_roundtrips_through_capture_authority(
+    selection, links
+):
+    from tools.proof_queue_pkg.command_admission import (
+        parse_cargo_invocation,
+        rust_link_artifact_selection,
+    )
+
+    command = ["cargo", "rustc", "--lib"]
+    selection.select_in(command)
+    command.extend(("--", "--print", "native-static-libs"))
+    assert parse_cargo_invocation(command).crate_types == tuple(
+        kind.value for kind in selection.crate_types
+    )
+    admitted = rust_link_artifact_selection(
+        command,
+        cargo=True,
+        cargo_invocation=parse_cargo_invocation(command),
+        unit="target",
+    )
+    assert admitted["cargo_crate_types"] == [
+        kind.value for kind in selection.crate_types
+    ]
+    assert admitted["rustc_crate_types"] == []
+    assert admitted["link_required"] is links

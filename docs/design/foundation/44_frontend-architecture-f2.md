@@ -517,7 +517,27 @@ establish CPython-version, OS, architecture, or backend matrix closure.
 
 **What F1 proved (the precedent F2 extends).** F1 split the 27K-line class across files **move-only** — beginning with `5ef17777b` (serialization + pattern_match) and `d206a9a4f` (visit_Call + visit_ClassDef families), then continuing through local-binding, midend-optimization, analysis, async/generator, comprehension, expression, function, assignment, control-flow, and scope families. Each family remains a body relocation with the `_GeneratorProtocol` (`_protocol.py:54`) restoring cross-file `self.<attr>` type-checking. F1's own headers are explicit that this bought *file boundaries, not semantic ones*: classes.py:1-9 — "Move-only extraction… every method here is, transitively, called only from within this family. self.<method>/<attr> references resolve through the SimpleTIRGenerator MRO at runtime." Doc 30:20 states the verdict precisely: the visitors are "F1-phase move-only extractions with **no independent semantic content**." F2 is the phase that gives them independent semantic content — or dissolves them.
 
-**The existence proof that F2's target shape is reachable** lives in the same package today: `cfg_analysis.py` (416 lines) is already the end-state shape — free functions (`build_cfg`, `_collect_control_maps` at `cfg_analysis.py:44`) over frozen dataclasses (`BasicBlock`/`ControlMaps`/`CFGGraph` at `cfg_analysis.py:12/19/31`) taking an `OpLike` Protocol (`cfg_analysis.py:7`). Zero `self`, zero god-object state, fully testable in isolation. F2 makes the rest of the frontend look like `cfg_analysis.py`.
+**The existence proof that F2's target shape is reachable** lives in the same package today: `cfg_analysis.py` has free functions (`build_cfg`, `_collect_control_maps`) over frozen dataclasses (`BasicBlock`, `ControlMaps`, `CFGGraph`) taking an `OpLike` protocol. Zero `self`, zero god-object state, fully testable in isolation. F2 makes the rest of the frontend look like `cfg_analysis.py`.
+
+`build_cfg` shares immutable graphs through a 128-entry LRU keyed by the exact
+control projection: every operation kind plus the label operand consumed by
+labels, jumps, exception routing and try markers. Reachability is available
+immediately; `CFGGraph.dominance` derives the immutable tree on first use.
+The entry count bounds retained generations, not bytes independently of input
+size. Cold/warm lowering and retained-cache memory require actual measurements.
+
+Frontend CFG dominance is owned by `DominatorTree` in that module. It computes
+immediate dominators over reachable reverse postorder and answers dominance
+through tree intervals, following TIR's `IndexedDominance` contract. Retained
+storage is linear in block count; construction uses linear block/edge storage
+and iterative traversals rather than a set of every ancestor per block. The
+fixed-point solver's running time still depends on graph shape. Normal,
+exception and resume edges all participate. Only reachable blocks dominate
+themselves; entry and unreachable blocks have no immediate dominator. Definite
+assignment and cross-block value reuse consume this query authority directly.
+The owning midend tests compare small graphs with an independent path-removal
+oracle and cover deep CFGs; full-module lowering receipts are required for
+compiler memory and latency claims.
 
 ---
 

@@ -208,7 +208,15 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
             }
 
             let mut seen: HashSet<String> = HashSet::new();
-            let annotation_order = unsafe { dict_order(annotations_ptr) }.clone();
+            let Some(annotation_order) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    annotations_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
+                return MoltObject::none().bits();
+            };
             for pair in annotation_order.chunks(2) {
                 if pair.len() != 2 {
                     continue;

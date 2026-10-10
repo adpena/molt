@@ -22,13 +22,6 @@ from pathlib import Path
 
 from generator_io import generator_main, rustfmt_source
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
-
-_COMMANDS = CommandExecutor.for_file(__file__)
-
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "runtime" / "heap_kinds.toml"
 OUT_CODEGEN = ROOT / "runtime" / "molt-codegen-abi" / "src" / "heap_kinds_generated.rs"
@@ -65,6 +58,7 @@ ACYCLIC_SLOT_SCHEMAS = {
         ("varkw", "str_or_none"),
         ("freevars", "str_tuple"),
         ("cellvars", "str_tuple"),
+        ("gpu_descriptor", "str_or_none"),
     ),
 }
 ALLOWED = {
@@ -178,6 +172,7 @@ OBJECT_SHAPE_FAMILIES = {
     "functools",
     "types",
     "itertools",
+    "contextvars",
 }
 OBJECT_SHAPE_RESOURCE_SLOTS = {"none", "io_socket", "websocket"}
 

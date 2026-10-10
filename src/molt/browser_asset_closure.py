@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from molt.source_root import compiler_source_root
+from molt.exact_json import read_exact
+from molt.toolchain_identity import capture_stable_regular_file
 
 
 BROWSER_WASM_ENTRY_ASSETS = "browser-wasm"
@@ -16,27 +17,38 @@ BROWSER_HOST_ENTRY_ASSETS = "browser-host"
 NODE_RUNNER_ENTRY_ASSETS = "node-runner"
 _GRAPH_NAME = "browser_asset_graph.generated.json"
 _CANONICAL_TEXT_SUFFIXES = frozenset({".js", ".json", ".mjs"})
+_MAX_ASSET_BYTES = 16 * 1024 * 1024
+_MAX_GRAPH_BYTES = 4 * 1024 * 1024
+_MAX_CLOSURE_BYTES = 64 * 1024 * 1024
 
 
 def canonical_text_bytes(path: Path) -> bytes:
     """Read UTF-8 text with one LF wire representation on every host."""
 
-    with path.open("r", encoding="utf-8", newline=None) as handle:
-        return handle.read().encode("utf-8")
+    _, raw = capture_stable_regular_file(
+        path, label="WASM loader text", max_bytes=_MAX_ASSET_BYTES
+    )
+    text = raw.decode("utf-8")
+    if "\r" not in text:
+        return raw
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def canonical_wasm_loader_asset_bytes(path: Path) -> bytes:
     """Read a loader asset in its deterministic publication wire form."""
 
     if path.suffix not in _CANONICAL_TEXT_SUFFIXES:
-        return path.read_bytes()
+        return capture_stable_regular_file(
+            path, label="WASM loader asset", max_bytes=_MAX_ASSET_BYTES
+        )[1]
     return canonical_text_bytes(path)
 
 
 @dataclass(frozen=True, slots=True)
-class _VerifiedAsset:
+class _Asset:
     references: tuple[str, ...]
     role: str
+    sha256: object
 
 
 def _canonical_asset_path(root: Path, name: str) -> Path:
@@ -49,38 +61,32 @@ def _canonical_asset_path(root: Path, name: str) -> Path:
     return path
 
 
-def _load_verified_graph(
+def _verified_closure(
     wasm_root: Path,
-) -> tuple[dict[str, _VerifiedAsset], dict[str, tuple[str, tuple[str, ...]]]]:
+    entries: str | Iterable[str],
+    *,
+    retain_payloads: bool,
+) -> tuple[tuple[str, ...], dict[str, bytes]]:
     root = wasm_root.resolve()
     graph_path = root / _GRAPH_NAME
     try:
-        graph_bytes = graph_path.read_bytes()
-        payload = json.loads(graph_bytes)
+        payload = read_exact(
+            graph_path, max_bytes=_MAX_GRAPH_BYTES, label="browser asset graph"
+        )
     except (OSError, ValueError) as exc:
         raise ValueError(
             f"browser asset graph is unreadable: {graph_path}: {exc}"
         ) from exc
-    if payload.get("schema_version") != 2 or not isinstance(
-        payload.get("assets"), dict
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 2
+        or not isinstance(payload.get("assets"), dict)
     ):
         raise ValueError(f"browser asset graph has unsupported schema: {graph_path}")
-    graph: dict[str, _VerifiedAsset] = {}
+    graph: dict[str, _Asset] = {}
     for name, facts in payload["assets"].items():
         if not isinstance(name, str) or not isinstance(facts, dict):
             raise ValueError("browser asset graph contains a malformed asset row")
-        path = _canonical_asset_path(root, name)
-        if not path.is_file():
-            raise FileNotFoundError(f"missing browser static asset: {path}")
-        expected_hash = facts.get("sha256")
-        actual_hash = hashlib.sha256(
-            canonical_wasm_loader_asset_bytes(path)
-        ).hexdigest()
-        if expected_hash != actual_hash:
-            raise ValueError(
-                f"browser asset graph hash drift for {name}: "
-                f"expected {expected_hash}, got {actual_hash}; run tools/gen_browser_asset_graph.py --write"
-            )
         role = facts.get("role")
         references = facts.get("references")
         if (
@@ -89,7 +95,7 @@ def _load_verified_graph(
             or not all(isinstance(reference, str) for reference in references)
         ):
             raise ValueError(f"browser asset graph references are malformed for {name}")
-        graph[name] = _VerifiedAsset(tuple(references), role)
+        graph[name] = _Asset(tuple(references), role, facts.get("sha256"))
     for owner, facts in graph.items():
         missing = sorted(set(facts.references) - set(graph))
         if missing:
@@ -116,29 +122,19 @@ def _load_verified_graph(
         if not isinstance(name, str) or not isinstance(row, dict):
             raise ValueError("browser asset graph contains a malformed entry group")
         role = row.get("role")
-        entries = row.get("assets")
+        group_assets = row.get("assets")
         if (
             role not in {"browser", "node"}
-            or not isinstance(entries, list)
-            or not all(isinstance(entry, str) for entry in entries)
+            or not isinstance(group_assets, list)
+            or not all(isinstance(entry, str) for entry in group_assets)
         ):
             raise ValueError("browser asset graph contains a malformed entry group")
-        missing = sorted(set(entries) - set(graph))
+        missing = sorted(set(group_assets) - set(graph))
         if missing:
             raise ValueError(
                 f"browser asset graph entry group {name} names undeclared asset {missing[0]}"
             )
-        groups[name] = role, tuple(entries)
-    return graph, groups
-
-
-def wasm_loader_asset_closure(
-    wasm_root: Path,
-    entries: str | Iterable[str] = BROWSER_WASM_ENTRY_ASSETS,
-) -> tuple[str, ...]:
-    """Return a verified browser/Node loader closure from the generated graph."""
-
-    graph, groups = _load_verified_graph(wasm_root)
+        groups[name] = role, tuple(group_assets)
     expected_role: str | None = None
     if isinstance(entries, str):
         if entries not in groups:
@@ -166,7 +162,46 @@ def wasm_loader_asset_closure(
             )
         seen.add(asset)
         pending.extend(facts.references)
-    return tuple(sorted(seen))
+    names = tuple(sorted(seen))
+    retained: dict[str, bytes] = {}
+    total_bytes = 0
+    # Validate every declared asset even when its bytes are not requested.
+    # The names projection has the same global drift/error boundary, but does
+    # not retain payloads. Staging keeps only its selected immutable captures.
+    for name, facts in graph.items():
+        path = _canonical_asset_path(root, name)
+        if not path.is_file():
+            raise FileNotFoundError(f"missing browser static asset: {path}")
+        data = canonical_wasm_loader_asset_bytes(path)
+        total_bytes += len(data)
+        if total_bytes > _MAX_CLOSURE_BYTES:
+            raise ValueError("browser asset graph exceeds payload byte limit")
+        actual_hash = hashlib.sha256(data).hexdigest()
+        if facts.sha256 != actual_hash:
+            raise ValueError(
+                f"browser asset graph hash drift for {name}: "
+                f"expected {facts.sha256}, got {actual_hash}; run tools/gen_browser_asset_graph.py --write"
+            )
+        if retain_payloads and name in seen:
+            retained[name] = data
+        del data
+    return names, {name: retained[name] for name in names} if retain_payloads else {}
+
+
+def wasm_loader_asset_payloads(
+    wasm_root: Path,
+    entries: str | Iterable[str] = BROWSER_WASM_ENTRY_ASSETS,
+) -> dict[str, bytes]:
+    """Retain only requested bytes, while verifying the entire generated graph."""
+    return _verified_closure(wasm_root, entries, retain_payloads=True)[1]
+
+
+def wasm_loader_asset_closure(
+    wasm_root: Path,
+    entries: str | Iterable[str] = BROWSER_WASM_ENTRY_ASSETS,
+) -> tuple[str, ...]:
+    """Project names for dependency scopes and direct source discovery."""
+    return _verified_closure(wasm_root, entries, retain_payloads=False)[0]
 
 
 def browser_asset_manifest_key(asset: str) -> str:

@@ -14,7 +14,7 @@ unsafe extern "C" {
     fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64;
     fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64;
     fn molt_is_callable_bool(obj_bits: u64) -> i32;
-    fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
+    fn molt_dict_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
     fn molt_rt_object_type_id(ptr: *mut u8) -> u32;
     fn molt_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
 }
@@ -89,7 +89,7 @@ pub(crate) fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return None;
     }
-    Some(unsafe { seq_snapshot(ptr) }.iter().copied().collect())
+    Some(unsafe { seq_snapshot(ptr) }?.iter().copied().collect())
 }
 
 pub(crate) fn decode_value_list_bits(bits: u64) -> Option<Vec<u64>> {
@@ -100,23 +100,22 @@ pub(crate) fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { molt_rt_object_type_id(ptr) }
 }
 
-unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub(crate) unsafe fn seq_snapshot(ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
     if unsafe { molt_seq_snapshot(ptr, &mut out_ptr, &mut out_len) } == 0 {
-        out_ptr = std::ptr::null();
-        out_len = 0;
+        return None;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
 }
 
-pub(crate) fn dict_order(ptr: *mut u8) -> Vec<u64> {
+pub(crate) fn dict_snapshot(ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    unsafe {
-        molt_rt_dict_order(ptr, &mut out_ptr, &mut out_len);
-        std::slice::from_raw_parts(out_ptr, out_len).to_vec()
+    if unsafe { molt_dict_snapshot(ptr, &mut out_ptr, &mut out_len) } == 0 {
+        return None;
     }
+    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
 }
 
 pub(crate) fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {

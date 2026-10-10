@@ -2205,7 +2205,7 @@ unsafe fn type_from_spec_impl(
         // A custom allocator may not have enrolled this physical allocation.
         // Admit it before the first such crossing, but keep it untracked until
         // the completed type can expose all of its initialized owned fields.
-        if (crate::hooks::hooks_or_stubs().native_gc_allocate)(object.addr()) < 0 {
+        if crate::hooks::hooks_or_stubs().native_gc_allocate(object.addr()) < 0 {
             crate::api::errors::check_native_status(-1, "heap type GC admission");
             native_lifecycle::release_unconstructed_type(object, metaclass, owns_metaclass);
             return ptr::null_mut();
@@ -2827,7 +2827,7 @@ unsafe fn type_namespace_lookup_with_bridge(
     unsafe {
         if let Some(class) = bridge.observed_handle_for_pyobj(tp.cast()) {
             let hooks = crate::hooks::hooks_or_stubs();
-            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
                 let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
                     return ptr::null_mut();
                 };
@@ -2880,7 +2880,7 @@ pub unsafe extern "C" fn _PyType_Lookup(
     let found = (|| unsafe {
         if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
             let hooks = crate::hooks::hooks_or_stubs();
-            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
                 let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
                     return ptr::null_mut();
                 };
@@ -2964,6 +2964,10 @@ pub unsafe extern "C" fn PyDescr_NAME(descr: *mut PyObject) -> *mut PyObject {
     unsafe { (*descr.cast::<crate::abi_types::PyDescrObject>()).d_name }
 }
 
+pub(crate) fn builtin_number_table<const TAG: u8>() -> crate::abi_types::PyNumberMethods {
+    native_slot_dispatch::builtin_number_table::<TAG>()
+}
+
 /// Install the shared physical descriptor lifecycle and typed wrapper slots.
 ///
 /// # Safety
@@ -2990,6 +2994,7 @@ const PY_T_UBYTE: c_int = 9;
 const PY_T_USHORT: c_int = 10;
 const PY_T_UINT: c_int = 11;
 const PY_T_ULONG: c_int = 12;
+const PY_T_STRING_INPLACE: c_int = 13;
 const PY_T_BOOL: c_int = 14;
 const PY_T_OBJECT_EX: c_int = 16;
 const PY_T_LONGLONG: c_int = 17;
@@ -3011,6 +3016,13 @@ pub unsafe extern "C" fn PyMember_GetOne(
         return ptr::null_mut();
     }
     unsafe {
+        if (*member).flags & crate::abi_types::Py_RELATIVE_OFFSET != 0 {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"PyMember_GetOne used with Py_RELATIVE_OFFSET".as_ptr(),
+            );
+            return ptr::null_mut();
+        }
         let field = addr.offset((*member).offset) as *const c_void;
         // Width-correct constructors: `c_long` is 32-bit on Windows MSVC, so
         // 64-bit members must route through the LongLong/Ssize_t constructors to
@@ -3076,15 +3088,27 @@ pub unsafe extern "C" fn PyMember_GetOne(
                     crate::api::strings::PyUnicode_FromString(s)
                 }
             }
+            PY_T_STRING_INPLACE => crate::api::strings::PyUnicode_FromString(field.cast()),
             PY_T_OBJECT | PY_T_OBJECT_EX => {
                 let v = *(field as *const *mut PyObject);
                 if v.is_null() {
                     if (*member).type_ == PY_T_OBJECT_EX {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_AttributeError)
-                                .cast::<crate::abi_types::PyObject>(),
-                            (*member).name,
-                        );
+                        let exception = (&raw mut crate::abi_types::PyExc_AttributeError).cast();
+                        if (crate::hooks::hooks_or_stubs().target_python_minor)() < 13 {
+                            crate::api::errors::PyErr_Format(
+                                exception,
+                                c"'%.200s' object has no attribute '%s'".as_ptr(),
+                                (*(*addr.cast::<PyObject>()).ob_type).tp_name,
+                                (*member).name,
+                            );
+                        } else {
+                            crate::api::errors::PyErr_Format(
+                                exception,
+                                c"'%T' object has no attribute '%s'".as_ptr(),
+                                addr.cast::<PyObject>(),
+                                (*member).name,
+                            );
+                        }
                         return ptr::null_mut();
                     }
                     let none = &raw mut crate::abi_types::Py_None;
@@ -3104,7 +3128,7 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
                         .cast::<crate::abi_types::PyObject>(),
-                    c"bad member type in PyMember_GetOne".as_ptr(),
+                    c"bad memberdescr type".as_ptr(),
                 );
                 ptr::null_mut()
             }
@@ -3112,10 +3136,10 @@ pub unsafe extern "C" fn PyMember_GetOne(
     }
 }
 
-/// `PyMember_SetOne` — write one struct member from a Python object. Faithful to
-/// CPython `Python/structmember.c`, covering the mutable subset numpy uses (it
-/// declares nearly all members `READONLY`). Read-only / audit-only members and
-/// unsupported writes fail closed with an honest exception.
+/// `PyMember_SetOne` — write one struct member from a Python object. Numeric
+/// conversion, truncation warnings and failure publication follow the target
+/// CPython `Python/structmember.c` contract. Read-only and unsupported writes
+/// fail closed with an exception.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMember_SetOne(
     addr: *mut c_char,
@@ -3126,6 +3150,13 @@ pub unsafe extern "C" fn PyMember_SetOne(
         return -1;
     }
     unsafe {
+        if (*member).flags & crate::abi_types::Py_RELATIVE_OFFSET != 0 {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"PyMember_SetOne used with Py_RELATIVE_OFFSET".as_ptr(),
+            );
+            return -1;
+        }
         if (*member).flags & PY_READONLY != 0 {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_AttributeError)
@@ -3159,10 +3190,18 @@ pub unsafe extern "C" fn PyMember_SetOne(
             }
         }
         // Helper: has an exception been raised by a converter?
-        let err_set = || !crate::api::errors::PyErr_Occurred().is_null();
-        // NOTE: CPython emits a non-fatal RuntimeWarning on out-of-range
-        // truncation (the WARN macro); the stored (truncated) value and the
-        // error/return contract are identical here — the warning is elided.
+        let err_set = crate::api::errors::raised_error_pending;
+        let warn = |message: &std::ffi::CStr| {
+            crate::api::errors::PyErr_WarnEx(
+                (&raw mut crate::abi_types::PyExc_RuntimeWarning).cast(),
+                message.as_ptr(),
+                1,
+            )
+        };
+        // CPython 3.12 published converter sentinels on these four wide signed
+        // cases; 3.13+ checks conversion before publishing. Use target identity,
+        // never the compiler host's Python version, for that observable split.
+        let writes_failed_sentinel = || (crate::hooks::hooks_or_stubs().target_python_minor)() < 13;
         match ty {
             PY_T_BOOL => {
                 let is_true = std::ptr::eq(
@@ -3191,6 +3230,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 }
                 // CPython stores `(char)long_val`; the width is one byte on every target.
                 *field.cast::<c_char>() = v as c_char;
+                if !(c_char::MIN as c_long..=c_char::MAX as c_long).contains(&v) {
+                    return warn(c"Truncation of value to char");
+                }
                 0
             }
             PY_T_UBYTE => {
@@ -3199,6 +3241,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     return -1;
                 }
                 *field.cast::<u8>() = v as u8;
+                if !(0..=u8::MAX as c_long).contains(&v) {
+                    return warn(c"Truncation of value to unsigned char");
+                }
                 0
             }
             PY_T_SHORT => {
@@ -3207,6 +3252,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     return -1;
                 }
                 *(field as *mut i16) = v as i16;
+                if !(i16::MIN as c_long..=i16::MAX as c_long).contains(&v) {
+                    return warn(c"Truncation of value to short");
+                }
                 0
             }
             PY_T_USHORT => {
@@ -3215,6 +3263,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     return -1;
                 }
                 *(field as *mut u16) = v as u16;
+                if !(0..=u16::MAX as c_long).contains(&v) {
+                    return warn(c"Truncation of value to unsigned short");
+                }
                 0
             }
             PY_T_INT => {
@@ -3223,47 +3274,99 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     return -1;
                 }
                 *(field as *mut i32) = v as i32;
+                if !(i64::from(c_int::MIN)..=i64::from(c_int::MAX))
+                    .contains(&crate::platform::c_long_to_i64(v))
+                {
+                    return warn(c"Truncation of value to int");
+                }
                 0
             }
-            PY_T_UINT => {
-                // CPython accepts negative ints for compatibility (falls back to
-                // the signed converter after clearing the OverflowError).
-                let mut u = crate::api::numbers::PyLong_AsUnsignedLong(value);
-                if u == c_ulong::MAX && err_set() {
-                    crate::api::errors::PyErr_Clear();
-                    let s = crate::api::numbers::PyLong_AsLong(value);
-                    if s == -1 && err_set() {
-                        return -1;
-                    }
-                    u = s as c_ulong;
+            PY_T_UINT | PY_T_ULONG | PY_T_ULONGLONG => {
+                enum UnsignedMember {
+                    Long(c_ulong),
+                    LongLong(c_ulonglong),
                 }
-                *(field as *mut u32) = u as u32;
+                // The private index protocol owns one conversion and preserves
+                // physical integer subtypes. Classify sign before choosing a
+                // width converter: errors are terminal, never a retry signal.
+                let index = crate::api::abstract_number::number_index(value);
+                if index.is_null() {
+                    return -1;
+                }
+                let negative = crate::api::numbers::_PyLong_Sign(index) < 0;
+                let converted = if negative {
+                    // CPython uses C long even for a negative ULONGLONG input.
+                    let signed = crate::api::numbers::PyLong_AsLong(index);
+                    if signed == -1 && err_set() {
+                        None
+                    } else if ty == PY_T_ULONGLONG {
+                        Some(UnsignedMember::LongLong(signed as c_ulonglong))
+                    } else {
+                        Some(UnsignedMember::Long(signed as c_ulong))
+                    }
+                } else if ty == PY_T_ULONGLONG {
+                    let unsigned = crate::api::numbers::PyLong_AsUnsignedLongLong(index);
+                    if unsigned == c_ulonglong::MAX && err_set() {
+                        None
+                    } else {
+                        Some(UnsignedMember::LongLong(unsigned))
+                    }
+                } else {
+                    let unsigned = crate::api::numbers::PyLong_AsUnsignedLong(index);
+                    if unsigned == c_ulong::MAX && err_set() {
+                        None
+                    } else {
+                        Some(UnsignedMember::Long(unsigned))
+                    }
+                };
+                // Conversion owns its error (including a runtime-only error).
+                // Finalization cannot replace it or turn success into failure.
+                crate::api::errors::release_preserving_error(&[index]);
+                let Some(unsigned) = converted else {
+                    return -1;
+                };
+                let truncated = match unsigned {
+                    UnsignedMember::Long(unsigned) if ty == PY_T_UINT => {
+                        let widened = crate::platform::c_ulong_to_u64(unsigned);
+                        *(field as *mut u32) = widened as u32;
+                        widened > u64::from(u32::MAX)
+                    }
+                    UnsignedMember::Long(unsigned) => {
+                        *(field as *mut c_ulong) = unsigned;
+                        false
+                    }
+                    UnsignedMember::LongLong(unsigned) => {
+                        std::ptr::write_unaligned(field as *mut c_ulonglong, unsigned);
+                        false
+                    }
+                };
+                // CPython warns after publishing, including warning-as-error:
+                // the -1 result does not roll back the already stored value.
+                if negative {
+                    return warn(c"Writing negative value into unsigned field");
+                }
+                if truncated {
+                    return warn(c"Truncation of value to unsigned int");
+                }
                 0
             }
             PY_T_LONG => {
                 let v = crate::api::numbers::PyLong_AsLong(value);
                 if v == -1 && err_set() {
+                    if writes_failed_sentinel() {
+                        *(field as *mut c_long) = v;
+                    }
                     return -1;
                 }
                 *(field as *mut std::os::raw::c_long) = v;
                 0
             }
-            PY_T_ULONG => {
-                let mut u = crate::api::numbers::PyLong_AsUnsignedLong(value);
-                if u == c_ulong::MAX && err_set() {
-                    crate::api::errors::PyErr_Clear();
-                    let s = crate::api::numbers::PyLong_AsLong(value);
-                    if s == -1 && err_set() {
-                        return -1;
-                    }
-                    u = s as c_ulong;
-                }
-                *(field as *mut std::os::raw::c_ulong) = u;
-                0
-            }
             PY_T_PYSSIZET => {
                 let v = crate::api::numbers::PyLong_AsSsize_t(value);
                 if v == -1 && err_set() {
+                    if writes_failed_sentinel() {
+                        *(field as *mut isize) = v;
+                    }
                     return -1;
                 }
                 *(field as *mut isize) = v;
@@ -3272,6 +3375,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
             PY_T_LONGLONG => {
                 let v = crate::api::numbers::PyLong_AsLongLong(value);
                 if v == -1 && err_set() {
+                    if writes_failed_sentinel() {
+                        std::ptr::write_unaligned(field as *mut c_longlong, v);
+                    }
                     return -1;
                 }
                 // 8-byte member: `field` may be only 4-aligned on a C-minted
@@ -3279,19 +3385,6 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 // read_unaligned for the same class (d461a6fea6). An aligned
                 // write here would be UB (misaligned dereference).
                 std::ptr::write_unaligned(field as *mut c_longlong, v);
-                0
-            }
-            PY_T_ULONGLONG => {
-                let mut u = crate::api::numbers::PyLong_AsUnsignedLongLong(value);
-                if u == c_ulonglong::MAX && err_set() {
-                    crate::api::errors::PyErr_Clear();
-                    let s = crate::api::numbers::PyLong_AsLongLong(value);
-                    if s == -1 && err_set() {
-                        return -1;
-                    }
-                    u = s as c_ulonglong;
-                }
-                std::ptr::write_unaligned(field as *mut c_ulonglong, u);
                 0
             }
             PY_T_FLOAT => {
@@ -3305,6 +3398,9 @@ pub unsafe extern "C" fn PyMember_SetOne(
             PY_T_DOUBLE => {
                 let v = crate::api::numbers::PyFloat_AsDouble(value);
                 if v == -1.0 && err_set() {
+                    if writes_failed_sentinel() {
+                        std::ptr::write_unaligned(field as *mut f64, v);
+                    }
                     return -1;
                 }
                 // Same 8-byte alignment class as T_LONGLONG/T_ULONGLONG above.
@@ -3321,7 +3417,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 *(field as *mut c_char) = *s;
                 0
             }
-            PY_T_STRING => {
+            PY_T_STRING | PY_T_STRING_INPLACE => {
                 // T_STRING / T_STRING_INPLACE are readonly (CPython raises here).
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_TypeError)
@@ -3343,22 +3439,11 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 0
             }
             _ => {
-                // Unknown member type: SystemError "bad memberdescr type for %s".
-                let name = if (*member).name.is_null() {
-                    "?".to_string()
-                } else {
-                    std::ffi::CStr::from_ptr((*member).name)
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                let msg = format!("bad memberdescr type for {name}");
-                if let Ok(c) = std::ffi::CString::new(msg) {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c.as_ptr(),
-                    );
-                }
+                crate::api::errors::PyErr_Format(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                    c"bad memberdescr type for %s".as_ptr(),
+                    (*member).name,
+                );
                 -1
             }
         }
@@ -3537,9 +3622,9 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeOb
     ) = (a_identity, b_identity)
     {
         let hooks = crate::hooks::hooks_or_stubs();
-        if unsafe { (hooks.classify_heap)(a_bits.bits()) }
+        if unsafe { hooks.classify_heap(a_bits.bits()) }
             == crate::abi_types::MoltTypeTag::Type as u8
-            && unsafe { (hooks.classify_heap)(b_bits.bits()) }
+            && unsafe { hooks.classify_heap(b_bits.bits()) }
                 == crate::abi_types::MoltTypeTag::Type as u8
         {
             return unsafe { (hooks.type_is_subtype)(a_bits.bits(), b_bits.bits()) };
@@ -3605,7 +3690,7 @@ pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject 
     if let Some(value) = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(tp.cast())
         .filter(|value| unsafe {
-            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                 == crate::abi_types::MoltTypeTag::Type as u8
         })
     {
@@ -3800,7 +3885,7 @@ pub unsafe extern "C" fn PyType_GetQualName(tp: *mut PyTypeObject) -> *mut PyObj
     if let Some(value) = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(tp.cast())
         .filter(|value| unsafe {
-            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                 == crate::abi_types::MoltTypeTag::Type as u8
         })
     {
@@ -4064,7 +4149,7 @@ pub(crate) unsafe fn declaring_richcompare(
         return ptr::null_mut();
     }
     let Some(owner) = crate::bridge::resolved_molt_handle(declaring_type.cast()) else {
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if !crate::api::errors::raised_error_pending() {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
@@ -4087,10 +4172,10 @@ unsafe fn numeric_declaring_richcompare(
     op: c_int,
 ) -> *mut PyObject {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-    let Some(left) = (unsafe { crate::api::numbers::numeric_comparison_value(left) }) else {
+    let Some(left) = (unsafe { crate::api::numbers::numeric_native_value(left) }) else {
         return ptr::null_mut();
     };
-    let Some(right) = (unsafe { crate::api::numbers::numeric_comparison_value(right) }) else {
+    let Some(right) = (unsafe { crate::api::numbers::numeric_native_value(right) }) else {
         return ptr::null_mut();
     };
     unsafe { declaring_richcompare(declaring_type, left.bits(), right.bits(), op) }

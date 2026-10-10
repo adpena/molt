@@ -19,6 +19,7 @@ from typing import Protocol, cast
 from command_execution import CommandExecutor
 
 from molt.exact_json import loads_exact
+from molt.file_publication import atomic_write_bytes
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -101,6 +102,23 @@ _EXTERNAL_KIND_BY_TYPE = {
     "global": 3,
     "tag": 4,
 }
+
+
+def preserve_rejected_wasm(data: bytes, evidence_root: Path, *, stage: str) -> Path:
+    """Keep rejected bytes outside invocation scratch; never replace prior evidence."""
+    if stage not in {"facts-scan", "linked-validation", "split-native-link"}:
+        raise ValueError(f"unknown WASM rejection stage: {stage}")
+    digest = hashlib.sha256(data).hexdigest()
+    evidence = evidence_root / f"{stage}-{digest}.wasm.rejected"
+    try:
+        atomic_write_bytes(evidence, data, exclusive=True)
+    except FileExistsError:
+        identity = stable_regular_file_identity(
+            evidence, label="rejected WASM evidence"
+        )
+        if identity.sha256 != digest:
+            raise ValueError(f"rejected WASM evidence content changed: {evidence}")
+    return evidence
 
 
 class WasmFactsProvider(Protocol):
@@ -526,8 +544,8 @@ class RustWasmFactsProvider:
     scanner_identity: StableRegularFileIdentity
     scratch_root: Path
     authority_digest: str
+    evidence_root: Path = field(repr=False, compare=False)
     metrics: dict[str, float] | None = field(default=None, repr=False, compare=False)
-    evidence_root: Path | None = field(default=None, repr=False, compare=False)
     _cache: OrderedDict[str, WasmLinkFacts] = field(
         default_factory=OrderedDict,
         init=False,
@@ -595,10 +613,15 @@ class RustWasmFactsProvider:
                     operation=f"Rust WASM facts scan for {artifact.name}",
                 )
             except ValueError as exc:
-                evidence_dir = self.evidence_root or self.scratch_root
-                evidence_dir.mkdir(parents=True, exist_ok=True)
-                evidence = evidence_dir / (artifact.name + ".rejected")
-                artifact.replace(evidence)
+                try:
+                    evidence = preserve_rejected_wasm(
+                        data, self.evidence_root, stage="facts-scan"
+                    )
+                except (OSError, ValueError) as evidence_error:
+                    raise ValueError(
+                        f"{exc}; failed to preserve rejected input under "
+                        f"{self.evidence_root}: {evidence_error}"
+                    ) from exc
                 raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
             self._cache[digest] = facts
             while len(self._cache) > _WASM_FACTS_CACHE_ENTRIES:
@@ -684,7 +707,7 @@ def make_rust_wasm_facts_provider(
     scratch_root: Path,
     metrics: dict[str, float] | None = None,
     *,
-    evidence_root: Path | None = None,
+    evidence_root: Path,
     expected_sha256: str | None = None,
 ) -> RustWasmFactsProvider:
     scanner_identity = _snapshot_rust_wasm_facts_scanner(

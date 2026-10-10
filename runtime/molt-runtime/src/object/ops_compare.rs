@@ -492,6 +492,56 @@ fn cell_compare_method(
     }
 }
 
+fn method_compare(py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) -> u64 {
+    let Some(left_ptr) = crate::builtins::types::method_ptr_from_bits(py, left) else {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!(
+                "descriptor '{}' requires a 'method' object but received a '{}'",
+                op.method_name(),
+                type_name(py, obj_from_bits(left)),
+            ),
+        );
+    };
+    let Some(right_ptr) = crate::builtins::types::method_ptr_from_bits(py, right) else {
+        return crate::builtins::methods::not_implemented_bits(py);
+    };
+    let _left = molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), left);
+    let _right = molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), right);
+    // CPython classobject.c: function equality runs first, even for distinct
+    // receivers. Receivers compare by identity without invoking their slots.
+    let equal = match compare_object_eq_bool(
+        py,
+        obj_from_bits(unsafe { bound_method_func_bits(left_ptr) }),
+        obj_from_bits(unsafe { bound_method_func_bits(right_ptr) }),
+    ) {
+        CompareBoolOutcome::True => unsafe {
+            bound_method_self_bits(left_ptr) == bound_method_self_bits(right_ptr)
+        },
+        CompareBoolOutcome::False => false,
+        CompareBoolOutcome::Error | CompareBoolOutcome::NotComparable => {
+            return MoltObject::none().bits();
+        }
+    };
+    MoltObject::from_bool(if op == RichCompareOp::Ne {
+        !equal
+    } else {
+        equal
+    })
+    .bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_method_eq(left: u64, right: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { method_compare(py, left, right, RichCompareOp::Eq) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_method_ne(left: u64, right: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { method_compare(py, left, right, RichCompareOp::Ne) })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

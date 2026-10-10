@@ -476,6 +476,13 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Target triple for extension build (default: native host target).",
     )
     extension_build_parser.add_argument(
+        "--python-version",
+        help=(
+            "Target Python version recorded in the extension artifact "
+            "(default: extension config, project.requires-python, then 3.12)."
+        ),
+    )
+    extension_build_parser.add_argument(
         "--source-plan",
         help=(
             "Upstream extension target plan. Meson intro-targets.json is "
@@ -864,6 +871,12 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--stdlib-profile",
         choices=list(STDLIB_PROFILE_CHOICES),
         default=None,
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--runtime-feature",
+        action="append",
+        default=[],
         help=argparse.SUPPRESS,
     )
     runtime_wasm_parser.add_argument(
@@ -1997,6 +2010,9 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "  molt install add requests            Add and persist a dependency\n"
         ),
     )
+    # This leading literal selects persistence without restricting package names.
+    # Dispatch and completion consume the same parser-owned value.
+    install_parser.set_defaults(_install_add_command="add")
     install_parser.add_argument(
         "packages",
         nargs="*",

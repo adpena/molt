@@ -17,10 +17,96 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 @pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+def test_headers_compile_with_traditional_object_layout(
+    tmp_path: Path, transport: str
+) -> None:
+    """CPython's presence-tested build flags must not be fabricated as zero."""
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for C-API header compilation")
+    root = Path(__file__).resolve().parents[2]
+    header = "Python.h" if transport == "abi-linked" else "molt/Python.h"
+    probe = tmp_path / "traditional_layout.c"
+    probe.write_text(
+        f"#include <{header}>\n"
+        + """
+#if defined(Py_GIL_DISABLED) || defined(Py_DEBUG) || defined(Py_TRACE_REFS) || defined(Py_REF_DEBUG)
+#error "default headers must not advertise a different CPython build mode"
+#endif
+_Static_assert(offsetof(PyObject, ob_refcnt) == 0, "traditional reference count");
+_Static_assert(offsetof(PyObject, ob_type) == sizeof(Py_ssize_t), "traditional type pointer");
+_Static_assert(sizeof(PyObject) == sizeof(Py_ssize_t) + sizeof(void *), "traditional object header");
+int probe(void) { return (int)sizeof(PyObject); }
+""",
+        encoding="utf-8",
+    )
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root,
+        abi_tier="cpython-abi" if transport == "abi-linked" else "source-compat",
+    )
+    command = [clang, "-std=c11", *(f"-I{path}" for path in includes)]
+    if transport == "source-host":
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+    result = run_cli_test_process(
+        [*command, "-c", str(probe), "-o", str(tmp_path / "traditional_layout.o")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+@pytest.mark.parametrize(
+    ("selector", "diagnostic"),
+    [
+        ("Py_GIL_DISABLED", "CPython free-threaded object layout"),
+        ("Py_TRACE_REFS", "CPython 3.12 trace-reference object layout"),
+    ],
+)
+@pytest.mark.parametrize("value", ["", "=0", "=1"])
+def test_headers_reject_unsupported_object_layout_before_compilation(
+    tmp_path: Path, transport: str, selector: str, diagnostic: str, value: str
+) -> None:
+    """Presence, including '=0', selects layouts outside the declared release ABI."""
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for C-API header preprocessing")
+    root = Path(__file__).resolve().parents[2]
+    header = "Python.h" if transport == "abi-linked" else "molt/Python.h"
+    probe = tmp_path / "unsupported_layout.c"
+    probe.write_text(f"#include <{header}>\n", encoding="utf-8")
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root,
+        abi_tier="cpython-abi" if transport == "abi-linked" else "source-compat",
+    )
+    command = [clang, "-std=c11", *(f"-I{path}" for path in includes)]
+    if transport == "source-host":
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+    result = run_cli_test_process(
+        [
+            *command,
+            f"-D{selector}{value}",
+            "-E",
+            str(probe),
+            "-o",
+            str(tmp_path / "unsupported_layout.i"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert (
+        f"Molt C headers do not support the {diagnostic} ({selector})" in result.stderr
+    )
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
 def test_descriptor_headers_share_layout_and_compiled_constructors(
     tmp_path: Path, transport: str
 ) -> None:
-    """Prove the physical descriptor carrier and every transport's linked owner.
+    """Prove descriptor/method carriers and every transport's linked owner.
 
     Independent owners check exact argument and return identities. A local
     method factory, identity wrapper or builtin-name lookup cannot satisfy this
@@ -42,6 +128,8 @@ _Static_assert(offsetof(PyMethodDescrObject, vectorcall) == sizeof(PyDescrObject
 _Static_assert(sizeof(PyMethodDescrObject) == sizeof(PyDescrObject) + 2 * sizeof(void *), "method layout");
 _Static_assert(sizeof(PyMemberDescrObject) == sizeof(PyDescrObject) + sizeof(void *), "member layout");
 _Static_assert(sizeof(PyGetSetDescrObject) == sizeof(PyDescrObject) + sizeof(void *), "getset layout");
+_Static_assert(offsetof(PyMethodObject, vectorcall) == sizeof(PyObject) + 3 * sizeof(void *), "bound method vector offset");
+_Static_assert(sizeof(PyMethodObject) == sizeof(PyObject) + 4 * sizeof(void *), "bound method layout");
 int probe(void **token, void **types) {
     PyTypeObject *owner = token[0];
     PyMethodDef *method = token[1];
@@ -57,6 +145,11 @@ int probe(void **token, void **types) {
     REQUIRE(&_PyMethodWrapper_Type == types[5]);
     REQUIRE(&PyClassMethod_Type == types[6]);
     REQUIRE(&PyStaticMethod_Type == types[7]);
+    REQUIRE(&PyMethod_Type == types[8]);
+    REQUIRE(PyMethod_New(value, result) == result);
+    REQUIRE(PyMethod_Check(result) == 29);
+    REQUIRE(PyMethod_GET_FUNCTION(result) == value);
+    REQUIRE(PyMethod_GET_SELF(result) == result);
     REQUIRE(PyDescr_NewMethod(owner, method) == result);
     REQUIRE(PyDescr_NewClassMethod(owner, method) == result);
     REQUIRE(PyDescr_NewMember(owner, member) == result);
@@ -85,7 +178,7 @@ int probe(void **token, void **types) {
 EXPORT intptr_t PyMethodDescr_Type[64], PyClassMethodDescr_Type[64];
 EXPORT intptr_t PyMemberDescr_Type[64], PyGetSetDescr_Type[64];
 EXPORT intptr_t PyWrapperDescr_Type[64], _PyMethodWrapper_Type[64];
-EXPORT intptr_t PyClassMethod_Type[64], PyStaticMethod_Type[64];
+EXPORT intptr_t PyClassMethod_Type[64], PyStaticMethod_Type[64], PyMethod_Type[64];
 static intptr_t storage[7][64];
 static unsigned int calls;
 #define MATCH(index, expr) do { if (!(expr)) return 0; calls |= 1U << (index); } while (0)
@@ -101,13 +194,18 @@ EXPORT void *PyDescr_NAME(void *descr) { MATCH(8, descr == storage[6]); return s
 EXPORT int PyDescr_IsData(void *descr) { MATCH(9, descr == storage[6]); return 19; }
 EXPORT void *PyMember_GetOne(void *value, void *member) { MATCH(10, value == storage[5] && member == storage[2]); return storage[6]; }
 EXPORT int PyMember_SetOne(void *value, void *member, void *result) { MATCH(11, value == storage[5] && member == storage[2] && result == storage[6]); return 23; }
+EXPORT void *PyMethod_New(void *func, void *self) { MATCH(12, func == storage[5] && self == storage[6]); return storage[6]; }
+EXPORT int PyMethod_Check(void *value) { MATCH(13, value == storage[6]); return 29; }
+EXPORT void *PyMethod_GET_FUNCTION(void *value) { MATCH(14, value == storage[6]); return storage[5]; }
+EXPORT void *PyMethod_GET_SELF(void *value) { MATCH(15, value == storage[6]); return storage[6]; }
 extern int probe(void **, void **);
+
 int main(void) {
     void *token[] = {storage[0], storage[1], storage[2], storage[3], storage[4], storage[5], storage[6]};
-    void *types[] = {PyMethodDescr_Type, PyClassMethodDescr_Type, PyMemberDescr_Type, PyGetSetDescr_Type, PyWrapperDescr_Type, _PyMethodWrapper_Type, PyClassMethod_Type, PyStaticMethod_Type};
+    void *types[] = {PyMethodDescr_Type, PyClassMethodDescr_Type, PyMemberDescr_Type, PyGetSetDescr_Type, PyWrapperDescr_Type, _PyMethodWrapper_Type, PyClassMethod_Type, PyStaticMethod_Type, PyMethod_Type};
     int result = probe(token, types);
     if (result) return result;
-    return calls != ((1U << 12) - 1);
+    return calls != ((1U << 16) - 1);
 }
 """,
         encoding="utf-8",
@@ -911,3 +1009,132 @@ int main(void) {
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+@pytest.mark.parametrize("shared_owner", [False, True], ids=["static", "windows-dll"])
+@pytest.mark.parametrize(
+    "private_copy", [False, True], ids=["exported", "private-mutant"]
+)
+def test_optimize_flag_headers_share_data_across_translation_units(
+    tmp_path: Path, transport: str, shared_owner: bool, private_copy: bool
+) -> None:
+    """Each facade must read/write one external owner, including DLL imports.
+
+    The negative replaces only the data declaration with the historical private
+    binding. It must compile and fail the independent address oracle, not merely
+    fail compilation or observe the same initial zero in every translation unit.
+    """
+    if shared_owner and sys.platform != "win32":
+        pytest.skip("actual Windows DLL data import requires Windows")
+    windows = sys.platform == "win32"
+    driver_name = "clang-cl" if windows else "clang"
+    compiler = shutil.which(driver_name)
+    if compiler is None:
+        pytest.skip(f"{driver_name} is required for C-API transport execution")
+    root = Path(__file__).resolve().parents[2]
+    tier = "cpython-abi" if transport == "abi-linked" else "source-compat"
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root, abi_tier=tier
+    )
+    header = _source_extension_python_header_for_abi_tier(molt_root=root, abi_tier=tier)
+    if private_copy:
+        # Preserve the real distributed header/include family; mutate only the
+        # data binding under test in a private top-level header.
+        source = header.read_text(encoding="utf-8")
+        declaration = "PyAPI_DATA(int) Py_OptimizeFlag;"
+        assert source.count(declaration) == 1
+        mutant = tmp_path / "private_python.h"
+        mutant.write_text(
+            source.replace(declaration, "static int Py_OptimizeFlag = 0;"),
+            encoding="utf-8",
+        )
+        # Quoted includes still resolve from the actual header's directory.
+        includes = (header.parent, *includes)
+        header = mutant
+    consumers = []
+    for name in ("left", "right"):
+        consumer = tmp_path / f"{name}.c"
+        consumer.write_text(
+            f'#include "{header.as_posix()}"\n'
+            f"int *{name}_address(void) {{ return &Py_OptimizeFlag; }}\n"
+            f"int {name}_read(void) {{ return Py_OptimizeFlag; }}\n"
+            f"void {name}_write(int value) {{ Py_OptimizeFlag = value; }}\n",
+            encoding="utf-8",
+        )
+        consumers.append(consumer)
+    owner = tmp_path / "owner.c"
+    owner.write_text(
+        "#ifdef _WIN32\n__declspec(dllexport)\n#endif\nint Py_OptimizeFlag = 17;\n",
+        encoding="utf-8",
+    )
+    driver = tmp_path / "driver.c"
+    driver.write_text(
+        """#if defined(_WIN32) && defined(MOLT_CPYTHON_ABI_SHARED)
+__declspec(dllimport)
+#endif
+extern int Py_OptimizeFlag;
+extern int *left_address(void), *right_address(void);
+extern int left_read(void), right_read(void);
+extern void left_write(int), right_write(int);
+int main(void) {
+    if (left_address() != &Py_OptimizeFlag || right_address() != &Py_OptimizeFlag) return 41;
+    if (left_read() != 17 || right_read() != 17) return 42;
+    left_write(23);
+    if (Py_OptimizeFlag != 23 || right_read() != 23) return 43;
+    right_write(31);
+    if (Py_OptimizeFlag != 31 || left_read() != 31) return 44;
+    Py_OptimizeFlag = 47;
+    if (left_read() != 47 || right_read() != 47) return 45;
+    return 0;
+}
+""",
+        encoding="utf-8",
+    )
+    command = [compiler, *(("/std:c11", "/O2") if windows else ("-std=c11", "-O2"))]
+    for include in includes:
+        command.extend(["/I" if windows else "-I", str(include)])
+    if transport == "source-host":
+        command.append(f"{'/D' if windows else '-D'}MOLT_EXTENSION_HOST_ABI=1")
+    if shared_owner:
+        # Exercise the native Windows MSVC driver and linker;
+        # consume its real import library, not a preprocessor-only DLL mock.
+        library = tmp_path / "owner.lib"
+        build = run_cli_test_process(
+            [
+                compiler,
+                "/LD",
+                str(owner),
+                f"/Fe{tmp_path / 'owner.dll'}",
+                "/link",
+                f"/IMPLIB:{library}",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert build.returncode == 0, build.stderr
+        command.append("/DMOLT_CPYTHON_ABI_SHARED=1")
+        owner_input = library
+    else:
+        owner_input = owner
+    output = tmp_path / ("probe.exe" if sys.platform == "win32" else "probe")
+    build = run_cli_test_process(
+        [
+            *command,
+            *(str(path) for path in consumers),
+            str(driver),
+            str(owner_input),
+            *([f"/Fe{output}"] if windows else ["-o", str(output)]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    result = run_cli_test_process(
+        [str(output)], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == (41 if private_copy else 0), result.stderr

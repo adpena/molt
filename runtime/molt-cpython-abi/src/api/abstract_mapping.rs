@@ -19,7 +19,7 @@ fn classify(bits: u64) -> u8 {
         return crate::abi_types::MoltTypeTag::Other as u8;
     }
     let h = hooks_or_stubs();
-    unsafe { (h.classify_heap)(bits) }
+    unsafe { h.classify_heap(bits) }
 }
 
 #[inline]

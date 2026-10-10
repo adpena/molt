@@ -11,11 +11,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import perf_scoreboard as scoreboard
 import perf_scoreboard_measure as measure
 from perf_scoreboard_build_profiles import profile_selection
-from perf_scoreboard_model import NATIVE_CRANELIFT, NATIVE_LLVM, WASM
+from perf_scoreboard_model import BACKENDS_BY_NAME, NATIVE_CRANELIFT, NATIVE_LLVM
+from tests.release_lane_fixtures import EXPECTED_LANES
 
 
-@pytest.mark.parametrize("spec", [NATIVE_CRANELIFT, NATIVE_LLVM, WASM])
-@pytest.mark.parametrize("profile", ["release-fast", "release-output", "dev-fast"])
+@pytest.mark.parametrize(
+    "spec,profile",
+    [
+        (BACKENDS_BY_NAME[backend], runtime)
+        for backend, _target, _guest, runtime, _compiler in EXPECTED_LANES
+    ],
+)
 @pytest.mark.parametrize("ambient", [False, True])
 def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
     keys = profile_selection(spec, profile).environment()
@@ -30,6 +36,10 @@ def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
     assert env["MOLT_DEV_CARGO_PROFILE"] == expected_guest
     assert env["MOLT_WASM_CARGO_PROFILE"] == expected_guest
     assert env["MOLT_BACKEND_PROFILE"] == "release"
+    assert spec.build_args() == (
+        "--backend",
+        "llvm" if spec.backend == "llvm" else "cranelift",
+    )
     assert env["MOLT_RELEASE_BACKEND_CARGO_PROFILE"] == "release"
     assert env["MOLT_RUNTIME_BUILD_PROFILE"] == ""
     assert env["MOLT_RUNTIME_WASM_INCREMENTAL"] == "0"
@@ -80,7 +90,7 @@ def test_backend_resolver_uses_controlled_host_profile(monkeypatch, tmp_path, pr
 
 
 def test_unknown_profile_does_not_alias_release():
-    with pytest.raises(ValueError, match="unknown performance profile"):
+    with pytest.raises(ValueError, match="unsupported release lane"):
         profile_selection(NATIVE_CRANELIFT, "release-typo")
 
 
@@ -108,22 +118,28 @@ def test_batch_request_carries_distinct_profile_inputs(tmp_path):
     assert requests[0] != requests[1]
 
 
-@pytest.mark.parametrize("spec", [NATIVE_CRANELIFT, NATIVE_LLVM, WASM])
-@pytest.mark.parametrize("profile", ["release-fast", "release-output", "dev-fast"])
+@pytest.mark.parametrize(
+    "spec,profile",
+    [
+        (BACKENDS_BY_NAME[backend], runtime)
+        for backend, _target, _guest, runtime, _compiler in EXPECTED_LANES
+    ],
+)
 def test_profile_binding_requires_actual_selected_coordinates(spec, profile):
     from perf_scoreboard_build_profiles import profile_binding_problems
 
     selection = profile_selection(spec, profile)
     facts = {
-        "guest_profile": selection.cli_build_profile,
-        "compiler_profile": selection.host_cargo_profile,
-        "runtime_profile": selection.guest_cargo_profile,
+        "backend": spec.backend,
+        "guest_profile": selection.guest_profile,
+        "compiler_profile": selection.compiler_profile,
+        "runtime_profile": selection.runtime_profile,
         "target": spec.build_target,
     }
 
     def check(observation):
         return profile_binding_problems(
-            observation, build_target=spec.build_target, profile=profile
+            observation, backend=spec.backend, profile=profile
         )
 
     assert check({"selected_profiles": facts, "compiled_with_verified": False}) == []
@@ -142,6 +158,7 @@ def test_publication_observes_selected_profiles_without_claiming_loaded_compiler
     output = tmp_path / "guest.exe"
     output.write_bytes(b"guest bytes")
     selection = {
+        "backend": "native",
         "guest_profile": "release",
         "compiler_profile": "release",
         "runtime_profile": "release-output",
@@ -208,14 +225,14 @@ def test_every_declared_acceptance_profile_remains_distinct(backend, profile):
 
     spec = BACKENDS_BY_NAME[backend]
     selection = profile_selection(spec, profile)
-    assert selection.guest_cargo_profile == profile
-    assert selection.host_cargo_profile == "release"
+    assert selection.runtime_profile == profile
+    assert selection.compiler_profile == "release"
     env = measure._perfscore_build_env(spec, profile)
     assert env["MOLT_WASM_CARGO_PROFILE"] == profile
 
 
 def test_wasm_only_profile_is_not_a_native_alias():
-    with pytest.raises(ValueError, match="WASM artifact coordinate"):
+    with pytest.raises(ValueError, match="unsupported release lane"):
         profile_selection(NATIVE_CRANELIFT, "wasm-release")
 
 
@@ -451,8 +468,19 @@ def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
         out_dir=tmp_path,
     )
 
+    expected = "llvm" if spec is NATIVE_LLVM else "cranelift"
     assert "MOLT_BACKEND" not in env
-    assert params.get("backend") == spec.molt_backend
-    assert spec.build_args() == (
-        () if spec.molt_backend is None else ("--backend", spec.molt_backend)
-    )
+    assert params.get("backend") == expected
+    assert spec.build_args() == ("--backend", expected)
+
+
+@pytest.mark.parametrize(
+    "backend,profile",
+    [("unknown", "release-fast"), ("wasm", "release-fast"), ("llvm", "unknown")],
+)
+def test_profile_binding_reports_unsupported_observed_lane(backend, profile):
+    from perf_scoreboard_build_profiles import profile_binding_problems
+
+    assert profile_binding_problems(
+        {"selected_profiles": {}}, backend=backend, profile=profile
+    ) == [f"unsupported release lane: backend={backend}, runtime_profile={profile}"]

@@ -61,14 +61,6 @@ class CallVisitorMixin(
         if builtin_result is not CALL_NOT_HANDLED:
             return builtin_result
 
-        gpu_launch = self._lower_gpu_kernel_launch_call(node)
-        if gpu_launch is not None:
-            return gpu_launch
-
-        gpu_intrinsic = self._is_gpu_intrinsic_call(node)
-        if gpu_intrinsic is not None and self.current_gpu_kernel_context:
-            return self._emit_gpu_kernel_intrinsic_op(gpu_intrinsic)
-
         user_method_fold = self._try_emit_user_method_static_call(node)
         if user_method_fold is not None:
             return user_method_fold

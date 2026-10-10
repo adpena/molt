@@ -253,3 +253,122 @@ x = LeftOnlyInplaceNI(3)
 y = RightReflected(4)
 x *= y
 print("reflected imul result", x)
+
+# Reflected numeric opportunity precedes physical list/bytearray in-place slots.
+import operator
+
+sequence_events = []
+
+
+class ReflectedSequenceOperand:
+    def __radd__(self, other):
+        sequence_events.append("radd")
+        return 71
+
+    def __rmul__(self, other):
+        sequence_events.append("rmul")
+        return 73
+
+    def __iter__(self):
+        sequence_events.append("iter")
+        return iter([9])
+
+    def __index__(self):
+        sequence_events.append("index")
+        return 2
+
+
+for make in (list, bytearray):
+    for operation in (operator.add, operator.iadd, operator.mul, operator.imul):
+        original = make([1, 2])
+        alias = original
+        sequence_events.clear()
+        result = operation(original, ReflectedSequenceOperand())
+        print("sequence-numeric-first", make.__name__, operation.__name__, result,
+              list(alias), sequence_events)
+
+original = [1, 2]
+sequence_events.clear()
+result = operator.iconcat(original, ReflectedSequenceOperand())
+print("explicit-iconcat", result is original, original, sequence_events)
+
+
+class DecliningList(list):
+    def __iadd__(self, other):
+        sequence_events.append("iadd-NI")
+        return NotImplemented
+
+    def __add__(self, other):
+        sequence_events.append("add-NI")
+        return NotImplemented
+
+
+left = DecliningList([1])
+sequence_events.clear()
+result = operator.iadd(left, ReflectedSequenceOperand())
+print("mutated-list-slots", result, list(left), sequence_events)
+del DecliningList.__iadd__
+del DecliningList.__add__
+sequence_events.clear()
+result = operator.iconcat(left, ReflectedSequenceOperand())
+print("restored-list-slots", result is left, list(left), sequence_events)
+
+container_events = []
+
+
+class ContainerReflected:
+    def __ror__(self, other):
+        container_events.append("ror")
+        return 71
+
+    def __rand__(self, other):
+        container_events.append("rand")
+        return 72
+
+    def __rsub__(self, other):
+        container_events.append("rsub")
+        return 73
+
+    def __rxor__(self, other):
+        container_events.append("rxor")
+        return 74
+
+
+for operation, expected, event in ((operator.ior, 71, "ror"),
+                                    (operator.iand, 72, "rand"),
+                                    (operator.isub, 73, "rsub"),
+                                    (operator.ixor, 74, "rxor")):
+    left = {1, 2}
+    container_events.clear()
+    result = operation(left, ContainerReflected())
+    assert result == expected and container_events == [event] and left == {1, 2}
+    print("set-declines-reflected", operation.__name__, result, container_events)
+
+
+class InheritedSet(set):
+    pass
+
+
+left = InheritedSet((1, 2))
+alias = left
+result = operator.iand(left, {2: 0}.keys())
+assert result == {2} and alias == {1, 2} and result is not alias
+print("inherited-set-view", sorted(result), sorted(alias))
+
+
+class MappingPairs:
+    def keys(self):
+        container_events.append("keys")
+        return ["x"]
+
+    def __getitem__(self, key):
+        container_events.append(("get", key))
+        return 8
+
+
+container_events.clear()
+left = {}
+result = dict.__ior__(left, MappingPairs())
+assert result is left and left == {"x": 8}
+assert container_events == ["keys", ("get", "x")]
+print("dict-declared-ior", result is left, left, container_events)

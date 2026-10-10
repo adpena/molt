@@ -292,17 +292,22 @@ def executable_name_candidates(
     if not windows:
         return (command,)
     extensions = tuple(
-        extension
-        for extension in executable_environment_value(
-            environment, "PATHEXT", ".COM;.EXE;.BAT;.CMD", windows=True
+        extension.rstrip(".")
+        for extension in (
+            executable_environment_value(environment, "PATHEXT", windows=True)
+            or ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
         ).split(";")
         if extension
     )
+    suffixed = tuple(command + extension for extension in extensions)
+    # CPython shutil.which's X_OK policy admits the direct spelling only
+    # when it already has a PATHEXT suffix. A sibling POSIX launcher must not
+    # shadow the executable Windows command (for example npm beside npm.cmd).
     if any(
         command.casefold().endswith(extension.casefold()) for extension in extensions
     ):
-        return (command,)
-    return (command, *(command + extension for extension in extensions))
+        return (command, *suffixed)
+    return suffixed
 
 
 def executable_search_directories(
@@ -379,6 +384,35 @@ def resolve_executable(
     return _executable_paths(candidate, label=label)[0]
 
 
+def split_native_command(value: str) -> tuple[str, ...]:
+    """Parse a host command using its actual native quoting authority."""
+    if os.name != "nt":
+        return tuple(shlex.split(value))
+
+    # CommandLineToArgvW is the Windows command-line grammar used by native
+    # launchers. shlex's POSIX and non-POSIX modes both mis-handle valid quoted
+    # Windows paths in edge cases, so use the platform authority directly.
+    import ctypes
+
+    argc = ctypes.c_int()
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    command_line_to_argv = shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    argv = command_line_to_argv(value, ctypes.byref(argc))
+    if not argv:
+        raise ValueError(
+            f"invalid Windows command line (error {ctypes.get_last_error()})"
+        )
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    try:
+        return tuple(argv[index] for index in range(argc.value))
+    finally:
+        kernel32.LocalFree(argv)
+
+
 def resolve_explicit_tool_command(
     raw_command: str,
     *,
@@ -408,17 +442,16 @@ def resolve_explicit_tool_command(
         direct_path = absolute(raw_command)
         if direct_path.is_file():
             return (str(direct_path),)
+    # Preserve literal filesystem spelling above. Command delimiters are not
+    # argv[0]; Windows otherwise emits an empty first argument for leading
+    # whitespace and selects the current executable for an empty command.
+    command_text = raw_command.lstrip(" \t\r\n")
+    if not command_text:
+        raise ValueError(f"{label} is empty")
     try:
-        argv = shlex.split(raw_command, posix=os.name != "nt")
+        argv = split_native_command(command_text)
     except ValueError as exc:
         raise ValueError(f"{label} is not a valid shell command: {exc}") from exc
-    if os.name == "nt":
-        argv = [
-            argument[1:-1]
-            if len(argument) >= 2 and argument[0] == argument[-1] == '"'
-            else argument
-            for argument in argv
-        ]
     if not argv or not argv[0]:
         raise ValueError(f"{label} is empty")
     executable = argv[0]
@@ -468,15 +501,52 @@ def _stable_file_content(
 _DIGEST_CHUNK_BYTES = 256 * 1024
 
 
-def _sha256_stream(stream: BinaryIO) -> str:
-    """SHA-256 of an open binary handle, read in bounded chunks."""
-
-    digest = hashlib.sha256()
+def _captured_file_chunks(
+    stream: BinaryIO, *, size: int, chunk_bytes: int
+) -> Iterator[bytes]:
+    """Consume exactly one admitted extent, probing one byte for growth."""
+    consumed = 0
     while True:
-        chunk = stream.read(_DIGEST_CHUNK_BYTES)
+        chunk = stream.read(min(chunk_bytes, size - consumed + 1))
         if not chunk:
-            break
+            if consumed != size:
+                raise StableRegularFileChangedError(
+                    "file size changed below its captured extent while reading"
+                )
+            return
+        consumed += len(chunk)
+        if consumed > size:
+            raise StableRegularFileChangedError(
+                "file size changed beyond its captured extent while reading"
+            )
+        yield chunk
+        del chunk
+
+
+def iter_stable_regular_file_chunks(
+    opened: StableRegularFileHandle, *, chunk_bytes: int = _DIGEST_CHUNK_BYTES
+) -> Iterator[bytes]:
+    """Read a newly opened or rewound file without following concurrent growth.
+
+    Exhaust this iterator inside the existing open_stable_regular_file context:
+    its owner still checks pathname, handle and change-time identity on exit.
+    No over-extent chunk reaches the consumer, including a staging destination.
+    """
+    if type(chunk_bytes) is not int or chunk_bytes <= 0:
+        raise ValueError("stable file chunk size must be a positive integer")
+    yield from _captured_file_chunks(
+        opened.stream, size=opened.stat.st_size, chunk_bytes=chunk_bytes
+    )
+
+
+def _sha256_stream(stream: BinaryIO, *, max_bytes: int) -> str:
+    """Hash exactly the captured file size using the shared finite traversal."""
+    digest = hashlib.sha256()
+    for chunk in _captured_file_chunks(
+        stream, size=max_bytes, chunk_bytes=_DIGEST_CHUNK_BYTES
+    ):
         digest.update(chunk)
+        del chunk
     return digest.hexdigest()
 
 
@@ -706,7 +776,7 @@ def _regular_file_identity(
 def stable_regular_file_handle_identity(
     opened: StableRegularFileHandle, *, label: str, max_bytes: int | None = None
 ) -> StableRegularFileIdentity:
-    """Hash an owned handle in bounded chunks, then rewind it for its consumer.
+    """Hash no more than the captured size, then rewind it for its consumer.
 
     The caller retains the enclosing open_stable_regular_file context through
     consumption. This is the same content authority as a pathname capture;
@@ -717,7 +787,7 @@ def stable_regular_file_handle_identity(
     ):
         raise ValueError(f"{label} exceeds size limit: {opened.path}")
     opened.stream.seek(0)
-    digest = _sha256_stream(opened.stream)
+    digest = _sha256_stream(opened.stream, max_bytes=opened.stat.st_size)
     if opened.stream.tell() != opened.stat.st_size:
         raise StableRegularFileChangedError(
             f"{label} size changed during capture: {opened.path}"
@@ -811,8 +881,15 @@ def snapshot_stable_regular_file(
     *,
     label: str,
     capture_prefix_bytes: int = 0,
+    max_bytes: int | None = None,
 ) -> StableRegularFileSnapshot:
-    """Stream one direct stable file into one exclusive attested snapshot."""
+    """Stream one direct stable file into one exclusive attested snapshot.
+
+    A caller's optional byte allowance is checked before output creation. Every
+    copy is bounded by the captured source size, including growth after opening.
+    """
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ValueError("stable snapshot byte limit must be a nonnegative integer")
 
     if not 0 <= capture_prefix_bytes <= _STABLE_SNAPSHOT_MAX_PREFIX_BYTES:
         raise ValueError(
@@ -826,6 +903,10 @@ def snapshot_stable_regular_file(
     owned_snapshot_identity: os.stat_result | None = None
     try:
         with open_stable_regular_file(source, label=label) as opened:
+            if max_bytes is not None and opened.stat.st_size > max_bytes:
+                raise StableRegularFileSnapshotError(
+                    f"{label} exceeds snapshot byte limit: {opened.stat.st_size} > {max_bytes}"
+                )
             if snapshot == opened.path:
                 raise StableRegularFileError(
                     f"{label} snapshot must differ from its source: {snapshot}"
@@ -849,7 +930,11 @@ def snapshot_stable_regular_file(
                 os.close(descriptor)
                 raise
             with destination:
-                while chunk := opened.stream.read(_STABLE_SNAPSHOT_CHUNK_BYTES):
+                copied = 0
+                for chunk in iter_stable_regular_file_chunks(
+                    opened, chunk_bytes=_STABLE_SNAPSHOT_CHUNK_BYTES
+                ):
+                    copied += len(chunk)
                     hasher.update(chunk)
                     written = destination.write(chunk)
                     if written != len(chunk):

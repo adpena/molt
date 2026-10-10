@@ -111,3 +111,27 @@ def test_result_roundtrips_and_a_tampered_entry_is_a_miss(
     assert not cache.restore_final_link_result(entry, again)
     assert not any(path.exists() for path in again.values())
     assert not entry.metadata.exists()
+
+
+def test_failure_evidence_destination_is_not_a_link_content_input(
+    tmp_path: Path,
+) -> None:
+    app = _inputs(tmp_path)
+    command = _link_cmd(tmp_path, out_dir=tmp_path, app=app, timings="t", split_dir="s")
+    facts = ({"role": "wasm-link-source-closure", "content_digest": "a" * 64},)
+    expected = cache.final_link_cache_key(command, cwd=tmp_path, tool_facts=facts)
+    for destination in (tmp_path / "first", tmp_path / "second"):
+        destination.mkdir()
+        assert (
+            cache.final_link_cache_key(
+                [*command, "--failure-evidence-dir", str(destination)],
+                cwd=tmp_path,
+                tool_facts=facts,
+            )
+            == expected
+        )
+    changed_source = ({"role": "wasm-link-source-closure", "content_digest": "b" * 64},)
+    assert (
+        cache.final_link_cache_key(command, cwd=tmp_path, tool_facts=changed_source)
+        != expected
+    )

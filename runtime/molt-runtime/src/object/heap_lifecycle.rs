@@ -62,6 +62,14 @@ fn take_best_buffer<T>(slots: &mut [Option<Vec<T>>; 4], required: usize) -> Vec<
 }
 
 pub(crate) enum DetachedResource {
+    DictEntries {
+        entries: super::backing::TrackedVecContents<crate::DictEntry>,
+        preceding_edges: usize,
+    },
+    SetEntries {
+        entries: super::backing::TrackedVecContents<crate::SetEntry>,
+        preceding_edges: usize,
+    },
     /// A tuple's canonical C projection after both bridge identity maps have
     /// published it absent.  Its projection-owned references are retired only
     /// after every runtime-owned tuple edge has been detached.
@@ -83,6 +91,20 @@ pub(crate) enum DetachedResource {
     Itertools(molt_runtime_itertools::itertools::DetachedItertoolsResource),
     #[cfg(not(feature = "stdlib_itertools"))]
     Itertools(crate::builtins::itertools::DetachedItertoolsResource),
+}
+
+impl DetachedResource {
+    fn preceding_managed_edges(&self) -> Option<usize> {
+        match self {
+            Self::DictEntries {
+                preceding_edges, ..
+            }
+            | Self::SetEntries {
+                preceding_edges, ..
+            } => Some(*preceding_edges),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct DetachedEdgeSink {
@@ -196,8 +218,19 @@ impl DetachedEdgeSink {
     }
 
     pub(crate) fn release_all(&mut self, py: &PyToken<'_>) {
-        for resource in self.resources.drain(..) {
+        let release_resource = |resource| {
             let release = || match resource {
+                DetachedResource::DictEntries { entries, .. } => {
+                    for row in entries.iter().filter(|row| row.hash.is_some()) {
+                        crate::dec_ref_bits(py, row.key);
+                        crate::dec_ref_bits(py, row.value);
+                    }
+                }
+                DetachedResource::SetEntries { entries, .. } => {
+                    for row in entries.iter().filter(|row| row.hash.is_some()) {
+                        crate::dec_ref_bits(py, row.key);
+                    }
+                }
                 DetachedResource::RuntimeView(view) => drop(view),
                 DetachedResource::ListProjection(projection) => drop(projection),
                 DetachedResource::OwnedCFields(fields) => drop(fields),
@@ -237,8 +270,32 @@ impl DetachedEdgeSink {
             }
             #[cfg(not(panic = "unwind"))]
             release();
+        };
+        // Physical C/native resources retain their existing precedence. Typed
+        // payloads replace scalar edges at the original detachment position;
+        // they must not leapfrog common fields or another object's payload.
+        for resource in self
+            .resources
+            .extract_if(.., |resource| resource.preceding_managed_edges().is_none())
+        {
+            release_resource(resource);
         }
-        for bits in self.edges.drain(..) {
+        let mut edges = self.edges.drain(..);
+        let mut released = 0usize;
+        for resource in self.resources.drain(..) {
+            let preceding = resource
+                .preceding_managed_edges()
+                .expect("only ordered aggregate resources remain");
+            while released < preceding {
+                let bits = edges
+                    .next()
+                    .expect("aggregate edge boundary is preflighted");
+                crate::dec_ref_bits(py, bits);
+                released += 1;
+            }
+            release_resource(resource);
+        }
+        for bits in edges {
             crate::dec_ref_bits(py, bits);
         }
     }
@@ -421,12 +478,8 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
     }
 }
 
-/// Side-effect-free enumeration of runtime payload ownership, including inline
-/// values. Independently owned physical C fields are visited separately.
-///
-/// The match is deliberately exhaustive over the generated per-kind token: adding
-/// a heap kind cannot silently inherit an empty traversal lane.
-pub(crate) unsafe fn visit_payload_owned_values(
+/// Common scalar ownership, independent of the concrete payload transport.
+unsafe fn visit_common_payload_owned_values(
     py: &PyToken<'_>,
     ptr: *mut u8,
     visit: &mut dyn FnMut(u64),
@@ -451,6 +504,19 @@ pub(crate) unsafe fn visit_payload_owned_values(
     if frame_bindings != 0 {
         visit_bits(frame_bindings, visit);
     }
+}
+
+/// Side-effect-free enumeration of runtime payload ownership, including inline
+/// values. Independently owned physical C fields are visited separately.
+///
+/// The match is deliberately exhaustive over the generated per-kind token: adding
+/// a heap kind cannot silently inherit an empty traversal lane.
+pub(crate) unsafe fn visit_payload_owned_values(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut dyn FnMut(u64),
+) {
+    unsafe { visit_common_payload_owned_values(py, ptr, visit) };
     let type_id = unsafe { object_type_id(ptr) };
     let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in traversal");
     unsafe {
@@ -483,18 +549,19 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 });
             }
             HeapLifecycleHandler::Dict => {
-                let order = crate::builtins::containers::dict_order_ptr(ptr);
-                if !order.is_null() {
-                    for &bits in &*order {
-                        visit_bits(bits, visit);
+                let rows = crate::dict_entries_ptr(ptr);
+                if !rows.is_null() {
+                    for row in (*rows).iter().filter(|row| row.hash.is_some()) {
+                        visit_bits(row.key, visit);
+                        visit_bits(row.value, visit);
                     }
                 }
             }
             HeapLifecycleHandler::Set | HeapLifecycleHandler::Frozenset => {
-                let order = crate::builtins::containers::set_order_ptr(ptr);
-                if !order.is_null() {
-                    for &bits in &*order {
-                        visit_bits(bits, visit);
+                let rows = crate::set_entries_ptr(ptr);
+                if !rows.is_null() {
+                    for row in (*rows).iter().filter(|row| row.hash.is_some()) {
+                        visit_bits(row.key, visit);
                     }
                 }
             }
@@ -631,6 +698,10 @@ pub(crate) unsafe fn visit_payload_owned_values(
                     );
                 }
             }
+            HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {
+                crate::builtins::contextvars::trie::visit(ptr, |bits| visit_bits(bits, visit));
+            }
             HeapLifecycleHandler::FrameBindings => {
                 crate::builtins::frames::frame_bindings_visit(ptr, visit);
             }
@@ -653,7 +724,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 visit_bits(super::instance_dict_bits(ptr), visit);
             }
             HeapLifecycleHandler::Code => {
-                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20] {
+                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22] {
                     visit_bits(
                         *(ptr.add(slot * std::mem::size_of::<u64>()) as *const u64),
                         visit,
@@ -665,6 +736,9 @@ pub(crate) unsafe fn visit_payload_owned_values(
             }
             // Shape/custom handlers have their own typed projection authorities.
             HeapLifecycleHandler::Generator => {
+                crate::async_rt::scheduler::task_visit_owned_edges(py, ptr, &mut |bits| {
+                    visit_bits(bits, visit)
+                });
                 crate::builtins::exceptions::generator_exception_stack_visit(ptr, |bits| {
                     visit_bits(bits, visit)
                 });
@@ -845,6 +919,12 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
     );
     projection
         + match handler {
+            HeapLifecycleHandler::Dict => {
+                usize::from(!unsafe { crate::dict_entries_ptr(ptr) }.is_null())
+            }
+            HeapLifecycleHandler::Set | HeapLifecycleHandler::Frozenset => {
+                usize::from(!unsafe { crate::set_entries_ptr(ptr) }.is_null())
+            }
             HeapLifecycleHandler::Memoryview => {
                 usize::from(unsafe { (*super::memoryview_ptr(ptr)).native_lease.is_some() })
             }
@@ -865,17 +945,40 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
         }
 }
 
-pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) -> (usize, usize) {
+/// Managed edges transported in the scalar sink. Sparse aggregate edges stay
+/// in their charged typed contents until the detached resource is released.
+pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8) -> usize {
     let mut count = 0usize;
-    // The shared traversal includes both sidecar namespace owners, including
-    // two sink entries when globals and builtins alias the same dictionary.
-    unsafe {
-        visit_owned_edges(py, ptr, &mut |_| {
+    let mut count_value = |bits| {
+        if obj_from_bits(bits).as_ptr().is_some() {
             count = count
                 .checked_add(1)
-                .unwrap_or_else(|| std::process::abort())
-        });
+                .unwrap_or_else(|| std::process::abort());
+        }
+    };
+    unsafe {
+        if matches!(
+            object_type_id(ptr),
+            super::TYPE_ID_DICT | super::TYPE_ID_SET | super::TYPE_ID_FROZENSET
+        ) {
+            // Aggregate rows remain in their existing typed backing. Counting
+            // scalar capacity must never walk those rows only to subtract them.
+            visit_common_payload_owned_values(py, ptr, &mut count_value);
+            visit_physical_owned_edges(ptr, &mut |edge| {
+                if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
+                    count_value(edge.value);
+                }
+            });
+        } else {
+            visit_owned_values(py, ptr, &mut count_value);
+        }
     }
+    count
+}
+
+pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) -> (usize, usize) {
+    // Includes both sidecar namespace owners, even when they alias.
+    let count = unsafe { detached_managed_edge_count(py, ptr) };
     let handler = heap_lifecycle_handler(unsafe { object_type_id(ptr) })
         .expect("unknown heap kind in terminal capacity");
     let extra = match handler {
@@ -895,8 +998,14 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
         }
         _ => 0,
     };
+    // A terminal/explicit close can retire a scheduler reference even though
+    // that external root must never be subtracted by cycle graph traversal.
+    let scheduler_extra = usize::from(unsafe {
+        (*crate::header_from_obj_ptr(ptr)).has_flag(crate::HEADER_FLAG_SPAWN_RETAIN)
+    });
     let edges = count
-        .checked_add(extra)
+        .checked_add(scheduler_extra)
+        .and_then(|count| count.checked_add(extra))
         .unwrap_or_else(|| std::process::abort());
     (edges, unsafe { detached_resource_count(ptr) })
 }
@@ -1040,14 +1149,7 @@ pub(crate) unsafe fn try_clear_cycle_edges_with_sink(
             return status;
         }
     }
-    let mut count = 0usize;
-    unsafe {
-        visit_owned_edges(py, ptr, &mut |_| {
-            count = count
-                .checked_add(1)
-                .unwrap_or_else(|| std::process::abort())
-        })
-    };
+    let count = unsafe { detached_managed_edge_count(py, ptr) };
     let resources = unsafe { detached_resource_count(ptr) };
     if !sink.try_ensure_capacities(
         sink.edges
@@ -1142,38 +1244,46 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     None,
                     None,
                 );
-                let order = crate::builtins::containers::dict_order_ptr(ptr);
-                let table = crate::builtins::containers::dict_table_ptr(ptr);
-                let hashes = crate::builtins::containers::dict_hashes_ptr(ptr);
-                let detached = if order.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut *order)
-                };
+                let rows = crate::dict_entries_ptr(ptr);
+                let table = crate::dict_table_ptr(ptr);
+                let detached =
+                    (!rows.is_null()).then(|| super::backing::tracked_vec_take_contents(rows));
                 if !table.is_null() {
                     (*table).clear();
                 }
-                if !hashes.is_null() {
-                    (*hashes).clear();
+                crate::dict_storage(ptr).live = 0;
+                crate::dict_storage(ptr).fill = 0;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+                if !rows.is_null() {
+                    super::backing::tracked_vec_bump_mutation_epoch(rows);
                 }
-                detach(sink, detached);
+                if let Some(detached) = detached {
+                    sink.detach_resource(DetachedResource::DictEntries {
+                        entries: detached,
+                        preceding_edges: sink.edges.len(),
+                    });
+                }
             }
             HeapLifecycleHandler::Set => {
-                let order = crate::builtins::containers::set_order_ptr(ptr);
-                let table = crate::builtins::containers::set_table_ptr(ptr);
-                let hashes = crate::builtins::containers::set_hashes_ptr(ptr);
-                let detached = if order.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut *order)
-                };
+                let rows = crate::set_entries_ptr(ptr);
+                let table = crate::set_table_ptr(ptr);
+                let detached =
+                    (!rows.is_null()).then(|| super::backing::tracked_vec_take_contents(rows));
                 if !table.is_null() {
                     (*table).clear();
                 }
-                if !hashes.is_null() {
-                    (*hashes).clear();
+                crate::set_storage(ptr).live = 0;
+                crate::set_storage(ptr).fill = 0;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+                if !rows.is_null() {
+                    super::backing::tracked_vec_bump_mutation_epoch(rows);
                 }
-                detach(sink, detached);
+                if let Some(detached) = detached {
+                    sink.detach_resource(DetachedResource::SetEntries {
+                        entries: detached,
+                        preceding_edges: sink.edges.len(),
+                    });
+                }
             }
             HeapLifecycleHandler::Exception => {
                 let detached = crate::builtins::exceptions::exception_detach_owned_edges(ptr);
@@ -1314,6 +1424,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 );
             }
             HeapLifecycleHandler::Generator => {
+                crate::async_rt::scheduler::task_detach_owned_edges(py, ptr, sink);
                 detach_generator_owned_edges(ptr, sink);
             }
             HeapLifecycleHandler::AsyncGenerator => {
@@ -1377,7 +1488,9 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::ListInt
             | HeapLifecycleHandler::Float
             | HeapLifecycleHandler::ListBool
-            | HeapLifecycleHandler::GlobIter => {}
+            | HeapLifecycleHandler::GlobIter
+            | HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {}
             HeapLifecycleHandler::NativeHandle => sink.detach_resource(DetachedResource::Native(
                 super::native_handle::native_handle_detach(ptr),
             )),
@@ -1390,7 +1503,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
 
 /// Publish every Python-owned terminal source empty, across both the mutable
 /// cycle-breaking subset and immutable/fixed-layout ownership. The caller must
-/// size `sink` from `visit_owned_edges` before entering this mutation phase and
+/// size `sink` from `terminal_detach_capacity` before entering this mutation phase and
 /// may release it only after this function returns.
 pub(crate) unsafe fn detach_terminal_owned_edges(
     py: &PyToken<'_>,
@@ -1428,27 +1541,34 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                     sink.detach_if_heap(bits);
                 }
             }
+            HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {
+                crate::builtins::contextvars::trie::detach(ptr, sink);
+            }
             HeapLifecycleHandler::Tuple => {
                 crate::object::seq_access::detach_tuple_edges(ptr, |bits| {
                     sink.detach_if_heap(bits)
                 });
             }
             HeapLifecycleHandler::Frozenset => {
-                let order = crate::builtins::containers::set_order_ptr(ptr);
-                if !order.is_null() {
-                    let detached = super::backing::tracked_vec_take_contents(order);
-                    for &bits in detached.iter() {
-                        sink.detach_if_heap(bits);
-                    }
-                    drop(detached);
-                }
-                let table = crate::builtins::containers::set_table_ptr(ptr);
+                let rows = crate::set_entries_ptr(ptr);
+                let table = crate::set_table_ptr(ptr);
+                let detached =
+                    (!rows.is_null()).then(|| super::backing::tracked_vec_take_contents(rows));
                 if !table.is_null() {
                     (*table).clear();
                 }
-                let hashes = crate::builtins::containers::set_hashes_ptr(ptr);
-                if !hashes.is_null() {
-                    (*hashes).clear();
+                crate::set_storage(ptr).live = 0;
+                crate::set_storage(ptr).fill = 0;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+                if !rows.is_null() {
+                    super::backing::tracked_vec_bump_mutation_epoch(rows);
+                }
+                if let Some(detached) = detached {
+                    sink.detach_resource(DetachedResource::SetEntries {
+                        entries: detached,
+                        preceding_edges: sink.edges.len(),
+                    });
                 }
             }
             HeapLifecycleHandler::DictKeysView
@@ -1537,7 +1657,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));
             }
             HeapLifecycleHandler::Code => {
-                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20], sink)
+                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22], sink)
             }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {
@@ -1600,6 +1720,51 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
 #[cfg(test)]
 mod detach_sink_tests {
     use super::*;
+
+    #[test]
+    fn sparse_dictionary_clear_keeps_detached_values_until_release_and_allows_refill() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+                let value_ptr = obj_from_bits(value).as_ptr().unwrap();
+                let owners = || (*header_from_obj_ptr(value_ptr)).ref_count_snapshot();
+                let baseline = owners();
+                let int = |value| MoltObject::from_int(value).bits();
+                let dict = crate::alloc_dict_with_pairs(
+                    py,
+                    &[int(0), value, int(1), value, int(2), value],
+                );
+                assert!(crate::object::ops::dict_del_in_place(py, dict, int(1)));
+                assert_eq!(owners(), baseline + 2);
+                let (edges, resources) = terminal_detach_capacity(py, dict);
+                let mut sink = DetachedEdgeSink::terminal_with_capacities(edges, resources);
+                clear_cycle_edges_with_sink(py, dict, &mut sink);
+                assert_eq!(crate::dict_len(dict), 0);
+                assert_eq!(
+                    owners(),
+                    baseline + 2,
+                    "clear publishes empty before retiring either live value"
+                );
+                crate::object::ops::dict_set_in_place(py, dict, int(9), value);
+                assert_eq!(owners(), baseline + 3);
+                sink.release_all(py);
+                assert_eq!(
+                    owners(),
+                    baseline + 1,
+                    "old detached storage is independent from refilled storage"
+                );
+                assert_eq!(
+                    crate::object::ops::dict_get_in_place(py, dict, int(9)),
+                    Some(value)
+                );
+                crate::dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+                assert_eq!(owners(), baseline);
+                crate::dec_ref_bits(py, value);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
 
     #[test]
     fn terminal_sink_reuses_learned_high_water_without_allocation() {

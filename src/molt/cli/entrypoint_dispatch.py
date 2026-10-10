@@ -62,6 +62,7 @@ def _configured_build_target(target: str | None, build_cfg: Mapping[str, Any]) -
 def _dispatch_entrypoint_command(
     args: argparse.Namespace,
     *,
+    parser: argparse.ArgumentParser,
     build_fn: Callable[..., int],
     config_root: Path,
     config: Mapping[str, Any],
@@ -85,6 +86,7 @@ def _dispatch_entrypoint_command(
         return _runtime_build._prebuild_runtime_wasm(
             project_root=config_root,
             kind=cast(Literal["shared", "reloc", "both"], args.kind),
+            required_link_features=frozenset(args.runtime_feature),
             json_output=args.json,
             build_profile=cast(BuildProfile, args.build_profile),
             cargo_timeout=args.cargo_timeout,
@@ -479,6 +481,7 @@ def _dispatch_entrypoint_command(
                 or extension_cfg.get("support_files")
                 or extension_cfg.get("support-files"),
                 deterministic=deterministic,
+                python_version=args.python_version,
                 target=args.target or extension_cfg.get("target"),
                 source_plan=args.source_plan or source_plan,
                 source_plan_target=args.source_plan_target or source_plan_target,
@@ -1099,7 +1102,7 @@ def _dispatch_entrypoint_command(
         return deps(args.include_dev, args.json, args.verbose)
     if args.command == "install":
         pkgs = args.packages or []
-        if pkgs and pkgs[0] == "add":
+        if pkgs and pkgs[0] == args._install_add_command:
             add_pkgs = pkgs[1:]
             if not add_pkgs:
                 return _fail(
@@ -1153,7 +1156,7 @@ def _dispatch_entrypoint_command(
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":
-        return completion(args.shell, args.json, args.verbose)
+        return completion(args.shell, args.json, args.verbose, parser=parser)
 
     if args.command == "harness":
         from molt.harness import main as harness_main

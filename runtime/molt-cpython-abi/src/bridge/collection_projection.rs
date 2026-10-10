@@ -256,14 +256,14 @@ impl ObjectBridge {
             return true;
         }
         let hooks = crate::hooks::hooks_or_stubs();
-        let len = unsafe { (hooks.tuple_len)(bits) };
+        let len = unsafe { hooks.tuple_len(bits) };
         let mut staged: Vec<*mut PyObject> = Vec::new();
         if staged.try_reserve_exact(len).is_err() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
             return false;
         }
         for index in 0..len {
-            let result = unsafe { (hooks.tuple_item)(bits, index) };
+            let result = unsafe { hooks.tuple_item(bits, index) };
             let pointer = match result.decode() {
                 crate::hooks::DecodedHandleResult::Ok(item_bits) => {
                     let Some(pointer) = self.list_projection_pointer(item_bits) else {
@@ -337,8 +337,8 @@ impl ObjectBridge {
             )
         };
         if !valid_slot || (!pointer.is_null() && !self.pyobj_matches_handle(pointer, value_bits)) {
-            unsafe { crate::api::refcount::Py_XDECREF(pointer) };
-            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { crate::api::errors::release_preserving_error(&[pointer]) };
+            if !crate::api::errors::raised_error_pending() {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
                         (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
@@ -350,8 +350,7 @@ impl ObjectBridge {
         }
         if !unsafe { self.projection_adopt_owned_ref(pointer) } {
             unsafe {
-                crate::api::refcount::Py_DECREF(pointer);
-                crate::api::errors::PyErr_NoMemory();
+                crate::api::errors::release_preserving_error(&[pointer]);
             }
             return None;
         }
@@ -1118,17 +1117,21 @@ impl ObjectBridge {
             return false;
         }
         for (index, pointer, old_projection) in changes.iter().copied() {
-            let new_bits = if let Some(handle) = self.molt_handle_for_pyobj(pointer) {
-                unsafe { (hooks.inc_ref)(handle.bits()) };
-                handle.bits()
-            } else {
-                let Some(bits) = (unsafe { self.molt_value_for_pyobj(pointer) }) else {
-                    for cell in staged {
-                        unsafe { (hooks.dec_ref)(cell.new_bits) };
-                    }
-                    return false;
-                };
-                bits
+            // Publish numeric identity without recursively observing a managed
+            // child: a raw list slot may legally point back to this list.
+            let acquired = match self.semantic_handle_for_pyobj(pointer) {
+                Ok(Some(value)) => {
+                    unsafe { (hooks.inc_ref)(value.bits()) };
+                    Some(value.bits())
+                }
+                Ok(None) => unsafe { self.molt_value_for_pyobj(pointer) },
+                Err(()) => None,
+            };
+            let Some(new_bits) = acquired else {
+                for cell in staged {
+                    unsafe { (hooks.dec_ref)(cell.new_bits) };
+                }
+                return false;
             };
             staged.push(DirectListCommitCell {
                 index,

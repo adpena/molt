@@ -51,7 +51,8 @@ def test_resource_pressure_json_contract_scales_dev_policies() -> None:
     assert payload["cargo"]["measured_peak_rss_bytes"] is None
     assert plan.compile_max_slots == 2
     assert plan.diff_scheduler_per_job_gb == pytest.approx(7.1392)
-    assert plan.diff_max_jobs == 12
+    # Differential jobs share one guarded tree: 7 x 7.1392 GB fits 51.40 GB.
+    assert plan.diff_max_jobs == 7
     assert "cpu=12" in plan.reason
     assert isinstance(payload["memory"], dict)
     assert payload["memory"]["available_gb"] == 96.0
@@ -80,11 +81,13 @@ def test_diff_scheduler_helpers_share_policy_with_plan() -> None:
         tree_gb=51.40224,
         cpu_count=12,
     ) == pytest.approx(7.1392)
+    # 1 GB jobs on 64 CPUs: the 14.15 GB tree, not the 23.59 GB global budget,
+    # bounds how many run at once.
     assert (
         resource_pressure.scheduler_max_jobs(
             global_gb=23.5904,
             tree_gb=14.15424,
             cpu_count=64,
         )
-        == 23
+        == 14
     )

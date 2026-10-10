@@ -306,123 +306,6 @@ pub(super) fn importlib_import_module_resolved_name(
     importlib_resolve_join(_py, &name, &package_name)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(super) fn importlib_canonical_codecs_file_path(path: &str) -> String {
-    const MARKER: &str = "/cpython-3.12.";
-    let Some(idx) = path.find(MARKER) else {
-        return path.to_string();
-    };
-    let suffix = &path[idx + MARKER.len()..];
-    let Some(dash) = suffix.find('-') else {
-        return path.to_string();
-    };
-    let candidate = format!(
-        "{}{}{}",
-        &path[..idx],
-        "/cpython-3.12-",
-        &suffix[dash + 1..]
-    );
-    if std::path::Path::new(&candidate).exists() {
-        candidate
-    } else {
-        path.to_string()
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(super) fn importlib_codecs_file_display(
-    _py: &PyToken<'_>,
-    codecs_bits: u64,
-) -> Result<Vec<u8>, u64> {
-    let file_name = intern_runtime_static_name(_py, b"__file__");
-    let Some(file_bits) = getattr_optional_bits(_py, codecs_bits, file_name)? else {
-        return Ok(b"None".to_vec());
-    };
-    let display = match crate::object::ops_format::string_obj_bytes(obj_from_bits(file_bits)) {
-        Some(path) => std::str::from_utf8(&path)
-            .map(|path| importlib_canonical_codecs_file_path(path).into_bytes())
-            .unwrap_or(path),
-        None => crate::object::ops_format::format_obj_str_bytes(_py, obj_from_bits(file_bits)),
-    };
-    if !obj_from_bits(file_bits).is_none() {
-        dec_ref_bits(_py, file_bits);
-    }
-    if exception_pending(_py) {
-        Err(MoltObject::none().bits())
-    } else {
-        Ok(display)
-    }
-}
-
-pub(super) fn importlib_import_module_reject_missing_oem_codec(
-    _py: &PyToken<'_>,
-    resolved: &str,
-    modules_ptr: *mut u8,
-) -> Result<(), u64> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        if resolved != "encodings.oem" {
-            return Ok(());
-        }
-        let codecs_key_bits = alloc_str_bits(_py, "codecs")?;
-        let codecs_bits =
-            importlib_import_resolved_module(_py, "codecs", codecs_key_bits, modules_ptr, false);
-        dec_ref_bits(_py, codecs_key_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(codecs_bits).is_none() {
-                dec_ref_bits(_py, codecs_bits);
-            }
-            return Err(MoltObject::none().bits());
-        }
-        if obj_from_bits(codecs_bits).is_none() {
-            return Err(raise_exception::<_>(
-                _py,
-                "ModuleNotFoundError",
-                "No module named 'codecs'",
-            ));
-        }
-        let oem_encode_name = intern_runtime_static_name(_py, b"oem_encode");
-        let oem_encode_bits = match getattr_optional_bits(_py, codecs_bits, oem_encode_name) {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, codecs_bits);
-                return Err(err);
-            }
-        };
-        if let Some(bits) = oem_encode_bits {
-            if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-            }
-            dec_ref_bits(_py, codecs_bits);
-            return Ok(());
-        }
-        let display = match importlib_codecs_file_display(_py, codecs_bits) {
-            Ok(value) => value,
-            Err(err) => {
-                dec_ref_bits(_py, codecs_bits);
-                return Err(err);
-            }
-        };
-        dec_ref_bits(_py, codecs_bits);
-        let message = [
-            b"cannot import name 'oem_encode' from 'codecs' (".as_slice(),
-            &display,
-            b")",
-        ]
-        .concat();
-        Err(crate::builtins::exceptions::raise_exception_bytes::<_>(
-            _py,
-            "ImportError",
-            &message,
-        ))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (_py, resolved, modules_ptr);
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct ImportlibModuleStateArgs {
     pub(super) module_bits: u64,
@@ -512,13 +395,6 @@ pub(super) fn importlib_import_module_impl(
         return Err(importlib_modules_runtime_error(_py));
     };
 
-    if let Err(err) = importlib_import_module_reject_missing_oem_codec(_py, &resolved, modules_ptr)
-    {
-        if !obj_from_bits(modules_bits).is_none() {
-            dec_ref_bits(_py, modules_bits);
-        }
-        return Err(err);
-    }
     // Cache precedence and provider/dependency provenance are resolved once by
     // the shared import attempt after the transaction's public-cache lookup.
     let out = importlib_import_resolved_transaction(_py, &resolved, modules_ptr, None);

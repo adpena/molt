@@ -71,6 +71,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ script execution
     import harness_memory_guard  # type: ignore
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+
 # ── Known-good frontier baselines (the committed authority) ───────────────────
 # Each entry encodes the EXPECTED far frontier a clean, all-fixes-landed tree
 # reaches when the engine drives that extension's PyInit natively. It is a
@@ -115,6 +117,9 @@ DEFAULT_SYMBOL_SWEEP_MAX_GAP = 14
 
 WSL_DISTRO = os.environ.get("MOLT_WITNESS_WSL_DISTRO", "MoltCodonUbuntu")
 _EXECUTION_CONTEXT: harness_memory_guard.HarnessExecutionContext | None = None
+# Both shell engines build this harness with Cargo in the repository before
+# they drive anything, so their driver admits the same build first.
+_ENGINE_HARNESS_BUILD = ("cargo", "build", "--locked", "-p", "molt-cext-discovery")
 
 
 def _execution_context() -> harness_memory_guard.HarnessExecutionContext:
@@ -137,6 +142,7 @@ def _run_child(
     timeout: float | None = None,
     check: bool = False,
 ) -> harness_memory_guard.GuardedCompletedProcess:
+    admit_cargo_build(command, cwd=cwd, env=env)
     result = _execution_context().run(
         command,
         cwd=cwd,
@@ -313,6 +319,7 @@ def run_native_drive(module: str, profile: str) -> tuple[Fingerprint, str, float
         raise SystemExit(f"FATAL: engine script missing: {script}")
     env = _env_for_drive()
     env["MOLT_DISCOVERY_PROFILE"] = profile
+    admit_cargo_build(_ENGINE_HARNESS_BUILD, cwd=repo, env=env)
     t0 = time.monotonic()
     proc = _run_child(
         ["bash", str(script), module],
@@ -470,6 +477,7 @@ def run_symbol_sweep(profile: str) -> tuple[int | None, str, float]:
         raise SystemExit(f"FATAL: sweep script missing: {script}")
     env = _env_for_drive()
     env["MOLT_DISCOVERY_PROFILE"] = profile
+    admit_cargo_build(_ENGINE_HARNESS_BUILD, cwd=repo, env=env)
     t0 = time.monotonic()
     proc = _run_child(
         ["bash", str(script)],

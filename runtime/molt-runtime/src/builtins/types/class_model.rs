@@ -336,41 +336,32 @@ pub extern "C" fn molt_type_new(
             }
         }
 
-        let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
         let kwargs_obj = obj_from_bits(kwargs_bits);
-        if !kwargs_obj.is_none()
-            && let Some(kwargs_ptr) = kwargs_obj.as_ptr()
+        // Keep the canonical snapshot alive through namespace mutations and callbacks.
+        let keyword_snapshot = if let Some(ptr) = kwargs_obj.as_ptr()
+            && unsafe { object_type_id(ptr) == TYPE_ID_DICT }
         {
-            unsafe {
-                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    let entries = dict_order(kwargs_ptr).clone();
-                    for pair in entries.chunks(2) {
-                        if pair.len() == 2 {
-                            kw_pairs.push((pair[0], pair[1]));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Own all keywords before namespace copying or cell replacement can
-        // invoke destructors, and before any construction callback can mutate
-        // a caller-visible kwargs dictionary.
-        let keyword_values: Vec<u64> = kw_pairs
-            .iter()
-            .flat_map(|&(name, value)| [name, value])
-            .collect();
-        let keyword_snapshot = if keyword_values.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            let snapshot = alloc_tuple(_py, &keyword_values);
-            if snapshot.is_null() {
+            let Some(snapshot) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
                 return MoltObject::none().bits();
-            }
-            snapshot
+            };
+            Some(snapshot)
+        } else {
+            None
         };
-        let _keyword_owner = crate::PtrDropGuard::new(keyword_snapshot);
-        let (kw_names, kw_values): (Vec<_>, Vec<_>) = kw_pairs.into_iter().unzip();
+        let (kw_names, kw_values): (Vec<_>, Vec<_>) = keyword_snapshot
+            .as_deref()
+            .unwrap_or(&[])
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| (pair[0], pair[1]))
+            .unzip();
 
         let mut bases_vec: Vec<u64> = Vec::new();
         let mut bases_tuple_bits = bases_bits;

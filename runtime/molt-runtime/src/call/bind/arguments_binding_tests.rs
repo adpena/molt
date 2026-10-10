@@ -170,7 +170,10 @@ fn keyword_admission_reads_replacements_and_retains_a_shared_mapping() {
             assert_eq!(view.kw_names, [key_bits]);
             assert_eq!(view.kw_values, [replacement_bits]);
             assert_eq!(
-                crate::dict_order(dict).len(),
+                crate::dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .len(),
                 2,
                 "a shared mapping stays intact"
             );
@@ -432,7 +435,10 @@ fn extension_callees_receive_the_whole_mapping_or_a_fresh_one() {
             let fresh = arguments.keyword_mapping().unwrap();
             let fresh_ptr = obj_from_bits(fresh).as_ptr().unwrap();
             assert_eq!(
-                crate::dict_order(fresh_ptr).as_slice(),
+                crate::dict_live_entries(fresh_ptr)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
                 [key_bits, value_bits]
             );
             drop(arguments);
@@ -629,6 +635,159 @@ fn callargs_registries_are_runtime_scoped() {
             let guard = state.call_bind.lock().unwrap();
             assert!(guard.callargs_builder_map.is_empty());
             assert!(guard.callargs_storage_registry.is_empty());
+        }
+    });
+}
+
+#[test]
+fn capi_arguments_keep_forward_value_release_across_target_versions_and_binding_errors() {
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let probes = ReleaseProbes::new(_py);
+            let names: Vec<_> = [b"a", b"b", b"c", b"d"]
+                .map(|name| MoltObject::from_ptr(crate::alloc_string(_py, name)).bits())
+                .into();
+            let parameter_names = MoltObject::from_ptr(alloc_tuple(_py, &names)).bits();
+            let function = metadata_function(
+                _py,
+                none_of_four as *const (),
+                4,
+                &[(b"__molt_arg_names__", parameter_names)],
+                false,
+            );
+            let finalizer = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(record_release as *const ()),
+                1,
+            );
+            let finalizer_bits = MoltObject::from_ptr(finalizer).bits();
+            let del_name = MoltObject::from_ptr(crate::alloc_string(_py, b"__del__")).bits();
+            let class_name =
+                MoltObject::from_ptr(crate::alloc_string(_py, b"KeywordReleaseProbe")).bits();
+            let namespace = alloc_dict_with_pairs(_py, &[del_name, finalizer_bits]);
+            let namespace_bits = MoltObject::from_ptr(namespace).bits();
+            let builtins = crate::builtin_classes(_py);
+            let key_class = crate::builtins::types::molt_type_new(
+                builtins.type_obj,
+                class_name,
+                builtins.str,
+                namespace_bits,
+                MoltObject::none().bits(),
+            );
+            assert!(!crate::exception_pending(_py));
+            for minor in [12, 13, 14] {
+                transaction.with_target_python_minor(_py, minor, || {
+                    for fail_binding in [false, true] {
+                        RELEASED.lock().unwrap().clear();
+                        let values = probes.instances(_py, 4);
+                        let keys = [if fail_binding { b"a" } else { b"c" }, b"d"].map(|text| {
+                            let key = crate::object::builders::alloc_native_inline_bytes(
+                                _py,
+                                key_class,
+                                crate::object::native_instance::NativePayload::String,
+                                text,
+                            );
+                            assert!(!key.is_null());
+                            MoltObject::from_ptr(key).bits()
+                        });
+                        let mapping =
+                            alloc_dict_with_pairs(_py, &[keys[0], values[2], keys[1], values[3]]);
+                        assert!(!mapping.is_null());
+                        let mapping_bits = MoltObject::from_ptr(mapping).bits();
+                        let arguments =
+                            CallArguments::capi(_py, Some(values[0]), &values[1..2], mapping_bits)
+                                .unwrap();
+                        // Make the real dispatch owner the last holder, then run
+                        // binding: the success and duplicate-value error paths
+                        // must both follow _PyStack_UnpackDict_Free's order.
+                        for &bits in &values {
+                            dec_ref_bits(_py, bits);
+                        }
+                        for &bits in &keys {
+                            dec_ref_bits(_py, bits);
+                        }
+                        dec_ref_bits(_py, mapping_bits);
+                        let result = call_bind_with_arguments(_py, function, arguments);
+                        assert!(obj_from_bits(result).is_none());
+                        assert_eq!(crate::exception_pending(_py), fail_binding);
+                        assert_eq!(
+                            ReleaseProbes::released(&[values.as_slice(), &keys].concat()),
+                            [0, 1, 2, 3, 5, 4],
+                            "3.{minor} failure={fail_binding}"
+                        );
+                        if fail_binding {
+                            crate::molt_exception_clear();
+                        }
+                    }
+                });
+            }
+            for bits in names.into_iter().chain([parameter_names, function]) {
+                dec_ref_bits(_py, bits);
+            }
+            for bits in [
+                key_class,
+                namespace_bits,
+                class_name,
+                del_name,
+                finalizer_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+            probes.release(_py);
+        }
+    });
+}
+
+#[test]
+fn capi_borrowed_spans_keep_caller_ownership_and_promote_only_receiver_span() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let item = alloc_list(py, &[]);
+            let value = alloc_list(py, &[]);
+            let name = crate::alloc_string(py, b"payload");
+            let item_bits = MoltObject::from_ptr(item).bits();
+            let value_bits = MoltObject::from_ptr(value).bits();
+            let name_bits = MoltObject::from_ptr(name).bits();
+            let count = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
+            let before = [count(item), count(value), count(name)];
+            let positional = [item_bits];
+            let names = [name_bits];
+            let values = [value_bits];
+            {
+                let mut arguments =
+                    CallArguments::capi_vector(py, &positional, &names, &values).unwrap();
+                assert!(matches!(arguments.admission(), Admission::Copy));
+                assert_eq!([count(item), count(value), count(name)], before);
+                let view = arguments.unpacked_view().unwrap();
+                assert_eq!(view.pos.as_ptr(), positional.as_ptr());
+                assert_eq!(view.kw_names.as_ptr(), names.as_ptr());
+                assert_eq!(view.kw_values.as_ptr(), values.as_ptr());
+                arguments.prepend_positional(item_bits).unwrap();
+                assert_eq!(arguments.positional(), &[item_bits, item_bits]);
+                assert_eq!(count(item), before[0] + 2);
+                assert_eq!([count(value), count(name)], [before[1], before[2]]);
+            }
+            assert_eq!([count(item), count(value), count(name)], before);
+            let mapping = alloc_dict_with_pairs(py, &[name_bits, value_bits]);
+            let mapping_bits = MoltObject::from_ptr(mapping).bits();
+            let parent = CallArguments::capi(py, None, &positional, mapping_bits).unwrap();
+            let mapping_count = count(mapping);
+            {
+                let child = parent.constructor_child(None, parent.positional()).unwrap();
+                assert_eq!(child.positional().as_ptr(), positional.as_ptr());
+                assert_eq!(child.capi_mapping(), Some(mapping_bits));
+                assert!(matches!(child.admission(), Admission::Copy));
+                assert_eq!(count(item), before[0]);
+                assert_eq!(count(mapping), mapping_count + 1);
+            }
+            assert_eq!(count(mapping), mapping_count);
+            drop(parent);
+            for bits in [mapping_bits, item_bits, value_bits, name_bits] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!crate::exception_pending(py));
         }
     });
 }

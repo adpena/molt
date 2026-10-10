@@ -183,3 +183,80 @@ def test_auxiliary_tool_grammar_has_no_hidden_argv() -> None:
         "/tools/zig",
         "ar",
     )
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "mode", "role"),
+    [
+        ("clang", (), "c"),
+        ("clang++", (), "cpp"),
+        ("clang++.exe", (), "cpp"),
+        ("clang", ("--driver-mode=g++",), "cpp"),
+        ("clang++", ("--driver-mode=gcc",), "c"),
+    ],
+)
+@pytest.mark.parametrize(
+    "target", ["wasm32-wasip1", "wasm32-unknown-unknown", "x86_64-unknown-linux-gnu"]
+)
+def test_compiler_role_uses_lexical_entrypoint_and_explicit_mode(
+    entrypoint, mode, role, target
+):
+    command = (entrypoint, *mode)
+    assert (
+        validate_source_extension_compiler_command(
+            command, role=role, target_triple=target
+        ).argv
+        == command
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "role"),
+    [
+        (("clang",), "cpp"),
+        (("clang++",), "c"),
+        (("clang++", "--driver-mode=gcc"), "cpp"),
+        (("clang", "--driver-mode=g++", "--driver-mode=gcc"), "c"),
+    ],
+)
+@pytest.mark.parametrize(
+    "target", ["wasm32-wasip1", "wasm32-unknown-unknown", "x86_64-unknown-linux-gnu"]
+)
+def test_compiler_refuses_wrong_or_conflicting_role(command, role, target):
+    with pytest.raises(ValueError, match="driver mode"):
+        validate_source_extension_compiler_command(
+            command, role=role, target_triple=target
+        )
+
+
+@pytest.mark.parametrize(
+    "target", ["wasm32-wasip1", "wasm32-unknown-unknown", "x86_64-unknown-linux-gnu"]
+)
+@pytest.mark.parametrize(
+    "options", [("--driver-mode", "g++"), ("-x", "c++"), ("-xc++",), ("-ansi",)]
+)
+def test_base_compiler_rejects_unowned_language_spelling(target, options):
+    with pytest.raises(ValueError, match="positive grammar"):
+        validate_source_extension_compiler_command(
+            ("clang++", *options), role="cpp", target_triple=target
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "role"),
+    [
+        (("clang++", "-std=c17"), "cpp"),
+        (("clang", "-std=c++20"), "c"),
+        (("clang-cl", "/clang:-std=c11"), "cpp"),
+    ],
+)
+def test_base_compiler_language_standard_matches_declared_role(command, role):
+    target = (
+        "x86_64-pc-windows-msvc"
+        if command[0] == "clang-cl"
+        else "x86_64-unknown-linux-gnu"
+    )
+    with pytest.raises(ValueError, match="standard for a different language"):
+        validate_source_extension_compiler_command(
+            command, role=role, target_triple=target
+        )

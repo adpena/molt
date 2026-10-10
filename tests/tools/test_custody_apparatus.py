@@ -130,12 +130,24 @@ def test_apparatus_events_are_part_of_the_receipt_identity(tmp_path: Path) -> No
     assert quiet.receipt()["identity_sha256"] != refreshed.receipt()["identity_sha256"]
 
 
-def test_guard_summary_dir_defaults_to_the_custody_root_outside_the_tree(
-    tmp_path: Path,
+@pytest.mark.parametrize("state_root", [None, "   "])
+@pytest.mark.parametrize("checkout", ["standalone", "molt-src", "worktrees/worker"])
+def test_guard_artifacts_default_to_shared_out_of_tree_custody(
+    tmp_path: Path, state_root: str | None, checkout: str
 ) -> None:
-    summary = pytest_guard_summary_dir(tmp_path, environ={})
-    assert summary == unconfigured_state_root(tmp_path) / "tmp" / "pytest-memory-guard"
-    assert not summary.is_relative_to(tmp_path.resolve())
+    repo = tmp_path / checkout
+    environ = {} if state_root is None else {"MOLT_MEMORY_GUARD_STATE_ROOT": state_root}
+    pytest_root = pytest_guard_summary_dir(repo, environ=environ)
+    harness_root = harness_guard_artifact_dir(repo, environ=environ)
+    expected = unconfigured_state_root(repo) / "tmp"
+    assert pytest_root == expected / "pytest-memory-guard"
+    assert harness_root == expected / "harness_memory_guard"
+    # Independent regression oracle: recording a failed proof must never mutate
+    # its watched source, even for an unconfigured checkout or blank selector.
+    assert not pytest_root.is_relative_to(repo.resolve())
+    assert not harness_root.is_relative_to(repo.resolve())
+    if checkout != "standalone":
+        assert expected == tmp_path.resolve() / "tmp"
 
 
 def test_guard_summary_dir_follows_the_admitted_state_root(tmp_path: Path) -> None:
@@ -156,18 +168,8 @@ def test_guard_summary_dir_resolves_a_relative_state_root_against_the_repo(
     )
 
 
-def test_guard_summary_dir_ignores_a_blank_state_root(tmp_path: Path) -> None:
-    environ = {"MOLT_MEMORY_GUARD_STATE_ROOT": "   "}
-    assert pytest_guard_summary_dir(tmp_path, environ=environ) == (
-        pytest_guard_summary_dir(tmp_path, environ={})
-    )
-
-
 def test_harness_command_log_follows_the_admitted_state_root(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    assert harness_guard_artifact_dir(repo, environ={}) == (
-        unconfigured_state_root(repo) / "tmp" / "harness_memory_guard"
-    )
     state_root = tmp_path / "state"
     assert harness_guard_artifact_dir(
         repo, environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)}

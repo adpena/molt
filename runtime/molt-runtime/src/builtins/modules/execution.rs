@@ -371,9 +371,18 @@ fn module_cache_set_by_name(_py: &PyToken<'_>, name: &str, module_bits: u64) -> 
 
 pub(super) unsafe fn copy_dict_entries(_py: &PyToken<'_>, src_ptr: *mut u8, dst_ptr: *mut u8) {
     unsafe {
-        let source_order = dict_order(src_ptr);
+        let Some(source_order) = crate::object::ops_dict::dict_snapshot(
+            _py,
+            src_ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        ) else {
+            return;
+        };
         for idx in (0..source_order.len()).step_by(2) {
             dict_set_in_place(_py, dst_ptr, source_order[idx], source_order[idx + 1]);
+            if exception_pending(_py) {
+                return;
+            }
         }
     }
 }

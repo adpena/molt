@@ -333,6 +333,20 @@ def elf_header(
     return image
 
 
+def elf_dynamic_image(name: bytes = b"libc.so", *, machine: int = 62) -> bytearray:
+    image = elf_header(machine=machine, kind=3, image_size=0x400)
+    struct.pack_into("<Q", image, 32, 64)
+    struct.pack_into("<HH", image, 54, 56, 2)
+    struct.pack_into("<IIQQQQQQ", image, 64, 1, 0, 0, 0, 0, len(image), len(image), 1)
+    struct.pack_into("<IIQQQQQQ", image, 120, 2, 0, 0x200, 0x200, 0, 64, 64, 8)
+    struct.pack_into("<qQ", image, 0x200, 1, 1)
+    struct.pack_into("<qQ", image, 0x210, 5, 0x300)
+    strings = b"\0" + name + b"\0"
+    struct.pack_into("<qQ", image, 0x220, 10, len(strings))
+    image[0x300 : 0x300 + len(strings)] = strings
+    return image
+
+
 def pe_header(
     *,
     machine: int = 0x8664,

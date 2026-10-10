@@ -6,11 +6,33 @@
 use crate::*;
 use molt_obj_model::MoltObject;
 
-use super::ops::{ensure_hashable, set_rebuild};
+use super::ops::ensure_hashable;
 use super::ops_arith::{
     set_like_copy_bits, set_like_difference, set_like_intersection, set_like_ptr_from_bits,
     set_like_result_type_id,
 };
+
+/// Retained live elements in canonical set-table traversal order. A snapshot
+/// owns its references and accounted buffer across arbitrary Python callbacks.
+pub(crate) unsafe fn set_snapshot<'a, 'py>(
+    py: &'a PyToken<'py>,
+    set: *mut u8,
+) -> Option<super::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
+    unsafe {
+        let Some(storage) = super::backing::tracked_vec_box_with_capacity::<u64>(set_len(set))
+        else {
+            record_memory_error_without_allocation(py);
+            return None;
+        };
+        let mut values = super::backing::tracked_vec_box_from_raw(storage);
+        let mut cursor = 0;
+        while let Some(row) = set_next_entry(set, &mut cursor) {
+            inc_ref_bits(py, row.key);
+            values.push(row.key);
+        }
+        Some(super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, values))
+    }
+}
 
 /// Python membership admits mutable-set needles after a TypeError; the public
 /// PySet_Contains API deliberately requires an already-hashable key.
@@ -128,6 +150,29 @@ pub extern "C" fn molt_set_add_probe(set_bits: u64, key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_add(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(target) = obj_from_bits(set_bits).as_ptr() else {
+            return raise_exception(
+                _py,
+                "SystemError",
+                "frozenset construction requires a frozenset",
+            );
+        };
+        let unique = unsafe {
+            if object_type_id(target) != TYPE_ID_FROZENSET {
+                false
+            } else {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .managed_handle_is_uniquely_referenced(set_bits)
+                    .unwrap_or_else(|| (*header_from_obj_ptr(target)).is_uniquely_owned())
+            }
+        };
+        if !unique {
+            return raise_exception(
+                _py,
+                "SystemError",
+                "frozenset construction requires unique ownership",
+            );
+        }
         if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
             return MoltObject::none().bits();
         }
@@ -198,22 +243,9 @@ pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    let order = set_order(ptr);
-                    if order.is_empty() {
-                        return raise_exception::<_>(_py, "KeyError", "pop from an empty set");
-                    }
-                    let key_bits = order.pop().unwrap_or_else(|| MoltObject::none().bits());
-                    let hashes = set_hashes(ptr);
-                    hashes.pop();
-                    let entries = order.len();
-                    let table = set_table(ptr);
-                    let capacity = set_table_capacity(entries.max(1));
-                    set_rebuild(_py, order, hashes, table, capacity);
-                    if order.is_empty() {
-                        (*header_from_obj_ptr(ptr))
-                            .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
-                    }
-                    return key_bits;
+                    return super::ops::set_pop_owned(ptr).unwrap_or_else(|| {
+                        raise_exception::<_>(_py, "KeyError", "pop from an empty set")
+                    });
                 }
             }
         }
@@ -680,7 +712,7 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
                     (other, set)
                 };
                 let mut index = 0;
-                while let Some(entry) = super::ops::set_pin_entry(py, source, index) {
+                while let Some(entry) = super::ops::set_pin_next(py, source, &mut index) {
                     let found = super::ops::set_find_entry_in_place_with_hash(
                         py,
                         probe,
@@ -694,7 +726,6 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
                     if found.is_some() {
                         return MoltObject::from_bool(false).bits();
                     }
-                    index += 1;
                 }
                 MoltObject::from_bool(true).bits()
             } else {
@@ -816,12 +847,11 @@ unsafe fn new_set_result(kind: u32) -> u64 {
 unsafe fn pin_dict_key<'a, 'py>(
     py: &'a PyToken<'py>,
     dict: *mut u8,
-    index: usize,
+    cursor: &mut usize,
 ) -> Option<(SetOwned<'a, 'py>, u64)> {
     unsafe {
-        let key = *dict_order(dict).get(index.checked_mul(2)?)?;
-        let hash = *dict_hashes(dict).get(index)?;
-        Some((SetOwned::borrow(py, key), hash))
+        let row = dict_next_entry(dict, cursor)?;
+        Some((SetOwned::borrow(py, row.key), row.hash?.get()))
     }
 }
 
@@ -847,25 +877,23 @@ pub(crate) unsafe fn set_update_iterable(
                     };
                 }
                 let mut index = 0;
-                while let Some(entry) = super::ops::set_pin_entry(py, other, index) {
+                while let Some(entry) = super::ops::set_pin_next(py, other, &mut index) {
                     super::ops::set_add_with_hash_in_place(py, set, entry.bits(), entry.hash());
                     drop(entry);
                     if exception_pending(py) {
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
-                    index += 1;
                 }
                 return Ok(());
             }
             if exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict) {
                 let mut index = 0;
-                while let Some((key, hash)) = pin_dict_key(py, other, index) {
+                while let Some((key, hash)) = pin_dict_key(py, other, &mut index) {
                     super::ops::set_add_with_hash_in_place(py, set, key.bits, hash);
                     drop(key);
                     if exception_pending(py) {
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
-                    index += 1;
                 }
                 return Ok(());
             }
@@ -905,7 +933,12 @@ impl Drop for IntersectionCustody<'_, '_> {
     }
 }
 
-unsafe fn set_intersection_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, kind: u32) -> u64 {
+pub(in crate::object) unsafe fn set_intersection_bits(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    other_bits: u64,
+    kind: u32,
+) -> u64 {
     unsafe {
         if let Some(other) = obj_from_bits(other_bits).as_ptr()
             && is_set_like_type(object_type_id(other))
@@ -1008,7 +1041,7 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 .map(|value| obj_from_bits(value.bits).as_ptr().unwrap())
                 .unwrap_or(other);
             let mut index = 0;
-            while let Some(entry) = super::ops::set_pin_entry(py, source, index) {
+            while let Some(entry) = super::ops::set_pin_next(py, source, &mut index) {
                 super::ops::set_del_with_hash_in_place(py, set, entry.bits(), entry.hash());
                 if exception_pending(py) {
                     drop(temporary);
@@ -1019,7 +1052,6 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 if exception_pending(py) {
                     return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
-                index += 1;
             }
         } else {
             let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits)
@@ -1056,7 +1088,7 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
                     return MoltObject::none().bits();
                 };
                 let mut index = 0;
-                while let Some(entry) = super::ops::set_pin_entry(py, set, index) {
+                while let Some(entry) = super::ops::set_pin_next(py, set, &mut index) {
                     let found = super::ops::dict_find_entry_with_hash(
                         py,
                         other,
@@ -1081,7 +1113,6 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
                         dec_ref_bits(py, bits);
                         return MoltObject::none().bits();
                     }
-                    index += 1;
                 }
                 return bits;
             }
@@ -1141,13 +1172,12 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
             && exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict)
         {
             let mut index = 0;
-            while let Some((key, hash)) = pin_dict_key(py, other, index) {
+            while let Some((key, hash)) = pin_dict_key(py, other, &mut index) {
                 set_toggle_entry(py, set, key.bits, hash)?;
                 drop(key);
                 if exception_pending(py) {
                     return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
-                index += 1;
             }
             return Ok(());
         }
@@ -1155,7 +1185,7 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
             .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         let temporary = temporary.map(|bits| SetOwned::adopt(py, bits));
         let mut index = 0;
-        while let Some(entry) = super::ops::set_pin_entry(py, other, index) {
+        while let Some(entry) = super::ops::set_pin_next(py, other, &mut index) {
             if set_toggle_entry(py, set, entry.bits(), entry.hash()).is_err() {
                 drop(temporary);
                 drop(entry);
@@ -1165,7 +1195,6 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
             if exception_pending(py) {
                 return Err(molt_runtime_core::ErrorIndicatorSet);
             }
-            index += 1;
         }
         Ok(())
     }

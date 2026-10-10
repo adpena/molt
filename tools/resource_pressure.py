@@ -150,13 +150,20 @@ def scheduler_max_jobs(
     cpu_count: int,
     explicit_per_job_gb: float | None = None,
 ) -> int:
+    """Jobs whose per-job budgets fit the tree budget.
+
+    Every differential job runs inside one process tree, and both the suite's
+    own sentinel and the memory guard that wraps the suite bound that whole
+    tree by ``tree_gb``. Dividing the larger global budget admitted more jobs
+    than the tree could hold, and the outer guard killed the tree (HF-105).
+    """
     per_job = scheduler_per_job_gb(
         global_gb=global_gb,
         tree_gb=tree_gb,
         cpu_count=cpu_count,
         explicit_gb=explicit_per_job_gb,
     )
-    return max(1, int(global_gb // max(0.001, per_job)))
+    return max(1, int(min(tree_gb, global_gb) // max(0.001, per_job)))
 
 
 def plan_resource_pressure(

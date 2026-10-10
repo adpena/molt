@@ -18,6 +18,7 @@ CORPUS = ROOT / "tests/differential/stdlib/unittest_mock_protocol.py"
 RETIRED_FRAGMENTS = ("_mock_autospec", "_mock_patch")
 
 # -I prevents ambient PYTHONPATH from substituting the reference or dependencies.
+# -B is explicit because isolation ignores environment bytecode-write controls.
 # Preload dependencies before changing only the canonical unittest package path.
 _PROBE = r"""
 import asyncio
@@ -100,16 +101,19 @@ if mode == "source":
 """
 
 
-def _run_protocol(mode: str) -> dict[str, object]:
+def _run_protocol(
+    mode: str, *, source: Path = UNITTEST_SOURCE, corpus: Path = CORPUS
+) -> dict[str, object]:
     result = run_surface_test_process(
         [
             sys.executable,
+            "-B",
             "-I",
             "-c",
             _PROBE,
             mode,
-            str(UNITTEST_SOURCE),
-            str(CORPUS),
+            str(source),
+            str(corpus),
         ],
         cwd=ROOT,
         timeout=45,
@@ -132,6 +136,38 @@ def test_mock_protocol_matches_cpython_through_canonical_package_import(
     reference_protocol: dict[str, object],
 ) -> None:
     assert _run_protocol("source") == reference_protocol
+
+
+def test_mock_source_observer_preserves_fresh_source_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reference_protocol: dict[str, object],
+) -> None:
+    disposable = tmp_path / "source"
+    source = disposable / "unittest"
+    source.mkdir(parents=True)
+    # The probe preloads CPython dependencies, then replaces only unittest.mock.
+    (source / "mock.py").write_bytes((UNITTEST_SOURCE / "mock.py").read_bytes())
+    corpus = disposable / "protocol.py"
+    corpus.write_bytes(CORPUS.read_bytes())
+
+    def snapshot():
+        return {
+            path.relative_to(disposable).as_posix(): (
+                None if path.is_dir() else path.read_bytes()
+            )
+            for path in disposable.rglob("*")
+        }
+
+    before = snapshot()
+    assert not list(disposable.rglob("__pycache__"))
+    # These environment settings cannot protect source under -I. The actual
+    # guarded observer must preserve both bytes and directory topology itself.
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "external-pycache"))
+    assert _run_protocol("source", source=source, corpus=corpus) == reference_protocol
+    assert snapshot() == before
+    assert not list(disposable.rglob("__pycache__"))
 
 
 def test_mock_family_has_no_dynamic_fragment_or_context_injection_lane() -> None:

@@ -107,6 +107,6 @@ pub use hooks::{
     BorrowedHandleResult, DictOp, EXCEPTION_SNAPSHOT_ARGS, EXCEPTION_SNAPSHOT_CAUSE,
     EXCEPTION_SNAPSHOT_CONTEXT, EXCEPTION_SNAPSHOT_DICT, EXCEPTION_SNAPSHOT_NOTES,
     EXCEPTION_SNAPSHOT_TRACEBACK, EXCEPTION_TYPED_MAX_FIELDS, ExceptionField, ExceptionSnapshot,
-    MoltBufferView, NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, RuntimeHooks, SetOp, hooks,
-    hooks_or_stubs, try_set_runtime_hooks,
+    MoltBufferView, NumberBinaryOp, NumberOperationMode, NumberUnaryOp, OwnedHandleResult,
+    RuntimeHooks, SetOp, hooks, hooks_or_stubs, try_set_runtime_hooks,
 };

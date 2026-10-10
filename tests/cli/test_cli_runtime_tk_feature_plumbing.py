@@ -37,6 +37,7 @@ from molt.cli.native_link_plan import (
     NativeLinkerKind,
     NativeLinkPlan,
     NativeLinkPolicy,
+    NativeTargetSpec,
     resolve_native_target_spec,
 )
 from tests.cli.native_link_test_support import (
@@ -392,7 +393,7 @@ def test_cargo_target_root_ignores_removed_legacy_target_root_env(
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
     assert cli._cargo_target_root(tmp_path) == (
-        tmp_path / "target" / "sessions" / "alpha_session_beta"
+        tmp_path / "target" / "sessions" / "alpha_session_b-575cb2aec94ffa27"
     )
 
 
@@ -400,16 +401,17 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
     external_root = tmp_path / "external" / "Molt"
     cli._cargo_target_root_cached.cache_clear()
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(external_root))
     monkeypatch.setenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", "1")
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "agent-one")
 
-    assert cli._cargo_target_root(tmp_path) == (
+    assert cli._cargo_target_root(project_root) == (
         external_root.resolve() / "target" / "sessions" / "agent-one"
     )
 
@@ -562,6 +564,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
     captured_runtime_libs: list[Path] = []
+    selected_target = resolve_native_target_spec(None)
 
     def fake_build_native_link_plan(
         *,
@@ -569,7 +572,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         stub_path: Path,
         runtime_lib: Path,
         output_binary: Path,
-        target_triple: str | None,
+        target: NativeTargetSpec,
         sysroot_path: Path | None,
         profile: str,
         runtime_build_identity: object,
@@ -580,7 +583,8 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         external_link_requirements: tuple[SourceExtensionLinkRequirements, ...] = (),
         bolt_requested: bool = False,
     ) -> NativeLinkPlan:
-        del output_obj, stub_path, target_triple, sysroot_path, profile
+        del output_obj, stub_path, sysroot_path, profile
+        assert target is selected_target
         del stdlib_obj_path
         del bolt_requested
         assert runtime_build_identity is selected_identity
@@ -592,7 +596,6 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
             for item in external_link_requirements
         )
         captured_runtime_libs.append(runtime_lib)
-        selected_target = resolve_native_target_spec(None)
         return NativeLinkPlan(
             target=selected_target,
             capabilities=NativeLinkCapabilities(
@@ -658,7 +661,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         json_output=True,
         output_binary=output_binary,
         runtime_codegen_binding=binding,
-        target=resolve_native_target_spec(None),
+        target=selected_target,
         sysroot_path=None,
         profile="dev",
         project_root=project_root,

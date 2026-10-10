@@ -6,13 +6,14 @@ from collections.abc import Mapping
 import os
 
 from molt import source_extension_link_inputs
-from molt.cli import wasm_link_inputs
 from molt.exact_json import loads_exact
+from molt.wasi_sdk_identity import WasiCAbiProjection
 
 
 def resolve_source_extension_link_inputs(
     target_triple: str,
     *,
+    wasi_c_abi: WasiCAbiProjection | None,
     environment: Mapping[str, str] | None = None,
 ) -> source_extension_link_inputs.SourceExtensionLinkInputs:
     environment = os.environ if environment is None else environment
@@ -24,21 +25,21 @@ def resolve_source_extension_link_inputs(
             raise ValueError(
                 "invalid captured source-extension link-input environment"
             ) from exc
-        return source_extension_link_inputs.validate_source_extension_link_inputs(
+        captured = source_extension_link_inputs.validate_source_extension_link_inputs(
             payload, target_triple=target_triple
         )
+        captured.verify_c_abi(wasi_c_abi)
+        return captured
     if target_triple != "wasm32-wasip1":
-        return source_extension_link_inputs.capture_source_extension_link_inputs(
+        if wasi_c_abi is not None:
+            raise ValueError("non-WASI source extension has an unexpected C ABI plan")
+        return source_extension_link_inputs.project_source_extension_link_inputs(
             target_triple, None
         )
-    path = wasm_link_inputs.wasm_compiler_builtins_archive(
-        target_triple, environment=environment
+    if wasi_c_abi is None:
+        raise ValueError("WASI source extension requires its selected C ABI plan")
+    captured = source_extension_link_inputs.project_source_extension_link_inputs(
+        target_triple, wasi_c_abi
     )
-    if path is None:
-        raise ValueError(
-            "WASI source-extension target requires the selected Rust compiler-builtins archive for Meson configure links"
-        )
-    path = path.resolve(strict=True)
-    return source_extension_link_inputs.capture_source_extension_link_inputs(
-        target_triple, path
-    )
+    captured.verify_c_abi(wasi_c_abi)
+    return captured

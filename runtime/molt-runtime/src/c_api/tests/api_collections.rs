@@ -115,10 +115,19 @@ fn c_api_tuple_new_size_getitem_setitem() {
         assert_ne!(tuple, 0);
         assert_eq!(PyTuple_Size(tuple), 3);
 
-        // The internal handle API uses the canonical missing singleton. The
-        // public pointer ABI translates it to NULL, not float +0.0 (bits 0).
+        // This borrowed-handle helper returns 0 without an error for an
+        // uninitialized slot. The typed ABI hook, tested separately with the
+        // public pointer API, distinguishes absence from valid float +0.0.
         let item0 = PyTuple_GetItem(tuple, 0);
-        assert_eq!(item0, crate::missing_bits(_py));
+        assert_eq!(item0, 0);
+        assert!(!exception_pending(_py));
+
+        let none = MoltObject::none().bits();
+        inc_ref_bits(_py, none);
+        assert_eq!(PyTuple_SetItem(tuple, 0, none), 0);
+        assert_eq!(PyTuple_GetItem(tuple, 0), none);
+        assert_ne!(none, 0, "Python None is a present borrowed value");
+        assert_eq!(PyTuple_GetItem(tuple, 1), 0);
         assert!(!exception_pending(_py));
 
         // SetItem steals the ref, so inc_ref the value first.
@@ -131,16 +140,14 @@ fn c_api_tuple_new_size_getitem_setitem() {
         // Out-of-bounds
         let bad = PyTuple_GetItem(tuple, 5);
         assert_eq!(bad, 0);
-        assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        assert_pending_exception_class(_py, "IndexError");
 
         // Negative index in SetItem should fail (CPython tuple uses non-negative only).
         let steal_val = MoltObject::from_int(1).bits();
         inc_ref_bits(_py, steal_val);
         let rc = PyTuple_SetItem(tuple, -1, steal_val);
         assert_eq!(rc, -1);
-        assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        assert_pending_exception_class(_py, "IndexError");
 
         dec_ref_bits(_py, tuple);
     });
@@ -1404,6 +1411,122 @@ fn c_api_dict_extended_operations() {
 
         dec_ref_bits(_py, k1);
         dec_ref_bits(_py, dict);
+    });
+}
+
+#[test]
+fn c_api_frozenset_unique_construction_preserves_observed_hash() {
+    use molt_cpython_abi::api::{refcount::OwnedPyObject, sequences, typeobj};
+
+    let _guard = CApiTestGuard::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let frozen =
+                OwnedPyObject::from_owned(sequences::PyFrozenSet_New(std::ptr::null_mut()));
+            assert!(!frozen.as_ptr().is_null());
+            assert_eq!(sequences::PyFrozenSet_CheckExact(frozen.as_ptr()), 1);
+            assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 0);
+            let hash = typeobj::PyObject_Hash(frozen.as_ptr());
+            assert_ne!(hash, -1);
+            let key = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .owned_handle_to_pyobj(MoltObject::from_int(7).bits()),
+            );
+            assert!(!key.as_ptr().is_null());
+            assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), 0);
+            assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 1);
+            assert_eq!(sequences::PySet_Contains(frozen.as_ptr(), key.as_ptr()), 1);
+            // CPython's PySet_Add accepts the unique under-construction object
+            // and leaves an already observed frozenset hash cached.
+            assert_eq!(typeobj::PyObject_Hash(frozen.as_ptr()), hash);
+            assert!(!exception_pending(_py));
+        }
+    });
+}
+
+static C_API_FROZEN_KEY_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn c_api_frozen_key_hash(
+    _key: *mut molt_cpython_abi::abi_types::PyObject,
+) -> isize {
+    C_API_FROZEN_KEY_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+    123
+}
+
+#[test]
+fn c_api_frozenset_alias_refusal_precedes_native_key_hash() {
+    use molt_cpython_abi::abi_types::{PyObject, PyType_Slot, PyType_Spec, PyTypeObject};
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    let _guard = CApiTestGuard::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let mut slots = [
+                PyType_Slot {
+                    slot: molt_cpython_abi::type_slots::Py_tp_hash,
+                    pfunc: c_api_frozen_key_hash as *const () as *mut std::ffi::c_void,
+                },
+                PyType_Slot {
+                    slot: 0,
+                    pfunc: std::ptr::null_mut(),
+                },
+            ];
+            let mut spec = PyType_Spec {
+                name: c"tests.FrozenConstructionKey".as_ptr(),
+                basicsize: std::mem::size_of::<PyObject>() as i32,
+                itemsize: 0,
+                flags: 0,
+                slots: slots.as_mut_ptr(),
+            };
+            let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+            assert!(!class.as_ptr().is_null());
+            let key = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                class.as_ptr().cast::<PyTypeObject>(),
+                0,
+            ));
+            assert!(!key.as_ptr().is_null());
+            C_API_FROZEN_KEY_HASH_CALLS.store(0, Ordering::Relaxed);
+            assert_eq!(typeobj::PyObject_Hash(key.as_ptr()), 123);
+            assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 1);
+
+            for runtime_alias in [false, true] {
+                let frozen =
+                    OwnedPyObject::from_owned(sequences::PyFrozenSet_New(std::ptr::null_mut()));
+                assert!(!frozen.as_ptr().is_null());
+                let bits = GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(frozen.as_ptr())
+                    .unwrap();
+                let c_alias = if runtime_alias {
+                    inc_ref_bits(_py, bits);
+                    None
+                } else {
+                    Some(OwnedPyObject::from_borrowed(frozen.as_ptr()))
+                };
+                C_API_FROZEN_KEY_HASH_CALLS.store(0, Ordering::Relaxed);
+                assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), -1);
+                assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 0);
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+                    ),
+                    1
+                );
+                errors::PyErr_Clear();
+                assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 0);
+                if runtime_alias {
+                    dec_ref_bits(_py, bits);
+                }
+                drop(c_alias);
+                // Releasing either kind of actual alias restores admission.
+                assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), 0);
+                assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 1);
+                assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 1);
+                assert!(!exception_pending(_py));
+            }
+        }
     });
 }
 

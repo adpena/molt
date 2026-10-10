@@ -99,3 +99,55 @@ if __name__ == "__main__":
     print("int pow", 2 ** 10)
     print("int pow zero", 5 ** 0)
     print("int pow neg", 2 ** -1)
+
+# The running CPython minor is the oracle for ternary reflected dispatch.
+# Molt must use its declared semantic target, never a host-version probe.
+power_events = []
+
+
+class PowerLeft:
+    def __pow__(self, other, modulus=None):
+        power_events.append(("left", modulus))
+        return NotImplemented
+
+    def __ipow__(self, other):
+        power_events.append(("inplace", None))
+        return NotImplemented
+
+
+class PowerRight(PowerLeft):
+    def __rpow__(self, other, modulus=None):
+        power_events.append(("reflected", modulus))
+        return 73
+
+
+for modulus in (None, 5):
+    power_events.clear()
+    try:
+        value = pow(PowerLeft(), PowerRight(), modulus)
+        print("power-protocol", modulus, value, power_events)
+    except TypeError:
+        print("power-protocol", modulus, "TypeError", power_events)
+
+power_events.clear()
+power_left = PowerLeft()
+power_left **= PowerRight()
+print("inplace-power-protocol", power_left, power_events)
+
+
+class PhysicalInt(int):
+    def __pow__(self, other, modulus=None):
+        return 91
+
+    def __rpow__(self, other, modulus=None):
+        return 92
+
+    def __int__(self):
+        raise AssertionError("physical storage conversion redispatched")
+
+
+physical = PhysicalInt(3)
+print("declared-power", int.__pow__(physical, 2), int.__rpow__(physical, 2))
+print("declared-mod-power", int.__pow__(physical, 3, 5))
+print("overridden-power", physical ** 2, 2 ** physical)
+print("modulus-slot", pow(2, 3, physical))

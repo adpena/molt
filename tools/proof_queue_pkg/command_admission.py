@@ -10,6 +10,7 @@ import re
 from typing import Literal, Mapping, Sequence
 
 from molt.exact_json import canonical_json_bytes
+from molt.rust_toolchain import canonical_rust_codegen_flags, rust_flag_spans
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import cargo_output_layout
@@ -19,7 +20,7 @@ from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v5"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v6"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -469,12 +470,17 @@ def _proof_command_registry() -> dict[str, object]:
     entrypoints: dict[tuple[str, str], list[str]] = {}
     entrypoint_variants: dict[tuple[str, str], set[tuple[str, ...]]] = {}
     for policy in plan.toolchain_policies:
-        if policy.identity_kind != "executable":
+        # Selected SDK policies are declared by their owning command. A bare
+        # executable spelling carries no SDK selection and infers only native policy.
+        if (
+            policy.identity_kind != "executable"
+            or policy.data.get("wasi_sdk_tool") is not None
+        ):
             continue
         executable = str(policy.data.get("executable") or policy.name)
         if executable == "{python}":
             continue
-        for basename in _executable_registry_names(executable):
+        for basename in sorted(_executable_registry_names(executable)):
             prior = policy_executables.get(basename)
             if prior is not None and prior != policy.name:
                 raise ValueError(
@@ -488,6 +494,7 @@ def _proof_command_registry() -> dict[str, object]:
         named[argv] = {
             "id": lane.id,
             "toolchains": tuple(lane.toolchains),
+            "cargo_native_c_units": proof_plan.cargo_native_c_units(lane.data),
         }
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
@@ -499,9 +506,15 @@ def _proof_command_registry() -> dict[str, object]:
         declared = tuple(command.toolchains)
         existing = exact.get(argv)
         if existing is None:
-            exact[argv] = {"ids": [command.id], "toolchains": declared}
+            exact[argv] = {
+                "ids": [command.id],
+                "toolchains": declared,
+                "cargo_native_c_units": proof_plan.cargo_native_c_units(command.data),
+            }
         else:
-            if existing["toolchains"] != declared:
+            if existing["toolchains"] != declared or existing[
+                "cargo_native_c_units"
+            ] != proof_plan.cargo_native_c_units(command.data):
                 raise ValueError(
                     "identical proof-plan argv has conflicting toolchain authorities: "
                     f"{existing['ids']!r}, {command.id!r}"
@@ -556,7 +569,7 @@ def _command_registration(
     has_uv: bool,
     typed_python: Mapping[str, object] | None = None,
     execution_argv: Sequence[str] | None = None,
-) -> tuple[str, list[str], list[str]]:
+) -> tuple[str, list[str], list[str], list[str]]:
     registry = _proof_command_registry()
     exact = registry["exact"]
     assert isinstance(exact, dict)
@@ -570,7 +583,12 @@ def _command_registration(
             raise ValueError(
                 f"proof-plan commands {command_ids!r} have no toolchain authority"
             )
-        return "proof-plan", toolchains, [str(command_id) for command_id in command_ids]
+        return (
+            "proof-plan",
+            toolchains,
+            [str(command_id) for command_id in command_ids],
+            list(exact_match["cargo_native_c_units"]),
+        )
     named = registry["named"]
     assert isinstance(named, dict)
     lane_match = named.get(tuple(str(value) for value in argv))
@@ -582,7 +600,12 @@ def _command_registration(
             raise ValueError(
                 f"named lane {lane_match['id']!r} has no toolchain authority"
             )
-        return "named-lane", toolchains, [str(lane_match["id"])]
+        return (
+            "named-lane",
+            toolchains,
+            [str(lane_match["id"])],
+            list(lane_match["cargo_native_c_units"]),
+        )
 
     if typed_python is not None and typed_python.get("family") == "prepared-named-lane":
         lane_id = str(typed_python["lane_id"])
@@ -592,6 +615,7 @@ def _command_registration(
             "named-lane",
             _toolchain_dependency_closure(plan.named_lane(lane_id).toolchains),
             [lane_id],
+            list(proof_plan.cargo_native_c_units(plan.named_lane(lane_id).data)),
         )
 
     entrypoint = _command_entrypoint(argv)
@@ -638,7 +662,12 @@ def _command_registration(
         add("python")
         if typed_python is not None:
             add("source-extension")
-            return "typed-python-family", _toolchain_dependency_closure(toolchains), []
+            return (
+                "typed-python-family",
+                _toolchain_dependency_closure(toolchains),
+                [],
+                [],
+            )
         if has_uv:
             add("uv")
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
@@ -647,7 +676,7 @@ def _command_registration(
             if console is not None:
                 for name in console:
                     add(name)
-        return "python", _toolchain_dependency_closure(toolchains), []
+        return "python", _toolchain_dependency_closure(toolchains), [], []
 
     if not argv:
         raise ValueError("proof command has no executable registration")
@@ -667,7 +696,7 @@ def _command_registration(
             add("cargo-deny")
         elif invocation.subcommand == "audit":
             add("cargo-audit")
-    return "toolchain", _toolchain_dependency_closure(toolchains), []
+    return "toolchain", _toolchain_dependency_closure(toolchains), [], []
 
 
 _CARGO_LEAF_SUBCOMMANDS = frozenset(
@@ -708,6 +737,7 @@ _CARGO_OPTIONS_WITH_VALUES = frozenset(
         "--exclude",
         "--lockfile-path",
         "--artifact-dir",
+        "--crate-type",
         "-C",
         "-Z",
     }
@@ -773,6 +803,19 @@ class CargoInvocation:
     option_values: tuple[tuple[str, str], ...]
     positionals: tuple[str, ...]
     forwarded: tuple[str, ...]
+
+    @property
+    def crate_types(self) -> tuple[str, ...] | None:
+        values = [value for name, value in self.option_values if name == "--crate-type"]
+        if not values:
+            return None
+        if self.subcommand != "rustc" or len(values) != 1:
+            raise ValueError("Cargo crate types require one cargo rustc selector")
+        return _rust_crate_types(values[0])
+
+    @property
+    def forwarded_crate_types(self) -> tuple[str, ...]:
+        return rustc_crate_types(self.forwarded)
 
     @property
     def requires_documenter(self) -> bool:
@@ -871,6 +914,104 @@ def parse_cargo_invocation(argv: Sequence[str]) -> CargoInvocation:
         tuple(positionals),
         forwarded,
     )
+
+
+def _rust_crate_types(value: str) -> tuple[str, ...]:
+    kinds = tuple(value.split(","))
+    if not kinds or any(
+        kind not in {"bin", "lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        for kind in kinds
+    ):
+        raise ValueError("Rust crate-type selection is invalid")
+    return kinds
+
+
+def rust_link_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
+    """Project the existing compiler-selection arguments, consuming operands."""
+    result: list[str] = []
+    for span in rust_flag_spans(arguments):
+        value = arguments[span.start]
+        if span.codegen is not None:
+            # This projection feeds real rustc and relative-path provenance;
+            # retain the observed spelling, not only its semantic equivalent.
+            result.extend(arguments[span.start : span.stop])
+        elif value == "--":
+            break
+        elif span.option in {"--crate-type", "--sysroot"}:
+            result.extend(arguments[span.start : span.stop])
+    return tuple(result)
+
+
+def rustc_crate_types(arguments: Sequence[str]) -> tuple[str, ...]:
+    kinds: list[str] = []
+    values = iter(canonical_rust_codegen_flags(rust_link_arguments(arguments)))
+    for argument in values:
+        if argument in {"-C", "--sysroot"}:
+            next(values)
+        elif argument == "--crate-type":
+            kinds.extend(_rust_crate_types(next(values)))
+        elif argument.startswith("--crate-type="):
+            kinds.extend(_rust_crate_types(argument.partition("=")[2]))
+    return tuple(kinds)
+
+
+def rust_link_artifact_selection(
+    argv: Sequence[str],
+    *,
+    cargo: bool,
+    cargo_invocation: CargoInvocation | None,
+    unit: str,
+    manifest_crate_types: Sequence[str] | None = None,
+) -> dict[str, object]:
+    """Bind explicit output kinds without inventing an executable for libraries.
+
+    Unspecified Cargo outputs retain the existing std capability probe. A
+    Cargo-level override replaces the manifest base; forwarded rustc crate
+    types require the retained selected manifest base and remain additive.
+    Direct rustc crate types replace rustc's default bin.
+    """
+    if unit == "host-proc-macro":
+        if manifest_crate_types is not None:
+            raise ValueError(
+                "host proc-macro probe cannot inherit target manifest kinds"
+            )
+        return {
+            "cargo_crate_types": None,
+            "rustc_crate_types": ["proc-macro"],
+            "manifest_crate_types": None,
+            "link_required": True,
+        }
+    # Admission owns the role before executable binding changes its basename.
+    invocation = cargo_invocation
+    if invocation is not None and not cargo:
+        raise ValueError("Cargo artifact selection requires a Cargo owner")
+    override = None if invocation is None else invocation.crate_types
+    forwarded = (
+        invocation.forwarded if invocation is not None else (() if cargo else argv[1:])
+    )
+    kinds = rustc_crate_types(forwarded)
+    requires_manifest = cargo and override is None and bool(kinds)
+    if requires_manifest != (manifest_crate_types is not None):
+        raise ValueError(
+            "forwarded Cargo crate types require the selected manifest base"
+        )
+    base = (
+        None
+        if manifest_crate_types is None
+        else _rust_crate_types(",".join(manifest_crate_types))
+    )
+    effective = (
+        *((override or base or ("bin",)) if cargo else (() if kinds else ("bin",))),
+        *kinds,
+    )
+    return {
+        "cargo_crate_types": None if override is None else list(override),
+        "manifest_crate_types": None if base is None else list(base),
+        "rustc_crate_types": list(kinds),
+        "link_required": any(
+            kind not in {"lib", "rlib", "staticlib"} for kind in effective
+        ),
+    }
 
 
 def cargo_invocation_for_envelope(
@@ -1189,7 +1330,6 @@ def _locked_python_environment_root(executable: str) -> Path:
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
     from molt.cli.source_build_environment import _source_build_custody_root
-    from molt.dx import _reject_onedrive
 
     selected = Path(executable)
     if not selected.is_absolute() or not selected.is_file():
@@ -1208,10 +1348,6 @@ def _locked_python_environment_root(executable: str) -> Path:
         raise ValueError(
             "prepared proof requires a content-addressed locked source-build interpreter"
         )
-    _reject_onedrive(selected, "prepared proof interpreter")
-    _reject_onedrive(
-        selected.resolve(strict=True), "prepared proof interpreter content"
-    )
     return environment_root
 
 
@@ -1279,7 +1415,6 @@ def _typed_python_command_family(
         source_extension_set_expected_identity,
     )
     from molt.cli.source_extension_target import resolve_source_extension_target_plan
-    from molt.dx import _reject_onedrive
     from molt.target_python import _parse_target_python_version
 
     producer = SourceExtensionSetInvocation.from_arguments(invocation.arguments)
@@ -1321,9 +1456,7 @@ def _typed_python_command_family(
         path = Path(value)
         if not path.is_absolute():
             raise ValueError(f"source-extension producer {label} must be absolute")
-        _reject_onedrive(path, f"source-extension {label}")
         resolved = path.resolve(strict=label == "source")
-        _reject_onedrive(resolved, f"source-extension resolved {label}")
         if path != resolved:
             raise ValueError(
                 f"source-extension producer {label} must use its canonical path, not an alias"
@@ -1522,12 +1655,14 @@ def _envelope_for_command(
     if python is not None:
         invocation = parse_python_invocation(_python_invocation_argv(argv, python))
         typed_python = _typed_python_command_family(argv, python, invocation)
-    registration_kind, toolchains, proof_plan_command_ids = _command_registration(
-        submitted_argv,
-        has_python=python is not None,
-        has_uv=first in {"uv", "uv.exe"},
-        typed_python=typed_python,
-        execution_argv=argv if wrapper is not None else None,
+    registration_kind, toolchains, proof_plan_command_ids, native_c_units = (
+        _command_registration(
+            submitted_argv,
+            has_python=python is not None,
+            has_uv=first in {"uv", "uv.exe"},
+            typed_python=typed_python,
+            execution_argv=argv if wrapper is not None else None,
+        )
     )
     guarded_exec = _guarded_exec_invocation(argv)
     nested_command = (
@@ -1603,6 +1738,9 @@ def _envelope_for_command(
         "python": python,
         "toolchains": toolchains,
         "proof_plan_command_ids": proof_plan_command_ids,
+        "cargo_native_c_units": (
+            native_c_units if delegated is None else delegated["cargo_native_c_units"]
+        ),
         "guarded_exec": (
             {key: value for key, value in guarded_exec.items() if key != "nested"}
             if guarded_exec is not None
@@ -1677,12 +1815,12 @@ def _bind_output_root_declaration(
     if "cargo" not in toolchains:
         envelope["cargo_output_root"] = dict(declaration)
         return
-    delegated = envelope.get("delegated")
-    cargo = delegated if isinstance(delegated, Mapping) else envelope
-    argv = cargo.get("argv")
-    if not isinstance(argv, list):
-        raise ValueError("Cargo output placement requires parsed Cargo argv")
-    invocation = parse_cargo_invocation(argv)
+    invocation = cargo_invocation_for_envelope(envelope)
+    if invocation is None:
+        # Declared Python drivers inherit the same leased Cargo output family.
+        # Their argv is Python's; it must not be parsed as a Cargo invocation.
+        envelope["cargo_output_root"] = dict(declaration)
+        return
     if (
         invocation.subcommand
         not in {"check", "test", "build", "bench", "doc", "rustdoc", "rustc", "run"}
@@ -1745,6 +1883,7 @@ def admission_envelope(
             "python": None,
             "toolchains": [],
             "proof_plan_command_ids": [],
+            "cargo_native_c_units": [],
             "guarded_exec": None,
             "delegated": None,
             "typed_command": None,
