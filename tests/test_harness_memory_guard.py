@@ -2696,7 +2696,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=self_pid,
             rss_kb=64,
             command=f"{tmp_path}/.venv/bin/python -m pytest",
-            started_at_ns=self_pid,
+            started_at_ns=1_000,
         ),
         owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=owned_pgid,
@@ -2704,7 +2704,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=owned_pgid,
             rss_kb=5 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --owned",
-            started_at_ns=owned_pgid,
+            started_at_ns=2_000,
         ),
         peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=peer_pgid,
@@ -2712,7 +2712,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=peer_pgid,
             rss_kb=6 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
-            started_at_ns=peer_pgid,
+            started_at_ns=3_000,
         ),
     }
     _patch_guard_operation(
@@ -2844,7 +2844,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
         pgid=self_pid,
         rss_kb=64,
         command=f"{tmp_path}/.venv/bin/python -m pytest",
-        started_at_ns=self_pid,
+        started_at_ns=1_000,
     )
     sample_sets = [
         {
@@ -2855,7 +2855,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=owned_pgid,
                 rss_kb=100,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
-                started_at_ns=owned_pgid,
+                started_at_ns=2_000,
             ),
         },
         {
@@ -2866,7 +2866,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=owned_pgid,
                 rss_kb=5 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
-                started_at_ns=owned_pgid,
+                started_at_ns=2_000,
             ),
             peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=peer_pgid,
@@ -2874,7 +2874,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=peer_pgid,
                 rss_kb=6 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
-                started_at_ns=peer_pgid,
+                started_at_ns=3_000,
             ),
         },
     ]
