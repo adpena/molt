@@ -2433,6 +2433,9 @@ def run_guarded(
             guard_marker,
             guard_token,
             status="completed",
+            # Without proven closure, orphaned processes may still run: the
+            # record then stays unresolved custody (active_custody.terminal).
+            descendants_closed=result.descendants_closed,
             owned_process_identities=process_identities_payload(
                 result.owned_process_identities
             ),
@@ -2522,6 +2525,8 @@ def run_guarded(
                 guard_marker,
                 guard_token,
                 status="finalizer_completed",
+                # The finalizer signals the tree but proves no closure.
+                descendants_closed=False,
                 child_process=guarded_child_process_payload(child_process),
                 child_returncode=proc.returncode,
                 termination_reports=termination_reports_payload(
@@ -2565,6 +2570,7 @@ def run_guarded(
                     if caught_exception is not None
                     else "finalizer_completed"
                 ),
+                descendants_closed=no_child_launched,
                 child_process=guarded_child_process_payload(child_process),
                 child_returncode=None if proc is None else proc.returncode,
                 termination_reports=termination_reports_payload(

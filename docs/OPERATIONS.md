@@ -60,9 +60,15 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
   or reused, with no recorded child-group member left, becomes
   `custody_reconciled` and leaves `active/`. Its leased or indeterminate scratch
   then takes the scratch authority's failure path (see `docs/agent/PROOF_QUEUE.md`).
-  `completed` and `finalizer_completed` are terminal without births: the guard
-  reaped its child before it published them. Live evidence (a matching birth or
-  a live child-group member) always protects. Inconclusive evidence (a present
+  `completed` and `finalizer_completed` are terminal without births, because the
+  guard reaped its child before it published them, but only when the guard
+  proved descendant closure. The guard publishes that verdict as
+  `descendants_closed`; a record written before the field existed proves it only
+  when `orphaned_process_groups` is empty. An unclosed completion stays
+  unresolved custody, so it protects disk reclamation, until one snapshot shows
+  its child's group and every recorded orphaned group empty; its receipt lists
+  those groups in `empty_process_groups`. Live evidence (a matching birth, or a
+  live member of the child's or an orphaned group) always protects. Inconclusive evidence (a present
   pid without two comparable births, or a launch that never published its
   outcome) and unreadable records stay protective, and the report names each
   one with the exact command `memory_guard_custody.py --active-dir <dir>

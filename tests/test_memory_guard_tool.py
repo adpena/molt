@@ -34,6 +34,7 @@ import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    guard_custody_env,
     install_module_os_view,
     install_module_view,
     start_owned_test_process,
@@ -951,12 +952,37 @@ def test_completed_guard_retires_its_marker_lock_and_scratch(
     payload = json.loads(retired.read_text(encoding="utf-8"))
     assert payload["pid"] == os.getpid()
     assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is True
     assert payload["temporary_artifacts"]["state"] == "reclaimed"
     assert payload["temporary_artifacts"]["receipt"] is None
     generations = [
         path.name for path in (tmp_path / "gs").iterdir() if len(path.name) == 32
     ]
     assert generations == []
+
+
+def test_unproven_closure_keeps_the_completed_marker_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proven = memory_guard._temporary_artifact_descendant_closure
+
+    def unproven(**kwargs: Any) -> tuple[bool, dict[str, object]]:
+        _closed, evidence = proven(**kwargs)
+        return False, {**evidence, "closed": False}
+
+    monkeypatch.setattr(
+        memory_guard, "_temporary_artifact_descendant_closure", unproven
+    )
+    state_root = tmp_path / "memory_guard"
+    _guarded_pass(state_root)
+    active = state_root / "active"
+    (marker,) = active.glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is False
+    # Orphans may still run beside its artifacts: it protects them.
+    assert not active_custody.read_marker_record(marker).terminal
+    assert active_custody.has_active_guard_marker(active)
 
 
 def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
@@ -5894,7 +5920,7 @@ def test_run_command_timeout_teardown_uses_bounded_wait(
         max_rss_kb=1_000_000,
         poll_interval=0.001,
         timeout=0.001,
-        env={"MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
+        env={**guard_custody_env(), "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
         sampler=lambda: {},
     )
 
@@ -5957,7 +5983,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -5985,7 +6011,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -6041,7 +6067,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
     return result, calls, report

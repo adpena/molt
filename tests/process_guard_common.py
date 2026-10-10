@@ -58,6 +58,20 @@ class ModuleView:
         self._hidden.add(attr)
 
 
+def guard_custody_env() -> dict[str, str]:
+    """Guard custody that a deliberately minimal child environment must carry.
+
+    An explicit environment is the guard's complete authority, so a test that
+    hands a guard a minimal environment would put its marker and scratch in
+    the host's guard state root. The session fixture in ``tests/conftest.py``
+    sets a session-scoped root; spread this into every minimal environment.
+    """
+
+    from molt.memory_guard_paths import STATE_ROOT_ENV
+
+    return {STATE_ROOT_ENV: os.environ[STATE_ROOT_ENV]}
+
+
 def install_module_view(
     monkeypatch: Any, attribute: str, real: object, *modules: object, **overrides: Any
 ) -> ModuleView:
