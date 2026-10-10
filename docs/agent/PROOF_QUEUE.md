@@ -246,7 +246,9 @@ the publication must be the non-reusable
 only failed terminal runs. An explicitly audited older successful run may be
 selected with `--allow-passed`; this does not admit reusable output or weaken any
 custody check. Select exact run IDs, preserve current proof/replay artifacts, and
-inspect the complete cohort before applying it. There is no age/LRU sweep.
+inspect the complete cohort before applying it. There is no age/LRU sweep;
+[run evidence retention](#run-evidence-retention) keeps a run whose Cargo
+generation target still exists and never reclaims a generation.
 Retained generations require explicit release; an admitted `terminal-success`
 output lifetime uses this same retirement authority after successful proof.
 `--apply` first
@@ -1523,9 +1525,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py note RUN_I
 ```
 
 Canonical note kinds are `submission`, `change`, `hypothesis`, `test`,
-`observation`, `finding`, `decision`, `followup`, and `handoff`. The queue
-enforces this vocabulary so status, evidence JSON, and notebook summaries stay
-searchable across agents.
+`observation`, `finding`, `decision`, `followup`, `handoff`, and `retain`. The
+queue enforces this vocabulary so status, evidence JSON, and notebook summaries
+stay searchable across agents. A `retain` note pins the run's evidence files
+against [run evidence retention](#run-evidence-retention).
 
 ## Proof DAG
 
@@ -1558,6 +1561,7 @@ Each run records:
 - append-only notes
 - per-kind note counts
 - append-only proof DAG parents/children, edge notes, and per-kind edge counts
+- the `evidence_retention` record, after retention reclaims the run's files
 
 Inspect machine-readable evidence with:
 
@@ -1692,6 +1696,89 @@ failure to the run log, classify the row as `queue-infra-warning`, and continue.
 Only the explicit `notebook RUN_ID` command treats notebook generation as the
 requested artifact and fails directly when it cannot write that projection.
 
+## Run Evidence Retention
+
+The queue owns the retention of run evidence. Each run writes files beside its
+log in the result root (`logs/proof_queue/runs` by default): the log, the
+memory-guard summary, the execution request and result, the command
+transcripts, the supervisor receipts and the detached runner log. Each run also
+owns one scratch directory, `<payload root>/derived/<execution nonce>`. Without
+a bound these files grow without limit: one host reached 68.8 GB in 2,720
+entries.
+
+Retention keeps all files of these runs:
+
+- unresolved rows: `queued`, `dispatched`, `running` and `stale`;
+- `failed` rows, whose logs diagnosis and `tools/apparatus_ledger.py` read;
+- runs pinned by a `retain` note;
+- parents of an unresolved row;
+- runs whose Cargo generation target still exists, or whose Cargo output
+  disposition is unresolved. The Cargo authority decides about those first;
+- rows whose custody retention cannot prove: a log or summary outside this
+  result root, a file stem that another row also names, a directory or link
+  where a file belongs, or an unavailable payload root.
+
+Of the other terminal runs (`passed`, `non-evidence` and `blocked`), retention
+keeps the newest runs that fit the bound and reclaims the rest. The bound is a
+count and a byte total: `MOLT_PROOF_QUEUE_RETAIN_RUNS` (default 200) and
+`MOLT_PROOF_QUEUE_RETAIN_GB` (default 8 GiB). Retention visits the runs newest
+first and keeps each run that fits both bounds, the same rule that guard
+scratch uses (`molt.temporary_artifacts.ScratchRetention`). The newest run
+always stays, so the run that just finished is inspectable. 200 runs is about
+one week of work at the measured rate. 8 GiB is a third of the 25 GiB
+build-admission floor, so kept evidence cannot eat the headroom a build needs.
+At the measured ~1.8 MB per ordinary run, only scratch-heavy runs reach it.
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py retention
+uv run --active --project . --python 3.12 python tools\proof_queue.py retention --apply
+```
+
+`molt queue retention` is the same command. Without `--apply` it opens the
+database read-only and changes nothing. `--json` prints the full report: each
+class with its run count and bytes, the runs to reclaim, the unverified rows
+with their reasons, and the files that no row owns. Retention never reclaims a
+file that no row owns. `--keep-runs` and `--keep-gb` override the bound for one
+pass; `--limit` caps the number of runs one pass reclaims.
+
+Reclamation goes through the queue database in this order:
+
+1. One SQL statement claims the run. It writes the reclamation record into the
+   row's `evidence_retention_json`: the exact path list, the byte count and the
+   peak RSS from the guard summary. The same statement rechecks the status, the
+   `retain` pins and the unresolved children, so a pin or a new child that
+   arrives during the pass wins.
+2. Retention checks each recorded path against the row again, then deletes it.
+3. Retention marks the record `reclaimed`.
+
+The claim is the point of no return. Every evidence lookup reads the record
+first. `evidence` adds `evidence_retention`, keeps the receipt identical (peak
+RSS comes from the record) and reports one `proof-evidence-reclaimed`
+diagnostic instead of reading the files; `status`, `diagnose` and `audit` do the
+same. A pass that stops after the claim leaves the record `reclaiming`, and the
+next pass finishes the recorded deletion. A failed deletion keeps the record
+`reclaiming` with its error, and the next pass tries again. SQLite triggers let
+the record only move forward and keep the outcome and evidence paths of a
+claimed row fixed. Retention never deletes a row, a note, a DAG edge, a
+notebook projection, the custody CAS or Cargo metadata. Notebook projections
+written before a reclamation keep their old payload; regenerate one with
+`notebook RUN_ID`.
+
+After each proof, the runner applies one bounded automatic pass: at most 32
+runs, oldest first. A retention failure never changes the proof result; the
+runner reports it, and the next pass or the explicit command finishes the work.
+
+To cite a run that may leave the window, pin it first:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py note RUN_ID `
+  --kind retain `
+  --note "cited by docs/agent/EXAMPLE.md"
+```
+
+A pin is an append-only note, so it stays. The queue refuses a pin on a run
+whose evidence is already reclaimed.
+
 ## Stall Recovery
 
 If a queue row stalls, inspect the log and memory-guard summary first:
@@ -1729,6 +1816,6 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stal
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale
 ```
 
-When citing proof, cite the run ID plus the log or evidence path. Treat
-uncertain, stale, or dirty-run evidence as partial until the current tree proves
-the claim.
+When citing proof, cite the run ID plus the log or evidence path, and pin the
+run with a `retain` note. Treat uncertain, stale, or dirty-run evidence as
+partial until the current tree proves the claim.

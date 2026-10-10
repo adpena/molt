@@ -67,6 +67,12 @@ class ScratchBusy(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ScratchRetention:
+    """A newest-first retention bound: a maximum entry count and byte total.
+
+    Guard scratch and proof-queue run evidence share this rule. A consumer
+    visits entries newest first and keeps each one that `admits` allows.
+    """
+
     count: int = 3
     bytes: int = 2 * 1024**3
 
@@ -75,6 +81,10 @@ class ScratchRetention:
             type(value) is not int or value < 0 for value in (self.count, self.bytes)
         ):
             raise ValueError("scratch retention limits must be nonnegative integers")
+
+    def admits(self, *, kept_count: int, kept_bytes: int, size: int) -> bool:
+        """Keep the next entry only while both bounds still hold."""
+        return kept_count < self.count and kept_bytes + size <= self.bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,8 +394,11 @@ def guard_scratch(environ: Mapping[str, str]) -> Path:
     return target
 
 
-def _target_bytes(target: Path) -> int:
-    """Payload bytes; the allocation receipt is custody, not payload."""
+def tree_bytes(target: Path) -> int:
+    """Sum regular-file bytes below one directory; never follow a link.
+
+    A scratch allocation receipt is custody, not payload, so it never counts.
+    """
     total = 0
     receipt = target / _TARGET_RECEIPT
     stack = [target]
@@ -596,7 +609,7 @@ def _retire_locked(
         "success": success,
         "closure": dict(closure),
         "finished_ns": finished_ns,
-        "retained_bytes": 0 if success else _target_bytes(target),
+        "retained_bytes": 0 if success else tree_bytes(target),
     }
     write_exact(generation / "terminal.json", terminal, exclusive=True)
     owner = {
@@ -1019,8 +1032,9 @@ def reclaim_terminal_scratch(
                 if (
                     owner["state"] == "retained"
                     and not success
-                    and kept_count < retention.count
-                    and kept_bytes + size <= retention.bytes
+                    and retention.admits(
+                        kept_count=kept_count, kept_bytes=kept_bytes, size=size
+                    )
                 ):
                     _terminal(generation, owner)
                     if (
