@@ -9149,24 +9149,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_codecs_stream_writer_drop",
-        symbol: "molt_codecs_stream_writer_drop",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_codecs_stream_writer_new",
-        symbol: "molt_codecs_stream_writer_new",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_codecs_stream_writer_write",
-        symbol: "molt_codecs_stream_writer_write",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_concurrent_as_completed",
         symbol: "molt_concurrent_as_completed",
         arity: 2,

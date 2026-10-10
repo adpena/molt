@@ -275,6 +275,25 @@ OWNERS: Mapping[str, Owner] = {
                     "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
                 ),
             ),
+            "shutdown-thread-state": Outcome(
+                0,
+                True,
+                stdout_markers=(
+                    "lifecycle thread-state retention verified: shutdown-thread-state\n",
+                ),
+                stderr_markers=(
+                    "molt runtime lifecycle failed: injected thread-state finalizer panic\n",
+                ),
+            ),
+            "exit-thread-state": Outcome(
+                1,
+                stdout_markers=(
+                    "lifecycle thread-state failure armed: exit-thread-state\n",
+                ),
+                stderr_markers=(
+                    "molt runtime lifecycle failed: injected thread-state finalizer panic\n",
+                ),
+            ),
         },
     ),
     EXIT: Owner(

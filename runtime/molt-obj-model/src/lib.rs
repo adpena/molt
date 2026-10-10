@@ -3,6 +3,7 @@
 
 pub mod byte_compare;
 pub mod exception_layout;
+pub mod exception_render;
 pub mod float_bits;
 pub mod float_literal;
 pub mod hash_policy;

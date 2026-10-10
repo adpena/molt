@@ -241,33 +241,67 @@ fn slice_projection_mirrors_do_not_root_a_managed_cycle() {
 #[test]
 fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
-    crate::concurrency::gil::with_gil(|_py| {
-        // Mortal carriers prove that the slice owns start/stop references. Cached
-        // small integers are immortal and intentionally ignore INCREF.
-        let start = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1002) };
-        let stop = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1005) };
-        let start_refcnt_before = unsafe { (*start).ob_refcnt };
-        let stop_refcnt_before = unsafe { (*stop).ob_refcnt };
-        let slice =
-            unsafe { molt_cpython_abi::api::slice::PySlice_New(start, stop, std::ptr::null_mut()) };
-        assert!(!slice.is_null());
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::slice::PySlice_Check(slice) },
-            1
+    crate::concurrency::gil::with_gil(|_py| unsafe {
+        // C-only noncached origins begin without runtime identity. Semantic
+        // ingress later adds a stable runtime hold and one C-header bias; the
+        // slice additionally owns a runtime edge and one private C mirror.
+        let start_owner = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::numbers::PyLong_FromLong(1002),
         );
-
-        let layout = slice.cast::<PySliceObject>();
-        assert!(std::ptr::eq(unsafe { (*layout).start }, start));
-        assert!(std::ptr::eq(unsafe { (*layout).stop }, stop));
-        assert!(std::ptr::eq(unsafe { (*layout).step }, &raw mut Py_None));
-        assert_eq!(unsafe { (*start).ob_refcnt }, start_refcnt_before + 1);
-        assert_eq!(unsafe { (*stop).ob_refcnt }, stop_refcnt_before + 1);
-
-        unsafe {
-            molt_cpython_abi::api::refcount::Py_DECREF(slice);
-            molt_cpython_abi::api::refcount::Py_DECREF(start);
-            molt_cpython_abi::api::refcount::Py_DECREF(stop);
+        let stop_owner = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::numbers::PyLong_FromLong(1005),
+        );
+        let start = start_owner.as_ptr();
+        let stop = stop_owner.as_ptr();
+        assert!(!start.is_null() && !stop.is_null());
+        assert_eq!((*start).ob_refcnt, 1);
+        assert_eq!((*stop).ob_refcnt, 1);
+        let first = refcount::OwnedPyObject::from_owned(slice::PySlice_New(
+            start, stop, std::ptr::null_mut(),
+        ));
+        assert!(!first.as_ptr().is_null());
+        let fields = [start, stop].map(|pointer| {
+            GLOBAL_BRIDGE.molt_handle_for_pyobj(pointer).unwrap().bits()
+        });
+        let check = |slice_count: usize| {
+            for (pointer, bits, expected) in [(start, fields[0], 1002), (stop, fields[1], 1005)] {
+                assert_eq!(molt_cpython_abi::api::numbers::PyLong_AsLongLong(pointer), expected);
+                let object = MoltObject::from_bits(bits).as_ptr().unwrap();
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(object)).ref_count_snapshot() as usize,
+                    1 + slice_count,
+                    "one stable bridge hold plus one runtime edge per slice",
+                );
+                assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(pointer.addr()), slice_count);
+                assert_eq!(
+                    (*pointer).ob_refcnt,
+                    1 + slice_count as isize + isize::from(slice_count != 0),
+                    "one original C owner, each mirror, and one runtime-owner bias",
+                );
+            }
+            assert!(errors::PyErr_Occurred().is_null());
+        };
+        check(1);
+        let second = refcount::OwnedPyObject::from_owned(slice::PySlice_New(
+            start, stop, std::ptr::null_mut(),
+        ));
+        assert!(!second.as_ptr().is_null());
+        for pointer in [first.as_ptr(), second.as_ptr()] {
+            assert_eq!(slice::PySlice_Check(pointer), 1);
+            let layout = pointer.cast::<PySliceObject>();
+            assert_eq!((*layout).start, start);
+            assert_eq!((*layout).stop, stop);
+            assert_eq!((*layout).step, &raw mut Py_None);
         }
+        check(2);
+        drop(second);
+        check(1);
+        drop(first);
+        check(0);
+        drop(start_owner);
+        drop(stop_owner);
+        assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(start).is_none());
+        assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(stop).is_none());
     });
 }
 

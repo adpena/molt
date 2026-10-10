@@ -14,6 +14,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import builtins
+import _codecs as _core_codecs
 import importlib.util
 import os
 import sys
@@ -29,25 +30,22 @@ def _load_module(name, path_text):
     return module
 
 
-_error_handlers = {{"strict": lambda exc: (_ for _ in ()).throw(exc)}}
-
-
+# Keep actual codec selection, error policies and registered callback behavior.
+# These are CPython's admitted builtins, not discovery of another installation.
 def _codecs_encode(obj, encoding, errors):
-    if isinstance(obj, str):
-        return obj.encode("utf-8")
-    return bytes(obj)
+    return _core_codecs.encode(obj, encoding, errors)
 
 
 def _codecs_decode(obj, encoding, errors):
-    return bytes(obj).decode("utf-8")
+    return _core_codecs.decode(obj, encoding, errors)
 
 
 def _register_error(name, fn):
-    _error_handlers[name] = fn
+    return _core_codecs.register_error(name, fn)
 
 
 def _lookup_error(name):
-    return _error_handlers[name]
+    return _core_codecs.lookup_error(name)
 
 
 _signal_values = {{
@@ -109,9 +107,6 @@ install_registry({{
     "molt_codecs_stream_reader_read": lambda handle, size=-1, chars=-1, firstline=False: handle[0].read(),
     "molt_codecs_stream_reader_readline": lambda handle, size=None, keepends=True: handle[0].readline(),
     "molt_codecs_stream_reader_drop": lambda handle: None,
-    "molt_codecs_stream_writer_new": lambda stream, encoding, errors: (stream, encoding, errors),
-    "molt_codecs_stream_writer_write": lambda handle, obj: handle[0].write(_codecs_encode(obj, handle[1], handle[2])),
-    "molt_codecs_stream_writer_drop": lambda handle: None,
     "molt_codecs_charmap_build": lambda decode_table: {{ord(ch): i for i, ch in enumerate(decode_table)}},
     "molt_codecs_charmap_decode": lambda data, errors, mapping: (bytes(data).decode("latin-1"), len(bytes(data))),
     "molt_codecs_charmap_encode": lambda data, errors, mapping: (str(data).encode("latin-1"), len(str(data))),
@@ -207,12 +202,18 @@ try:
                     delattr(codecs_mod, _encode_name)
 finally:
     sys.modules["codecs"] = _original_codecs
+writer_protocol = _load_module(
+    "molt_test_stream_writer_protocol",
+    {str(REPO_ROOT / "tests/differential/stdlib/stream_writer_protocol.py")!r},
+)
+writer_protocol.run_protocol(codecs_mod)
 pickle_mod = _load_module("molt_test_pickle", {str(STDLIB_ROOT / "pickle.py")!r})
 errno_mod = _load_module("molt_test_errno", {str(STDLIB_ROOT / "errno.py")!r})
 stat_mod = _load_module("molt_test_stat", {str(STDLIB_ROOT / "stat.py")!r})
 signal_mod = _load_module("molt_test_signal", {str(STDLIB_ROOT / "signal.py")!r})
 
 checks = {{
+    "stream_writer_protocol": True,
     "codecs": (
         codecs_mod.encode("hi", "utf-8") == b"hi"
         and codecs_mod.decode(b"hi", "utf-8") == "hi"
@@ -286,6 +287,7 @@ def test_public_intrinsic_surface_batch_d(
             checks[rest[0]] = rest[1]
     assert checks == {
         "codecs": "True",
+        "stream_writer_protocol": "True",
         "errno": "True",
         "pickle": "True",
         "signal": "True",

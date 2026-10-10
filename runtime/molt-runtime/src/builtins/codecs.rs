@@ -1,5 +1,5 @@
 use crate::object::ops::{
-    DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError, decode_error_byte,
+    DecodeTextError as OpsDecodeTextError, decode_error_byte,
     decode_error_range,
 };
 use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
@@ -156,17 +156,8 @@ pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_b
             None => return MoltObject::none().bits(),
         };
 
-        match encode_string_with_errors(&[], &encoding, Some(&errors)) {
-            Ok(_) => {}
-            Err(OpsEncodeError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::InvalidChar { .. }) => {}
+        if let Err(error) = encode_string_with_errors(&[], &encoding, Some(&errors)) {
+            return error.raise(_py, obj_bits);
         }
 
         let obj = obj_from_bits(obj_bits);
@@ -186,30 +177,7 @@ pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_b
             let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
             let out = match encode_string_with_errors(bytes, &encoding, Some(&errors)) {
                 Ok(bytes) => bytes,
-                Err(OpsEncodeError::UnknownEncoding(name)) => {
-                    let msg = format!("unknown encoding: {name}");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(OpsEncodeError::UnknownErrorHandler(name)) => {
-                    let msg = format!("unknown error handler name '{name}'");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(OpsEncodeError::InvalidChar {
-                    encoding,
-                    code,
-                    pos,
-                    limit,
-                }) => {
-                    let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                    return raise_unicode_encode_error::<_>(
-                        _py,
-                        encoding,
-                        obj_bits,
-                        pos,
-                        pos + 1,
-                        &reason,
-                    );
-                }
+                Err(error) => return error.raise(_py, obj_bits),
             };
             let ptr = alloc_bytes(_py, &out);
             if ptr.is_null() {

@@ -392,21 +392,40 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             0,
         );
         assert!(!code.is_null());
+        let code = ExceptionValue::adopt(py, MoltObject::from_ptr(code).bits());
+        // A Python frame owns real namespace identities. Zero is an absent
+        // binding, which materialization correctly rejects instead of making
+        // up globals. Follow the live-frame/traceback namespace test authority.
+        let globals = crate::alloc_dict_with_pairs(py, &[]);
+        assert!(!globals.is_null());
+        let globals = ExceptionValue::adopt(py, MoltObject::from_ptr(globals).bits());
+        let builtins = crate::alloc_dict_with_pairs(py, &[]);
+        assert!(!builtins.is_null());
+        let builtins = ExceptionValue::adopt(py, MoltObject::from_ptr(builtins).bits());
+        struct ContextFrame<'a, 'py>(&'a PyToken<'py>);
+        impl Drop for ContextFrame<'_, '_> {
+            fn drop(&mut self) {
+                crate::builtins::frames::frame_stack_pop(self.0);
+            }
+        }
         crate::builtins::frames::frame_stack_push_owned(
             py,
-            MoltObject::from_ptr(code).bits(),
-            0,
-            0,
+            code.into_bits(),
+            globals.into_bits(),
+            builtins.into_bits(),
             0,
         );
+        let frame = ContextFrame(py);
         let payload = crate::builtins::frames::frame_stack_trace_payload_bits(py, None, false);
-        crate::builtins::frames::frame_stack_pop(py);
         let payload = ExceptionValue::adopt(py, payload.expect("captured context frame"));
+        drop(frame);
         let traceback = ExceptionValue::adopt(
             py,
             crate::builtins::frames::traceback_payload_to_traceback_bits(py, payload.bits()),
         );
         assert!(!MoltObject::from_bits(traceback.bits()).is_none());
+        assert!(!crate::exception_pending(py));
+        assert!(errors::PyErr_Occurred().is_null());
         let traceback =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback.into_bits()));
         assert!(!traceback.as_ptr().is_null());

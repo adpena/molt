@@ -73,9 +73,6 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                 let raw = std::slice::from_raw_parts(string_bytes(data_ptr), string_len(data_ptr));
                 let errors = handle.errors.as_deref().unwrap_or("strict");
                 let newline = handle.newline.as_deref();
-                if let Err(msg) = validate_encode_error_handler(errors) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
                 let translated = translate_write_newlines_bytes(raw, newline);
                 let mut encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
                 let mut mark_bom_written = false;
@@ -92,29 +89,23 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                     Some(errors),
                 ) {
                     Ok(bytes) => bytes,
-                    Err(crate::object::ops::EncodeError::UnknownEncoding(name)) => {
-                        let msg = format!("unknown encoding: {name}");
-                        return raise_exception::<_>(_py, "LookupError", &msg);
-                    }
-                    Err(crate::object::ops::EncodeError::UnknownErrorHandler(name)) => {
-                        let msg = format!("unknown error handler name '{name}'");
-                        return raise_exception::<_>(_py, "LookupError", &msg);
-                    }
-                    Err(crate::object::ops::EncodeError::InvalidChar {
-                        encoding,
-                        code,
-                        pos,
-                        limit,
-                    }) => {
-                        let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                        return raise_unicode_encode_error::<_>(
-                            _py,
-                            encoding,
-                            data_obj.bits(),
-                            pos,
-                            pos + 1,
-                            &reason,
-                        );
+                    Err(error) => {
+                        if !matches!(error, crate::object::ops::EncodeError::InvalidSequence { .. })
+                            || translated.as_slice() == raw
+                        {
+                            return error.raise(_py, data_obj.bits());
+                        }
+                        // Allocate the translated Python object only when the
+                        // exception needs it. Successful writes keep the same
+                        // byte buffer and do not create another Python string.
+                        let object = alloc_string(_py, &translated);
+                        if object.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        let bits = MoltObject::from_ptr(object).bits();
+                        let result = error.raise(_py, bits);
+                        dec_ref_bits(_py, bits);
+                        return result;
                     }
                 };
                 if mark_bom_written {

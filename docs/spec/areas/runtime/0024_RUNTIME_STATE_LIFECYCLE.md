@@ -267,10 +267,13 @@ Exception text is rendered on observation through the declaring type's real
 repr/str slots. The builtin exception schema owns those declarations independently
 of physical layout: BaseException owns repr and the generic args str slot, while
 KeyError, groups, SyntaxError, ImportError, OSError and the three concrete Unicode
-errors own their specialized str slots. Managed and foreign exceptions use the
-same ABI slot implementations and physical field access. An explicit base slot
-call retains that owner's behavior. Object's repr slot produces the default
-representation; object's str slot dynamically calls repr.
+errors own their specialized str slots. The schema publishes declaring wrapper
+descriptors into every runtime's own builtin namespaces, including isolates.
+`molt-obj-model::exception_render` owns one statically dispatched rendering
+algorithm family. Managed fields and physical C fields use ownership adapters;
+managed rendering does not publish C views or acquire process-static extension
+state. An explicit base slot call retains that owner's behavior. Object's repr
+slot produces the default representation; object's str slot dynamically calls repr.
 
 Rendering does not cache formatted text or classify Python subclasses by name.
 Each callback observes current state in Python's evaluation order, and every

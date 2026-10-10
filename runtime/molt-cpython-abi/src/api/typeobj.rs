@@ -1475,12 +1475,13 @@ pub unsafe extern "C" fn molt_type_is_gc(op: *mut PyObject) -> c_int {
 
 type TypeVisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
 
-/// CPython 3.12 ``type_traverse`` for heap type objects.
+/// Traverse the physical owners of native heap type objects.
 ///
-/// ``type_is_gc`` prevents the collector from invoking this slot for static
-/// types. Heap types own references through the common type header plus
-/// ``PyHeapTypeObject.ht_module``; visiting this exact family is what makes
-/// class/dict/MRO/module cycles observable to the collector.
+/// ``type_is_gc`` prevents collection of static types. Molt's shared native and
+/// runtime graph counts every owned occurrence, including heap name and slot
+/// fields. CPython omits those fields as acyclic; that omission does not express
+/// the complete physical ownership inventory required by the shared collector.
+/// The specialization cache is non-owning and is deliberately excluded.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_type_traverse(
     op: *mut PyObject,

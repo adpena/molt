@@ -544,23 +544,47 @@ unsafe extern "C" fn collect_type_reference(op: *mut PyObject, arg: *mut c_void)
     0
 }
 
+// These two slot probes lend local sentinel addresses to physical fields.
+// Clear them before their stack storage or separate C owners leave scope, even
+// if a visitor/clear assertion unwinds. NativeType must never consume them.
+struct BorrowedHeapTypeFields(*mut PyHeapTypeObject);
+
+impl Drop for BorrowedHeapTypeFields {
+    fn drop(&mut self) {
+        unsafe {
+            let heap = &mut *self.0;
+            heap.ht_type.tp_dict = ptr::null_mut();
+            heap.ht_type.tp_cache = ptr::null_mut();
+            heap.ht_type.tp_mro = ptr::null_mut();
+            heap.ht_type.tp_bases = ptr::null_mut();
+            heap.ht_type.tp_base = ptr::null_mut();
+            heap.ht_module = ptr::null_mut();
+            heap.ht_name = ptr::null_mut();
+            heap.ht_slots = ptr::null_mut();
+            heap.ht_qualname = ptr::null_mut();
+            heap._spec_cache.getitem = ptr::null_mut();
+        }
+    }
+}
+
 #[test]
 fn type_traverse_visits_exact_heap_type_ownership_family() {
     let _guard = init();
     let mut heap = NativeType::<PyHeapTypeObject>::new();
     heap.ht_type.tp_flags = Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
-    let mut references: [PyObject; 6] = unsafe { std::mem::zeroed() };
-    let mut acyclic_heap_references: [PyObject; 4] = unsafe { std::mem::zeroed() };
+    let mut references: [PyObject; 9] = unsafe { std::mem::zeroed() };
+    let mut nonowning_cache: PyObject = unsafe { std::mem::zeroed() };
+    let _borrowed_fields = BorrowedHeapTypeFields(&raw mut *heap);
     heap.ht_type.tp_dict = &raw mut references[0];
     heap.ht_type.tp_cache = &raw mut references[1];
     heap.ht_type.tp_mro = &raw mut references[2];
     heap.ht_type.tp_bases = &raw mut references[3];
     heap.ht_type.tp_base = (&raw mut references[4]).cast::<PyTypeObject>();
-    heap.ht_module = &raw mut references[5];
-    heap.ht_name = &raw mut acyclic_heap_references[0];
-    heap.ht_slots = &raw mut acyclic_heap_references[1];
-    heap.ht_qualname = &raw mut acyclic_heap_references[2];
-    heap._spec_cache.getitem = &raw mut acyclic_heap_references[3];
+    heap.ht_name = &raw mut references[5];
+    heap.ht_qualname = &raw mut references[6];
+    heap.ht_slots = &raw mut references[7];
+    heap.ht_module = &raw mut references[8];
+    heap._spec_cache.getitem = &raw mut nonowning_cache;
     let mut visited: Vec<usize> = Vec::new();
     let traverse = unsafe { PyType_Type.tp_traverse }.expect("type_traverse installed");
     assert_eq!(
@@ -580,23 +604,31 @@ fn type_traverse_visits_exact_heap_type_ownership_family() {
             .map(|reference| reference as *mut PyObject as usize)
             .collect::<Vec<_>>()
     );
-    for reference in &mut acyclic_heap_references {
-        assert!(
-            !visited.contains(&(reference as *mut PyObject as usize)),
-            "CPython 3.12 does not visit acyclic name/slots/qualname strings or the non-owning specialization cache"
-        );
-    }
-    // These sentinels model borrowed traversal addresses, not actual owners.
-    heap.ht_type.tp_dict = ptr::null_mut();
-    heap.ht_type.tp_cache = ptr::null_mut();
-    heap.ht_type.tp_mro = ptr::null_mut();
-    heap.ht_type.tp_bases = ptr::null_mut();
-    heap.ht_type.tp_base = ptr::null_mut();
-    heap.ht_module = ptr::null_mut();
-    heap.ht_name = ptr::null_mut();
-    heap.ht_slots = ptr::null_mut();
-    heap.ht_qualname = ptr::null_mut();
-    heap._spec_cache.getitem = ptr::null_mut();
+    assert!(
+        !visited.contains(&((&raw mut nonowning_cache) as usize)),
+        "specialization cache is not an owned edge",
+    );
+    // Molt's shared graph counts physical ownership, including names/slots;
+    // CPython's omission of acyclic strings is not that ownership inventory.
+    // Equal target pointers still represent two independently retained edges.
+    heap.ht_module = &raw mut references[0];
+    visited.clear();
+    assert_eq!(
+        unsafe {
+            traverse(
+                (&raw mut heap.ht_type).cast(),
+                collect_type_reference as *mut c_void,
+                (&raw mut visited).cast(),
+            )
+        },
+        0,
+    );
+    let mut expected: Vec<_> = references[..8]
+        .iter_mut()
+        .map(|reference| reference as *mut PyObject as usize)
+        .collect();
+    expected.push((&raw mut references[0]) as usize);
+    assert_eq!(visited, expected, "owned edge multiplicity must survive aliasing");
 }
 
 #[test]
@@ -608,6 +640,7 @@ fn type_clear_breaks_heap_type_mro_and_module_cycles() {
     let mut mro: PyObject = unsafe { std::mem::zeroed() };
     let mut module: PyObject = unsafe { std::mem::zeroed() };
     let mut retained: [PyObject; 6] = unsafe { std::mem::zeroed() };
+    let _borrowed_fields = BorrowedHeapTypeFields(&raw mut *heap);
     mro.ob_refcnt = 2;
     module.ob_refcnt = 2;
     heap.ht_type.tp_mro = &raw mut mro;
@@ -619,7 +652,10 @@ fn type_clear_breaks_heap_type_mro_and_module_cycles() {
     heap.ht_type.tp_bases = &raw mut retained[4];
     heap.ht_type.tp_base = (&raw mut retained[5]).cast::<PyTypeObject>();
     heap._spec_cache.getitem = &raw mut retained[0];
-    let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
+    let dict_owner = unsafe {
+        refcount::OwnedPyObject::from_owned(molt_cpython_abi::api::mapping::PyDict_New())
+    };
+    let dict = dict_owner.as_ptr();
     assert!(!dict.is_null());
     assert_eq!(
         unsafe {
@@ -656,13 +692,7 @@ fn type_clear_breaks_heap_type_mro_and_module_cycles() {
     assert_eq!(heap.ht_type.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
     assert_eq!(mro.ob_refcnt, 1);
     assert_eq!(module.ob_refcnt, 1);
-    unsafe { refcount::Py_CLEAR(&raw mut heap.ht_type.tp_dict) };
-    heap.ht_type.tp_cache = ptr::null_mut();
-    heap.ht_type.tp_bases = ptr::null_mut();
-    heap.ht_type.tp_base = ptr::null_mut();
-    heap.ht_name = ptr::null_mut();
-    heap.ht_slots = ptr::null_mut();
-    heap.ht_qualname = ptr::null_mut();
+
 }
 
 static WATCH_CALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

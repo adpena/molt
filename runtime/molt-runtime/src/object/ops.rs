@@ -30,7 +30,7 @@ pub(crate) use crate::object::ops_hash::{
 // Re-export encoding functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_encoding::{
     DecodeTextError, EncodeError, decode_bytes_text, decode_error_byte, decode_error_range,
-    encode_error_reason, encode_string_with_errors, encoding_kind_name, is_surrogate,
+    encode_string_with_errors, encoding_kind_name, is_surrogate,
     normalize_encoding, unicode_escape,
 };
 

@@ -4958,6 +4958,42 @@ pub fn current_thread_has_retained_runtime_state() -> bool {
     existing_current_thread_state().is_some()
 }
 
+/// Preserve an existing C owner after its runtime enters terminal failure.
+///
+/// The caller must identify the failing owner before clearing its runtime TLS
+/// binding. No callback is safe after that failure: remove the record from TLS
+/// destructor custody while retaining its allocation, managed edges, registry
+/// identity and retained-owner count until process exit. A missing record is a
+/// no-op; an inaccessible slot or a different owner refuses without mutation.
+pub fn retain_current_thread_state_after_runtime_failure(runtime_owner: usize) -> bool {
+    MOLT_THREAD_STATE
+        .try_with(|slot| {
+            let Ok(mut slot) = slot.try_borrow_mut() else {
+                return false;
+            };
+            if slot
+                .as_deref()
+                .is_some_and(|record| record.runtime_owner != runtime_owner)
+            {
+                return false;
+            }
+            if let Some(record) = slot.take() {
+                std::mem::forget(record);
+            }
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "runtime-test-support")]
+pub fn retained_thread_state_identity_for_test(address: usize) -> Option<(usize, u64)> {
+    THREAD_STATE_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&address)
+        .map(|record| (record.runtime_owner, record.id))
+}
+
 /// Drain the shutdown owner's detached CPython state while the runtime is
 /// still live and the caller holds execution custody.
 ///
@@ -4968,6 +5004,8 @@ pub fn current_thread_has_retained_runtime_state() -> bool {
 /// ownership domain converge before the record is destroyed. The callback
 /// returns true whenever it detached owned runtime references; even with no C
 /// edges, that requires another pass because their finalizers may refill TLS.
+/// A panic propagates to the caller's runtime-owner boundary, which retains a
+/// failed owner. Only the actual native-thread TLS destructor aborts directly.
 pub fn clear_current_thread_state_for_runtime_shutdown(cleanup_runtime_tls: impl FnMut() -> bool) {
     assert!(
         !current_thread_state_attached(),
@@ -4985,7 +5023,7 @@ pub fn clear_current_thread_state_for_runtime_shutdown(cleanup_runtime_tls: impl
         );
     });
     destroy_current_thread_state(
-        ThreadStatePanicBoundary::AbortProcess,
+        ThreadStatePanicBoundary::Propagate,
         ThreadStateDropCustodyMode::RuntimeOwner,
         cleanup_runtime_tls,
     );

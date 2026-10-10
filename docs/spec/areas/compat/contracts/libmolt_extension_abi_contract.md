@@ -414,6 +414,11 @@ outer channels before executing or reporting callback failures. Cold C-view
 publication uses the same preservation boundary; cached views retain their
 direct path. Builtin exception rendering slots inherit from the shared schema
 before namespace readiness so readiness failures can themselves be formatted.
+The same schema declares managed wrapper descriptors independently in every
+runtime. C slots and managed descriptors share the rendering algorithms in
+`molt-obj-model::exception_render`; their adapters retain physical field presence,
+selective snapshots and exact callback results. Isolate rendering requires no
+process-static C type publication.
 Delayed native and test snapshots use the same runtime raised-state authority.
 Native callback completion detects either raised channel without requiring C
 error projection. Operand publication continues after a failure while preserving

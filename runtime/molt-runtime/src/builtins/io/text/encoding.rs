@@ -336,21 +336,3 @@ pub(in crate::builtins::io) fn validate_decode_error_handler(errors: &str) -> Re
         Err(format!("unknown error handler name '{errors}'"))
     }
 }
-
-pub(in crate::builtins::io) fn validate_encode_error_handler(errors: &str) -> Result<(), String> {
-    if matches!(
-        errors,
-        "strict"
-            | "ignore"
-            | "replace"
-            | "backslashreplace"
-            | "surrogateescape"
-            | "surrogatepass"
-            | "namereplace"
-            | "xmlcharrefreplace"
-    ) {
-        Ok(())
-    } else {
-        Err(format!("unknown error handler name '{errors}'"))
-    }
-}

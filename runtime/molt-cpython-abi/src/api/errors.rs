@@ -18,7 +18,9 @@ use std::ptr;
 
 mod formatting;
 pub(crate) use formatting::exception_str_slot;
-pub use formatting::{molt_native_exception_repr, molt_native_exception_str};
+pub use formatting::{
+    molt_native_exception_repr, molt_native_exception_str, render_native_exception_str,
+};
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use libc as platform_errno;

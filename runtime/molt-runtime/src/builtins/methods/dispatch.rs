@@ -142,7 +142,9 @@ pub(crate) fn builtin_class_method_bits(py: &PyToken<'_>, class: u64, name: &str
         } else if class == b.complex {
             super::numeric::complex_class_method_bits(py, name)
         } else if issubclass_bits(class, b.base_exception) {
-            if name == "__init__" {
+            if matches!(name, "__str__" | "__repr__") {
+                crate::builtins::exceptions::exception_render_method_bits(py, class, name)
+            } else if name == "__init__" {
                 let owner = if class == b.exception_group {
                     b.base_exception_group
                 } else {
@@ -192,7 +194,9 @@ pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> boo
     } else if class == b.complex {
         super::numeric::publish_complex_class_methods(py)
     } else if issubclass_bits(class, b.base_exception) {
-        if !crate::builtins::exceptions::publish_exception_fields(py, class) {
+        if !crate::builtins::exceptions::publish_exception_fields(py, class)
+            || !crate::builtins::exceptions::publish_exception_render_methods(py, class)
+        {
             return false;
         }
         let owner = if class == b.exception_group {

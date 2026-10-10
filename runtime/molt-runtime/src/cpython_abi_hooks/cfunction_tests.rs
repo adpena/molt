@@ -76,6 +76,7 @@ fn managed_exception_class_creation_and_calls_use_runtime_authority() {
 #[derive(Debug, PartialEq)]
 struct ObservedCall {
     null_self: bool,
+    receiver_address: usize,
     receiver: Option<u64>,
     defining_class: Option<u64>,
     positional: Vec<i64>,
@@ -124,6 +125,7 @@ unsafe fn capture_vector(
     OBSERVED.with(|slot| {
         *slot.borrow_mut() = Some(ObservedCall {
             null_self: receiver.is_null(),
+            receiver_address: receiver as usize,
             receiver: molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .molt_handle_for_pyobj(receiver)
                 .map(|handle| handle.bits()),
@@ -491,6 +493,11 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
                 observed,
                 ObservedCall {
                     null_self: flags & METH_STATIC != 0,
+                    receiver_address: if flags & METH_STATIC != 0 {
+                        0
+                    } else {
+                        (&raw mut molt_cpython_abi::abi_types::Py_None) as usize
+                    },
                     receiver: (flags & METH_STATIC == 0).then_some(MoltObject::none().bits()),
                     defining_class: (flags & METH_METHOD != 0).then_some(class),
                     positional: vec![10, 20, 30][..count].to_vec(),
@@ -867,16 +874,19 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     register_cpython_hooks();
     unsafe {
-        let zero = numeric::PyFloat_FromDouble(0.0);
-        assert!(!zero.is_null());
-        for (receiver, expected) in [
-            (ptr::null_mut(), None),
-            (
-                &raw mut molt_cpython_abi::abi_types::Py_None,
-                Some(MoltObject::none().bits()),
-            ),
-            (zero, Some(MoltObject::from_float(0.0).bits())),
-        ] {
+        let zero_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            numeric::PyFloat_FromDouble(0.0),
+        );
+        let other_zero_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            numeric::PyFloat_FromDouble(0.0),
+        );
+        let zero = zero_owner.as_ptr();
+        let other_zero = other_zero_owner.as_ptr();
+        assert!(!zero.is_null() && !other_zero.is_null());
+        assert_ne!(zero, other_zero, "equal fresh C floats retain distinct origins");
+        let none = &raw mut molt_cpython_abi::abi_types::Py_None;
+        let mut zero_identities = Vec::new();
+        for receiver in [ptr::null_mut(), none, zero, other_zero] {
             let mut definition = molt_cpython_abi::abi_types::PyMethodDef {
                 ml_name: c"nullable_receiver".as_ptr(),
                 ml_meth: Some(noargs),
@@ -885,7 +895,23 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             };
             let callable =
                 molt_cpython_abi::api::object::PyCFunction_New(&raw mut definition, receiver);
+            let _callable_owner =
+                molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(callable);
             assert!(!callable.is_null());
+            let expected = if receiver.is_null() {
+                None
+            } else if receiver == none {
+                Some(MoltObject::none().bits())
+            } else {
+                assert_eq!(numeric::PyFloat_AsDouble(receiver).to_bits(), 0.0f64.to_bits());
+                let identity = GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(receiver)
+                    .expect("C callable receiver acquired a runtime identity")
+                    .bits();
+                assert_ne!(identity, MoltObject::none().bits());
+                zero_identities.push(identity);
+                Some(identity)
+            };
             assert_callable_class_identity(callable, false);
             assert_eq!(
                 molt_cpython_abi::api::object::PyCFunction_GetFunction(callable)
@@ -905,6 +931,7 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             assert!(!result.is_null());
             molt_cpython_abi::api::refcount::Py_DECREF(result);
             let raw = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
+            assert_eq!(raw.receiver_address, receiver as usize);
             assert_eq!(raw.receiver, expected);
             assert_eq!(raw.null_self, receiver.is_null());
             let function = molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -916,9 +943,10 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             hook_dec_ref(result);
             let runtime = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
             assert_eq!(runtime, raw);
-            molt_cpython_abi::api::refcount::Py_DECREF(callable);
         }
-        molt_cpython_abi::api::refcount::Py_DECREF(zero);
+        assert_eq!(zero_identities.len(), 2);
+        assert_ne!(zero_identities[0], zero_identities[1], "equal values must not merge C origins");
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     }
 }
 
@@ -1537,6 +1565,7 @@ fn constructor_phases_preserve_original_mapping_and_observe_new_mutation() {
 }
 
 thread_local! {
+    static PUBLICATION_REPLACEMENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PUBLICATION_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 unsafe fn publication_write_list(list: *mut PyObject) -> *mut PyObject {
@@ -1548,6 +1577,7 @@ unsafe fn publication_write_list(list: *mut PyObject) -> *mut PyObject {
         // setter or subsequent C inquiry that could accidentally publish it.
         let replacement = numeric::PyLong_FromLong(907);
         assert!(!replacement.is_null());
+        PUBLICATION_REPLACEMENT.set(replacement as usize);
         *(*physical).ob_item = replacement;
         if PUBLICATION_FAIL.get() {
             molt_cpython_abi::api::errors::PyErr_SetString(
@@ -1633,6 +1663,7 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 );
                 assert_ne!(function, 0);
                 PUBLICATION_FAIL.set(fail);
+                PUBLICATION_REPLACEMENT.set(0);
                 let result = if channel >= 2 {
                     let dict = crate::alloc_dict_with_pairs(&py, &[name, list_bits]);
                     let dict_bits = MoltObject::from_ptr(dict).bits();
@@ -1657,7 +1688,7 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 // never rereads the C view or calls bridge observation first.
                 let actual = crate::object::seq_access::pin_item(&py, list, 0).unwrap();
                 assert_eq!(
-                    MoltObject::from_bits(actual.bits()).as_int(),
+                    crate::builtins::numbers::to_i64(MoltObject::from_bits(actual.bits())),
                     Some(907),
                     "channel={channel}, fail={fail}"
                 );
@@ -1671,6 +1702,18 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                     );
                     crate::molt_exception_clear();
                 }
+                // Only after the direct runtime read and pending-error oracle:
+                // exposing that item must recover the exact C-origin pointer,
+                // whose independent C numeric conversion still reads 907.
+                let exposed_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                    cext_new_pyobject_from_borrowed_bits(actual.bits()),
+                );
+                let exposed = exposed_owner.as_ptr();
+                assert!(!exposed.is_null());
+                assert_eq!(exposed as usize, PUBLICATION_REPLACEMENT.get());
+                assert_eq!(numeric::PyLong_AsLongLong(exposed), 907);
+                assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+                drop(exposed_owner);
                 if result != 0 {
                     dec_ref_bits(&py, result);
                 }

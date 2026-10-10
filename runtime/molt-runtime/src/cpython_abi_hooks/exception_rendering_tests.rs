@@ -1044,6 +1044,16 @@ unsafe fn raised_exception_transfer_cases() {
             NativeType::subtype(&raw mut PyBaseObject_Type, c"RaisedCleanupPayload");
         payload_type.tp_dealloc = Some(payload_drop);
         assert_eq!(payload_type.ready(), 0);
+        // A failed assertion must retire any pending payload before its native
+        // type storage leaves scope, even when the transfer itself is defective.
+        struct RaisedCleanup;
+        impl Drop for RaisedCleanup {
+            fn drop(&mut self) {
+                DROP_RAISES.store(false, Ordering::SeqCst);
+                unsafe { errors::PyErr_Clear() };
+            }
+        }
+        let _cleanup = RaisedCleanup;
         DROP_RAISES.store(true, Ordering::SeqCst);
         let drops_before = DROPS.load(Ordering::SeqCst);
         for clear in [false, true] {
@@ -1053,12 +1063,16 @@ unsafe fn raised_exception_transfer_cases() {
             })));
             let old = exception(&raw mut PyExc_ValueError, &[payload.as_ptr()]);
             drop(payload);
-            errors::PyErr_SetRaisedException(old.into_ptr());
+            // Readiness and construction are fixture setup, not part of the
+            // raised-state transfer. Finish them before installing the old
+            // indicator; only SetRaisedException runs with that error pending.
             let next = if clear {
                 OwnedPyObject::from_owned(ptr::null_mut())
             } else {
                 exception(&raw mut PyExc_LookupError, &[])
             };
+            assert!(errors::PyErr_Occurred().is_null());
+            errors::PyErr_SetRaisedException(old.into_ptr());
             let next = next.into_ptr();
             errors::PyErr_SetRaisedException(next);
             let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());

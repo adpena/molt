@@ -106,7 +106,10 @@ unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
     }
 }
 
-fn exercise_native_namespaces(unwind_after_read: bool, receiver_address: &Cell<usize>) {
+fn exercise_native_namespaces(
+    unwind_after_read: bool,
+    receiver_final_refcount: &Cell<Option<isize>>,
+) {
     use molt_cpython_abi::abi_types::{
         Py_None, Py_TPFLAGS_READY, PyBaseObject_Type, PyType_Type, PyTypeObject,
     };
@@ -166,10 +169,38 @@ fn exercise_native_namespaces(unwind_after_read: bool, receiver_address: &Cell<u
             };
             assert!(!class.tp_dict.is_null() && !receiver.dictionary.is_null());
             let receiver_ptr = &raw mut receiver.object;
+            // Declared before every runtime/descriptor owner so Drop observes
+            // their release while the original stack C object is still alive.
+            // Never assert in Drop: the outer test inspects the observation
+            // after catching the fixture's intentional panic.
+            struct ReceiverRetirement<'a> {
+                receiver: *mut PyObject,
+                final_refcount: &'a Cell<Option<isize>>,
+            }
+            impl Drop for ReceiverRetirement<'_> {
+                fn drop(&mut self) {
+                    self.final_refcount
+                        .set(Some(unsafe { (*self.receiver).ob_refcnt }));
+                }
+            }
+            let _retirement = ReceiverRetirement {
+                receiver: receiver_ptr,
+                final_refcount: receiver_final_refcount,
+            };
+            assert_eq!((*receiver_ptr).ob_refcnt, 1);
             let receiver_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(receiver_ptr).unwrap();
             let _receiver_owner = ExceptionValue::adopt(py, receiver_bits);
-            receiver_address.set(receiver_ptr.addr());
-            assert!(GLOBAL_BRIDGE.pyobj_to_handle(receiver_ptr).is_some());
+            let wrapper = obj_from_bits(receiver_bits).as_ptr().unwrap();
+            assert_eq!(crate::object_type_id(wrapper), crate::TYPE_ID_FOREIGN);
+            assert_eq!(
+                crate::object::foreign::foreign_ptr_from_obj(wrapper),
+                receiver_ptr.addr(),
+            );
+            assert_eq!(
+                (*receiver_ptr).ob_refcnt,
+                2,
+                "the foreign runtime owner retains exactly one C reference",
+            );
             let get = function(py, descriptor_get as *const (), 1);
             let _get_owner = ExceptionValue::adopt(py, get);
             let set = function(py, descriptor_set as *const (), 2);
@@ -485,26 +516,27 @@ fn exercise_native_namespaces(unwind_after_read: bool, receiver_address: &Cell<u
 #[test]
 fn native_namespaces_bind_and_mutate_managed_descriptors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
-    exercise_native_namespaces(false, &Cell::new(0));
+    let final_refcount = Cell::new(None);
+    exercise_native_namespaces(false, &final_refcount);
+    assert_eq!(final_refcount.get(), Some(1), "normal completion retires the C owner");
 }
 
 #[test]
 fn native_descriptor_fixture_unwind_retires_foreign_receiver_binding() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
-    let address = Cell::new(0);
+    let final_refcount = Cell::new(None);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        exercise_native_namespaces(true, &address);
+        exercise_native_namespaces(true, &final_refcount);
     }))
     .expect_err("the fixture must reach its intentional unwind");
     assert_eq!(
         failure.downcast_ref::<&str>(),
         Some(&"native descriptor fixture unwind")
     );
-    assert_ne!(address.get(), 0);
-    assert!(
-        GLOBAL_BRIDGE
-            .pyobj_to_handle(std::ptr::with_exposed_provenance_mut(address.get()))
-            .is_none()
+    assert_eq!(
+        final_refcount.get(),
+        Some(1),
+        "unwind must return the live C object to its original sole owner",
     );
 }
 
