@@ -11,10 +11,10 @@
 - **Maximum built-in tier:** explicit `--trusted` resolves the finite generated `full` tier; capability checks remain exact.
 - **Determinism first:** hashing, ordering, and file/system APIs must preserve deterministic output.
 - **Enforcement:** use `molt.capabilities` to check or require capability tokens in stdlib shims.
-- **Intrinsic-only enforcement:** compiled binaries may only import stdlib modules that are intrinsic-backed; Python-only stdlib modules must fail fast (compile-time error or immediate `RuntimeError`) until lowered.
+- **Implementation statuses (spec 0016):** a compiled binary may import any implemented stdlib module: `intrinsic-backed`, `intrinsic-partial`, `intrinsic-support`, or `python-compiled` (Molt compiles the module's own Python source; no host interpreter runs). A `stub` raises the canonical gap error on any attribute until lowered. Intrinsic status counts only intrinsics a module reads; see `stdlib_intrinsics_audit.generated.md`.
 - **Import-only stubs (tooling-only):** stubs may be used for dependency tracking in tooling, but are forbidden in compiled binaries.
 - **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
-- **Intrinsic-partial ratchet:** `intrinsic-partial` count must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`), enforced by `tools/check_stdlib_intrinsics.py`.
+- **Status ratchet:** the `intrinsic-partial` and `stub` counts must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`, `max_stub`), enforced by `tools/check_stdlib_intrinsics.py`.
 - **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
 ## 0.1 Tier-0 Direct-Call Rule

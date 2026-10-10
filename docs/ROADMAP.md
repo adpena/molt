@@ -202,7 +202,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/std
 - Implemented: importlib.resources loader-reader lookup now explicitly falls back from `module.__spec__.loader` to `module.__loader__` inside runtime intrinsic lowering, so module-object reader discovery no longer depends on Python-side bootstrap probing.
 - Implemented: compiler-emitted extension/sourceless shim modules use normal import semantics, including the canonical `from ... import *` implementation; the former shim-specific parser is deleted.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:partial): lower every `stub` stdlib module and bring `intrinsic-partial` modules to attested full coverage. Compiled pure-Python stdlib modules (`python-compiled`) are admitted implementations, and intrinsic status counts only intrinsics a module reads (spec 0016, HF-91). See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
 - Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) with fail-fast missing-intrinsic behavior.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P0, status:partial): complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm.
@@ -240,12 +240,12 @@ Program board:
 
 1. Phase 0 (enforcement spine)
 - Keep `tools/check_stdlib_intrinsics.py` as generated-audit + lint gate in CI.
-- Keep strict core-lane gate in CI (`tools/check_core_lane_lowering.py`), requiring `intrinsic-backed` status only for the core-lane import closure.
+- Keep the core-lane gate (`tools/check_core_lane_lowering.py`), which requires every module in the core-lane import closure to be implemented (no `stub` or `policy-gate`).
 - Keep core differential lane as the first green gate before broader stdlib sweeps.
 
 2. Phase 1 (core-lane blockers, P0)
 - Lower core closure bootstrap modules to intrinsic-backed: `types`, `abc` stack (`abc`, `_abc`, `collections.abc`, `_collections_abc`), `weakref` stack (`weakref`, `_weakrefset`), `typing`, `traceback`, `__future__`, and core-used `asyncio` surface.
-- Exit only when core-lane closure contains zero `probe-only`, `intrinsic-partial`, and `python-only` modules.
+- Exit only when the core-lane closure contains no `stub` and no `intrinsic-partial` module.
 
 3. Phase 2 (concurrency substrate, P0)
 - Lower in dependency order: `socket` -> `threading` -> `asyncio`.

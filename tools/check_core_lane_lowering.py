@@ -181,24 +181,6 @@ def _imports_from_ast(
     return out
 
 
-def _load_stdlib_audit() -> dict[str, tuple[str, Path]]:
-    out: dict[str, tuple[str, Path]] = {}
-    failures: list[str] = []
-    for path in sorted(stdlib_audit.STDLIB_ROOT.rglob("*.py")):
-        errors, intrinsic_names, status, has_stdlib_todo = stdlib_audit._scan_file(path)
-        module = stdlib_audit._module_name(path)
-        if status == stdlib_audit.STATUS_INTRINSIC and has_stdlib_todo:
-            status = stdlib_audit.STATUS_INTRINSIC_PARTIAL
-        if errors:
-            rel = path.relative_to(ROOT)
-            failures.extend(f"{rel}: {msg}" for msg in errors)
-        out[module] = (status, path)
-    if failures:
-        joined = "\n- ".join(sorted(set(failures)))
-        raise RuntimeError(f"stdlib audit failed:\n- {joined}")
-    return out
-
-
 def _collect_manifest_tests(manifest: Path) -> list[Path]:
     if not manifest.is_file():
         raise FileNotFoundError(f"Manifest not found: {manifest}")
@@ -282,7 +264,7 @@ def _closure(seeds: set[str], deps: dict[str, set[str]]) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Ensure compiled core-lane imports resolve only to fully lowered "
+            "Ensure compiled core-lane imports resolve only to implemented "
             "stdlib modules."
         )
     )
@@ -296,12 +278,21 @@ def main() -> int:
         "--allow-status",
         action="append",
         default=[],
-        help=("Allowed audit status (repeatable). Default is `intrinsic-backed` only."),
+        help=(
+            "Allowed audit status (repeatable). Default: every implemented "
+            "status (intrinsic-backed, intrinsic-partial, intrinsic-support, "
+            "python-compiled)."
+        ),
     )
     args = parser.parse_args()
 
-    allow_statuses = set(args.allow_status) or {stdlib_audit.STATUS_INTRINSIC}
-    audit_map = _load_stdlib_audit()
+    allow_statuses = set(args.allow_status) or {
+        stdlib_audit.STATUS_INTRINSIC,
+        stdlib_audit.STATUS_INTRINSIC_PARTIAL,
+        stdlib_audit.STATUS_INTRINSIC_SUPPORT,
+        stdlib_audit.STATUS_PYTHON_COMPILED,
+    }
+    audit_map = stdlib_audit.stdlib_module_statuses()
     dep_graph = _build_stdlib_dep_graph(audit_map)
     seed_modules = _collect_seed_modules(args.manifest, set(audit_map))
 

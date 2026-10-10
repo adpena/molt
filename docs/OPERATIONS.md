@@ -189,7 +189,7 @@ Use this section when `python3 tools/check_stdlib_intrinsics.py` fails in CI or
 on-call triage.
 
 For agent triage, add `--json-out <local-report.json>`. The
-`molt.stdlib-intrinsics-audit.v2` report contains `ok`, `analysis_complete`, and
+`molt.stdlib-intrinsics-audit.v3` report contains `ok`, `analysis_complete`, and
 one ordered `diagnostics` list matching the console. Policy failures report all
 evaluated gates in one scan; source or manifest evaluation failures replace any
 stale report with `analysis_complete: false` and no fabricated coverage. Always
@@ -338,7 +338,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 python3 tools/check_stdlib_intrinsics.py --allowlist-modules builtins,sys,types,importlib,importlib.machinery,importlib.util
 ```
 
-`stdlib intrinsics lint failed: strict-import roots must be intrinsic-backed`
+`stdlib intrinsics lint failed: strict-import roots must be implemented`
 ```bash
 python3 tools/check_stdlib_intrinsics.py --critical-allowlist
 rg -n "TODO\\(stdlib[^,]*,.*status:(missing|partial|planned|divergent)" src/molt/stdlib
@@ -350,22 +350,17 @@ ls src/molt/stdlib/builtins.py src/molt/stdlib/sys.py src/molt/stdlib/types.py
 ls src/molt/stdlib/importlib/__init__.py src/molt/stdlib/importlib/machinery.py src/molt/stdlib/importlib/util.py
 ```
 
-`stdlib intrinsics lint failed: bootstrap strict closure must be intrinsic-backed`
+`stdlib intrinsics lint failed: bootstrap strict closure must be implemented`
 ```bash
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
-`stdlib intrinsics lint failed: bootstrap modules must be intrinsic-backed`
+`stdlib intrinsics lint failed: bootstrap modules must be implemented`
 ```bash
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
-`stdlib intrinsics lint failed: non-python-only modules cannot depend on python-only stdlib modules`
-```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
-
-`stdlib intrinsics lint failed: strict-import allowlist violated (intrinsic-backed roots imported non-intrinsic-backed stdlib modules)`
+`stdlib intrinsics lint failed: strict-import allowlist violated (roots imported a stub or policy-gate stdlib module)`
 ```bash
 python3 tools/check_stdlib_intrinsics.py --critical-allowlist
 ```
@@ -394,17 +389,11 @@ rg -n "except .*:\\s*$|pass$" src/molt/stdlib/json/__init__.py
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
-`stdlib intrinsics lint failed: zero non-intrinsic gate violated`
-```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-python3 tools/gen_stdlib_stubs.py --write
-```
-
-`stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated`
+`stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated` (or `stub ratchet gate violated`)
 ```bash
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 cat tools/stdlib_intrinsics_ratchet.json
-# Lower intrinsic-partial modules first, then tighten max_intrinsic_partial.
+# Lower modules first, then tighten max_intrinsic_partial or max_stub.
 ```
 
 `stdlib intrinsics lint failed: full-coverage attestation references unknown modules`
@@ -670,9 +659,14 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 ## Weekly Stdlib Scoreboard
 Update this table at least weekly during lowering burn-down.
 
-| Date | intrinsic-backed | intrinsic-partial | probe-only | python-only | missing top-level | missing submodules | native parity pass % | wasm parity pass % | memory regressions |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 2026-02-12 | 177 | 696 | 0 | 0 | 0 | 0 | TBD | TBD | TBD |
+Rows before 2026-10-09 counted a module as intrinsic-backed or intrinsic-partial
+when it required any intrinsic, read or not (HF-91). From that date the counts
+use only intrinsics a module reads, and `python-compiled` and `stub` have their
+own columns; `probe-only` and `python-only` no longer exist.
+
+| Date | intrinsic-backed | intrinsic-partial | intrinsic-support | python-compiled | stub | missing top-level | missing submodules | native parity pass % | wasm parity pass % | memory regressions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 2026-02-12 | 177 | 696 | n/a | n/a | n/a | 0 | 0 | TBD | TBD | TBD |
 
 Rules:
 - Any PR that worsens this table requires explicit exception sign-off.

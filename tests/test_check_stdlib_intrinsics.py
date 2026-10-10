@@ -56,7 +56,7 @@ def test_runtime_boundary_rejects_compiler_imports(tmp_path: Path, source: str) 
     path = tmp_path / "runtime.py"
     path.write_text(source + "\n", encoding="utf-8")
 
-    errors, _, _, _ = module._scan_file(path)
+    errors, _, _ = module._scan_file(path)
 
     assert len(errors) == 1
     assert "Importing the host molt compiler package" in errors[0]
@@ -86,7 +86,7 @@ def test_runtime_boundary_allows_runtime_and_normalized_imports(
     path = tmp_path / "runtime.py"
     path.write_text(source + "\n", encoding="utf-8")
 
-    errors, _, _, _ = module._scan_file(path)
+    errors, _, _ = module._scan_file(path)
 
     assert errors == []
 
@@ -168,11 +168,14 @@ def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> N
 
     module = _load_gate_module()
     path = REPO_ROOT / "src" / "molt" / "stdlib" / "builtins.py"
-    errors, intrinsic_names, status, _ = module._scan_file(path)
+    errors, intrinsic_names, _ = module._scan_file(path)
     assert errors == []
-    assert status == "intrinsic-backed"
-    assert "molt_compile_builtin" in intrinsic_names
     assert frozenset(intrinsic_names) == module_required_intrinsic_names(path)
+    classification = module.classify_stdlib_module_statuses(
+        {"builtins": path}, target_python=module._DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert classification.statuses["builtins"] == "intrinsic-backed"
+    assert "molt_compile_builtin" in classification.used_intrinsics["builtins"]
 
 
 @pytest.mark.parametrize(
@@ -181,7 +184,6 @@ def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> N
         (("molt_a", "molt_b", "molt_a"), ("molt_a", "molt_b")),
         (("molt_a", 1), None),
         (("invalid",), None),
-        (("molt_stdlib_probe",), None),
         (["molt_a"], None),
     ],
 )
@@ -222,10 +224,7 @@ def _seed_bootstrap_strict_modules(
     stdlib_root: Path, *, partial_modules: tuple[str, ...] = ()
 ) -> None:
     stdlib_root.mkdir(parents=True, exist_ok=True)
-    intrinsic_line = (
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_require_intrinsic("molt_capabilities_has", globals())\n'
-    )
+    intrinsic_line = _INTRINSIC_READ
     partial_gap_marker = "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:partial): test fixture partial marker.\n"
 
     module_names = (
@@ -263,12 +262,27 @@ def _seed_bootstrap_strict_modules(
         write_module(module_name)
 
 
+# A module that requires one intrinsic and reads it.
+_INTRINSIC_READ = (
+    "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+    '_MOLT_TEST_INTR = _require_intrinsic("molt_capabilities_has")\n'
+    "def _has_capability(name):\n"
+    "    return _MOLT_TEST_INTR(name)\n"
+)
+
+
+def _stub_source(name: str) -> str:
+    from molt.stdlib_intrinsic_policy import STDLIB_STUB_MARKER
+
+    return (
+        "def __getattr__(attr):\n"
+        f"    raise RuntimeError('stdlib module \"{name}\" {STDLIB_STUB_MARKER}')\n"
+    )
+
+
 def _seed_intrinsic_module(stdlib_root: Path, module_name: str, body: str) -> None:
     (stdlib_root / f"{module_name}.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_MOLT_TEST_INTR = _require_intrinsic("molt_capabilities_has", globals())\n'
-        + body
-        + ("\n" if not body.endswith("\n") else ""),
+        _INTRINSIC_READ + body + ("\n" if not body.endswith("\n") else ""),
         encoding="utf-8",
     )
 
@@ -279,10 +293,7 @@ def _seed_intrinsic_package(
     package_dir = stdlib_root / package_name
     package_dir.mkdir(parents=True, exist_ok=True)
     (package_dir / "__init__.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_MOLT_TEST_INTR = _require_intrinsic("molt_capabilities_has", globals())\n'
-        + body
-        + ("\n" if body and not body.endswith("\n") else ""),
+        _INTRINSIC_READ + body + ("\n" if body and not body.endswith("\n") else ""),
         encoding="utf-8",
     )
 
@@ -372,11 +383,19 @@ def _configure_report_test(tmp_path: Path, monkeypatch, *options: str):
 def test_failed_audit_reports_every_gate_once_without_publishing_docs(
     tmp_path: Path, monkeypatch, capsys, existing_doc: bool
 ) -> None:
+    ratchet = tmp_path / "ratchet.json"
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
     module, root, doc, report = _configure_report_test(
-        tmp_path, monkeypatch, "--update-doc"
+        tmp_path,
+        monkeypatch,
+        "--update-doc",
+        "--intrinsic-partial-ratchet-file",
+        str(ratchet),
     )
     _seed_intrinsic_module(root, "alpha", "import molt.net\nimport orphan\n")
-    (root / "orphan.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "orphan.py").write_text(_stub_source("orphan"), encoding="utf-8")
     _configure_required_top_level(module, monkeypatch, root)
     monkeypatch.setattr(
         module, "_load_fully_covered_stdlib_modules", lambda _path: frozenset({"alpha"})
@@ -408,12 +427,11 @@ def test_failed_audit_reports_every_gate_once_without_publishing_docs(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["analysis_complete"] is True
     assert payload["ok"] is False
-    assert payload["schema"] == "molt.stdlib-intrinsics-audit.v2"
+    assert payload["schema"] == "molt.stdlib-intrinsics-audit.v3"
     assert {
         "failures",
         "full-coverage-missing-intrinsic-wiring",
-        "dependency-violations",
-        "non-intrinsic-modules",
+        "stub-budget",
     } <= {item["code"] for item in payload["diagnostics"]}
     output = capsys.readouterr().out
     assert all(
@@ -436,16 +454,18 @@ def test_unknown_and_non_intrinsic_strict_roots_preserve_remaining_diagnostics(
     module, root, doc, report = _configure_report_test(
         tmp_path, monkeypatch, "--update-doc", "--allowlist-modules", "absent,orphan"
     )
-    (root / "orphan.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "orphan.py").write_text(_stub_source("orphan"), encoding="utf-8")
     _configure_required_top_level(module, monkeypatch, root)
     assert module.main() == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["analysis_complete"] is True
     assert payload["unknown_strict_roots"] == ["absent"]
+    assert payload["strict_root_status_violations"] == [
+        {"module": "orphan", "status": "stub"}
+    ]
     assert {
         "unknown-strict-roots",
         "strict-root-status-violations",
-        "non-intrinsic-modules",
     } <= {item["code"] for item in payload["diagnostics"]}
     assert not doc.exists()
 
@@ -460,11 +480,11 @@ def test_aggregate_diagnostics_respect_fallback_gate_selection(
     )
     _seed_fallback_module(root)
     _configure_required_top_level(module, monkeypatch, root)
-    assert module.main() == 1
+    # The fallback module is compiled Python, so only the global gate sees it.
+    assert module.main() == (0 if limited else 1)
     payload = json.loads(report.read_text(encoding="utf-8"))
     codes = {item["code"] for item in payload["diagnostics"]}
     assert ("all-fallback-violations" in codes) is not limited
-    assert "non-intrinsic-modules" in codes
     assert payload["all_fallback_violations"]
 
 
@@ -642,11 +662,7 @@ def test_fallback_intrinsic_backed_only_opt_down_flag_is_accepted(
     module = _load_gate_module()
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
-    (stdlib_root / "intrinsic_mod.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_require_intrinsic("molt_capabilities_has", globals())\n',
-        encoding="utf-8",
-    )
+    (stdlib_root / "intrinsic_mod.py").write_text(_INTRINSIC_READ, encoding="utf-8")
     audit_doc = tmp_path / "audit.md"
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
@@ -703,52 +719,59 @@ except ImportError:
     assert audit_doc.exists()
 
 
-def test_zero_non_intrinsic_gate_rejects_python_only_module(
-    tmp_path: Path, monkeypatch, capsys
+def test_compiled_python_module_is_an_admitted_implementation(
+    tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_gate_module()
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "plain_mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    audit_doc = tmp_path / "audit.md"
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
-    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
     monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
 
-    exit_code = module.main()
-    out = capsys.readouterr().out
-
-    assert exit_code == 1
-    assert "zero non-intrinsic gate violated" in out
-    assert "python-only modules" in out
-    assert "plain_mod" in out
+    assert module.main() == 0
+    text = audit_doc.read_text(encoding="utf-8")
+    assert "- `python-compiled`: `1`" in text
+    assert "### Compiled pure-Python modules\n- `plain_mod`" in text
 
 
-def test_zero_non_intrinsic_gate_rejects_probe_only_module(
-    tmp_path: Path, monkeypatch, capsys
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A discarded requirement: the anchor shape a probe or stub used.
+        '_require_intrinsic("molt_capabilities_has")\n',
+        # A private binding nothing loads.
+        '_MOLT_READY = _require_intrinsic("molt_capabilities_has")\n',
+    ],
+)
+def test_unread_intrinsic_requirement_is_not_backing(
+    tmp_path: Path, monkeypatch, source: str
 ) -> None:
-    module = _load_gate_module()
-    stdlib_root = tmp_path / "stdlib"
-    stdlib_root.mkdir()
-    (stdlib_root / "probe_mod.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_require_intrinsic("molt_stdlib_probe", globals())\n',
+    module, root, _, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc"
+    )
+    (root / "anchored_mod.py").write_text(
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n" + source,
         encoding="utf-8",
     )
-
-    _configure_required_top_level(module, monkeypatch, stdlib_root)
-    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
-    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
-    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
-
-    exit_code = module.main()
-    out = capsys.readouterr().out
-
-    assert exit_code == 1
-    assert "zero non-intrinsic gate violated" in out
-    assert "probe-only modules" in out
-    assert "probe_mod" in out
+    _configure_required_top_level(module, monkeypatch, root)
+    module.main()
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    statuses = {entry["module"]: entry for entry in payload["modules"]}
+    assert statuses["anchored_mod"]["status"] == "python-compiled"
+    assert statuses["anchored_mod"]["intrinsics"] == []
+    unread = [
+        (entry["module"], entry["intrinsic"])
+        for entry in (
+            payload["unread_intrinsic_bindings"]
+            + payload["discarded_intrinsic_requirements"]
+        )
+    ]
+    assert unread == [("anchored_mod", "molt_capabilities_has")]
 
 
 def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
@@ -799,10 +822,8 @@ def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
         "### Intrinsic-backed modules (partial lowering pending)\n- `pkg`" in audit_text
     )
     assert "- `pkg.widgets`" in audit_text
-    assert "### Python-only modules (intrinsic missing)\n" in audit_text
-    assert (
-        "### Python-only modules (intrinsic missing)\n- `pkg.widgets`" not in audit_text
-    )
+    # The package's binding is read only by the sibling that imports it.
+    assert "### Compiled pure-Python modules\n\n" in audit_text
 
 
 def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_in_audit(
@@ -812,9 +833,7 @@ def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_i
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "_pyio.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_READY = _require_intrinsic("molt_import_smoke_runtime_ready")\n'
-        "def _load_text_io_classes():\n"
+        _INTRINSIC_READ + "def _load_text_io_classes():\n"
         "    import _pyio_text as text_module\n"
         "    return text_module\n",
         encoding="utf-8",
@@ -837,9 +856,7 @@ def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_i
         in audit_text
     )
     assert "- `_pyio_text`" in audit_text
-    assert (
-        "### Python-only modules (intrinsic missing)\n- `_pyio_text`" not in audit_text
-    )
+    assert "### Compiled pure-Python modules\n- `_pyio_text`" not in audit_text
 
 
 def test_fail_closed_import_policy_gate_is_allowed(tmp_path: Path, monkeypatch) -> None:
@@ -902,18 +919,18 @@ def test_policy_gate_rejects_executable_python_body(
         '"""not a pure gate"""\nVALUE = 1\nraise ImportError(\'reserved\')\n',
         encoding="utf-8",
     )
+    audit_doc = tmp_path / "audit.md"
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
-    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
     monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
 
-    exit_code = module.main()
-    out = capsys.readouterr().out
-
-    assert exit_code == 1
-    assert "zero non-intrinsic gate violated" in out
-    assert "not_reserved_mod" in out
+    # Executable Python makes it a compiled module, not an allowlisted gate.
+    assert module.main() == 0
+    text = audit_doc.read_text(encoding="utf-8")
+    assert "- `policy-gate`: `0`" in text
+    assert "### Compiled pure-Python modules\n- `not_reserved_mod`" in text
 
 
 def test_real_stdlib_import_fallback_cleanup_modules_stay_clean() -> None:
@@ -943,19 +960,16 @@ def test_bootstrap_strict_closure_allows_intrinsic_partial_root(
     assert module.main() == 0
 
 
-def test_bootstrap_strict_closure_rejects_transitive_python_only_dependency(
+def test_bootstrap_strict_closure_rejects_transitive_stub_dependency(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     module = _load_gate_module()
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root)
     (stdlib_root / "sys.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_require_intrinsic("molt_capabilities_has", globals())\n'
-        "import os\n",
-        encoding="utf-8",
+        _INTRINSIC_READ + "import os\n", encoding="utf-8"
     )
-    (stdlib_root / "os.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (stdlib_root / "os.py").write_text(_stub_source("os"), encoding="utf-8")
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -966,8 +980,8 @@ def test_bootstrap_strict_closure_rejects_transitive_python_only_dependency(
     out = capsys.readouterr().out
 
     assert exit_code == 1
-    assert "bootstrap strict closure must be intrinsic-implemented" in out
-    assert "os: python-only" in out
+    assert "bootstrap strict closure must be implemented" in out
+    assert "os: stub" in out
 
 
 def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
@@ -977,10 +991,7 @@ def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root)
     (stdlib_root / "sys.py").write_text(
-        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_require_intrinsic("molt_capabilities_has", globals())\n'
-        "import reserved_mod\n",
-        encoding="utf-8",
+        _INTRINSIC_READ + "import reserved_mod\n", encoding="utf-8"
     )
     (stdlib_root / "reserved_mod.py").write_text(
         '"""reserved namespace"""\n'
@@ -1000,7 +1011,7 @@ def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
     out = capsys.readouterr().out
 
     assert exit_code == 1
-    assert "bootstrap strict closure must be intrinsic-implemented" in out
+    assert "bootstrap strict closure must be implemented" in out
     assert "reserved_mod: policy-gate" in out
 
 
@@ -1364,7 +1375,9 @@ def test_intrinsic_partial_ratchet_gate_rejects_regression(
         "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): fixture partial marker.\n",
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1401,7 +1414,9 @@ def test_intrinsic_partial_ratchet_gate_allows_within_budget(
         "# STDLIB_GAP(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): fixture partial marker.\n",
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 1}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 1, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1433,7 +1448,9 @@ def test_host_fallback_import_pattern_rejected(
         "import _py_decimal\n",
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1469,7 +1486,9 @@ def test_host_fallback_dynamic_import_module_alias_pattern_rejected(
         'from importlib import import_module\nimport_module("_py_decimal")\n',
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1508,7 +1527,9 @@ def test_host_fallback_dynamic_import_keyword_name_pattern_rejected(
         '__import__(name="_py_decimal")\n',
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1544,7 +1565,9 @@ def test_full_coverage_attestation_defaults_to_intrinsic_partial(
     manifest = tmp_path / "full_coverage.py"
     manifest.write_text("STDLIB_FULLY_COVERED_MODULES = ()\n", encoding="utf-8")
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 1}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 1, "max_stub": 0}\n', encoding="utf-8"
+    )
     report = tmp_path / "report.json"
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
@@ -1597,7 +1620,9 @@ def test_full_coverage_attestation_marks_intrinsic_backed(
     manifest = tmp_path / "full_coverage.py"
     manifest.write_text('STDLIB_FULLY_COVERED_MODULES = ("alpha",)\n', encoding="utf-8")
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
     report = tmp_path / "report.json"
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
@@ -1648,7 +1673,9 @@ def test_full_coverage_intrinsic_contract_requires_module_entry(
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1691,7 +1718,9 @@ def test_full_coverage_intrinsic_contract_requires_intrinsic_wiring(
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
@@ -1735,10 +1764,14 @@ def test_full_coverage_intrinsic_contract_accepts_required_intrinsics(
     _seed_intrinsic_module(
         stdlib_root,
         "alpha",
-        '_MOLT_TIME = _require_intrinsic("molt_time_time", globals())\n',
+        '_MOLT_TIME = _require_intrinsic("molt_time_time")\n'
+        "def now():\n"
+        "    return _MOLT_TIME()\n",
     )
     ratchet = tmp_path / "ratchet.json"
-    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+    ratchet.write_text(
+        '{"max_intrinsic_partial": 0, "max_stub": 0}\n', encoding="utf-8"
+    )
 
     _configure_required_top_level(module, monkeypatch, stdlib_root)
     monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
