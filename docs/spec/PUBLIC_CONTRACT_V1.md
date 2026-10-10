@@ -60,15 +60,16 @@ this page explains them and never restates their content.
   authorities for closure, not a parallel checklist.
 - Releases follow semver. `molt --version` and the wheel version are the
   `pyproject.toml` project version resolved through `molt._version`.
-- A `v1.x.y` tag is a stable release. Source admission checks the E1-E4 bundle
-  and its join with the findings ledger at the source commit; planning names the
-  required `H0` artifact but does not certify phase exit.
+- A `v1.x.y` tag is a stable release. Source admission checks the E1-E4 bundle,
+  which refuses PASS while the findings ledger at the source commit holds an
+  open row; planning names the required `H0` artifact but does not certify
+  phase exit.
   The signing job prepares and signs H0, and
   `tools/release/release_authority.py index` requires that authenticated green
   manifest for the tagged commit (see `docs/design/CENTURY_SYSTEMS_PLAN.md` §5
   and `tools/phase_exit_manifest.py`). Pre-1.0 tags carry no stability promise
-  and need no H0 phase exit, but still require E1-E4 evidence and a findings
-  ledger with no open row.
+  and need no H0 phase exit, but still require E1-E4 evidence. Their bundle
+  records and reports open findings, which do not hold a pre-1.0 release.
 - Deprecation is a time-bounded public transition: the superseded lane is
   registered in `config/legacy_inventory.toml` with its replacement and a
   `removal_release`, and `legacy_count` must be zero before a phase exit is

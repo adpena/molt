@@ -795,6 +795,7 @@ def release_evidence_inputs(
             True,
             (),
             (),
+            "0.0.1",
         ),
     )
     monkeypatch.setattr(
@@ -1617,13 +1618,13 @@ def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -
 @pytest.mark.parametrize(
     "report",
     [
-        release_exit_gate.ReleaseGateReport("b" * 40, "PASS", True, (), ()),
-        release_exit_gate.ReleaseGateReport("a" * 40, "FAIL", False, (), ()),
+        release_exit_gate.ReleaseGateReport("b" * 40, "PASS", True, (), (), "1.0.0"),
+        release_exit_gate.ReleaseGateReport("a" * 40, "FAIL", False, (), (), "1.0.0"),
         release_exit_gate.ReleaseGateReport(
-            "a" * 40, "PASS", True, ("tampered receipt",), ()
+            "a" * 40, "PASS", True, ("tampered receipt",), (), "1.0.0"
         ),
         release_exit_gate.ReleaseGateReport(
-            "a" * 40, "FAIL", False, (), ("HF-7", "V1-3")
+            "a" * 40, "FAIL", False, (), ("HF-7", "V1-3"), "1.0.0"
         ),
     ],
 )

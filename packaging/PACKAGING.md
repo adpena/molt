@@ -20,10 +20,13 @@ The semantic evidence authority is `tools/release_exit_gate.py`, which verifies
 the source-addressed E1-E4 bundle. Every release, including `v0.0.1`, must pass
 that gate. The gate also joins
 [the findings ledger](../docs/agent/V1_HANDOFF_FINDINGS.md) at the bundle source
-commit. It reads the ledger blob through Git, records every open finding in the
-bundle and names them in its report. The bundle status is PASS only when every
-typed receipt passes and no finding is open. An invalid ledger, such as a
-resurrected row or a fixed row without evidence, stops assembly. The original canonical ZIP is admitted before builds, pinned by its
+commit. It reads the ledger blob and the `pyproject.toml` project version
+through Git, and records both and every open finding in the bundle and its
+report. A version with major 1 or later claims the v1 public stable contract;
+its bundle is PASS only when every typed receipt passes and no finding is open.
+A v0.x bundle still records and reports its open findings, but they do not hold
+it at FAIL. An invalid ledger, such as a resurrected row or a fixed row without
+evidence, or an unreadable version stops assembly. The original canonical ZIP is admitted before builds, pinned by its
 digest, reverified in the signing checkout, and published unchanged. Stable
 `v1.0` and later releases additionally require a green H0 phase exit, projected
 from those same receipts and cryptographically authenticated in the signing job.

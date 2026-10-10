@@ -57,7 +57,7 @@ def test_full_matrix_has_no_self_authored_toolchain_success_path(monkeypatch, tm
         release_exit_gate,
         "verify_release_bundle",
         lambda *_, **__: release_exit_gate.ReleaseGateReport(
-            "a" * 40, "PASS", True, (), ()
+            "a" * 40, "PASS", True, (), (), "1.0.0"
         ),
     )
     root = Path(__file__).resolve().parents[2]
