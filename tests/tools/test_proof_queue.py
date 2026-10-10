@@ -16825,7 +16825,8 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     assert actual == [str(expected), *payload[1:]]
     if mode != "direct":
         assert exact[1 : len(prefix)] == prefix[1:]
-        assert exact[len(prefix)] == custody_spelling(
+        # Launch preserves filesystem spelling; custody identities below normalize it.
+        assert exact[len(prefix)] == str(
             (state.ROOT / "tools/guarded_exec.py").resolve()
         )
         assert delegated["path"] == custody_spelling(expected)

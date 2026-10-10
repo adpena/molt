@@ -317,8 +317,7 @@ def test_admitted_delegated_outputs_survive_python_custody_rewriting(tmp_path):
     execution_command = command_admission._python_bootstrap_command(
         envelope, admitted_argv
     )
-    with pytest.raises(ValueError, match="direct Python target"):
-        command_admission._nested_command(execution_command)
+    assert command_admission._nested_command(execution_command) is None
     with pytest.raises(ValueError):
         command_admission.parse_cargo_invocation(execution_command)
 
