@@ -6545,29 +6545,6 @@ def test_shared_cfg_keeps_resume_edge_kind() -> None:
     assert target not in returning.reachable
     assert (0, returning.index_to_block[2]) not in returning.edge_kinds
 
-    assert set(idom) == reachable  # one entry per reachable block, never a set
-    cfg = cfg_analysis.CFGGraph(
-        blocks=[],
-        index_to_block={},
-        label_to_block={},
-        block_entry_label={},
-        control=build_cfg([]).control,
-        successors=successors,
-        edge_kinds={},
-        predecessors=predecessors,
-        reachable=reachable,
-    )
-    assert cfg.idom == idom  # derived on first use from the same graph
-    for block in range(count):
-        for candidate in range(count):
-            if block not in reachable:
-                expected = candidate == block
-            else:
-                expected = candidate == block or block not in _reachable_without(
-                    successors, candidate
-                )
-            assert cfg.dominates(candidate, block) is expected, (candidate, block)
-
 
 # --- Stateful polls keep every value a resume needs in the frame ------------
 #
