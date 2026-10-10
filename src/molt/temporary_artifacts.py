@@ -1,8 +1,12 @@
 """Guard-owned scratch: terminal receipts, never age or PID, permit deletion.
 
 The parent allocates and binds the target before exposing it to the child.
-The parent guard alone publishes terminal evidence after process-tree closure.
+The parent guard publishes terminal evidence after process-tree closure. When
+a guard dies or cannot prove closure, marker reconciliation proves it later
+and hands that evidence to ``resolve_guard_scratch``.
 Owner/terminal records and the OS lock live outside the deletable target.
+A reclaimed generation holds no custody, so its receipts are removed: the
+generation namespace holds only live, retained, blocked or unresolved work.
 """
 
 from __future__ import annotations
@@ -45,6 +49,11 @@ _TOKEN = re.compile(r"[0-9a-f]{32}")
 _TARGET_NAME = re.compile(r"pt-[a-z0-9_]{8}")
 _MAX_RECEIPT_BYTES = 65536
 SCRATCH_ENV = "MOLT_GUARD_SCRATCH_ROOT"
+# The generation namespace. A lease target is its sibling:
+# <scratch>/gs/<token> owns <scratch>/pt-*.
+_ROOT_DIRNAME = "gs"
+# Reclaimed generations move here before their receipts are deleted.
+_REMOVING_DIRNAME = "removing"
 
 
 class ScratchBusy(RuntimeError):
@@ -90,9 +99,9 @@ def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
     # guard scratch is run scratch and follows the selected scratch storage.
     if environ.get(STATE_ROOT_ENV, "").strip():
         return resolve_owned_path(
-            memory_guard_state_root(repo_root, environ).parent / "gs"
+            memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME
         )
-    return resolve_owned_path(scratch_dir(repo_root, "gs", environ))
+    return resolve_owned_path(scratch_dir(repo_root, _ROOT_DIRNAME, environ))
 
 
 def _generation(root: Path, token: str) -> Path:
@@ -472,11 +481,15 @@ def _block_uncommitted_retirement_locked(
 
 
 def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, object]:
+    """Delete one retained payload; the caller removes a reclaimed generation.
+
+    The pending index stays until ``_remove_reclaimed_generation`` commits, so
+    a removal that cannot run now is found again by the next sweep.
+    """
     if owner["state"] == "reclaimed":
         _terminal(generation, owner)
         if _target(generation, owner).exists():
             raise ValueError("reclaimed scratch target unexpectedly exists")
-        _drop_index(generation)
         return owner
     if owner["state"] != "retained":
         raise ValueError("scratch is not terminal and reclaimable")
@@ -489,8 +502,229 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
     ok, error = delete_path(target)
     owner = {**owner, "state": "reclaimed" if ok else "blocked", "error": error or None}
     write_exact(generation / "owner.json", owner)
-    _drop_index(generation)
+    if not ok:
+        _drop_index(generation)
     return owner
+
+
+def _remove_reclaimed_generation(generation: Path) -> str | None:
+    """Remove the receipts of one reclaimed generation; return a deferral.
+
+    Call without the generation lock, after the locked authority verified
+    ``reclaimed``. That state is final, so no transition can race this one.
+    The atomic move into ``removing/`` ends the generation for every reader:
+    a contender that locked it just before finds it absent, which means
+    removed. Windows cannot move a directory while a contender holds its lock
+    file open. The pending index then stays, and the next sweep removes it.
+    """
+    removing = resolve_owned_path(generation.parent / _REMOVING_DIRNAME)
+    removing.mkdir(exist_ok=True)
+    tombstone = removing / generation.name
+    try:
+        durable_namespace_publish_directory_exclusive(generation, tombstone)
+    except (OSError, ValueError) as error:
+        if os.path.lexists(generation):
+            return f"{generation}: reclaimed receipt removal deferred: {error}"
+        # Another remover committed this final transition and owns the
+        # tombstone; it also drops the index.
+        return None
+    _drop_index(generation)
+    ok, error = delete_path(tombstone)
+    if not ok:
+        raise OSError(f"reclaimed scratch receipts remain at {tombstone}: {error}")
+    return None
+
+
+def _retire_locked(
+    generation: Path,
+    owner: dict[str, object],
+    target: Path,
+    *,
+    success: bool,
+    closure: Mapping[str, object],
+    finished_ns: int,
+) -> dict[str, object]:
+    """Move a closed run's payload into its generation and index the work."""
+    destination = resolve_owned_path(generation / "payload")
+    terminal = {
+        "schema": SCHEMA,
+        "token": owner["token"],
+        "generation": str(generation),
+        "target_identity": owner["target_identity"],
+        "target": str(destination),
+        "source_target": str(target),
+        "closed": True,
+        "success": success,
+        "closure": dict(closure),
+        "finished_ns": finished_ns,
+        "retained_bytes": 0 if success else _target_bytes(target),
+    }
+    write_exact(generation / "terminal.json", terminal, exclusive=True)
+    owner = {
+        **owner,
+        "target": str(destination),
+        "state": "retiring",
+        "terminal_digest": canonical_json_sha256(terminal),
+    }
+    # The pending-work index is a projection, not deletion authority.
+    # Index first: interruption must not leave a retired payload undiscoverable.
+    _publish_index(generation, owner["terminal_digest"])
+    write_exact(generation / "owner.json", owner)
+    try:
+        # Both resolved absolute paths are bound to this allocation and
+        # its exact generation before any recursive move/deletion occurs.
+        durable_namespace_publish_directory_exclusive(target, destination)
+    except OSError as error:
+        owner = {**owner, "state": "blocked", "error": str(error)}
+        write_exact(generation / "owner.json", owner)
+        _drop_index(generation)
+        return owner
+    owner = {**owner, "state": "retained"}
+    write_exact(generation / "owner.json", owner)
+    return owner
+
+
+def _adopt_locked(
+    generation: Path, owner: dict[str, object], closure: Mapping[str, object]
+) -> dict[str, object]:
+    """Terminalize a dead guard's lease from the caller's closure proof.
+
+    The payload takes the owner's own failure path. It records no finish
+    time (``finished_ns`` 0), so retention keeps it only behind real failures.
+    A payload that is already gone resolves with a receipt that says so. A
+    target that is now another directory stays blocked and is reported.
+    """
+    target = _target(generation, owner)
+    destination = resolve_owned_path(generation / "payload")
+    try:
+        identity = _identity(target)
+    except FileNotFoundError:
+        identity = None
+    if identity is None:
+        terminal = {
+            "schema": SCHEMA,
+            "token": owner["token"],
+            "generation": str(generation),
+            "target_identity": owner["target_identity"],
+            "target": str(destination),
+            "source_target": str(target),
+            "source_target_absent": True,
+            "closed": True,
+            "success": False,
+            "closure": dict(closure),
+            "finished_ns": 0,
+            "retained_bytes": 0,
+        }
+        write_exact(generation / "terminal.json", terminal, exclusive=True)
+        owner = {
+            **owner,
+            "target": str(destination),
+            "state": "reclaimed",
+            "terminal_digest": canonical_json_sha256(terminal),
+            "error": None,
+        }
+        write_exact(generation / "owner.json", owner)
+        return owner
+    if identity != owner["target_identity"]:
+        owner = {
+            **owner,
+            "state": "blocked",
+            "error": "abandoned scratch target is another directory; preserved",
+        }
+        write_exact(generation / "owner.json", owner)
+        return owner
+    return _retire_locked(
+        generation, owner, target, success=False, closure=closure, finished_ns=0
+    )
+
+
+def scratch_generation(token: str, outcome: Mapping[str, object]) -> Path | None:
+    """Return the generation that one guard's scratch outcome names.
+
+    A finished outcome names a receipt inside its generation. A live lease
+    names only its target, and ``acquire_guard_scratch`` places that target
+    beside the generation namespace. An outcome with neither holds no
+    unresolved scratch: a reclaimed generation is already removed.
+    """
+    receipt = outcome.get("receipt")
+    if isinstance(receipt, str):
+        return resolve_owned_path(Path(receipt).parent)
+    target = outcome.get("target")
+    if isinstance(target, str):
+        return _generation(
+            resolve_owned_path(Path(target).parent / _ROOT_DIRNAME), token
+        )
+    return None
+
+
+def resolve_guard_scratch(
+    generation: Path,
+    *,
+    guard_marker: Path,
+    closure: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Resolve one finished guard's scratch generation through this authority.
+
+    ``closure`` is the caller's proof that no process of the guard's run
+    remains, or None without that proof. A leased or indeterminate payload
+    is adopted only with a proof; a busy lock means a live owner. Retained,
+    blocked and interrupted generations belong to the pending sweep, so they
+    count as resolved here. ``resolved`` False keeps the guard marker active.
+    """
+    generation = resolve_owned_path(generation)
+    if not os.path.lexists(generation):
+        return {"generation": str(generation), "state": "absent", "resolved": True}
+    remove = False
+    try:
+        with _locked(generation):
+            owner = _owner(generation)
+            if not _same_owned_path(owner.get("guard_marker"), str(guard_marker)):
+                raise ValueError("scratch generation belongs to another guard marker")
+            if owner["state"] in {"leased", "indeterminate"}:
+                if closure is None:
+                    return {
+                        "generation": str(generation),
+                        "state": owner["state"],
+                        "resolved": False,
+                    }
+                owner = _adopt_locked(generation, owner, closure)
+            if owner["state"] == "reclaimed":
+                _reclaim_locked(generation, owner)
+                remove = True
+            state = owner["state"]
+    except ScratchBusy:
+        return {"generation": str(generation), "state": "busy", "resolved": False}
+    except (OSError, ValueError, RuntimeError) as error:
+        if not os.path.lexists(generation):
+            return {"generation": str(generation), "state": "absent", "resolved": True}
+        return {
+            "generation": str(generation),
+            "state": "error",
+            "resolved": False,
+            "error": str(error),
+        }
+    outcome: dict[str, object] = {
+        "generation": str(generation),
+        "state": state,
+        "resolved": True,
+    }
+    if remove:
+        try:
+            outcome["deferred"] = _remove_reclaimed_generation(generation)
+        except OSError as error:
+            outcome["error"] = str(error)
+    return outcome
+
+
+def inspect_guard_scratch(generation: Path) -> str:
+    """Read one generation's state without its lock, for dry runs only."""
+    try:
+        generation = resolve_owned_path(generation)
+        if not os.path.lexists(generation):
+            return "absent"
+        return str(_owner(generation)["state"])
+    except (OSError, ValueError) as error:
+        return f"error: {error}"
 
 
 def finish_guard_scratch(
@@ -521,8 +755,22 @@ def finish_guard_scratch(
             lease.release()
     if early is not None:
         return early
+    # The pending index of this generation is still published, so this sweep
+    # also removes the receipts of a run that reached reclaimed.
     sweep = reclaim_terminal_scratch(root, retention=retention)
-    final_owner = _owner(generation)
+    try:
+        final_owner = _owner(generation)
+    except (OSError, ValueError):
+        if os.path.lexists(generation):
+            raise
+        # The generation reached reclaimed and its receipts were removed,
+        # by this sweep or a concurrent one under the same final transition.
+        return {
+            "state": "reclaimed",
+            "receipt": None,
+            "error": None,
+            "retention": sweep,
+        }
     return {
         "state": final_owner["state"],
         "receipt": str(generation / "owner.json"),
@@ -551,49 +799,23 @@ def _finish_guard_scratch_owned(
             owner = {**owner, "state": "indeterminate", "closure": dict(evidence)}
             write_exact(generation / "owner.json", owner)
             return {"state": "indeterminate", "receipt": str(generation / "owner.json")}
-        destination = resolve_owned_path(generation / "payload")
-        terminal = {
-            "schema": SCHEMA,
-            "token": owner["token"],
-            "generation": str(generation),
-            "target_identity": owner["target_identity"],
-            "target": str(destination),
-            "source_target": str(target),
-            "closed": True,
-            "success": success,
-            "closure": dict(evidence),
-            "finished_ns": time.time_ns(),
-            "retained_bytes": 0 if success else _target_bytes(target),
-        }
-        write_exact(generation / "terminal.json", terminal, exclusive=True)
-        owner = {
-            **owner,
-            "target": str(destination),
-            "state": "retiring",
-            "terminal_digest": canonical_json_sha256(terminal),
-        }
-        # The pending-work index is a projection, not deletion authority.
-        # Successful-run receipts never enter the next run's discovery walk.
-        # Index first: interruption must not leave a retired payload undiscoverable.
-        _publish_index(generation, owner["terminal_digest"])
-        write_exact(generation / "owner.json", owner)
-        try:
-            # Both resolved absolute paths are bound to this allocation and
-            # its exact generation before any recursive move/deletion occurs.
-            durable_namespace_publish_directory_exclusive(target, destination)
-        except OSError as error:
-            owner = {**owner, "state": "blocked", "error": str(error)}
-            write_exact(generation / "owner.json", owner)
-            _drop_index(generation)
+        owner = _retire_locked(
+            generation,
+            owner,
+            target,
+            success=success,
+            closure=evidence,
+            finished_ns=time.time_ns(),
+        )
+        if owner["state"] == "blocked":
             return {
                 "state": "blocked",
                 "receipt": str(generation / "owner.json"),
-                "error": str(error),
+                "error": owner.get("error"),
             }
-        owner = {**owner, "state": "retained"}
-        write_exact(generation / "owner.json", owner)
         if success:
-            owner = _reclaim_locked(generation, owner)
+            _reclaim_locked(generation, owner)
+        return None
     except BaseException as error:
         # Preserve the original error even if storage failure also prevents the
         # diagnostic write. Never overwrite owner metadata changed by the child.
@@ -628,7 +850,11 @@ def _finish_guard_scratch_owned(
 def reclaim_terminal_scratch(
     root: Path, *, retention: ScratchRetention = ScratchRetention()
 ) -> dict[str, object]:
-    """Bound completed failure scratch; legacy, active and blocked data stay put."""
+    """Bound completed failure scratch; legacy, active and blocked data stay put.
+
+    A generation whose directory is gone was removed by its own reclaimed
+    transition; its index entry is resolved, not an error.
+    """
     root = resolve_owned_path(root)
     pending = resolve_owned_path(root / "pending")
     if not pending.exists():
@@ -638,14 +864,18 @@ def reclaim_terminal_scratch(
             "retained_count": 0,
             "protected_count": 0,
             "errors": [],
+            "deferred": [],
         }
     candidates: list[tuple[int, int, Path, str, bool]] = []
     errors: list[str] = []
+    deferred: list[str] = []
+    removals: list[Path] = []
     protected_count = 0
     for entry in sorted(pending.iterdir()):
         if entry.suffix != ".json" or _TOKEN.fullmatch(entry.stem) is None:
             errors.append(f"{entry}: invalid scratch pending entry")
             continue
+        generation: Path | None = None
         try:
             generation = _generation(root, entry.stem)
             with _locked(generation):
@@ -656,6 +886,7 @@ def reclaim_terminal_scratch(
                 # authority; a missing retained owner's index is still an error.
                 if owner["state"] == "reclaimed":
                     _reclaim_locked(generation, owner)
+                    removals.append(generation)
                     continue
                 if owner["state"] == "blocked":
                     errors.append(f"{generation}: {owner.get('error')}")
@@ -691,8 +922,9 @@ def reclaim_terminal_scratch(
                     owner = _recover_transition_locked(generation, owner)
                     if owner["state"] == "blocked":
                         errors.append(f"{generation}: {owner.get('error')}")
-                if owner["state"] in {"blocked", "reclaimed"}:
-                    _drop_index(generation)
+                        _drop_index(generation)
+                    if owner["state"] == "reclaimed":
+                        removals.append(generation)
                 if owner["state"] != "retained":
                     continue
                 terminal = _terminal(generation, owner)
@@ -710,6 +942,9 @@ def reclaim_terminal_scratch(
         except ScratchBusy:
             protected_count += 1
         except (OSError, ValueError, RuntimeError) as error:
+            if generation is not None and not os.path.lexists(generation):
+                _drop_index(generation)
+                continue
             errors.append(f"{entry}: {error}")
     kept_bytes = 0
     kept_count = 0
@@ -722,6 +957,7 @@ def reclaim_terminal_scratch(
                     raise ValueError("scratch terminal generation changed")
                 if owner["state"] == "reclaimed":
                     _reclaim_locked(generation, owner)
+                    removals.append(generation)
                     continue
                 if (
                     owner["state"] == "retained"
@@ -741,18 +977,32 @@ def reclaim_terminal_scratch(
                 result = _reclaim_locked(generation, owner)
                 if result["state"] == "reclaimed":
                     reclaimed.append(str(generation))
+                    removals.append(generation)
                 else:
                     errors.append(f"{generation}: {result.get('error')}")
         except ScratchBusy:
             protected_count += 1
         except (OSError, ValueError, RuntimeError) as error:
+            if not os.path.lexists(generation):
+                continue
             errors.append(f"{generation}: {error}")
+    # Remove receipts only after each generation lock is released: Windows
+    # cannot move a directory while this process holds a file inside it.
+    for generation in removals:
+        try:
+            deferral = _remove_reclaimed_generation(generation)
+        except OSError as error:
+            errors.append(str(error))
+            continue
+        if deferral is not None:
+            deferred.append(deferral)
     return {
         "reclaimed": reclaimed,
         "retained_bytes": kept_bytes,
         "retained_count": kept_count,
         "protected_count": protected_count,
         "errors": errors,
+        "deferred": deferred,
     }
 
 

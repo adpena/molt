@@ -565,7 +565,8 @@ project. A valid recovery landing removes a real source of drift, avoids
 duplicate authority, and leaves no dangling legacy lane. Before risky commands,
 leave a death capsule: command, cwd, guard pid, child pid when known, status,
 timestamp, and evidence path. Prefer the guard state root
-(`<artifact root>/tmp/memory_guard/active/` and `.../incidents/`), pytest
+(`<artifact root>/tmp/memory_guard/active/`, finished runs in `.../retired/`,
+and `.../incidents/`), pytest
 outer-guard summaries, and
 `logs/agents/codex_stall/*.json`.
 

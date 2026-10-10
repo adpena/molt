@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -116,8 +117,9 @@ def test_retention_compares_canonical_paths_without_changing_receipt_digest(tmp_
     )
     assert result["errors"] == []
     assert result["reclaimed"] == [str(lease.generation)]
-    assert _read(terminal_path) == terminal
-    assert not (lease.generation / "payload").exists()
+    # The alternate spellings matched; reclamation then removed the receipts.
+    assert not lease.generation.exists()
+    assert not scratch._index_path(lease.generation).exists()
 
 
 def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
@@ -129,14 +131,13 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     assert scratch.guard_scratch(tmp_path, env) == lease.target
     result = _finish(lease)
     assert result["state"] == "reclaimed"
+    assert result["receipt"] is None
     assert lease.lock is None
     assert not lease.target.exists()
-    assert not (lease.generation / "payload").exists()
+    # A reclaimed generation holds no custody, so its receipts are gone too.
+    assert not lease.generation.exists()
     assert (legacy / "keep").read_text(encoding="utf-8") == "legacy"
-    assert _read(lease.generation / "terminal.json")["source_target"] == str(
-        lease.target
-    )
-    with pytest.raises(ValueError, match="active parent's"):
+    with pytest.raises(ValueError, match="scratch owner"):
         scratch.guard_scratch(tmp_path, env)
 
 
@@ -160,8 +161,7 @@ def test_guard_reclaims_readonly_hardlink_without_changing_external_source(
     assert result["retention"]["errors"] == []
     assert lease.lock is None
     assert not lease.target.exists()
-    assert not (lease.generation / "payload").exists()
-    assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+    assert not lease.generation.exists()
     assert attributes() == before
     assert source.read_bytes() == b"external source must survive cleanup"
 
@@ -290,7 +290,8 @@ def test_failure_payload_moves_inside_generation_and_retention_is_bounded(tmp_pa
     (second.target / "failure").write_bytes(b"5678")
     result = _finish(second, success=False, retention=policy)
     assert not (first.generation / "payload").exists()
-    assert (first.generation / "terminal.json").is_file()
+    assert not first.generation.exists()
+    assert result["retention"]["reclaimed"] == [str(first.generation)]
     assert result["retention"]["retained_bytes"] == 4
     assert (second.generation / "payload" / "failure").read_bytes() == b"5678"
 
@@ -707,15 +708,23 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
         target.rmdir()
     owner = _read(lease.generation / "owner.json")
     write_exact(lease.generation / "owner.json", dict(owner, state="reclaiming"))
-    monkeypatch.setattr(
-        scratch, "delete_path", lambda *_: pytest.fail("must not retry")
-    )
+    delete_path = scratch.delete_path
+
+    def delete_receipts_only(path):
+        if path == target:
+            pytest.fail("must not retry")
+        return delete_path(path)
+
+    monkeypatch.setattr(scratch, "delete_path", delete_receipts_only)
     scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
-    assert _read(lease.generation / "owner.json")["state"] == (
-        "blocked" if present else "reclaimed"
-    )
+    if present:
+        assert _read(lease.generation / "owner.json")["state"] == "blocked"
+        assert target.is_dir()
+    else:
+        # The repaired receipt says reclaimed, which then removes the receipts.
+        assert not lease.generation.exists()
 
 
 def test_delete_failure_is_durable_and_not_silenced(tmp_path, monkeypatch):
@@ -729,12 +738,20 @@ def test_delete_failure_is_durable_and_not_silenced(tmp_path, monkeypatch):
     assert (lease.generation / "payload").exists()
 
 
-def test_oversized_failed_payload_is_reclaimed_but_receipt_survives(tmp_path):
+@pytest.mark.parametrize("budget", [3, 4])
+def test_failed_payload_bytes_decide_retention(tmp_path, budget):
     lease, _ = _lease(tmp_path)
     (lease.target / "output").write_bytes(b"1234")
-    result = _finish(lease, success=False, retention=scratch.ScratchRetention(3, 3))
-    assert result["state"] == "reclaimed"
-    assert _read(lease.generation / "terminal.json")["retained_bytes"] == 4
+    result = _finish(
+        lease, success=False, retention=scratch.ScratchRetention(3, budget)
+    )
+    if budget < 4:
+        assert result["state"] == "reclaimed"
+        assert not lease.generation.exists()
+    else:
+        assert result["state"] == "retained"
+        assert _read(lease.generation / "terminal.json")["retained_bytes"] == 4
+        assert (lease.generation / "payload" / "output").read_bytes() == b"1234"
 
 
 def test_existing_generation_is_never_adopted_by_a_new_parent(tmp_path):
@@ -1010,3 +1027,155 @@ def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
 
     assert root.parent.parent == ram.resolve()
     assert root.name == "gs"
+
+
+# --- dead-guard resolution and receipt removal ------------------------------
+
+
+_CLOSURE = {"schema": "molt.guard-scratch-closure.v1", "closed": True}
+
+
+def _marker_of(env):
+    return Path(env["MOLT_MEMORY_GUARD_MARKER"])
+
+
+def test_scratch_generation_follows_receipt_or_lease_geometry(tmp_path):
+    lease, env = _lease(tmp_path)
+    try:
+        token = env["MOLT_MEMORY_GUARD_TOKEN"]
+        leased = {"state": "leased", "target": str(lease.target)}
+        assert scratch.scratch_generation(token, leased) == lease.generation
+        receipt = {
+            "state": "indeterminate",
+            "receipt": str(lease.generation / "owner.json"),
+        }
+        assert scratch.scratch_generation(token, receipt) == lease.generation
+        assert scratch.scratch_generation(token, {"state": "reclaimed"}) is None
+    finally:
+        lease.release()
+
+
+def test_live_lease_and_unproven_closure_stay_unresolved(tmp_path):
+    lease, env = _lease(tmp_path)
+    marker = _marker_of(env)
+    busy = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=marker, closure=_CLOSURE
+    )
+    assert (busy["state"], busy["resolved"]) == ("busy", False)
+    lease.release()
+    unproven = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=marker, closure=None
+    )
+    assert (unproven["state"], unproven["resolved"]) == ("leased", False)
+    assert _read(lease.generation / "owner.json")["state"] == "leased"
+    assert lease.target.is_dir()
+
+
+def test_proven_dead_lease_takes_the_failure_retention_path(tmp_path):
+    lease, env = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"1234")
+    lease.release()
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert (outcome["state"], outcome["resolved"]) == ("retained", True)
+    assert (lease.generation / "payload" / "output").read_bytes() == b"1234"
+    terminal = _read(lease.generation / "terminal.json")
+    assert terminal["closure"] == _CLOSURE and terminal["finished_ns"] == 0
+    # The existing retention bound reclaims it like any other failure.
+    result = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert result["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_adopted_payloads_sort_behind_real_failures(tmp_path):
+    real, _ = _lease(tmp_path)
+    (real.target / "failure").write_bytes(b"1")
+    assert _finish(real, success=False)["state"] == "retained"
+    dead, env = _lease(tmp_path, 2)
+    (dead.target / "failure").write_bytes(b"2")
+    dead.release()
+    scratch.resolve_guard_scratch(
+        dead.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    result = scratch.reclaim_terminal_scratch(
+        real.generation.parent, retention=scratch.ScratchRetention(1, 1024)
+    )
+    assert result["reclaimed"] == [str(dead.generation)]
+    assert (real.generation / "payload" / "failure").read_bytes() == b"1"
+
+
+def test_dead_lease_without_its_payload_resolves_and_is_removed(tmp_path):
+    lease, env = _lease(tmp_path)
+    finished = _finish(lease, closed=False)
+    assert finished["state"] == "indeterminate"
+    lease.target.rmdir()
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert outcome == {
+        "generation": str(lease.generation),
+        "state": "reclaimed",
+        "resolved": True,
+        "deferred": None,
+    }
+    assert not lease.generation.exists()
+    again = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert (again["state"], again["resolved"]) == ("absent", True)
+
+
+def test_dead_lease_whose_target_is_another_directory_stays_blocked(tmp_path):
+    lease, env = _lease(tmp_path)
+    lease.release()
+    lease.target.rmdir()
+    lease.target.mkdir()
+    (lease.target / "other").write_text("keep", encoding="utf-8")
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert (outcome["state"], outcome["resolved"]) == ("blocked", True)
+    assert (lease.target / "other").read_text(encoding="utf-8") == "keep"
+    assert "another directory" in _read(lease.generation / "owner.json")["error"]
+
+
+def test_index_of_a_removed_generation_is_resolved_not_an_error(tmp_path):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    index = scratch._index_path(lease.generation)
+    shutil.rmtree(lease.generation)
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert result["errors"] == []
+    assert not index.exists()
+
+
+def test_receipt_removal_that_cannot_move_now_is_deferred_and_retried(
+    tmp_path, monkeypatch
+):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    move = scratch.durable_namespace_publish_directory_exclusive
+
+    def contended(source, destination):
+        if source == lease.generation:
+            raise PermissionError("fixture: a contender holds the generation lock")
+        return move(source, destination)
+
+    monkeypatch.setattr(
+        scratch, "durable_namespace_publish_directory_exclusive", contended
+    )
+    first = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert first["errors"] == []
+    assert first["deferred"] and "contender" in first["deferred"][0]
+    assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+    assert scratch._index_path(lease.generation).exists()
+    monkeypatch.setattr(scratch, "durable_namespace_publish_directory_exclusive", move)
+    second = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert second["errors"] == [] and second["deferred"] == []
+    assert not lease.generation.exists()
+    assert not scratch._index_path(lease.generation).exists()
