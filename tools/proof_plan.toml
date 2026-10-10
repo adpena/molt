@@ -6,7 +6,7 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v5"
+schema = "molt.proof-plan.v6"
 
 authority_inputs = [
   "tools/compatibility_error_protocol.py",
@@ -1352,6 +1352,7 @@ resource_class = "scheduled-suite"
 # command spelling is never duplicated in YAML.
 [[command]]
 id = "nightly.shards.prepare"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_shard_prepare"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1423,6 +1424,7 @@ toolchains = ["python", "uv"]
 # outlive it.
 [[command]]
 id = "nightly.determinism.compiler-prewarm"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1436,6 +1438,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "nightly.determinism.runtime"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1474,6 +1477,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 # outlive it.
 [[command]]
 id = "nightly.verification-t3.compiler-prewarm"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1492,6 +1496,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # `-u` streams progress, so a timeout shows how far the sweep got.
 [[command]]
 id = "nightly.verification-t3.reproducibility"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1508,6 +1513,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 # room for 100 after the cold prewarm.
 [[command]]
 id = "nightly.verification-t3.fuzz-compiler"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1536,6 +1542,7 @@ toolchains = ["python", "uv"]
 # other Tier 3 suites in Nightly run 37953183680.
 [[command]]
 id = "nightly.verification-t3.translation"
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1622,7 +1629,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1636,7 +1643,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1654,7 +1661,7 @@ cache_domain = "pytest"
 dependencies = []
 # Retain successful nested command costs while diagnosing the prior timeout.
 env = { MOLT_GUARD_PROFILE = "all" }
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1683,7 +1690,7 @@ toolchains = ["python", "uv"]
 
 [[command]]
 id = "portability.rust.macos.clippy-workspace"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1701,7 +1708,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "linux-aarch64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1720,6 +1727,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.macos.runtime-gate"
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["main"]
@@ -2056,7 +2064,7 @@ resource_class = "repository-policy"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rust_ffi_blocks.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_satellite_parity.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_tk_import_authority.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_gate.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rust_ffi_blocks.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_satellite_parity.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_tk_import_authority.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_gate.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 # Agent coordination: the claims ledger, landing and commit guards, session
@@ -2108,7 +2116,7 @@ toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.host"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2398,6 +2406,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools
 
 [[command]]
 id = "wasm.test.finally-pending-observer-parity"
+cargo_native_units = { target = ["c", "c++"] }
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2414,6 +2423,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld"
 # admit that once through the CLI, without a second build-only pass.
 [[command]]
 id = "wasm.test.import-from-codec-parity"
+cargo_native_units = { target = ["c", "c++"] }
 evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
@@ -2673,6 +2683,7 @@ toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
 id = "native.integration.bench-cli"
+cargo_native_units = { target = ["c", "c++"] }
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["main"]
@@ -2688,6 +2699,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # build and reuse its dev-fast native backend instead of building their own.
 [[command]]
 id = "native.integration.capability-manifest"
+cargo_native_units = { target = ["c", "c++"] }
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
@@ -2763,7 +2775,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "rust.test.default-truth"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2779,6 +2791,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.test.compiler-authorities"
+cargo_native_units = { target = ["c"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2792,11 +2805,14 @@ dependencies = []
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
 # Pass and WASM libtests belong to their own partition, not repeated here.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
-toolchains = ["cargo", "lune", "node", "wasm-ld"]
+# Object-model identity and split ABI witnesses share this compiler contract.
+# Its Criterion dev dependency builds alloca target C even for libtests.
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
+toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
+cargo_native_units = { target = ["c"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2814,11 +2830,12 @@ dependencies = []
 # default-truth owns feature-enabled native and the two-cell WASM artifact target.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
-toolchains = ["cargo", "node", "wasm-ld"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
+toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-release-output"
 tiers = ["pre-push", "pr", "main"]
@@ -2838,7 +2855,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.test.runtime-extension-admission"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 evidence_outputs = ["proof-receipts/evidence/runtime-extension-admission"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
@@ -2857,7 +2874,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2882,6 +2899,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "llvm.build.backend"
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2894,6 +2912,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "llvm.test.lowering"
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2908,6 +2927,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "linker.test.generated-object-admission"
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-linker-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2920,6 +2940,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.clippy.backend"
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2932,6 +2953,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "mlir.test.backend"
+cargo_native_units = { host = ["c++"] }
 family = "llvm"
 cell = "linux-x86_64-py312-mlir-dev"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2957,6 +2979,7 @@ toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.test.differential"
+cargo_native_units = { target = ["c", "c++"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["main", "scheduled"]
@@ -4012,7 +4035,18 @@ gates = [
 # =========================================================================
 
 [[named_lane]]
+id = "runtime.abi-fixture-authorities"
+description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
+argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
+toolchains = ["cargo", "rustc", "python"]
+cargo_native_units = { target = ["c"] }
+resource_family = "rust"
+contention_key = "cargo:molt-lang-cpython-abi"
+timeout_seconds = 1800
+
+[[named_lane]]
 id = "pact.witness.acceptance.native"
+cargo_native_units = { target = ["c", "c++"] }
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
@@ -4044,6 +4078,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py312"
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4053,6 +4088,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py313"
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4062,6 +4098,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py314"
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4285,7 +4322,7 @@ resource_class = "compiler-build-resource"
 
 [[command]]
 id = "runtime.cost.candidate"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "runtime_candidate_costs"
 cell = "linux-x86_64-rust-native-release"
 tiers = ["scheduled"]

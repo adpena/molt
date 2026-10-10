@@ -2969,5 +2969,21 @@ def test_scratch_probe_exceptions_are_exact_and_retire_when_unused(tmp_path: Pat
     assert [f.location for f in stale] == ["tools/proof_queue_pkg/runner.py"]
 
 
+def test_scratch_probe_flags_rust_that_derives_a_root(tmp_path: Path):
+    body = (
+        'let a = std::env::var_os("MOLT_EXT_ROOT");\n'
+        'let b = repo_root.join("tmp").join("molt-backend");\n'
+        'let c = base.join( "tmp/diff" );\n'
+        '// std::env::var_os("MOLT_EXT_ROOT") in a comment reads nothing\n'
+        'let d = std::env::var_os("MOLT_DEBUG_ARTIFACT_DIR");\n'
+        'let e = std::env::temp_dir().join("molt-backend");\n'
+        'let f = root.join("tmpfs");\n'
+        'let g = Some("tmp".to_string());\n'
+    )
+    # A producer and a test fixture alike: Rust has no fixture-root exemption.
+    for relative in ("runtime/molt-ir/src/lib.rs", "runtime/molt-backend/tests/t.rs"):
+        assert _scratch_bypass_count(tmp_path, relative, body) == 3
+
+
 def test_the_repository_has_no_scratch_authority_bypass():
     assert SA.probe_scratch_authority_bypasses(ROOT) == []

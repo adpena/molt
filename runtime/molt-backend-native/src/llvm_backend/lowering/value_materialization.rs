@@ -1803,23 +1803,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         bits: inkwell::values::IntValue<'ctx>,
     ) -> inkwell::values::IntValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        let masked = self
-            .backend
+        self.backend
             .builder
             .build_and(
                 bits,
                 i64_ty.const_int(nanbox::POINTER_MASK, false),
-                "ptr_masked",
+                "ptr_address",
             )
-            .unwrap();
-        let shifted = self
-            .backend
-            .builder
-            .build_left_shift(masked, i64_ty.const_int(16, false), "ptr_shifted")
-            .unwrap();
-        self.backend
-            .builder
-            .build_right_shift(shifted, i64_ty.const_int(16, false), true, "ptr_signext")
             .unwrap()
     }
 

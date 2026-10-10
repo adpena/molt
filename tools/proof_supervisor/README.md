@@ -15,7 +15,7 @@ molt-proof-supervisor verify --policy policy.json --receipt receipt.json
 ```
 
 The standalone crate is intentionally outside the main Rust workspace. The
-policy schema is `molt.proof-process-closure.v2`. It requires an absolute cwd,
+policy schema is `molt.proof-process-closure.v3`. It requires an absolute cwd,
 an absolute command image, an exact environment, a fixed SHA-256 image set,
 and optional non-overlapping derived executable roots. `leaf` rejects every
 descendant process. `declared-tree` admits only fixed images or identities first
@@ -96,7 +96,7 @@ summary and artifact manifest:
 
 ```json
 {
-  "schema": "molt.proof-process-closure.v2",
+  "schema": "molt.proof-process-closure.v3",
   "nonce": "128-or-more-bits-of-hex",
   "mode": "declared-tree",
   "cwd": "absolute captured cwd",
@@ -138,7 +138,8 @@ reconciles accounting and derived-image identity, and checks receipt/event
 content identities. It exits 0 for any authentic terminal receipt (including an
 authentic `INCOMPLETE`/`REJECTED` receipt) and 79 for a well-formed but invalid
 receipt. Integration must require successful verification plus
-`state == "COMPLETE" && complete == true`.
+`state == "COMPLETE" && complete == true` and the replay-derived
+`capability.admission.state == "admitted"`.
 
 Both `verify` and `verify-rooted` return `receipt_sha256`/`receipt_bytes` and
 `policy_input_sha256`/`policy_input_bytes` for the exact buffers decoded by the
@@ -167,10 +168,27 @@ Directory sync and kernel process-metadata reads retain their distinct semantics
 
 `protocol.json` owns the policy, capability, receipt and event schemas. Cargo
 generates Rust constants from it, and the Python custody consumer reads the same
-file and includes it in the supervisor source identity. Capability v3 seals both
-pre-entry exec and process-creation authority together with required environment.
+file and includes it in the supervisor source identity. Capability v4 binds the
+planned backend and required environment to one tagged `admission` value:
 
-Terminal receipts use schema `molt.proof-process-closure-receipt.v4` and are
+- `ineligible` includes a bounded nonempty `reason` and refuses before launch.
+- `eligible` permits an attempt; it asserts no successful kernel admission.
+- `admitted` includes `root_stable_process_id`, `root_create_sequence`, and
+  `initial_image_sequence`. The shared process ledger derives this witness only
+  after accepting the owned root and its policy-validated initial image.
+
+Planners never emit `admitted`. Linux preflight can inspect Yama and its compiled
+backend but cannot prove that an opaque outer seccomp policy permits the required
+creation operations. Windows launch can also fail after an eligible plan. Failure
+before the initial image therefore remains `eligible` with `INCOMPLETE`; later
+failure remains `admitted` with `INCOMPLETE`. Ineligibility produces `REJECTED`.
+Replay derives admission afresh and rejects a forged or partial witness. Windows
+records genuine creation before fallible image observation, then exactly one
+`initial-image` event for that live process. `process-create` has no image field.
+Linux records root creation, descendant forks and exec events. These states describe developer proof custody, not
+emitted program behavior or platform release qualification.
+
+Terminal receipts use schema `molt.proof-process-closure-receipt.v6` and are
 hard-limited to 65,536 bytes including the final newline. They keep bounded
 diagnostic samples and counts, lifecycle, accounting (including `root_execs` and
 `root_exit_terminated_processes`),
@@ -180,7 +198,7 @@ JSON objects, one per line, in a content-addressed adjacent artifact:
 ```json
 {
   "event_log": {
-    "schema": "molt.proof-process-event-log.v2",
+    "schema": "molt.proof-process-event-log.v4",
     "file": "receipt.json.events.<sha256>.jsonl",
     "count": 42,
     "bytes": 8192,
@@ -192,20 +210,81 @@ JSON objects, one per line, in a content-addressed adjacent artifact:
 }
 ```
 
-The supervisor streams into a bounded buffered temporary journal. Publication
+The supervisor streams into a bounded direct-file temporary journal. Publication
 syncs file contents, atomically renames, and syncs the parent directory (Windows
 uses write-through replacement plus a flushed directory handle). The immutable
 content-addressed event artifact is published first; the compact receipt is the
 commit marker. Verification requires the deterministic adjacent filename,
 digest, byte/record counts and contiguous sequence numbers. One `ProcessLedger`
-applies typed process-create, fork, exec, exit, unclassified-clone and
-kernel-policy-termination events during
-both capture and replay. It validates the recorded platform dialect, stable process
+applies typed process-create, initial-image, fork, exec, exit and unclassified-clone events
+during both capture and replay. It validates the recorded platform dialect, stable process
 identities, live parent ownership, image classification, root command, root exit,
 derived-image stability and violation counts. Threads remain under kernel custody
 without inflating the process ledger. Windows Job and completion-port accounting
 remain independent kernel observations. Exact native path components, opened-file
 identity and size are preserved in the image records.
+
+`journal_coverage` and `native_custody` describe separate facts. Full coverage
+can support a complete receipt only when replay and the native owner agree.
+A refused observation freezes a typed prefix with its exact accepted sequence,
+record count, byte count, digest and cause. Cleanup may close native custody while
+that prefix still contains live processes; the receipt remains `INCOMPLETE`.
+Windows preserves genuine debug creation/exit counters and raw held-Job totals,
+including a reconciliation failure. It never invents creation, image or exit events
+to make those counters agree. A partial/failed append poisons the journal and
+prevents ordinary event or receipt publication.
+
+The ledger borrows the sealed policy. Each transition validates budgets, reserves
+index capacity and prepares owned keys/images before writing. Borrowed image and
+event-wire preflight precedes classification and copies. A derived registry entry
+owns its path once; full identity drift checks remain separate from path-key
+equality. Retained admission identities and diagnostic samples participate in the
+same aggregate debit as live images and derived witnesses. Each stored diagnostic
+conservatively charges its full bounded buffer capacity; observations beyond the
+sample cap store nothing and add no debit. Borrowed violation facts are formatted
+only after the complete transition fits. Diagnostic formatting retains only its
+bounded escaped-wire prefix.
+Acceptance commits
+only those prepared values; allocator observation tests cover the real append to
+commit boundary. Hash indexes do not define wire order: retained identities are
+sorted only when producing summaries. Cleanup terminal samples have fixed storage.
+
+`protocol.json` is also the numeric budget authority. Its projections bound raw
+policy input and canonical policy bytes (16 MiB each), receipt bytes (64 KiB),
+one event (1 MiB), the journal (1 GiB / 10 million records), fixed rows (65,536),
+distinct fixed paths and inventory identities (16,384), lifetime processes
+(262,144), live processes (16,384), live trace tasks (65,536), retained ledger
+payload (64 MiB) and retained derived identities (16 MiB). Scalar, role-group,
+cache and diagnostic limits are in that same manifest. These are logical retained
+storage and transport limits, not an RSS guarantee. Python publication counts the
+exact compact UTF-8/LF encoding before allocating the document. Native readers
+retain one bounded direct-file generation and fence mutation; canonical hashes
+stream without retaining a second encoded policy. Alias groups retain every role
+and reuse hashes for an opened identity/mutation generation while it remains in
+the bounded cache (1,024 entries); aliases encountered after eviction can require
+rehashing. The Python inventory has a distinct identity-count/transport bound;
+the 64 MiB ledger payload bound does not describe Python receiver memory.
+
+Native `verify` reports both `receipt_sha256` / `receipt_bytes` and
+`policy_input_sha256` / `policy_input_bytes`. Consumers capture both file
+generations before verification and bind the response to those retained bytes.
+A successful integrity verification does not convert an incomplete receipt into
+execution success.
+
+### Apparatus capability matrix
+
+| Native host cell | Implemented admission | Qualification boundary |
+| --- | --- | --- |
+| Linux little-endian x86-64 / AArch64 | clone3 pidfd root custody, ptrace creation/image stops, inherited audited seccomp creation filter | Requires kernel 5.3+, permitted syscalls/Yama policy and native regression/performance receipts for the exact host/profile; no blanket signal or supervisor-death claim |
+| Windows x64 / ARM64 | suspended DEBUG_PROCESS, retained root handle and nested kill-on-close Job, genuine create then initial image | Native debug/Job reconciliation and performance receipts are required for each host/profile |
+| macOS, all modes | prelaunch ineligible refusal | No complete process/image custody backend is qualified |
+| Other Linux supervisor ABIs | prelaunch ineligible refusal | No audited creation filter is implemented |
+
+An eligible plan authorizes an attempt, never a verified platform claim. Linux
+TRACEME group stops explicitly refuse; the backend does not implement SEIZE/LISTEN
+parity. Root clone3 and the inherited clone3 restriction are intentional apparatus
+contracts and must be compatible with the selected proof workload. These host
+restrictions do not alter compiled guest semantics or Molt target support.
 
 ## Kernel authority
 
@@ -220,19 +299,22 @@ identity and size are preserved in the image records.
   events. Exec images are classified at the kernel stop before user code runs.
   An unreadable `PTRACE_EVENT_CLONE` thread-group identity is a terminal
   violation, and a run cannot complete without an admitted root exec event.
-- macOS has a Seatbelt/ptrace leaf implementation, but its pre-entry image
-  claim is unqualified. A recorded blocked-SIGTRAP/re-exec negative counted one
-  exec while two images executed. Positive preflight availability, sandbox
-  installation and a complete receipt cannot establish release acceptance.
-  `declared-tree` and `inventory-tree` reject before launch. Every admitted
-  closure mode needs independent pre-entry creation/image and supervisor-death
-  controls; entitlement availability or polling/kqueue observations alone do
-  not establish them. [HF-07](../../docs/agent/V1_HANDOFF_FINDINGS.md) owns this
-  open developer-apparatus contract.
+  Application SIGTRAP and other delivery stops retain the subject signal.
+  A detected job-control group stop refuses with incomplete evidence and cleanup:
+  TRACEME cannot use the SEIZE-only `PTRACE_LISTEN` operation to preserve it.
+  This implementation does not silently swallow the stop or switch backends.
+- macOS refuses every mode as `ineligible`. The former Seatbelt/ptrace leaf
+  implementation could miss re-exec when the subject blocked SIGTRAP; it has
+  been retired. Tree modes also lack retained pre-entry creation authority.
+  [HF-07](../../docs/agent/V1_HANDOFF_FINDINGS.md) owns the open qualification
+  contract. Enabling a mode requires independent pre-entry creation/image,
+  signal-behavior and supervisor-death controls; an entitlement or a positive
+  preflight alone does not establish them. This is a developer proof boundary,
+  not a restriction on the compiler's macOS target support.
 
 Receipts follow one enforced lifecycle:
 `CREATED -> POLICY_SEALED -> RUNNING -> DRAINING -> COMPLETE|INCOMPLETE`, with
-`POLICY_SEALED -> REJECTED` for unavailable capabilities. The adjacent artifact
+`POLICY_SEALED -> REJECTED` for ineligible plans. The adjacent artifact
 contains process/image events only, and the receipt keeps their aggregate
 reconciliation; neither serializes ambient process or module inventories.
 

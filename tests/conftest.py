@@ -15,6 +15,10 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parents[1]
 MOLT_STDLIB_ROOT = str(ROOT / "src" / "molt" / "stdlib")
 _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
+_CHECKOUT_TARGET_SNAPSHOT_ATTR = "_molt_checkout_target_snapshot"
+# The CLI's default Cargo target for a project; the compiler's own checkout
+# must never get one from a test session (HF-114).
+CHECKOUT_TARGET = ROOT / "target"
 
 
 @pytest.fixture(autouse=True)
@@ -97,38 +101,57 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-# What a hosted job adds to a developer host: the custody contract, and the
-# Molt roots and session that the guarded executor derives from it. Tool caches
-# (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child `uv run` calls keep their
-# environment and write nothing into the checkout.
-DEVELOPER_HOST_CLEARED_KEYS = (
-    "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
-    "MOLT_EXT_ROOT",
-    "MOLT_TARGET_ROOT",
-    "MOLT_CACHE",
-    "MOLT_DIFF_ROOT",
-    "MOLT_DIFF_TMPDIR",
-    "MOLT_DIFF_CARGO_TARGET_DIR",
-    "CARGO_TARGET_DIR",
-    "MOLT_SESSION_ID",
-    "MOLT_SESSION_ID_GENERATED",
-)
+# The session's environment once its run context is in place (pytest_configure).
+_SESSION_ENVIRONMENT: dict[str, str] = {}
+
+
+def _run_context_env_keys() -> tuple[str, ...]:
+    """The ambient run context: hosted custody, request knobs, roots, session."""
+    from molt.dx import (
+        DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        MOLT_ROOT_ENV_KEYS,
+    )
+
+    return (
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        *MOLT_ROOT_ENV_KEYS,
+        *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        "MOLT_SESSION_ID",
+        "MOLT_SESSION_ID_GENERATED",
+    )
 
 
 @pytest.fixture
 def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve paths as a developer host with no ambient run context does.
 
-    A hosted job exports the custody root for the whole job, and the proof
-    plan's guarded executor exports the roots and session it derives from it.
-    A test that builds a synthetic project, patches ``subprocess`` or asserts
-    default roots would test that CI context instead.
+    A hosted job exports the custody root for the whole job, a workflow may
+    request external artifacts for every step (``MOLT_PREFER_EXTERNAL_ARTIFACTS``),
+    and every test session enters the Molt roots and session of its run context
+    (``molt.dx.MOLT_ROOT_ENV_KEYS``). A test that builds a synthetic project,
+    patches ``subprocess`` or asserts default roots would test that context
+    instead. Tool caches (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child
+    `uv run` calls keep their environment and write nothing into the checkout.
+    A child that runs repository tooling on the real checkout needs the
+    context back: see `checkout_run_context`.
     """
-    from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
-
-    assert GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV in DEVELOPER_HOST_CLEARED_KEYS
-    for key in DEVELOPER_HOST_CLEARED_KEYS:
+    for key in _run_context_env_keys():
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def checkout_run_context() -> dict[str, str]:
+    """The session's run context, for a child that runs on the real checkout.
+
+    `developer_host_context` clears it. A child that runs repository tooling
+    on the real checkout (``tools/dev.py``, ``python -m molt.cli``) must get it
+    back: without it a hosted CI clone is its own artifact root, and the child
+    creates ``target/``, ``.molt_cache/``, ``.uv-cache/`` and a uv environment
+    inside the checkout.
+    """
+    keys = _run_context_env_keys()
+    return {key: value for key, value in _SESSION_ENVIRONMENT.items() if key in keys}
 
 
 @pytest.fixture
@@ -339,6 +362,8 @@ def pytest_configure() -> None:
     _ensure_src_on_path()
     _assert_pytest_memory_guard_active()
     _ensure_pytest_process_scope()
+    _SESSION_ENVIRONMENT.clear()
+    _SESSION_ENVIRONMENT.update(os.environ)
 
 
 def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
@@ -355,9 +380,93 @@ def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
         return False
 
 
+def checkout_target_entries(target: Path = CHECKOUT_TARGET) -> frozenset[str]:
+    """Paths a session could create in the checkout's own Cargo target.
+
+    The target itself, its children, and its session-scoped targets
+    (``sessions/*``), relative to the checkout. Reads two directory listings,
+    so it costs nothing on a large target.
+    """
+    entries: set[str] = set()
+    if target.is_dir():
+        entries.add(target.name)
+    for directory in (target, target / "sessions"):
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        prefix = directory.relative_to(target.parent).as_posix()
+        entries.update(f"{prefix}/{name}" for name in names)
+    return frozenset(entries)
+
+
+def checkout_target_leaks(
+    before: frozenset[str],
+    after: frozenset[str],
+    *,
+    cargo_target_in_checkout: bool,
+) -> tuple[str, ...]:
+    """Entries a session added to the checkout's own Cargo target.
+
+    A checkout outside its artifact root must gain none. A checkout that is
+    its own artifact root (a plain clone) builds in its own target, but a
+    pytest session id never scopes a target there.
+    """
+    added = sorted(after - before)
+    if cargo_target_in_checkout:
+        return tuple(
+            entry for entry in added if entry.startswith("target/sessions/pytest-")
+        )
+    return tuple(added)
+
+
+def _is_xdist_worker() -> bool:
+    return bool(os.environ.get("PYTEST_XDIST_WORKER"))
+
+
+def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-def]
+    before = getattr(session.config, _CHECKOUT_TARGET_SNAPSHOT_ATTR, None)
+    if before is None:
+        return
+    from molt.path_custody import host_path_is_within
+
+    cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    leaks = checkout_target_leaks(
+        before,
+        checkout_target_entries(),
+        cargo_target_in_checkout=bool(cargo_target)
+        and host_path_is_within(Path(cargo_target), ROOT),
+    )
+    if not leaks:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    lines = [
+        f"Cargo or build state appeared in the checkout during this session: {ROOT}",
+        *(f"  {entry}" for entry in leaks),
+        "Tests build where a developer run does (molt.dx.RunContext.root_env); "
+        "find the test that cleared or bypassed the run context (HF-114).",
+        "Every session that shares the checkout reports the same entries: a "
+        "proof-plan family runs its commands in parallel.",
+    ]
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:
+        print("\n".join(lines), file=sys.stderr)
+        return
+    reporter.ensure_newline()
+    reporter.write_sep("!", "checkout build state", red=True)
+    for line in lines:
+        reporter.write_line(line, red=True)
+
+
 def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     _ensure_src_on_path()
     _ensure_pytest_process_scope()
+    if not _is_xdist_worker():
+        # Before the repo sentinel, whose suite lease is the first writer of
+        # build state in a session.
+        setattr(
+            session.config, _CHECKOUT_TARGET_SNAPSHOT_ATTR, checkout_target_entries()
+        )
     # Automatic repo sentinels now scope violation/drain kills to the current
     # process tree, but xdist still has many independent worker controllers and
     # its own channel teardown. Keep the session sentinel serial-only: each xdist
@@ -384,6 +493,7 @@ def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untype
     sentinel = getattr(session.config, _PYTEST_SENTINEL_ATTR, None)
     if sentinel is not None:
         sentinel.__exit__(None, None, None)
+    _report_checkout_target_leaks(session)
 
 
 @pytest.hookimpl(wrapper=True)

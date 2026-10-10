@@ -1,5 +1,5 @@
 // Final-link execution of one generated native object (Cranelift or LLVM)
-// against a no_std Rust provider archive and a Rust harness. Include beside
+// against a no_std Rust provider crate and a Rust harness. Include beside
 // `cargo_test_artifacts`; every input, archive and image stays in Cargo image
 // custody.
 
@@ -47,15 +47,7 @@ fn run_checked(command: &mut Command, purpose: &str) {
     );
 }
 
-fn native_provider_archive_path(temp: &Path) -> PathBuf {
-    if cfg!(windows) {
-        temp.join("native_callable_provider.lib")
-    } else {
-        temp.join("libnative_callable_provider.a")
-    }
-}
-
-/// Compile `provider_source_text` to a static archive, final-link the generated
+/// Compile `provider_source_text` to a Rust archive, final-link the generated
 /// object with it into `harness_source_text`, and run the resulting binary.
 pub fn link_and_run_native_object(
     rustc: &Path,
@@ -71,7 +63,7 @@ pub fn link_and_run_native_object(
     let temp = artifacts.path();
     let app_object = temp.join("native_callable_app.o");
     let provider_source = temp.join("provider.rs");
-    let provider_archive = native_provider_archive_path(temp);
+    let provider_archive = temp.join("libnative_callable_provider.rlib");
     let harness_source = temp.join("harness.rs");
     let executable = temp.join(if cfg!(windows) {
         "native_callable_execution.exe"
@@ -91,19 +83,32 @@ pub fn link_and_run_native_object(
             .arg(artifacts.argument("", &provider_source).unwrap())
             .arg("-o")
             .arg(artifacts.argument("", &provider_archive).unwrap()),
-        &format!("compile {purpose} provider static archive"),
+        &format!("compile {purpose} provider Rust archive"),
     );
-    fs::write(&harness_source, harness_source_text).expect("write native execution harness");
+    // Let rustc order the provider before its transitive core/compiler-builtins
+    // dependencies. A raw link-arg archive arrives after those libraries and
+    // leaves AArch64 outlined atomics unresolved. This explicit crate use also
+    // retains providers reached only from the generated object's C ABI calls.
+    fs::write(
+        &harness_source,
+        format!("{harness_source_text}\nextern crate native_callable_provider;\n"),
+    )
+    .expect("write native execution harness");
     run_checked(
         artifacts
             .command(rustc)
             .expect("resolve fixture compiler")
             .arg("--edition=2021")
+            .arg("-Cpanic=abort")
             .arg(artifacts.argument("", &harness_source).unwrap())
+            .arg("--extern")
+            .arg(
+                artifacts
+                    .argument("native_callable_provider=", &provider_archive)
+                    .unwrap(),
+            )
             .arg("-C")
             .arg(artifacts.argument("link-arg=", &app_object).unwrap())
-            .arg("-C")
-            .arg(artifacts.argument("link-arg=", &provider_archive).unwrap())
             .arg("-o")
             .arg(artifacts.argument("", &executable).unwrap()),
         &format!("final-link generated object with {purpose} provider archive"),

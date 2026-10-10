@@ -324,3 +324,39 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
     );
     let _ = try_lower_tir_to_llvm(&func, &backend);
 }
+
+#[test]
+fn pointer_decode_constant_folding_preserves_unsigned_high_addresses() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let function = TirFunction::new(
+        "pointer_decode".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let llvm_fn =
+        backend
+            .module
+            .add_function("pointer_decode", ctx.void_type().fn_type(&[], false), None);
+    backend
+        .builder
+        .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
+    let lowering = make_dummy_lowering(&backend, &function, llvm_fn);
+    // Literal encoded words and addresses are independent of the ABI helpers.
+    // These are arithmetic probes; synthetic addresses are never dereferenced.
+    for (boxed, expected) in [
+        (0x7ffc_7fff_ffff_ffff, 0x0000_7fff_ffff_ffff),
+        (0x7ffc_8000_0000_0000, 0x0000_8000_0000_0000),
+        (0x7ffc_fa89_0c6a_ca20, 0x0000_fa89_0c6a_ca20),
+        (0x7ffc_ffff_ffff_ffff, 0x0000_ffff_ffff_ffff),
+    ] {
+        let decoded = lowering.unbox_ptr_bits(ctx.i64_type().const_int(boxed, false));
+        assert_eq!(decoded.get_zero_extended_constant(), Some(expected));
+    }
+    backend.builder.build_return(None).unwrap();
+    backend
+        .module
+        .verify()
+        .expect("valid pointer arithmetic probe");
+}

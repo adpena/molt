@@ -59,9 +59,11 @@ def _guard_result(
         stdout,
         stderr,
         elapsed_s=0.01,
-        child_stderr=stderr,
         timed_out=timed_out,
         child_returncode=child_returncode,
+        child_stderr=(b"" if isinstance(stderr, bytes) else "")
+        if infrastructure
+        else stderr,
         infrastructure_failure=failure,
     )
 

@@ -200,7 +200,7 @@ def backend_build_admission(
         CargoResourceCustody,
         resolve_runtime_cargo_plan,
     )
-    from molt.cli.runtime_paths import _cargo_target_root_cached
+    from molt.dx import project_cargo_target_dir
     from molt.llvm_toolchain import LlvmToolchainConfigError
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
@@ -217,12 +217,7 @@ def backend_build_admission(
     try:
         prepared = _cargo_build_env(env)
         prepared["CARGO_TARGET_DIR"] = os.fspath(
-            _cargo_target_root_cached(
-                os.fspath(root),
-                prepared.get("CARGO_TARGET_DIR"),
-                os.fspath(Path.cwd()),
-                prepared.get("MOLT_SESSION_ID", ""),
-            )
+            project_cargo_target_dir(root, prepared)
         )
         llvm_inputs: LlvmCompilerInputs | None = None
 

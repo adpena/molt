@@ -1,5 +1,4 @@
 pub mod analysis;
-pub mod bolt;
 pub mod cache;
 pub mod call_facts;
 pub mod call_graph;

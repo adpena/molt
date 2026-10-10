@@ -331,7 +331,7 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 representation_plan,
             )
             .expect("Object not found");
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj_bits, nbc);
+            let obj_ptr = unbox_ptr_value(&mut *builder, *obj_bits);
             let class_bits = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,

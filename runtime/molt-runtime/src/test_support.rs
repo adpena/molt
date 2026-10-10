@@ -33,6 +33,34 @@ thread_local! {
 static INSTALL_EXPECTED_PANIC_HOOK: Once = Once::new();
 static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
 
+/// Observe the allocation-free raised channel through the real C API. Callers
+/// install the hooks before denying allocation and keep the denial active here.
+pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {
+    use molt_cpython_abi::{abi_types, api::errors};
+    assert!(crate::exception_pending(py));
+    assert_eq!(
+        crate::builtins::exceptions::molt_exception_last_pending(),
+        crate::MoltObject::none().bits(),
+        "allocation denial must not publish a partial exception object"
+    );
+    unsafe {
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_MemoryError).cast()),
+            1
+        );
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_TypeError).cast()),
+            0
+        );
+        assert!(
+            crate::exception_pending(py),
+            "matching must preserve raised state"
+        );
+        errors::PyErr_Clear();
+    }
+    assert!(!crate::exception_pending(py));
+}
+
 struct RuntimeTestRestartCustody {
     owner: std::thread::ThreadId,
     active: bool,

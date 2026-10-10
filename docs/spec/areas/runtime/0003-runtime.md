@@ -43,7 +43,7 @@ payloads.
 
 ### 2.1 The Bit Scheme (64-bit)
 - **NaN Space**: `0x7FF0000000000000` to `0xFFFF000000000000`
-- **Pointer (Heap)**: Bits 48-63 = `0x0001` (or similar tag). Payload is a 48-bit canonical pointer, sign-extended on unbox.
+- **Pointer (object)**: `QNAN | TAG_PTR` occupies the high bits; the low 48 bits carry an unsigned address. Unboxing masks the tag without sign-extending bit 47. Boxing rejects addresses outside this payload in every profile; decoding also requires the address to fit the target pointer width.
 - **Int (64-bit)**: If it fits in the signed 47-bit inline range, stored inline. Otherwise, a heap pointer to a `BigInt`.
 - **Float**: Standard IEEE 754 double (non-NaN values).
 - **Bool/None**: Specific bit patterns in the NaN space.

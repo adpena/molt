@@ -145,7 +145,7 @@ def consumer_guest_command(
             "--target",
             "native",
             "--backend",
-            "llvm" if lane.backend == "llvm" else "cranelift",
+            lane.codegen_backend,
             "--profile",
             lane.guest_profile,
             "--python-version",
