@@ -26,9 +26,6 @@ _molt_stream_reader_new = _require_intrinsic("molt_codecs_stream_reader_new")
 _molt_stream_reader_read = _require_intrinsic("molt_codecs_stream_reader_read")
 _molt_stream_reader_readline = _require_intrinsic("molt_codecs_stream_reader_readline")
 _molt_stream_reader_drop = _require_intrinsic("molt_codecs_stream_reader_drop")
-_molt_stream_writer_new = _require_intrinsic("molt_codecs_stream_writer_new")
-_molt_stream_writer_write = _require_intrinsic("molt_codecs_stream_writer_write")
-_molt_stream_writer_drop = _require_intrinsic("molt_codecs_stream_writer_drop")
 _molt_charmap_build = _require_intrinsic("molt_codecs_charmap_build")
 _molt_charmap_decode = _require_intrinsic("molt_codecs_charmap_decode")
 _molt_charmap_encode = _require_intrinsic("molt_codecs_charmap_encode")
@@ -155,10 +152,10 @@ def _decode_with_consumed(
 
 class Codec:
     def encode(self, input, errors="strict"):
-        return _encode_with_consumed(input, "utf-8", errors)
+        raise NotImplementedError
 
     def decode(self, input, errors="strict"):
-        return _decode_with_consumed(input, "utf-8", errors)
+        raise NotImplementedError
 
 
 class IncrementalEncoder:
@@ -214,23 +211,36 @@ class BufferedIncrementalDecoder(IncrementalDecoder):
 
 
 class StreamWriter(Codec):
-    _encoding = "utf-8"
-
     def __init__(self, stream, errors="strict"):
         self.stream = stream
         self.errors = errors
-        self._sw_handle = _molt_stream_writer_new(stream, self._encoding, errors)
 
     def write(self, obj):
-        return _molt_stream_writer_write(self._sw_handle, obj)
+        data, _consumed = self.encode(obj, self.errors)
+        self.stream.write(data)
 
-    def __del__(self):
-        handle = getattr(self, "_sw_handle", None)
-        if handle is not None:
-            try:
-                _molt_stream_writer_drop(handle)
-            except Exception:
-                pass
+    def writelines(self, lines):
+        self.write("".join(lines))
+
+    def reset(self):
+        pass
+
+    def seek(self, offset, whence=0):
+        self.stream.seek(offset, whence)
+        if whence == 0 and offset == 0:
+            self.reset()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.stream.close()
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("can't serialize %s" % self.__class__.__name__)
 
 
 class StreamReader(Codec):
@@ -324,11 +334,14 @@ def _coerce_codec_entry(search_name: str, entry: object) -> CodecInfo:
 
 def _encoding_bound_class(base: type, encoding: str) -> type:
     safe_name = "".join(ch if ch.isalnum() else "_" for ch in encoding)
-    return type(
-        f"{safe_name}_{base.__name__}",
-        (base,),
-        {"_encoding": encoding, "__module__": __name__},
-    )
+    namespace: dict[str, object] = {"_encoding": encoding, "__module__": __name__}
+    if base is StreamWriter:
+
+        def encode(self, obj, errors="strict"):
+            return _encode_with_consumed(obj, encoding, errors)
+
+        namespace["encode"] = encode
+    return type(f"{safe_name}_{base.__name__}", (base,), namespace)
 
 
 def lookup(encoding: object) -> CodecInfo:

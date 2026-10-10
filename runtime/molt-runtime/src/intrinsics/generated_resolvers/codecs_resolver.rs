@@ -111,18 +111,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_codecs_stream_reader_readline",
             crate::molt_codecs_stream_reader_readline as *const (),
         )),
-        "molt_codecs_stream_writer_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_codecs_stream_writer_drop",
-            crate::molt_codecs_stream_writer_drop as *const (),
-        )),
-        "molt_codecs_stream_writer_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_codecs_stream_writer_new",
-            crate::molt_codecs_stream_writer_new as *const (),
-        )),
-        "molt_codecs_stream_writer_write" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_codecs_stream_writer_write",
-            crate::molt_codecs_stream_writer_write as *const (),
-        )),
         "molt_codecs_charmap_build" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_codecs_charmap_build",
             crate::molt_codecs_charmap_build as *const (),

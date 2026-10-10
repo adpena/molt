@@ -57,7 +57,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         ([support.EXIT], 2),
         (TRACE_OWNERS, 3),
         ([support.TRANSACTION], 9),
-        ([support.LIFECYCLE], 3),
+        ([support.LIFECYCLE], 5),
         ([support.DISCOVERY], 1),
         ([support.ISOLATE_OWNER], 3),
         ([support.THREAD_ADMISSION], 21),
@@ -590,6 +590,18 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
                 (),
                 (
                     "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                ),
+            ),
+            (support.LIFECYCLE, "shutdown-thread-state"): (
+                ("lifecycle thread-state retention verified: shutdown-thread-state\n",),
+                (
+                    "molt runtime lifecycle failed: injected thread-state finalizer panic\n",
+                ),
+            ),
+            (support.LIFECYCLE, "exit-thread-state"): (
+                ("lifecycle thread-state failure armed: exit-thread-state\n",),
+                (
+                    "molt runtime lifecycle failed: injected thread-state finalizer panic\n",
                 ),
             ),
         }

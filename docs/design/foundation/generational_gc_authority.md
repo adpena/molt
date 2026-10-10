@@ -77,6 +77,17 @@ Failed teardown preserves both and keeps the failing thread's TLS runtime bindin
 through native thread exit: no fallback to primary ownership, state address reuse,
 foreign membership clear, or subsequent process registry reset is allowed.
 
+Synchronous C thread-state drains propagate invariant failures to their existing
+runtime-owner boundary in every teardown mode. Embedding lifecycle entrypoints
+then enter terminal `Failed` state and preserve the failing thread's exact C
+record, managed edges and registry membership before clearing its runtime TLS
+binding. That record leaves TLS destructor custody without invoking callbacks
+or decrementing retained-owner counts; the failed runtime allocation remains
+alive until process exit. A mismatched owner refuses retention and aborts.
+Process exit reports the original failure and exits nonzero. A panic during an
+actual native-thread TLS destructor still aborts immediately. Successful drains
+retain their normal callback and record-retirement behavior.
+
 Native spawn reserves the primary runtime through its existing CLOSED/count
 execution-admission atomic before publishing work to an OS thread. The reservation
 is transferable and does not pretend to be the caller's execution depth or C

@@ -2184,33 +2184,10 @@ pub extern "C" fn molt_os_fsencode(path_bits: u64) -> u64 {
                 Some(filesystem_encode_errors()),
             ) {
                 Ok(bytes) => bytes,
-                Err(crate::object::ops::EncodeError::UnknownEncoding(name)) => {
+                Err(error) => {
+                    let result = error.raise(_py, fspath_bits);
                     dec_ref_bits(_py, fspath_bits);
-                    let msg = format!("unknown encoding: {name}");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(crate::object::ops::EncodeError::UnknownErrorHandler(name)) => {
-                    dec_ref_bits(_py, fspath_bits);
-                    let msg = format!("unknown error handler name '{name}'");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(crate::object::ops::EncodeError::InvalidChar {
-                    encoding,
-                    code,
-                    pos,
-                    limit,
-                }) => {
-                    let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                    let exc_bits = raise_unicode_encode_error::<_>(
-                        _py,
-                        encoding,
-                        fspath_bits,
-                        pos,
-                        pos + 1,
-                        &reason,
-                    );
-                    dec_ref_bits(_py, fspath_bits);
-                    return exc_bits;
+                    return result;
                 }
             };
             dec_ref_bits(_py, fspath_bits);

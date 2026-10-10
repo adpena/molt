@@ -2089,23 +2089,7 @@ fn bytes_from_str_impl(
     let bytes = unsafe { std::slice::from_raw_parts(string_bytes(src_ptr), string_len(src_ptr)) };
     let out = match encode_string_with_errors(bytes, &encoding, errors.as_deref()) {
         Ok(bytes) => bytes,
-        Err(EncodeError::UnknownEncoding(name)) => {
-            let msg = format!("unknown encoding: {name}");
-            return raise_exception::<_>(_py, "LookupError", &msg);
-        }
-        Err(EncodeError::UnknownErrorHandler(name)) => {
-            let msg = format!("unknown error handler name '{name}'");
-            return raise_exception::<_>(_py, "LookupError", &msg);
-        }
-        Err(EncodeError::InvalidChar {
-            encoding,
-            code,
-            pos,
-            limit,
-        }) => {
-            let reason = encode_error_reason(encoding, code, limit);
-            return raise_unicode_encode_error::<_>(_py, encoding, src_bits, pos, pos + 1, &reason);
-        }
+        Err(error) => return error.raise(_py, src_bits),
     };
     let out_ptr = match kind {
         BytesCtorKind::Bytes => alloc_bytes(_py, &out),

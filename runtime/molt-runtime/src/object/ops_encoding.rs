@@ -14,15 +14,42 @@ pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
     kind.name()
 }
 
+#[derive(Debug)]
 pub(crate) enum EncodeError {
     UnknownEncoding(String),
     UnknownErrorHandler(String),
-    InvalidChar {
+    InvalidSequence {
         encoding: &'static str,
-        code: u32,
-        pos: usize,
-        limit: u32,
+        start: usize,
+        end: usize,
+        reason: &'static str,
     },
+}
+
+impl EncodeError {
+    /// Every text-encoding consumer publishes the scanner's original span.
+    pub(crate) fn raise<T: crate::builtins::exceptions::ExceptionSentinel>(
+        self,
+        py: &crate::PyToken<'_>,
+        object_bits: u64,
+    ) -> T {
+        match self {
+            Self::UnknownEncoding(name) => {
+                crate::raise_exception(py, "LookupError", &format!("unknown encoding: {name}"))
+            }
+            Self::UnknownErrorHandler(name) => crate::raise_exception(
+                py,
+                "LookupError",
+                &format!("unknown error handler name '{name}'"),
+            ),
+            Self::InvalidSequence {
+                encoding,
+                start,
+                end,
+                reason,
+            } => crate::raise_unicode_encode_error(py, encoding, object_bits, start, end, reason),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -105,16 +132,6 @@ pub(crate) fn unicode_escape(ch: char) -> String {
     unicode_escape_codepoint(ch as u32)
 }
 
-pub(crate) fn encode_error_reason(encoding: &str, code: u32, limit: u32) -> String {
-    if encoding == "charmap" {
-        return "character maps to <undefined>".to_string();
-    }
-    if is_surrogate(code) && encoding.starts_with("utf-") {
-        return "surrogates not allowed".to_string();
-    }
-    format!("ordinal not in range({limit})")
-}
-
 #[allow(dead_code)]
 fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -187,35 +204,43 @@ pub(crate) fn encode_string_with_errors(
         return Err(EncodeError::UnknownEncoding(encoding.to_string()));
     };
     let handler = errors.unwrap_or("strict");
-    let mut unknown_handler: Option<String> = None;
-    let handler = match handler {
+    // Error-handler lookup remains lazy: valid text accepts an unknown name.
+    let unknown_handler = match handler {
         "surrogatepass" | "strict" | "surrogateescape" | "ignore" | "replace"
-        | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => handler,
-        other => {
-            unknown_handler = Some(other.to_string());
-            "strict"
-        }
+        | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => None,
+        other => Some(other),
+    };
+    let handler = if unknown_handler.is_some() {
+        "strict"
+    } else {
+        handler
     };
     let error_encoding = kind.encode_error_label();
-    let invalid_char_err =
-        |encoding: &'static str, code: u32, pos: usize, limit: u32| -> EncodeError {
-            if let Some(name) = unknown_handler.as_ref() {
-                EncodeError::UnknownErrorHandler(name.clone())
-            } else {
-                EncodeError::InvalidChar {
-                    encoding,
-                    code,
-                    pos,
-                    limit,
-                }
+    let invalid_sequence = |start, end| {
+        if let Some(name) = unknown_handler {
+            EncodeError::UnknownErrorHandler(name.to_owned())
+        } else {
+            let reason = match kind.runtime_class() {
+                CodecRuntimeClass::Ascii => "ordinal not in range(128)",
+                CodecRuntimeClass::Latin1 => "ordinal not in range(256)",
+                CodecRuntimeClass::Charmap => "character maps to <undefined>",
+                _ => "surrogates not allowed",
+            };
+            EncodeError::InvalidSequence {
+                encoding: error_encoding,
+                start,
+                end,
+                reason,
             }
-        };
+        }
+    };
     let encode_charmap = |kind: EncodingKind| -> Result<Vec<u8>, EncodeError> {
         let Some(table) = single_byte_charmap(kind) else {
             unreachable!("single-byte charmap encoder called for non-charmap encoding");
         };
         let mut out = Vec::new();
-        for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+        let mut points = wtf8_from_bytes(bytes).code_points().enumerate().peekable();
+        while let Some((idx, cp)) = points.next() {
             let code = cp.to_u32();
             if code <= 0x7F {
                 out.push(code as u8);
@@ -237,15 +262,29 @@ pub(crate) fn encode_string_with_errors(
                 "xmlcharrefreplace" => {
                     push_xmlcharref_ascii(&mut out, code);
                 }
-                "surrogateescape" => {
-                    if (0xDC80..=0xDCFF).contains(&code) {
+                "surrogateescape" | "surrogatepass" | "strict" => {
+                    let mut end = idx + 1;
+                    let mut escapable = (0xDC80..=0xDCFF).contains(&code);
+                    if handler == "surrogateescape" && escapable {
                         out.push((code - 0xDC00) as u8);
-                    } else {
-                        return Err(invalid_char_err(error_encoding, code, idx, 0));
                     }
-                }
-                "surrogatepass" | "strict" => {
-                    return Err(invalid_char_err(error_encoding, code, idx, 0));
+                    while let Some((_, next)) = points.peek() {
+                        let next = next.to_u32();
+                        if encode_single_byte_charmap_byte(table, next).is_some() {
+                            break;
+                        }
+                        points.next();
+                        end += 1;
+                        escapable &= (0xDC80..=0xDCFF).contains(&next);
+                        if handler == "surrogateescape" && escapable {
+                            out.push((next - 0xDC00) as u8);
+                        }
+                    }
+                    // Unlike the ordinal and UTF-8 encoders, CPython's charmap
+                    // callback sees the original whole span if escape fails.
+                    if handler != "surrogateescape" || !escapable {
+                        return Err(invalid_sequence(idx, end));
+                    }
                 }
                 other => {
                     return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -263,21 +302,33 @@ pub(crate) fn encode_string_with_errors(
                     if !wtf8_has_surrogates(bytes) {
                         return Ok(bytes.to_vec());
                     }
-                    for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
+                    while let Some((idx, cp)) = points.next() {
                         let code = cp.to_u32();
                         if is_surrogate(code) {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                            let end = idx
+                                + 1
+                                + points
+                                    .take_while(|(_, cp)| is_surrogate(cp.to_u32()))
+                                    .count();
+                            return Err(invalid_sequence(idx, end));
                         }
                     }
                     Ok(bytes.to_vec())
                 }
                 "surrogateescape" => {
-                    for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
+                    while let Some((idx, cp)) = points.next() {
                         let code = cp.to_u32();
                         if (0xDC80..=0xDCFF).contains(&code) {
                             out.push((code - 0xDC00) as u8);
                         } else if is_surrogate(code) {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                            let end = idx
+                                + 1
+                                + points
+                                    .take_while(|(_, cp)| is_surrogate(cp.to_u32()))
+                                    .count();
+                            return Err(invalid_sequence(idx, end));
                         } else {
                             push_wtf8_codepoint(out, code);
                         }
@@ -323,7 +374,8 @@ pub(crate) fn encode_string_with_errors(
         CodecRuntimeClass::Charmap => encode_charmap(kind),
         CodecRuntimeClass::Latin1 | CodecRuntimeClass::Ascii => {
             let limit = kind.ordinal_limit();
-            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+            let mut points = wtf8_from_bytes(bytes).code_points().enumerate();
+            while let Some((idx, cp)) = points.next() {
                 let code = cp.to_u32();
                 if code < limit {
                     out.push(code as u8);
@@ -345,11 +397,15 @@ pub(crate) fn encode_string_with_errors(
                         if (0xDC80..=0xDCFF).contains(&code) {
                             out.push((code - 0xDC00) as u8);
                         } else {
-                            return Err(invalid_char_err(error_encoding, code, idx, limit));
+                            let end =
+                                idx + 1 + points.take_while(|(_, cp)| cp.to_u32() >= limit).count();
+                            return Err(invalid_sequence(idx, end));
                         }
                     }
                     "surrogatepass" | "strict" => {
-                        return Err(invalid_char_err(error_encoding, code, idx, limit));
+                        let end =
+                            idx + 1 + points.take_while(|(_, cp)| cp.to_u32() >= limit).count();
+                        return Err(invalid_sequence(idx, end));
                     }
                     other => {
                         return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -388,13 +444,13 @@ pub(crate) fn encode_string_with_errors(
                 let code = cp.to_u32();
                 if is_surrogate(code) {
                     match handler {
-                        "surrogatepass" | "surrogateescape" => {
+                        "surrogatepass" => {
                             push_u16(&mut out, code as u16, endian);
                             continue;
                         }
                         "ignore" => continue,
                         "replace" => {
-                            push_u16(&mut out, 0xFFFD, endian);
+                            push_u16(&mut out, b'?' as u16, endian);
                             continue;
                         }
                         "backslashreplace" => {
@@ -413,8 +469,8 @@ pub(crate) fn encode_string_with_errors(
                             push_xmlcharref_utf16(&mut out, code, endian);
                             continue;
                         }
-                        "strict" => {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                        "strict" | "surrogateescape" => {
+                            return Err(invalid_sequence(idx, idx + 1));
                         }
                         other => {
                             return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -447,13 +503,13 @@ pub(crate) fn encode_string_with_errors(
                 let code = cp.to_u32();
                 if is_surrogate(code) {
                     match handler {
-                        "surrogatepass" | "surrogateescape" => {
+                        "surrogatepass" => {
                             push_u32(&mut out, code, endian);
                             continue;
                         }
                         "ignore" => continue,
                         "replace" => {
-                            push_u32(&mut out, 0xFFFD, endian);
+                            push_u32(&mut out, b'?' as u32, endian);
                             continue;
                         }
                         "backslashreplace" => {
@@ -472,8 +528,8 @@ pub(crate) fn encode_string_with_errors(
                             push_xmlcharref_utf32(&mut out, code, endian);
                             continue;
                         }
-                        "strict" => {
-                            return Err(invalid_char_err(kind.name(), code, idx, 0x110000));
+                        "strict" | "surrogateescape" => {
+                            return Err(invalid_sequence(idx, idx + 1));
                         }
                         other => {
                             return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -1233,5 +1289,183 @@ pub(crate) fn decode_bytes_text(
     match result {
         Ok((text, label)) => Ok((text, label)),
         Err((failure, label)) => Err(DecodeTextError::Failure(failure, label)),
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    #[test]
+    fn encoding_failure_spans_follow_each_cpython_scanner() {
+        // CPython Objects/unicodeobject.c unicode_encode_ucs1,
+        // charmap_encoding_error, _PyUnicode_EncodeUTF16/32 and
+        // Objects/stringlib/codecs.h utf8_encode: code-point offsets, not bytes.
+        let cases: &[(&[u32], &str, &str, usize, usize, &str)] = &[
+            (&[97, 0xe9, 0x20ac, 122], "ascii", "strict", 1, 3, "ascii"),
+            (
+                &[0xe9, 97, 0x20ac, 0x10000, 122],
+                "latin-1",
+                "strict",
+                2,
+                4,
+                "latin-1",
+            ),
+            (
+                &[97, 0x20ac, 0x416, 0x10000, 122],
+                "cp1252",
+                "strict",
+                2,
+                4,
+                "charmap",
+            ),
+            (&[97, 0xd800, 0xd801, 122], "utf-8", "strict", 1, 3, "utf-8"),
+            (
+                &[97, 0xd800, 0xd801, 122],
+                "utf-8-sig",
+                "strict",
+                1,
+                3,
+                "utf-8",
+            ),
+            (
+                &[97, 0xd800, 0xd801, 122],
+                "utf-16-le",
+                "strict",
+                1,
+                2,
+                "utf-16-le",
+            ),
+            (
+                &[97, 0xd800, 0xd801, 122],
+                "utf-32-be",
+                "strict",
+                1,
+                2,
+                "utf-32-be",
+            ),
+            (
+                &[97, 0xdc80, 0xd800, 0xdc81, 122],
+                "ascii",
+                "surrogateescape",
+                2,
+                4,
+                "ascii",
+            ),
+            (
+                &[97, 0xdc80, 0xd800, 0xdc81, 122],
+                "latin-1",
+                "surrogateescape",
+                2,
+                4,
+                "latin-1",
+            ),
+            (
+                &[97, 0xdc80, 0xd800, 0xdc81, 122],
+                "cp1252",
+                "surrogateescape",
+                1,
+                4,
+                "charmap",
+            ),
+            (
+                &[97, 0xdc80, 0xd800, 0xdc81, 122],
+                "utf-8",
+                "surrogateescape",
+                2,
+                4,
+                "utf-8",
+            ),
+            (
+                &[97, 0xdc80, 0xdcff, 122],
+                "utf-16-be",
+                "surrogateescape",
+                1,
+                2,
+                "utf-16-be",
+            ),
+            (
+                &[97, 0xdc80, 0xdcff, 122],
+                "utf-32-le",
+                "surrogateescape",
+                1,
+                2,
+                "utf-32-le",
+            ),
+            (
+                &[97, 0xe9, 120, 0x20ac, 122],
+                "ascii",
+                "surrogatepass",
+                1,
+                2,
+                "ascii",
+            ),
+        ];
+        for &(points, codec, policy, expected_start, expected_end, label) in cases {
+            let mut bytes = Vec::new();
+            for &point in points {
+                push_wtf8_codepoint(&mut bytes, point);
+            }
+            let EncodeError::InvalidSequence {
+                encoding,
+                start,
+                end,
+                reason,
+            } = encode_string_with_errors(&bytes, codec, Some(policy)).unwrap_err()
+            else {
+                panic!("{codec}/{policy}: expected UnicodeEncodeError");
+            };
+            assert_eq!(
+                (encoding, start, end),
+                (label, expected_start, expected_end),
+                "{codec}/{policy}"
+            );
+            let expected_reason = match label {
+                "ascii" => "ordinal not in range(128)",
+                "latin-1" => "ordinal not in range(256)",
+                "charmap" => "character maps to <undefined>",
+                _ => "surrogates not allowed",
+            };
+            assert_eq!(reason, expected_reason);
+        }
+    }
+
+    #[test]
+    fn encoding_builtin_handlers_preserve_bytes_and_lookup_is_lazy() {
+        let input = b"a\xed\xa0\x80\xed\xa0\x81z"; // a, D800, D801, z
+        for (codec, expected) in [
+            ("utf-16-le", &b"a\0?\0?\0z\0"[..]),
+            ("utf-16-be", &b"\0a\0?\0?\0z"[..]),
+            ("utf-32-le", &b"a\0\0\0?\0\0\0?\0\0\0z\0\0\0"[..]),
+            ("utf-32-be", &b"\0\0\0a\0\0\0?\0\0\0?\0\0\0z"[..]),
+        ] {
+            assert_eq!(
+                encode_string_with_errors(input, codec, Some("replace")).unwrap(),
+                expected
+            );
+        }
+        for codec in ["ascii", "latin-1", "cp1252", "utf-8"] {
+            assert_eq!(
+                encode_string_with_errors(
+                    b"a\xed\xb2\x80\xed\xb3\xbfz",
+                    codec,
+                    Some("surrogateescape")
+                )
+                .unwrap(),
+                b"a\x80\xffz"
+            );
+            assert!(encode_string_with_errors(b"valid", codec, Some("missing-handler")).is_ok());
+            assert!(
+                matches!(encode_string_with_errors(input, codec, Some("missing-handler")), Err(EncodeError::UnknownErrorHandler(name)) if name == "missing-handler")
+            );
+        }
+        assert_eq!(
+            encode_string_with_errors(input, "utf-16-le", Some("surrogatepass")).unwrap(),
+            b"a\0\0\xd8\x01\xd8z\0"
+        );
+        assert_eq!(
+            encode_string_with_errors(input, "utf-32-be", Some("surrogatepass")).unwrap(),
+            b"\0\0\0a\0\0\xd8\0\0\0\xd8\x01\0\0\0z"
+        );
     }
 }

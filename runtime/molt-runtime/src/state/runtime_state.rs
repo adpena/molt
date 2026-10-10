@@ -894,6 +894,8 @@ macro_rules! runtime_lifecycle_entry {
 /// alive because published native roots may still borrow it; only process
 /// exit reclaims it.
 fn runtime_lifecycle_failed(message: &str) {
+    use std::io::Write;
+
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     RUNTIME_EXECUTION_ADMISSION
         .fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel);
@@ -903,13 +905,33 @@ fn runtime_lifecycle_failed(message: &str) {
         .phase
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Initialization has not published a process pointer yet. Finalization
+    // may already have unpublished it. Preserve the exact current owner before
+    // replacing either authority, without reentering the failed runtime.
+    let runtime_owner = runtime_state_tls()
+        .map(RuntimeState::identity)
+        .unwrap_or_else(|| match *phase {
+            RuntimeLifecyclePhase::Ready { ptr }
+            | RuntimeLifecyclePhase::Finalizing { ptr, .. } => ptr,
+            _ => 0,
+        });
+    if !molt_cpython_abi::api::object::retain_current_thread_state_after_runtime_failure(
+        runtime_owner,
+    ) {
+        // A mismatched or still-borrowed record cannot be safely abandoned for
+        // this owner, and this outer C boundary must not unwind a second time.
+        let _ = writeln!(
+            std::io::stderr(),
+            "molt runtime lifecycle failed: {message}; could not retain its C thread-state owner"
+        );
+        std::process::abort();
+    }
     *phase = RuntimeLifecyclePhase::Failed;
     lifecycle.phase.clear_poison();
     lifecycle.changed.notify_all();
     drop(phase);
     clear_thread_runtime_state();
     // eprintln! panics when stderr is closed; nothing may unwind from here.
-    use std::io::Write;
     let _ = writeln!(
         std::io::stderr(),
         "molt runtime lifecycle failed: {message}"
@@ -2166,6 +2188,12 @@ mod tests {
     #[test]
     fn lifecycle_ffi_panics_fail_closed_without_unwinding() {
         const MODE: &str = "MOLT_TEST_LIFECYCLE_FFI_PANIC";
+        static RETAINED_CAPSULE_DROPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn retained_capsule_drop(
+            _capsule: *mut molt_cpython_abi::abi_types::PyObject,
+        ) {
+            RETAINED_CAPSULE_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
         if let Ok(mode) = std::env::var(MODE) {
             std::panic::set_hook(Box::new(|_| {}));
             match mode.as_str() {
@@ -2184,6 +2212,119 @@ mod tests {
                     molt_runtime_exit(0);
                     unreachable!("process exit returned");
                 }
+                "shutdown-thread-state" | "exit-thread-state" => {
+                    use molt_cpython_abi::api::{capsule, mapping, object, refcount, sys};
+                    let process_exit = mode == "exit-thread-state";
+                    // The native thread must actually exit after Failed. A
+                    // record left in TLS would try to reacquire dead runtime
+                    // custody there and abort instead of joining successfully.
+                    let (owner, address, id, retained) = std::thread::spawn(move || {
+                        assert_eq!(molt_runtime_init(), 1);
+                        let (owner, address, id, retained) = {
+                            let gil = GilGuard::new();
+                            let py = gil.token();
+                            let state = runtime_state(&py);
+                            let owner = state.identity();
+                            assert!(!object::current_thread_has_retained_runtime_state());
+                            assert!(object::retain_current_thread_state_after_runtime_failure(0));
+                            assert!(!object::current_thread_has_retained_runtime_state());
+                            let retained = Arc::downgrade(state.sleep_queue());
+                            object::attach_runtime_execution_thread(owner);
+                            let tstate = unsafe { object::_PyThreadState_UncheckedGet() };
+                            assert!(!tstate.is_null());
+                            let id = unsafe { object::PyThreadState_GetID(tstate) };
+                            let address = tstate.expose_provenance();
+                            unsafe {
+                                let dict = sys::PyThreadState_GetDict();
+                                assert!(!dict.is_null());
+                                let new_payload = || {
+                                    capsule::PyCapsule_New(
+                                        std::ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+                                        std::ptr::null(),
+                                        Some(retained_capsule_drop),
+                                    )
+                                };
+                                // Prove the callback observation before leaving
+                                // the real payload owned only by the C dict.
+                                let probe = new_payload();
+                                assert!(!probe.is_null());
+                                refcount::Py_DECREF(probe);
+                                assert_eq!(RETAINED_CAPSULE_DROPS.load(Ordering::SeqCst), 1);
+                                RETAINED_CAPSULE_DROPS.store(0, Ordering::SeqCst);
+                                let payload = new_payload();
+                                assert!(!payload.is_null());
+                                assert_eq!(
+                                    mapping::PyDict_SetItemString(
+                                        dict,
+                                        c"failed_owner_payload".as_ptr(),
+                                        payload,
+                                    ),
+                                    0
+                                );
+                                refcount::Py_DECREF(payload);
+                            }
+                            let owners = object::runtime_retained_thread_state_count_for(owner);
+                            assert!(!object::retain_current_thread_state_after_runtime_failure(
+                                owner.wrapping_add(1)
+                            ));
+                            assert_eq!(
+                                unsafe { object::_PyThreadState_UncheckedGet() },
+                                tstate,
+                                "a different failed owner must not steal the record"
+                            );
+                            assert_eq!(
+                                object::runtime_retained_thread_state_count_for(owner),
+                                owners
+                            );
+                            assert_eq!(
+                                object::retained_thread_state_identity_for_test(address),
+                                Some((owner, id))
+                            );
+                            object::detach_runtime_execution_thread();
+                            (owner, address, id, retained)
+                        };
+                        assert_eq!(RETAINED_CAPSULE_DROPS.load(Ordering::SeqCst), 0);
+                        object::inject_thread_state_finalizer_panic_for_test();
+                        if process_exit {
+                            use std::io::Write;
+                            println!("lifecycle thread-state failure armed: exit-thread-state");
+                            std::io::stdout().flush().unwrap();
+                            molt_runtime_exit(0);
+                            unreachable!("process exit returned");
+                        }
+                        assert_eq!(molt_runtime_shutdown(), 0);
+                        assert_eq!(
+                            *runtime_lifecycle().phase.lock().unwrap(),
+                            RuntimeLifecyclePhase::Failed
+                        );
+                        assert!(!object::current_thread_has_retained_runtime_state());
+                        assert_eq!(object::runtime_retained_thread_state_count_for(owner), 1);
+                        // Repetition must neither forget twice nor fabricate a
+                        // replacement state for the terminal runtime.
+                        assert!(object::retain_current_thread_state_after_runtime_failure(
+                            owner
+                        ));
+                        assert!(!object::current_thread_has_retained_runtime_state());
+                        assert_eq!(object::runtime_retained_thread_state_count_for(owner), 1);
+                        assert_eq!(RETAINED_CAPSULE_DROPS.load(Ordering::SeqCst), 0);
+                        (owner, address, id, retained)
+                    })
+                    .join()
+                    .expect("failed runtime owner survives actual native TLS destruction");
+                    assert!(
+                        retained.upgrade().is_some(),
+                        "failed RuntimeState stays alive"
+                    );
+                    assert_eq!(object::runtime_retained_thread_state_count(), 1);
+                    assert_eq!(object::runtime_retained_thread_state_count_for(owner), 1);
+                    assert_eq!(
+                        object::retained_thread_state_identity_for_test(address),
+                        Some((owner, id)),
+                        "thread exit preserves the exact registered owner and state identity"
+                    );
+                    assert_eq!(RETAINED_CAPSULE_DROPS.load(Ordering::SeqCst), 0);
+                    println!("lifecycle thread-state retention verified: shutdown-thread-state");
+                }
                 _ => panic!("unknown lifecycle panic mode"),
             }
             assert!(!runtime_is_ready());
@@ -2197,17 +2338,31 @@ mod tests {
             );
             return;
         }
-        for (mode, cause, exit_code) in [
-            ("init", "injected unpublished runtime init panic", 0),
+        for (mode, cause, exit_code, stdout_marker) in [
+            ("init", "injected unpublished runtime init panic", 0, None),
             (
                 "shutdown",
                 "injected shutdown drain C extension cleanup panic",
                 0,
+                None,
             ),
             (
                 "exit",
                 "injected shutdown drain C extension cleanup panic",
                 1,
+                None,
+            ),
+            (
+                "shutdown-thread-state",
+                "injected thread-state finalizer panic",
+                0,
+                Some("lifecycle thread-state retention verified: shutdown-thread-state\n"),
+            ),
+            (
+                "exit-thread-state",
+                "injected thread-state finalizer panic",
+                1,
+                Some("lifecycle thread-state failure armed: exit-thread-state\n"),
             ),
         ] {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -2230,6 +2385,12 @@ mod tests {
                 stderr.contains(&format!("molt runtime lifecycle failed: {cause}")),
                 "{mode}: the diagnostic names the original panic: {stderr}"
             );
+            if let Some(marker) = stdout_marker {
+                assert!(
+                    String::from_utf8_lossy(&output.stdout).contains(marker),
+                    "{mode}: missing thread-state ownership observation"
+                );
+            }
         }
     }
 

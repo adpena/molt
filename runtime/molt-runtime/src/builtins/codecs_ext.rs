@@ -1,12 +1,12 @@
 // === FILE: runtime/molt-runtime/src/builtins/codecs_ext.rs ===
 //
-// Intrinsics for incremental codecs, stream reader/writer, BOM constants,
+// Intrinsics for incremental codecs, stream readers, BOM constants,
 // encoding normalization, and error handler registration.
 //
 // Architecture
 // ────────────
-// All stateful objects (IncrementalEncoder, IncrementalDecoder, StreamReader,
-// StreamWriter) are stored in thread-local handle tables (HashMap<i64, State>),
+// IncrementalEncoder, IncrementalDecoder and StreamReader state is stored
+// in thread-local handle tables (HashMap<i64, State>),
 // matching the pattern used in builtins/csv.rs.
 //
 // The actual encode/decode work delegates to the same `encode_string_with_errors`
@@ -18,7 +18,7 @@
 // static analysis prevents dynamic callsite lowering); instead we store them
 // and surface them to the Python wrapper via `molt_codecs_lookup_error`.
 
-use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
+use crate::object::ops::DecodeTextError as OpsDecodeTextError;
 use crate::object::ops_encoding::{
     DecodeFailure as OpsDecodeFailure, push_xmlcharref_ascii, unicode_escape_codepoint,
     unicode_name_escape,
@@ -34,7 +34,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 static NEXT_INC_ENC_HANDLE: AtomicI64 = AtomicI64::new(1);
 static NEXT_INC_DEC_HANDLE: AtomicI64 = AtomicI64::new(1);
 static NEXT_STREAM_RDR_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_STREAM_WTR_HANDLE: AtomicI64 = AtomicI64::new(1);
 
 fn next_inc_enc_handle() -> i64 {
     NEXT_INC_ENC_HANDLE.fetch_add(1, Ordering::Relaxed)
@@ -44,9 +43,6 @@ fn next_inc_dec_handle() -> i64 {
 }
 fn next_stream_rdr_handle() -> i64 {
     NEXT_STREAM_RDR_HANDLE.fetch_add(1, Ordering::Relaxed)
-}
-fn next_stream_wtr_handle() -> i64 {
-    NEXT_STREAM_WTR_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,18 +234,9 @@ pub extern "C" fn molt_codecs_incremental_encoder_new(encoding_bits: u64, errors
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
 
-        // Validate encoding + error handler by attempting a dummy encode.
-        match encode_string_with_errors(&[], &encoding, Some(&errors)) {
-            Ok(_) => {}
-            Err(OpsEncodeError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::InvalidChar { .. }) => {}
+        // Validate the codec without eagerly rejecting an unused error handler.
+        if let Err(error) = encode_string_with_errors(&[], &encoding, Some(&errors)) {
+            return error.raise(_py, MoltObject::none().bits());
         }
 
         let id = next_inc_enc_handle();
@@ -280,49 +267,39 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
             return MoltObject::none().bits();
         };
         let input_obj = obj_from_bits(input_bits);
-        let Some(input_str) = string_obj_to_owned(input_obj) else {
+        // The argument stays owned through this call. Bound the lossless
+        // borrow here so input type validation precedes other observations.
+        let Some(result) = (unsafe {
+            crate::object::ops_format::with_string_bytes(input_obj, |input_bytes| {
+                let is_final = is_truthy(_py, obj_from_bits(final_bits));
+
+                let (encoding, errors) = INC_ENC_HANDLES.with(|h| {
+                    h.borrow()
+                        .get(&id)
+                        .map(|s| (s.encoding.clone(), s.errors.clone()))
+                        .unwrap_or_default()
+                });
+                if encoding.is_empty() {
+                    return raise_exception::<_>(_py, "RuntimeError", "invalid encoder handle");
+                }
+
+                let result = encode_string_with_errors(input_bytes, &encoding, Some(&errors));
+                match result {
+                    Ok(bytes) => {
+                        let _ = is_final; // stateless encodings: no pending
+                        let ptr = alloc_bytes(_py, &bytes);
+                        if ptr.is_null() {
+                            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+                        }
+                        MoltObject::from_ptr(ptr).bits()
+                    }
+                    Err(error) => error.raise(_py, input_bits),
+                }
+            })
+        }) else {
             return raise_exception::<_>(_py, "TypeError", "input must be str");
         };
-        let is_final = is_truthy(_py, obj_from_bits(final_bits));
-
-        let (encoding, errors) = INC_ENC_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| (s.encoding.clone(), s.errors.clone()))
-                .unwrap_or_default()
-        });
-        if encoding.is_empty() {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid encoder handle");
-        }
-
-        let result = encode_string_with_errors(input_str.as_bytes(), &encoding, Some(&errors));
-        match result {
-            Ok(bytes) => {
-                let _ = is_final; // stateless encodings: no pending
-                let ptr = alloc_bytes(_py, &bytes);
-                if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
-                }
-                MoltObject::from_ptr(ptr).bits()
-            }
-            Err(OpsEncodeError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsEncodeError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsEncodeError::InvalidChar {
-                encoding,
-                code,
-                pos,
-                limit,
-            }) => {
-                let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                raise_unicode_encode_error::<_>(_py, encoding, input_bits, pos, pos + 1, &reason)
-            }
-        }
+        result
     })
 }
 
@@ -824,133 +801,6 @@ fn stream_decode_error(_py: &PyToken<'_>, e: OpsDecodeTextError) -> u64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stream writer
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct StreamWriterState {
-    encoding: String,
-    errors: String,
-    stream_bits: u64,
-}
-
-thread_local! {
-    static STREAM_WTR_HANDLES: RefCell<HashMap<i64, StreamWriterState>> =
-        RefCell::new(HashMap::new());
-}
-
-fn stream_wtr_id(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
-    to_i64(obj_from_bits(bits)).or_else(|| {
-        let _ = raise_exception::<u64>(_py, "TypeError", "stream writer handle must be int");
-        None
-    })
-}
-
-/// Create a StreamWriter wrapping `stream_bits`. Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_writer_new(
-    stream_bits: u64,
-    encoding_bits: u64,
-    errors_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "encoding must be str");
-        };
-        let errors =
-            string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
-
-        let id = next_stream_wtr_handle();
-        STREAM_WTR_HANDLES.with(|h| {
-            h.borrow_mut().insert(
-                id,
-                StreamWriterState {
-                    encoding,
-                    errors,
-                    stream_bits,
-                },
-            );
-        });
-        MoltObject::from_int(id).bits()
-    })
-}
-
-/// Encode `text_bits` (str) and write to the underlying stream.
-/// Returns int: number of bytes written.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_writer_write(handle_bits: u64, text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(id) = stream_wtr_id(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let text_obj = obj_from_bits(text_bits);
-        let Some(text) = string_obj_to_owned(text_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-
-        let (encoding, errors, stream_bits) = STREAM_WTR_HANDLES.with(|h| {
-            h.borrow()
-                .get(&id)
-                .map(|s| (s.encoding.clone(), s.errors.clone(), s.stream_bits))
-                .unwrap_or_default()
-        });
-        if encoding.is_empty() {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid stream writer handle");
-        }
-
-        let encoded = match encode_string_with_errors(text.as_bytes(), &encoding, Some(&errors)) {
-            Ok(b) => b,
-            Err(OpsEncodeError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
-            }
-            Err(OpsEncodeError::InvalidChar {
-                encoding,
-                code,
-                pos,
-                limit,
-            }) => {
-                let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                return raise_unicode_encode_error::<_>(
-                    _py,
-                    encoding,
-                    text_bits,
-                    pos,
-                    pos + 1,
-                    &reason,
-                );
-            }
-        };
-        let n_bytes = encoded.len();
-
-        // Write bytes to the underlying stream.
-        let bytes_ptr = alloc_bytes(_py, &encoded);
-        if bytes_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
-        }
-        let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let _ = crate::molt_file_write(stream_bits, bytes_bits);
-
-        MoltObject::from_int(n_bytes as i64).bits()
-    })
-}
-
-/// Drop stream writer handle. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_writer_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(id) = stream_wtr_id(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        STREAM_WTR_HANDLES.with(|h| h.borrow_mut().remove(&id));
-        MoltObject::none().bits()
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // BOM constants
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1369,28 +1219,32 @@ pub extern "C" fn molt_codecs_charmap_encode(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let input_obj = obj_from_bits(input_bits);
-        let Some(input_str) = string_obj_to_owned(input_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "input must be str");
-        };
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
         let mapping_obj = obj_from_bits(mapping_bits);
 
-        // None mapping = latin-1 identity encode
+        // A missing mapping uses the ordinal codec and the original WTF-8
+        // object. The explicit mapping branch has its own lookup protocol.
         if mapping_obj.is_none() {
-            match encode_string_with_errors(input_str.as_bytes(), "latin-1", Some(&errors)) {
-                Ok(encoded) => {
-                    return charmap_encode_tuple(_py, &encoded, input_str.chars().count());
-                }
-                Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "UnicodeEncodeError",
-                        "charmap encode failed with latin-1 fallback",
-                    );
-                }
-            }
+            let Some(result) = (unsafe {
+                crate::object::ops_format::with_string_bytes(input_obj, |bytes| {
+                    encode_string_with_errors(bytes, "latin-1", Some(&errors)).map(|encoded| {
+                        let consumed = crate::object::ops_string::wtf8_from_bytes(bytes)
+                            .code_points().count();
+                        (encoded, consumed)
+                    })
+                })
+            }) else {
+                return raise_exception::<_>(_py, "TypeError", "input must be str");
+            };
+            return match result {
+                Ok((encoded, consumed)) => charmap_encode_tuple(_py, &encoded, consumed),
+                Err(error) => error.raise(_py, input_bits),
+            };
         }
+        let Some(input_str) = string_obj_to_owned(input_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "input must be str");
+        };
 
         let mut out: Vec<u8> = Vec::new();
         let Some(map_ptr) = mapping_obj.as_ptr() else {

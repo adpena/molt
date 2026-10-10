@@ -49,17 +49,62 @@ newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
-The current runtime ownership candidate at `406d69789` compiles the full
-Linux/aarch64 default-feature release-output test image. Its first execution
-was stopped by proof custody when a process fixture launched the undeclared
-POSIX shell; it has no completed aggregate or semantic acceptance. The native
-journal retains the denial and incomplete cleanup observation. The
-replacement uses real self-image OS fixtures through one existing exact-test
-entry, retiring all shell/cmd/cat/sleep fixture dependencies without adding
-executable admission policy. Pipe tests collect bounded whole streams and compare
-exact payloads through EOF; the process-group oracle requires actual grandchild
-SIGTERM status and native reaping. Independent source review found no blocker;
-compiled Linux, Windows stdin and macOS group/prelude execution remain required.
+The current runtime ownership candidate at `1021a57ea` compiles the full
+Linux/aarch64 default-feature release-output test image. Its native custody
+receipt is COMPLETE with no violations or supervisor errors. All 25 process
+fixtures and seven isolated gate children pass; the parallel partition has
+1,260 passes, 481 failures and four ignores. The shell-free process fixture
+migration is exercised on Linux; Windows stdin and macOS group/prelude cells
+remain unverified. Runtime semantic and performance acceptance remain blocked.
+
+Fresh exact-image processes reproduce isolate exception rendering, synchronous
+CPython thread-state panic handling, and stale C scalar/foreign-owner fixture
+observations independently. The restart test passes alone; in the parallel
+partition, earlier failed fixtures leave native owners live, its retirement
+then fails, and 461 subsequent bootstrap/restart assertions fail. Repairs must
+preserve the managed exception rendering authority, the owning lifecycle's
+failure retention and exact native identity, with complete consumer migration.
+No blanket retry, expectation relaxation or release qualification follows from
+the compiled image or the successful process-custody receipt. Five existing C-API
+failures also reproduce on the retained main-based baseline. The synchronous
+teardown repair now propagates to the existing owning boundary and retains the
+failed process's exact C record before clearing TLS; its receipt and gate cohort
+passes 221 checks with one platform skip. Managed descriptors and physical C
+slots now share one selective exception-rendering engine in candidate source.
+Scalar, foreign-wrapper, heap-type traversal and slice fixture observations are
+migrated to the actual representation/ownership contracts with failure-safe
+cleanup. The name-publication assertion passes in a fresh exact-image process;
+its parallel failure still requires qualification after fixture cleanup.
+
+The same runtime replay exposes a built-in encoding failure-span defect. The
+candidate propagates scanner-owned code-point spans through every fixed-kernel
+consumer, retaining CPython's distinct single-surrogate UTF-16/32 behavior,
+correct replacement bytes and surrogateescape failures. Incremental/stream
+inputs preserve raw Python string bytes, and translated text-write errors retain
+the actual encoded object. Error-handler validation remains lazy. The extended
+public consumer reference passes on CPython 3.12; compiled consumer execution,
+negative controls, performance and the remaining codec registry/callback/stateful
+acceptance remain open. The stream writer now uses live Python object attributes
+and normal encode/write dispatch; its redundant TLS state, counter, destructor
+and three intrinsic exports are retired through every generated consumer.
+CPython protocol and guarded surface controls pass. The registered encoder
+callback regression is retained separately under V1-18; current fixed kernels
+still reject registered names on invalid input. Native typed exception fields
+now reuse the existing tuple, integer and C string predicate authorities, while
+snapshot cleanup keeps one error-preservation scope in original release order.
+Raw native Unicode/bytes payload transport remains an explicit existing ABI
+frontier. These semantic repairs change shipped runtime behavior; regression
+and receipt machinery remains development-only. All new runtime repairs still
+require compilation and execution before landing or qualification.
+
+The intrinsic/WASM generator cohort passes 127 checks; all generated projections
+are current and the differential layout validates. The surface/proof-plan cohort
+has 248 passes and one development-host capacity rejection before its Cargo child
+starts. That unchanged timeout fixture has separate prior Linux proof; this run
+is not reported as a pass. The failed v7 queue run also observed transient uv
+cache writes inside its source checkout, despite identical before/after source
+bytes. Its missing terminal digest cannot be synthesized from the native receipt;
+cache placement and safe output retirement remain development-side obligations.
 
 Windows development-tool identity now derives the interpreter architecture
 from CPython sysconfig rather than querying host WMI. The focused runtime
@@ -82,9 +127,13 @@ confirm the operation distinctions. The first patched runtime dispatch stopped
 before compilation because the strict receiver assumed registered Python Cargo
 drivers were direct Cargo invocations. The corrected receiver and all 55 declared
 driver rows pass capture, strict validation, CAS and reuse; the complete capture
-cohort passes 285 checks with 13 platform skips. Patched Linux capture/replay,
-two capacity-blocked queue controls and actual Windows selection remain unqualified. This change is
-not yet a public release or performance acceptance claim.
+cohort passes 285 checks with 13 platform skips. Actual Linux compiler execution
+now qualifies 23 capture cases through strict validation and resource/image
+revalidation, including the registered runtime driver and distinct documenter
+linkers. Three invalid original Cargo flag combinations are separately confirmed
+as upstream rejections, not accepted capture cases. Both previously capacity-blocked
+queue controls pass on Linux. Actual Windows selection and release-wide
+performance acceptance remain open; this tooling adds no emitted-binary work.
 
 Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
@@ -1133,7 +1182,7 @@ result alone cannot redefine the contract.
 | V1-15 | Source and ZIP loaders validate a source payload but execute a compiler-admitted body selected only by module name. Changed source bytes can therefore invoke the older admitted body; source execution must preserve the public AOT capability boundary without silently accepting a different generation. | Bind the exact frontend-used raw source identity through serial/parallel cache results, the canonical module-registry JSON/blob writer, native/LLVM/WASM projections and the sole runtime registry reader. Verify actual loader-owned bytes against the admitted body before execution, including aliases and entry identities. Reuse captured PythonSourceSnapshot digests; do not reread the path at registry construction or add a second backend digest authority. Prove matching Latin-1/BOM/CRLF source and ZIP bodies plus changed-source refusal and failure atomicity through actual consumers. SourceFileLoader decoding follows PEP263 and universal newlines; ZIP get_source retains its distinct CPython strict UTF-8 behavior. Unrestricted dynamic compilation is outside the declared contract. Compiler identity work belongs to development; guest checks occur only when an actual loader requests source execution. |
 | V1-16 | Tokenization and the token-module payload hard-code Python3.12 token numbers while the public contract includes3.13/3.14; independent interpreter execution shows COMMENT64 in3.12 and62 in3.13/3.14. | Reconcile the canonical versioned opcode/token payload, runtime TokenKind projection and installed tokenize/token consumers through the selected target Python version. Qualify exact token types, names and operators against the pinned CPython sources and independent version-matched interpreters. Do not add a second local numbering table. |
 | V1-17 | The FFI crate has a standalone lane that returns zero, identity or None as successful substitutes, math wrappers bypass canonical Python error/coercion behavior, and its unused header claims functions absent from the implementation under fictitious generator custody. | Bounded current-source/history/donor review found no production caller or release publisher for the unpublished duplicate crate, and found 25 header declarations without implementations. Retire the crate and orphan capability bridge through the complete workspace/lockfile/graph/harness/generator/test/documentation family. Preserve the maintained runtime C API, canonical lifecycle, math, JSON and distinct compiler FFI lowering; do not introduce a replacement wrapper for an absent caller. Make unavailable cells explicit and failure atomic; verify real success, exception observability, reference ownership and shutdown. Reconcile or delete the dead header and its orphan-generator claim rather than preserving false API promises. No additional guest wrapper or default-option allocation is justified when the canonical runtime operation already owns the behavior. The isolated main candidate now removes the crate, orphan capability bridge and complete graph/harness/header projections, while preserving canonical lifecycle and C-API code. It also removes the compilation SDK's unused runtime dependency. Cargo projects the exact two expected lock changes without dependency upgrades; regenerated metadata has one direct native-runtime consumer. This bounded retirement landed on main at `82fa7c3cc` after independent review, 70 actual consumer checks, exact generator-fanout renewal and a dependency-free SDK compile with three configuration tests on Darwin arm64/Rust 1.99.0. Canonical C-API execution, actual SDK CLI behavior and remaining native/WASM/release cells are still unqualified; no measured performance or artifact-size win is claimed. |
-| V1-18 | Registered codec error handlers are stored but canonical encode/decode paths do not implement the callback protocol, and built-in lookup entries are non-callable placeholders. Incremental decoder/stream-reader table borrows span decoding; arbitrary callbacks require reentrant ownership. Stateful handles are thread-local despite the public concurrency direction. Public codecs.encode/decode also bypass registered codec searches. | Migrate the complete encode/decode/translate and public lookup/registration family through its existing canonical authorities. Preserve encoding-specific builtin fast paths, callable lookup identity, result/index validation, mutable exception reuse, replacement-object rules and exported-buffer lifetime; release state-table borrows before arbitrary callbacks. Reconcile the existing maintained encoding subclasses before retaining a second state machine: their native callable attributes must obey CPython descriptor binding. Source-grounded pinned controls cover 89 callback, 44 stateful, 97 encoder/public-handler and 14 BOM/reentrancy rows; compiled native/WASM, cross-thread and performance cells remain unqualified. Runtime callback work belongs only to actual codec operations. The current codecs module also scans a host uv Python directory and forges its __file__ during import; retire that developer filesystem/provenance work from emitted application behavior through the same migration. |
+| V1-18 | Registered codec error handlers are stored but canonical encode/decode paths do not implement the callback protocol, and built-in lookup entries are non-callable placeholders. Incremental decoder/stream-reader table borrows span decoding; arbitrary callbacks require reentrant ownership. Stateful handles are thread-local despite the public concurrency direction. Public codecs.encode/decode also bypass registered codec searches. | Migrate the complete encode/decode/translate and public lookup/registration family through its existing canonical authorities. Preserve encoding-specific builtin fast paths, callable lookup identity, result/index validation, mutable exception reuse, replacement-object rules and exported-buffer lifetime; release state-table borrows before arbitrary callbacks. Reconcile the existing maintained encoding subclasses before retaining a second state machine: their native callable attributes must obey CPython descriptor binding. Source-grounded pinned controls cover 89 callback, 44 stateful, 97 encoder/public-handler and 14 BOM/reentrancy rows; compiled native/WASM, cross-thread and performance cells remain unqualified. Runtime callback work belongs only to actual codec operations. The current codecs module also scans a host uv Python directory and forges its __file__ during import; retire that developer filesystem/provenance work from emitted application behavior through the same migration.  Candidate source removes the StreamWriter TLS handle family and implements live public encode/write/seek/reset/context dispatch. Its independent protocol and CPython controls pass; native/WASM compiled execution remains unverified. `codec_registered_encode_callback.py` retains the real custom-handler case unchanged as an open regression, separate from mocked encoder surface checks. |
 | V1-19 | Resource charges belong to replaceable thread-local trackers, while retirement debits the current thread. New threads receive fresh caps. Raw exports, C projections and allocator APIs leave physical storage unaccounted. Runtime-wide inspection found no production calls to the tracker time, recursion or operation-size hooks. | Reconcile one generation-owned ledger and allocation custody through admission, growth, transfer, cross-thread cleanup, C publication, raw allocation, finalization and shutdown. Reuse interpreter lifetime and storage owners; do not add a sort-local counter or a second publication registry. Wire the actual execution/frame/builtin and WASM instance consumers, then prove denials and failure atomicity against independent controls. A configured limit or a tracker unit test is not enforcement. Preserve a minimal-cost unmetered path with an explicit lifecycle contract; measure accounting, synchronization, layout and default costs. Resource documentation and registry claims are corrected on main (`fa3986e3d`); native/WASM execution and whole-runtime acceptance remain unqualified. Developer RSS instrumentation stays outside the guest. |
 | V1-20 | The ordinary string builder auto-interns every computed ASCII identifier-like result in a runtime-lifetime pool and duplicates its byte key. Decoder and argv projections use that builder, so dropping guest references does not retire those pool entries. | The mechanism is verified in current source; retained-byte growth has not yet been measured on the new compiled generation. Reconcile the existing explicit intern, bounded canonical empty/character and ephemeral string authorities across computed outputs and metadata producers. Preserve source-defined identity requirements, eliminate unbounded accidental retention and duplicate unaccounted keys, and prove release/denial behavior and cost through public decoder/string/JSON and runtime-lifecycle consumers. Do not substitute a type-local bypass for the complete builder ownership policy. |
 | V1-21 | Sort storage allocates full-list overlays/output, eager merge scratch and a heap run stack. Independent review of the replacement also found that a first physical C view created inside a sort callback is not enrolled in restoration, leaving runtime and C list contents inconsistent. The existing attestation admits finite summaries inconsistent with samples and trusts echoed positive-control status. | Reuse the canonical CPython-order powersort/ListSortTxn with detached values, optional key/C pointer columns, bounded runs and lazy accounted shorter-run scratch. The superseded eleven-path generation2 is uncompiled and remains on HOLD. Independent review confirmed that a nested no-op sort, empty reverse and empty clear falsely alter the shared mutation epoch; restoration identity must be distinct from real mutation evidence without rewinding counters. First C-view publication on another thread is also supported when a native callback releases the runtime GIL, so a thread-local borrowed inventory cannot own restoration. Generation3 is now frozen across sixteen paths and received independent bounded source-design acceptance. It copies and pins handles before reentrant materialization, uses one GIL-owned intrusive source list with non-LIFO unlink, separates restoration identity from mutation history, and migrates all six readiness waits plus RuntimeHooks ABI58 through tokenized internal suspension. Compilation, real native/WASM execution, raw projection quota ownership/denial and same-harness performance remain unrun; the source review does not qualify those cells. First-view success, failure, reverse/destructor callbacks and complete statistical admission from real samples remain required. Preserve original C identities, callback exception/destruction order and failure atomicity. Prove the complete native/WASM, resource-denial and matched cost family before accepting either semantic or performance claims; raw C projection accounting remains a separate blocker. |

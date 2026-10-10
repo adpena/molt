@@ -2052,6 +2052,47 @@ mod bootstrap_failure_tests {
     }
 
     #[test]
+    fn isolated_exception_rendering_covers_every_declared_family_without_process_ownership() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let primary_bindings = primary_exception_bindings();
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = Arc::clone(&completed);
+        let handle = Arc::new(MoltThreadHandle::new());
+        let worker_handle = Arc::clone(&handle);
+        let lifetime = RuntimeLifetimeLease::try_acquire().expect("live process for isolate");
+        std::thread::spawn(move || {
+            run_isolate_thread(
+                lifetime,
+                worker_handle,
+                || {
+                    crate::with_gil_entry_nopanic!(py, {
+                        assert!(!crate::state::runtime_state::owns_process_cpython_state(
+                            runtime_state(py)
+                        ));
+                        crate::builtins::exceptions::assert_managed_rendering_contract(py);
+                        assert!(!crate::state::runtime_state::owns_process_cpython_state(
+                            runtime_state(py)
+                        ));
+                        MoltObject::none().bits()
+                    })
+                },
+                || {
+                    worker_completed.store(true, AtomicOrdering::Release);
+                },
+            );
+        })
+        .join()
+        .expect("isolate rendering worker must finish");
+        assert!(
+            completed.load(AtomicOrdering::Acquire),
+            "caught fixture failures cannot count as completion"
+        );
+        assert!(handle.done.load(AtomicOrdering::Acquire));
+        assert_eq!(primary_exception_bindings(), primary_bindings);
+    }
+
+    #[test]
     fn isolated_runtime_rejects_process_static_cpython_ownership() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());

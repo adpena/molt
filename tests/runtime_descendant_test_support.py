@@ -141,25 +141,38 @@ for _mode in (
         "exit_code": 0,
         "completes": True,
     }
-for _mode, _exit, _cause in (
-    ("init", 0, "injected unpublished runtime init panic"),
-    ("shutdown", 0, "injected shutdown drain C extension cleanup panic"),
-    ("exit", 1, "injected shutdown drain C extension cleanup panic"),
+for _mode, _exit, _cause, _observation in (
+    ("init", 0, "injected unpublished runtime init panic", ""),
+    ("shutdown", 0, "injected shutdown drain C extension cleanup panic", ""),
+    ("exit", 1, "injected shutdown drain C extension cleanup panic", ""),
+    (
+        "shutdown-thread-state",
+        0,
+        "injected thread-state finalizer panic",
+        "lifecycle thread-state retention verified: shutdown-thread-state\n",
+    ),
+    (
+        "exit-thread-state",
+        1,
+        "injected thread-state finalizer panic",
+        "lifecycle thread-state failure armed: exit-thread-state\n",
+    ),
 ):
     CONTRACT[(LIFECYCLE, _mode)] = {
         "role": "lifecycle-ffi",
         "child": LIFECYCLE,
         "args": ["--exact", LIFECYCLE, *SERIAL],
         "stdout": f"\nrunning 1 test\ntest {LIFECYCLE} ... "
+        + _observation
         + (
             "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
             "0 measured; 41 filtered out; finished in 0.00s\n\n"
-            if _mode != "exit"
+            if _exit == 0
             else ""
         ),
         "stderr": f"molt runtime lifecycle failed: {_cause}\n",
         "exit_code": _exit,
-        "completes": _mode != "exit",
+        "completes": _exit == 0,
     }
 CONTRACT[(DISCOVERY, "render-and-drain")] = {
     "role": "discovery-pending-diagnostic",

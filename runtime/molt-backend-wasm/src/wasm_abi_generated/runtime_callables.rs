@@ -8369,21 +8369,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_codecs_stream_writer_drop",
-        import: WasmRuntimeImport::CodecsStreamWriterDrop,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_codecs_stream_writer_new",
-        import: WasmRuntimeImport::CodecsStreamWriterNew,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_codecs_stream_writer_write",
-        import: WasmRuntimeImport::CodecsStreamWriterWrite,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_concurrent_as_completed",
         import: WasmRuntimeImport::ConcurrentAsCompleted,
         arity: 2,
@@ -14814,9 +14799,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_codecs_stream_reader_new" => Some(WasmRuntimeImport::CodecsStreamReaderNew),
         "molt_codecs_stream_reader_read" => Some(WasmRuntimeImport::CodecsStreamReaderRead),
         "molt_codecs_stream_reader_readline" => Some(WasmRuntimeImport::CodecsStreamReaderReadline),
-        "molt_codecs_stream_writer_drop" => Some(WasmRuntimeImport::CodecsStreamWriterDrop),
-        "molt_codecs_stream_writer_new" => Some(WasmRuntimeImport::CodecsStreamWriterNew),
-        "molt_codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
         "molt_concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
         "molt_concurrent_future_add_done_callback" => {
             Some(WasmRuntimeImport::ConcurrentFutureAddDoneCallback)

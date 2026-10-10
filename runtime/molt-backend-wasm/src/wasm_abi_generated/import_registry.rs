@@ -10365,21 +10365,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CodecsStreamWriterDrop,
-        name: "codecs_stream_writer_drop",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CodecsStreamWriterNew,
-        name: "codecs_stream_writer_new",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CodecsStreamWriterWrite,
-        name: "codecs_stream_writer_write",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentAsCompleted,
         name: "concurrent_as_completed",
         type_idx: 3,
@@ -18944,12 +18929,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_codecs_stream_reader_read" => Some(WasmRuntimeImport::CodecsStreamReaderRead),
         "codecs_stream_reader_readline" => Some(WasmRuntimeImport::CodecsStreamReaderReadline),
         "molt_codecs_stream_reader_readline" => Some(WasmRuntimeImport::CodecsStreamReaderReadline),
-        "codecs_stream_writer_drop" => Some(WasmRuntimeImport::CodecsStreamWriterDrop),
-        "molt_codecs_stream_writer_drop" => Some(WasmRuntimeImport::CodecsStreamWriterDrop),
-        "codecs_stream_writer_new" => Some(WasmRuntimeImport::CodecsStreamWriterNew),
-        "molt_codecs_stream_writer_new" => Some(WasmRuntimeImport::CodecsStreamWriterNew),
-        "codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
-        "molt_codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
         "concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
         "molt_concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
         "concurrent_future_add_done_callback" => {

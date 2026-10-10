@@ -1673,21 +1673,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_codecs_stream_writer_drop",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_codecs_stream_writer_new",
-        arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_codecs_stream_writer_write",
-        arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_codeop_compile",
         arity: 5,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,

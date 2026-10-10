@@ -1515,30 +1515,7 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
             let bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let out = match encode_string_with_errors(bytes, &encoding, Some(&errors)) {
                 Ok(bytes) => bytes,
-                Err(EncodeError::UnknownEncoding(name)) => {
-                    let msg = format!("unknown encoding: {name}");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(EncodeError::UnknownErrorHandler(name)) => {
-                    let msg = format!("unknown error handler name '{name}'");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
-                }
-                Err(EncodeError::InvalidChar {
-                    encoding,
-                    code,
-                    pos,
-                    limit,
-                }) => {
-                    let reason = encode_error_reason(encoding, code, limit);
-                    return raise_unicode_encode_error::<_>(
-                        _py,
-                        encoding,
-                        hay_bits,
-                        pos,
-                        pos + 1,
-                        &reason,
-                    );
-                }
+                Err(error) => return error.raise(_py, hay_bits),
             };
             let ptr = alloc_bytes(_py, &out);
             if ptr.is_null() {
