@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Iterable
 import _imp as _imp_mod
@@ -17,7 +16,6 @@ import warnings
 
 from .os_helper import temp_dir, unlink
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): extend import_helper coverage (extension loader helpers, importlib.machinery parity, and script helper utilities beyond ready_to_import).
 
@@ -240,5 +238,3 @@ __all__ = [
     "ready_to_import",
     "unload",
 ]
-
-globals().pop("_require_intrinsic", None)

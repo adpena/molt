@@ -6,7 +6,6 @@ from typing import Callable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_TOKENIZE_RUNTIME_READY = _require_intrinsic("molt_tokenize_runtime_ready")
 _MOLT_TOKENIZE_SCAN = _require_intrinsic("molt_tokenize_scan")
 
 ENDMARKER = 0
@@ -39,10 +38,8 @@ class TokenInfo:
 
 def tokenize(
     readline: Callable[[], bytes],
-    _runtime_ready_intrinsic=_MOLT_TOKENIZE_RUNTIME_READY,
     _tokenize_scan_intrinsic=_MOLT_TOKENIZE_SCAN,
 ) -> Iterator[TokenInfo]:
-    _runtime_ready_intrinsic()
     chunks: list[bytes] = []
     while True:
         chunk = readline()
@@ -70,7 +67,6 @@ __all__ = [
     "tokenize",
 ]
 
-del _MOLT_TOKENIZE_RUNTIME_READY
 del _MOLT_TOKENIZE_SCAN
 
 globals().pop("_require_intrinsic", None)

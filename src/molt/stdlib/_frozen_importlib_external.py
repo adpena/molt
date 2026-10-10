@@ -7,7 +7,6 @@ import sys
 
 _machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec",), 0)
 
-_require_intrinsic("molt_capabilities_has")
 _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD = _require_intrinsic(
     "molt_importlib_frozen_external_payload"
 )

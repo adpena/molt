@@ -13,9 +13,6 @@ import threading
 from traceback import format_exception
 import weakref
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from concurrent.futures import BrokenProcessPool, ProcessPoolExecutor
 
@@ -47,5 +44,3 @@ __all__ = [
     "threading",
     "weakref",
 ]
-
-globals().pop("_require_intrinsic", None)

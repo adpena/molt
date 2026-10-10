@@ -10,9 +10,7 @@ import sys
 import types as _types
 from typing import TYPE_CHECKING, Any, Callable
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 from .base_futures import isfuture as isfuture
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import (
     CancelledError,
@@ -256,8 +254,6 @@ __all__ = [
 if _EXPOSE_GRAPH:
     __all__.extend(["future_add_to_awaited_by", "future_discard_from_awaited_by"])
 
-globals().pop("_require_intrinsic", None)
-
 
 def _subscribe_completion(
     fut: Any, callback: Any, *, wake_waiter: bool = False
@@ -279,7 +275,6 @@ def _unsubscribe_completion(fut: Any, subscription: tuple[bool, Any]) -> None:
         fut._unsubscribe_done_callback(key)
     else:
         fut.remove_done_callback(key)
-
 
 
 async def _wait_for_future(future: Any) -> Any:

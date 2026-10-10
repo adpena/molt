@@ -8,9 +8,6 @@ import os
 import sys
 import types
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import iscoroutine, iscoroutinefunction
 
@@ -23,5 +20,3 @@ __all__ = [
     "sys",
     "types",
 ]
-
-globals().pop("_require_intrinsic", None)

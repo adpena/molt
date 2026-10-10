@@ -8,7 +8,6 @@ import sys
 
 Any = object
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_TRACEBACK_PAYLOAD = _require_intrinsic("molt_traceback_payload")
 _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY = _require_intrinsic(
     "molt_traceback_format_exception_only"

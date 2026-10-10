@@ -9,9 +9,6 @@ import threading
 import time
 import types
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import concurrent.futures as _futures
 
@@ -99,5 +96,3 @@ __all__ = [
     "types",
     "wait",
 ]
-
-globals().pop("_require_intrinsic", None)

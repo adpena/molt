@@ -759,8 +759,9 @@ def test_unread_intrinsic_requirement_is_not_backing(
         encoding="utf-8",
     )
     _configure_required_top_level(module, monkeypatch, root)
-    module.main()
+    assert module.main() == 1
     payload = json.loads(report.read_text(encoding="utf-8"))
+    assert [item["code"] for item in payload["diagnostics"]] == ["unread-intrinsics"]
     statuses = {entry["module"]: entry for entry in payload["modules"]}
     assert statuses["anchored_mod"]["status"] == "python-compiled"
     assert statuses["anchored_mod"]["intrinsics"] == []

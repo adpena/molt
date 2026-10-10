@@ -986,7 +986,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "- `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not full-coverage attestations.",
             "- Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).",
             "- Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).",
-            "- Gate rule: each attested full-coverage module must stay `intrinsic-backed` or `python-compiled`, declare its required intrinsic set (empty for `python-compiled`), and read every declared intrinsic.",
+            "- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, `intrinsic-support` or `python-compiled` without a progress marker, declare the intrinsic set it reads (empty for a pure facade or `python-compiled`), and read every declared intrinsic.",
             "- This rule applies to all stdlib modules and submodules.",
             "",
             "## CPython Top-Level Union Gate",
@@ -1325,7 +1325,11 @@ def _run_audit(args: argparse.Namespace) -> int:
             if module_name in modules_by_name
             and (
                 modules_by_name[module_name].status
-                not in {STATUS_INTRINSIC, STATUS_PYTHON_COMPILED}
+                not in {
+                    STATUS_INTRINSIC,
+                    STATUS_INTRINSIC_SUPPORT,
+                    STATUS_PYTHON_COMPILED,
+                }
                 or module_name in progress_marker_modules
             )
         )
@@ -1489,6 +1493,24 @@ def _run_audit(args: argparse.Namespace) -> int:
             for msg in errors:
                 messages.append(f"  {msg}")
 
+    unread_bindings = intrinsic_classification.unused_bindings
+    discarded_requirements = intrinsic_classification.discarded_requirements
+    if unread_bindings or discarded_requirements:
+        messages = diagnostics.setdefault("unread-intrinsics", [])
+        messages.append(
+            "stdlib intrinsics lint failed: required intrinsics nothing reads "
+            "(delete each requirement; an intrinsic must be read to count)"
+        )
+        for module in sorted(set(unread_bindings) | set(discarded_requirements)):
+            rel = _display_path(module_paths[module])
+            for binding in unread_bindings.get(module, ()):
+                messages.append(
+                    f"- {rel}:{binding.line}: `{binding.name}` binds "
+                    f"`{binding.intrinsic}` and no module reads it"
+                )
+            for name, line in discarded_requirements.get(module, ()):
+                messages.append(f"- {rel}:{line}: discards `{name}`")
+
     if missing_intrinsics:
         messages = diagnostics.setdefault("missing-intrinsics", [])
         messages.append("stdlib intrinsics lint failed: unknown intrinsic names")
@@ -1532,7 +1554,9 @@ def _run_audit(args: argparse.Namespace) -> int:
     if full_coverage_status_violations:
         messages = diagnostics.setdefault("full-coverage-status-violations", [])
         messages.append(
-            "stdlib intrinsics lint failed: full-coverage modules must remain intrinsic-backed"
+            "stdlib intrinsics lint failed: full-coverage modules must stay "
+            "implemented (intrinsic-backed, intrinsic-support or python-compiled) "
+            "without a progress marker"
         )
         for module, status in full_coverage_status_violations:
             messages.append(f"- {module}: {status}")

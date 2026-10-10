@@ -29,7 +29,6 @@ __all__ = [
     "field_size_limit",
 ]
 
-_MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready")
 _MOLT_CSV_QUOTE_MINIMAL = _require_intrinsic("molt_csv_quote_minimal")
 _MOLT_CSV_QUOTE_ALL = _require_intrinsic("molt_csv_quote_all")
 _MOLT_CSV_QUOTE_NONNUMERIC = _require_intrinsic("molt_csv_quote_nonnumeric")
@@ -56,7 +55,6 @@ _MOLT_CSV_VALIDATE_DIALECT = _require_intrinsic("molt_csv_validate_dialect")
 _MOLT_CSV_NORMALIZE_ROW = _require_intrinsic("molt_csv_normalize_row")
 _MOLT_CSV_DIALECT_LOOKUP_NAME = _require_intrinsic("molt_csv_dialect_lookup_name")
 
-_MOLT_CSV_RUNTIME_READY()
 
 QUOTE_MINIMAL = int(_MOLT_CSV_QUOTE_MINIMAL())
 QUOTE_ALL = int(_MOLT_CSV_QUOTE_ALL())

@@ -16,7 +16,6 @@ from collections.abc import Iterable
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # -- probe intrinsic (standard pattern) ------------------------------------
-_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 
 # -- signal constant intrinsics --------------------------------------------
 _MOLT_SIGNAL_SIG_DFL = _require_intrinsic("molt_signal_sig_dfl")

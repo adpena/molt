@@ -6,12 +6,6 @@ relies on `asyncio` (intrinsic-backed in molt), `contextvars`,
 code via `unittest`.
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import asyncio
 import contextvars
@@ -119,6 +113,3 @@ class IsolatedAsyncioTestCase(TestCase):
     def __del__(self):
         if self._asyncioRunner is not None:
             self._tearDownAsyncioRunner()
-
-
-globals().pop("_require_intrinsic", None)

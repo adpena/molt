@@ -1,7 +1,7 @@
 {
   "build_failure_test_skips": 14.0,
   "critical_hand_classifications": 0.0,
-  "debt_markers_total": 403.0,
+  "debt_markers_total": 448.0,
   "duplicate_authorities": 0.0,
   "hand_classified_matches": 0.0,
   "handset_classifications": 0.0,
@@ -11,7 +11,7 @@
   "max_undecomposed_file_lines": 0.0,
   "native_scalar_plan_authority_violations": 0.0,
   "process_wide_test_patches": 252.0,
-  "python_stub_surfaces_total": 460.0,
+  "python_stub_surfaces_total": 493.0,
   "repr_name_scalar_authority_violations": 0.0,
   "rust_backend_lowering_gaps_total": 0.0,
   "rust_backend_rejection_applicability_total": 0.0,

@@ -20,7 +20,6 @@ import weakref
 import logging as _logging
 from asyncio import socket as socket
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from asyncio import BaseEventLoop as BaseEventLoop
 from asyncio import Server as Server
@@ -37,7 +36,6 @@ from . import timeouts
 from . import transports
 from . import trsock
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 MAXIMUM_SELECT_TIMEOUT = 24 * 3600
 logger = _logging.getLogger("asyncio")
@@ -76,5 +74,3 @@ __all__ = [
     "warnings",
     "weakref",
 ]
-
-globals().pop("_require_intrinsic", None)

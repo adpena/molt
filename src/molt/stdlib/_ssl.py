@@ -1,6 +1,5 @@
 """Intrinsic-backed compatibility surface for CPython's `_ssl`."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from ssl import (
     CERT_NONE,
@@ -21,7 +20,6 @@ from ssl import (
     create_default_context,
 )
 
-_MOLT_SSL_CONTEXT_NEW = _require_intrinsic("molt_ssl_context_new")
 
 __all__ = [
     "CERT_NONE",
@@ -41,5 +39,3 @@ __all__ = [
     "TLSVersion",
     "create_default_context",
 ]
-
-globals().pop("_require_intrinsic", None)

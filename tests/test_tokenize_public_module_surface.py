@@ -16,10 +16,7 @@ import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
 
-calls = []
-
 install_registry({{
-    "molt_tokenize_runtime_ready": lambda: calls.append("ready"),
     "molt_tokenize_scan": lambda source: [
         (1, "x", (1, 0), (1, 1), source.splitlines()[0]),
         (4, "\\n", (1, 1), (1, 2), source.splitlines()[0]),
@@ -41,8 +38,7 @@ tokens = list(tokenize.tokenize(io.BytesIO(b"x\\n").readline))
 
 checks = {{
     "behavior": (
-        calls == ["ready"]
-        and tokens[0].type == tokenize.ENCODING
+        tokens[0].type == tokenize.ENCODING
         and tokens[1].type == tokenize.NAME
         and tokens[1].string == "x"
     ),

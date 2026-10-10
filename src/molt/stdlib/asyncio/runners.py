@@ -8,9 +8,6 @@ import signal
 import threading
 import contextvars
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio.constants as constants
 import asyncio.coroutines as coroutines
@@ -33,5 +30,3 @@ __all__ = [
     "tasks",
     "threading",
 ]
-
-globals().pop("_require_intrinsic", None)
