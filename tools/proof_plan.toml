@@ -1762,18 +1762,6 @@ argv = ["uv", "run", "python3", "tools/check_commit_attribution.py", "--introduc
 toolchains = ["python", "uv"]
 
 [[command]]
-id = "repository.status-blocks.generated"
-family = "repository_policy"
-cell = "linux-x86_64-py312-repository-policy"
-tiers = ["pre-push", "pr", "main"]
-resource_class = "repository-policy"
-timeout_seconds = 300
-cache_domain = "uv"
-dependencies = []
-argv = ["uv", "run", "python3", "tools/update_status_blocks.py", "--check"]
-toolchains = ["python", "uv"]
-
-[[command]]
 id = "repository.benchmark-docs.generated"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"

@@ -340,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ba1d20988419d204f86556cb18a9338135ceb718f0f22e74be1b787b9aa7f4e1",
+  "authority_sha256": "5bec5ef09afac123b5dbf846762c743ef4dee6b93da872776101c5a678846503",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1953,31 +1953,6 @@
         "main"
       ],
       "timeout_seconds": 60,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/update_status_blocks.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.status-blocks.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -6821,12 +6796,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1140,
+        "headroom_seconds": 1260,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2340,
-        "required_job_seconds": 2460,
+        "projected_makespan_seconds": 2220,
+        "required_job_seconds": 2340,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2145
+          "repository-policy": 2070
         }
       },
       "rust": {
