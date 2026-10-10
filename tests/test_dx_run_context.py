@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
+from tests.process_guard_common import run_guarded_test_process
 import molt.dx as dx
 from molt import custody_layout
 import pytest
@@ -1510,3 +1512,57 @@ def test_render_env_spells_hyphenated_names_per_shell() -> None:
 
     with pytest.raises(dx.DxConfigError, match="no underscore spelling"):
         dx.render_env({"ORPHAN-NAME": "x"}, ("ORPHAN-NAME",), "posix")
+
+
+def _git(repo: Path, *args: str) -> str:
+    completed = run_guarded_test_process(
+        ["git", "-C", str(repo), *args],
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        },
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+@pytest.mark.parametrize("layout", ["branch", "packed", "detached", "worktree"])
+def test_checkout_head_is_read_from_git_files_without_git_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is required to build the oracle repository")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "a")
+    checkout = repo
+    if layout == "packed":
+        _git(repo, "pack-refs", "--all")
+        assert not (repo / ".git" / "refs" / "heads" / "main").exists()
+    elif layout == "detached":
+        _git(repo, "checkout", "-q", "--detach")
+    elif layout == "worktree":
+        checkout = tmp_path / "linked"
+        _git(repo, "worktree", "add", "-q", "-b", "lane", str(checkout))
+        (checkout / "b.txt").write_text("b\n", encoding="utf-8")
+        _git(checkout, "add", "b.txt")
+        _git(checkout, "commit", "-q", "-m", "b")
+    oracle = _git(checkout, "rev-parse", "HEAD")
+    # Reading HEAD must not depend on a git executable.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert dx.git_checkout_head(checkout) == oracle
+
+
+def test_checkout_head_refuses_an_unreadable_layout(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
+    assert dx.git_checkout_head(tmp_path) is None
+    assert dx.git_checkout_head(tmp_path / "missing") is None
