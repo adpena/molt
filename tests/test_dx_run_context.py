@@ -868,15 +868,27 @@ def test_clone_outside_a_checkout_family_keeps_scratch_out_of_the_source_tree(
     assert Path(env["TMPDIR"]) == custody_layout.out_of_tree_scratch_root(repo_root)
 
 
-def _family(tmp_path: Path) -> tuple[Path, Path]:
+@pytest.fixture
+def family_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A `<family>/worktrees/lane` checkout family; returns (family, lane).
+
+    The host temp root is pinned away from ``tmp_path``: a session inside a
+    run context has ``TMPDIR`` at the family's run scratch, which holds the
+    pytest temp root, and would make every fixture project "explicit scratch".
+    """
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     family = tmp_path / "Molt"
     lane = family / "worktrees" / "lane"
     lane.mkdir(parents=True)
     return family.resolve(), lane.resolve()
 
 
-def test_artifact_root_is_what_canonical_env_exports(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_artifact_root_is_what_canonical_env_exports(
+    tmp_path: Path, family_layout: tuple[Path, Path]
+) -> None:
+    family, lane = family_layout
     explicit = tmp_path / "external"
 
     # Unset: the family root, never the worktree.
@@ -892,13 +904,10 @@ def test_artifact_root_is_what_canonical_env_exports(tmp_path: Path) -> None:
 
 
 def test_root_env_enters_only_the_family_molt_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, family_layout: tuple[Path, Path]
 ) -> None:
     """A test session builds where a developer run does (HF-114)."""
-    family, lane = _family(tmp_path)
-    monkeypatch.setattr(
-        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
-    )
+    family, lane = family_layout
     caller = {
         "TMPDIR": str(tmp_path / "caller-tmp"),
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "caller-venv"),
@@ -922,12 +931,9 @@ def test_root_env_enters_only_the_family_molt_roots(
 
 
 def test_root_env_keeps_explicit_roots_and_pinned_sessions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, family_layout: tuple[Path, Path]
 ) -> None:
-    family, lane = _family(tmp_path)
-    monkeypatch.setattr(
-        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
-    )
+    family, lane = family_layout
     explicit = tmp_path / "explicit-target"
 
     kept = RunContext(lane).root_env({"CARGO_TARGET_DIR": str(explicit)})
@@ -984,8 +990,10 @@ def test_artifact_root_refuses_the_checkout_when_external_is_required(
         )
 
 
-def test_scratch_dir_and_tmpdir_share_one_root(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_scratch_dir_and_tmpdir_share_one_root(
+    family_layout: tuple[Path, Path],
+) -> None:
+    family, lane = family_layout
 
     assert dx.scratch_root(lane, {}) == family / "tmp"
     assert dx.scratch_dir(lane, "bench", {}) == family / "tmp" / "bench"
@@ -1016,9 +1024,9 @@ def test_scratch_never_lands_in_a_plain_clone(tmp_path: Path) -> None:
 
 
 def test_memory_storage_moves_scratch_but_not_control_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family_layout: tuple[Path, Path]
 ) -> None:
-    family, lane = _family(tmp_path)
+    family, lane = family_layout
     ram = tmp_path / "ram"
     ram.mkdir()
     env = {"MOLT_SCRATCH_STORAGE": str(ram)}
@@ -1063,16 +1071,20 @@ def test_memory_storage_never_creates_a_ram_disk(
         dx.scratch_storage({"MOLT_SCRATCH_STORAGE": "ram"})
 
 
-def test_memory_storage_inside_the_checkout_is_refused(tmp_path: Path) -> None:
-    _family_root, lane = _family(tmp_path)
+def test_memory_storage_inside_the_checkout_is_refused(
+    family_layout: tuple[Path, Path],
+) -> None:
+    _family_root, lane = family_layout
     inside = lane / "ram"
     inside.mkdir()
     with pytest.raises(dx.DxConfigError, match="outside the checkout"):
         dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": str(inside)})
 
 
-def test_proof_scratch_root_prefers_the_queue_issued_root(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_proof_scratch_root_prefers_the_queue_issued_root(
+    tmp_path: Path, family_layout: tuple[Path, Path]
+) -> None:
+    family, lane = family_layout
     issued = tmp_path / "queue" / "scratch"
 
     assert dx.proof_scratch_root(lane, {}) == family / "tmp"
