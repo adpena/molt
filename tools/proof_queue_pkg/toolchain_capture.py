@@ -2808,7 +2808,11 @@ def validate_rust_link_selection(
                     "Cargo documenter witness differs from selected documenter inputs"
                 )
             documenter = flags.get("documenter")
-            if row["unit"] == "target" and invocation.requires_documenter:
+            if (
+                row["unit"] == "target"
+                and invocation is not None
+                and invocation.requires_documenter
+            ):
                 if (
                     not isinstance(documenter, Mapping)
                     or documenter.get("command") != producer

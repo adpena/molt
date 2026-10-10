@@ -2175,7 +2175,14 @@ def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutatio
 
 
 def _native_build_capture_fixture(
-    tmp_path, monkeypatch, *, required=True, resources=False, armed=True, operation="c"
+    tmp_path,
+    monkeypatch,
+    *,
+    required=True,
+    resources=False,
+    armed=True,
+    operation="c",
+    registered_command=None,
 ):
     """Real capture boundary with independent C/C++ driver transcripts."""
     from tools import proof_plan
@@ -2253,6 +2260,14 @@ def _native_build_capture_fixture(
         if required
         else ["cargo", "build"]
     )
+    admitted_command = command
+    if registered_command is not None:
+        from tools.proof_queue_pkg import command_admission
+
+        admitted_command = list(registered_command)
+        envelope = command_admission.envelope_for_command(admitted_command)
+        requirements = envelope["cargo_native_units"]
+        command = list((envelope.get("delegated") or envelope)["argv"])
     environment = {
         "PATH": str(tools["as"].parent),
         "CC": str(tools["selected-gcc"]),
@@ -2275,7 +2290,7 @@ def _native_build_capture_fixture(
         target=None,
         rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
         command_argv=command,
-        admitted_command=command,
+        admitted_command=admitted_command,
         native_units=requirements,
     )
     if armed:
@@ -3810,3 +3825,55 @@ def test_external_unstable_manifest_is_rejected_before_capability_compile(
             ],
         )
     assert all("--manifest-path" not in argv for argv in calls)
+
+
+def _registered_cargo_driver_cases():
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_admission
+
+    plan = proof_plan.ProofPlan.load()
+    cases = []
+    for row in (*plan.commands, *plan.named_lanes):
+        if "cargo" not in row.toolchains:
+            continue
+        envelope = command_admission.envelope_for_command(list(row.argv))
+        if command_admission.cargo_invocation_for_envelope(envelope) is None:
+            cases.append(pytest.param(list(row.argv), id=row.id))
+    return cases
+
+
+@pytest.mark.parametrize("registered_command", _registered_cargo_driver_cases())
+def test_registered_python_cargo_drivers_capture_validate_and_reuse(
+    tmp_path, monkeypatch, registered_command
+):
+    from tools.proof_queue_pkg import command_admission
+
+    # Real registered argv and real producer/receiver; only process execution
+    # supplies independent compiler transcripts. Python payloads deliberately
+    # have no CargoInvocation, even when their descendant closure includes Cargo.
+    identity, _tools, _env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, registered_command=registered_command
+    )
+    selection = toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=command, full_capture=True
+    )
+    assert [row["unit"] for row in selection["units"]] == ["target", "host-proc-macro"]
+    assert all(row["artifact_selection"]["link_required"] for row in selection["units"])
+    assert all("documenter" not in row["flag_context"] for row in selection["units"])
+    assert selection["admitted_command"] == registered_command
+    assert selection["producer_command"] == command
+    before = list(calls)
+    _, ref, _ = toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": identity})
+    loaded = toolchain_capture.load_capture(ref, cas_root=tmp_path / "cas")
+    toolchain_capture.validate_rust_link_selection(
+        loaded["toolchains"]["rustc"], command_argv=command, full_capture=True
+    )
+    toolchain_capture.revalidate_rust_link_process_images(
+        loaded["toolchains"]["rustc"],
+        target=None,
+        command_argv=command,
+        required_native_units=command_admission.envelope_for_command(
+            registered_command
+        )["cargo_native_units"],
+    )
+    assert calls == before

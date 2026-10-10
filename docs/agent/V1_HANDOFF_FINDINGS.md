@@ -78,8 +78,12 @@ identified and repaired forwarded rustc/Clippy emit/query handling, explicit-tar
 precedence, a proof-only stability restriction leaking into runtime planning, and
 an unconfined Cargo build directory. The affected successor cohort passes 563
 checks with 13 skips. Actual Cargo/Rust 1.99 linker-wrapper oracles independently
-confirm the operation distinctions; patched capture/replay, two capacity-blocked
-queue controls and actual Windows selection remain unqualified. This change is
+confirm the operation distinctions. The first patched runtime dispatch stopped
+before compilation because the strict receiver assumed registered Python Cargo
+drivers were direct Cargo invocations. The corrected receiver and all 55 declared
+driver rows pass capture, strict validation, CAS and reuse; the complete capture
+cohort passes 285 checks with 13 platform skips. Patched Linux capture/replay,
+two capacity-blocked queue controls and actual Windows selection remain unqualified. This change is
 not yet a public release or performance acceptance claim.
 
 Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
