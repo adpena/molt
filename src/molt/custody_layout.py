@@ -59,6 +59,19 @@ def out_of_tree_scratch_root(source_root: str | Path) -> Path:
     return base / name
 
 
+def disk_scratch_roots_of(artifact_root: str | Path) -> tuple[Path, Path]:
+    """Return both disk scratch roots an artifact root can have.
+
+    A checkout outside the root keeps scratch at `<root>/tmp`; a checkout
+    that is its own artifact root keeps it in its out-of-tree folder. An
+    observer that sees only the artifact root (a reclaimer, a preflight)
+    must look at both.
+    """
+
+    root = Path(artifact_root).expanduser().resolve()
+    return (root / SCRATCH_DIRNAME, out_of_tree_scratch_root(root))
+
+
 def scratch_root(
     artifact_root: str | Path,
     source_root: str | Path,

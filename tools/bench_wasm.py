@@ -36,7 +36,12 @@ from molt.harness_conformance import (  # noqa: E402
 )
 from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
-from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from molt.dx import (  # noqa: E402
+    artifact_root,
+    cargo_target_dir_for_artifact_root,
+    configured_artifact_root,
+    scratch_dir,
+)
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
@@ -71,8 +76,7 @@ def _wasm_runtime_root() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    ext_root = os.environ.get("MOLT_EXT_ROOT")
-    external_root = Path(ext_root).expanduser() if ext_root else None
+    external_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
     if external_root is not None and external_root.is_dir():
         return external_root / "wasm"
     return Path("wasm")
@@ -121,12 +125,8 @@ def _is_valid_wasm(path: Path) -> bool:
 
 
 def _external_root() -> Path | None:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        root = Path(configured).expanduser().resolve()
-        if root.is_dir():
-            return root
-    return None
+    root = configured_artifact_root(os.environ, relative_to=_repo_root())
+    return root if root is not None and root.is_dir() else None
 
 
 def _repo_root() -> Path:
@@ -137,10 +137,9 @@ def _cargo_target_root() -> Path:
     env_root = os.environ.get("CARGO_TARGET_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    external_root = _external_root()
-    if external_root is not None:
-        return cargo_target_dir_for_artifact_root(external_root, _wasm_session_id())
-    return cargo_target_dir_for_artifact_root(_repo_root(), _wasm_session_id())
+    return cargo_target_dir_for_artifact_root(
+        artifact_root(_repo_root()), _wasm_session_id()
+    )
 
 
 def _runtime_source_mtime() -> float:
@@ -1146,7 +1145,7 @@ def bench_results(
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     with harness_memory_guard.repo_process_sentinel(
         repo_root=_repo_root(),
-        artifact_root=_repo_root() / "tmp" / "bench",
+        artifact_root=scratch_dir(_repo_root(), "bench"),
         label="bench_wasm",
         limits=limits,
     ):

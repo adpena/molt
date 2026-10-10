@@ -738,11 +738,34 @@ def test_root_selection_requires_explicit_custody(tmp_path, name):
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
     assert (
-        dg.resolve_root(selected, env={dg.ENV_ROOT: str(unrelated)})
+        dg.resolve_root(selected, env={"MOLT_EXT_ROOT": str(unrelated)})
         == selected.resolve()
     )
-    assert dg.resolve_root(env={dg.ENV_ROOT: str(selected)}) == selected.resolve()
+    assert dg.resolve_root(env={"MOLT_EXT_ROOT": str(selected)}) == selected.resolve()
     with pytest.raises(SystemExit, match="could not resolve the artifact root"):
         dg.resolve_root(env={})
     with pytest.raises(SystemExit):
         dg.resolve_root(Path(tmp_path.anchor), env={})
+
+
+def test_out_of_tree_markers_protect_a_checkout_that_is_its_own_root(
+    tmp_path, monkeypatch
+):
+    import tempfile
+
+    from molt import custody_layout
+
+    host_tmp = tmp_path / "host-tmp"
+    host_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(host_tmp))
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    # A plain clone that is its own artifact root keeps guard state out of
+    # its tree; the reclaimer must still see that guard.
+    markers = custody_layout.out_of_tree_scratch_root(clone) / "memory_guard"
+    markers = markers / "active"
+    markers.mkdir(parents=True)
+    _guard_marker(markers, 1, "child_running")
+
+    assert not (clone / "tmp").exists()
+    assert dg._has_active_guard(clone) is True

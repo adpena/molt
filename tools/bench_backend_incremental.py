@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.throughput_measurement import PhaseResult, elapsed_sec, phase_result  # noqa: E402
+from molt.dx import artifact_root, scratch_dir  # noqa: E402
 
 
 @dataclass
@@ -41,22 +42,14 @@ class CaseResult:
     phases: list[PhaseResult]
 
 
-def _default_artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return REPO_ROOT
-
-
 def _resolve_output_root(output_root: str | None) -> tuple[Path, Path]:
     if output_root:
         root = Path(output_root).expanduser().resolve()
         return root, root
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    artifact_root = _default_artifact_root()
     return (
-        artifact_root / "tmp" / f"bench_backend_incremental_{stamp}",
-        artifact_root,
+        scratch_dir(REPO_ROOT, f"bench_backend_incremental_{stamp}"),
+        artifact_root(REPO_ROOT),
     )
 
 
@@ -306,8 +299,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output directory root. If omitted, defaults under the configured "
-            "artifact root (`MOLT_EXT_ROOT` when set, otherwise repo-local `tmp/`)."
+            "Output directory root. If omitted, defaults under the "
+            "run scratch root (molt.dx.scratch_dir), never inside the checkout."
         ),
     )
     parser.add_argument(

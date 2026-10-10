@@ -36,9 +36,10 @@ COORDINATION_RECORD_GLOB = "*/coordination.json"
 COORDINATION_RECORD_SOURCE = f"{LOG_ROOT.as_posix()}/{COORDINATION_RECORD_GLOB}"
 CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
 CODEX_CRASH_ROOT = LOG_ROOT / "codex_crash"
+# Checkout-local artifact roots. Scratch is never one: it lives out of the
+# tree (molt.dx.scratch_dir).
 CANONICAL_ARTIFACT_ROOTS = (
     Path("logs"),
-    Path("tmp"),
     Path("bench/results"),
     Path("target"),
 )
@@ -1558,7 +1559,7 @@ def build_record(
         "shared_target_root": target_root,
         "owned_paths": list(owned_paths),
         "ownership_request": request,
-        "artifact_roots": ["target/", "tmp/", "logs/", "bench/results/"],
+        "artifact_roots": ["target/", "logs/", "bench/results/"],
         "environment": environment_snapshot(repo_root),
         "env_sh": str(base / "env.sh"),
         "env_ps1": str(base / "env.ps1"),

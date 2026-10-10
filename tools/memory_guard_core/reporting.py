@@ -513,11 +513,10 @@ def write_worker_exit_summary_json(
     return True
 
 
-def default_incident_summary_path(root: Path) -> Path:
+def default_incident_summary_path(state_root: Path) -> Path:
+    """Name an incident summary under the guard's state root."""
     stamp = utc_compact_timestamp()
-    return (
-        root / "tmp" / "memory_guard" / "incidents" / f"{stamp}-pid{os.getpid()}.json"
-    )
+    return state_root / "incidents" / f"{stamp}-pid{os.getpid()}.json"
 
 
 def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:

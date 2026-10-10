@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 
 from gen_browser_asset_graph import AssetSource, _read_manifest, scan_sources
+from molt.dx import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "tmp" / "browser_asset_graph" / "batch_profile.json"
 
 
 def _profile(multiplier: int, sources: tuple[AssetSource, ...]) -> dict[str, object]:
@@ -42,7 +42,7 @@ def _profile(multiplier: int, sources: tuple[AssetSource, ...]) -> dict[str, obj
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     _groups, manifest_sources = _read_manifest()
     sources = tuple(
@@ -54,7 +54,9 @@ def main() -> int:
         "invariant": "one Node process and one source payload per batch",
         "schema_version": 1,
     }
-    output = args.output.resolve()
+    output = (
+        args.output or scratch_dir(ROOT, "browser_asset_graph") / "batch_profile.json"
+    ).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"

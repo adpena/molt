@@ -1524,7 +1524,9 @@ class RunContext:
         explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
         if explicit:
             return self._resolve_env_path(explicit)
-        ext_root = configured_artifact_root(env, relative_to=self.root) or self.root
+        ext_root = artifact_root(
+            self.root, env, prefer_external=self.prefer_external_artifacts
+        )
         return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def canonical_env(
@@ -1750,7 +1752,11 @@ class DxProject:
             if not path.is_absolute():
                 path = self.root / path
             return path.resolve()
-        ext_root = configured_artifact_root(env, relative_to=self.root) or self.root
+        ext_root = artifact_root(
+            self.root,
+            env,
+            prefer_external=bool(self.load_config().get("prefer_external_artifacts")),
+        )
         return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:

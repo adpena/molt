@@ -32,7 +32,7 @@ Usage:
     uv run python tools/bench_rust_transpile.py --iterations 5 --json results.json
 
 Environment:
-    MOLT_EXT_ROOT=<artifact-root>   # optional; defaults to repo root
+    MOLT_EXT_ROOT=<artifact-root>   # optional; defaults to the checkout family root
     CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID
     RUSTC_WRAPPER=""
     PYTHONPATH=src
@@ -67,13 +67,6 @@ DEFAULT_BENCHMARKS = [
 ]
 
 ITERATIONS = 10
-
-
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return REPO_ROOT
 
 
 def _find_rustc() -> str | None:

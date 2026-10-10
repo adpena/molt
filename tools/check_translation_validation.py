@@ -51,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 
 def _make_env() -> dict[str, str]:
@@ -409,7 +410,7 @@ def main() -> int:
     with harness_memory_guard.guarded_harness_scope(
         prefix="MOLT_CONFORMANCE",
         repo_root=REPO_ROOT,
-        artifact_root=REPO_ROOT / "tmp" / "translation_validation",
+        artifact_root=scratch_dir(REPO_ROOT, "translation_validation", guard_env),
         label="check_translation_validation",
         env=guard_env,
         limits=limits,
