@@ -14,7 +14,10 @@ These synthetic bundles are test inputs, never release acceptance evidence.
 Only inputs this checkout cannot supply are fixtured: the Pact registry (the
 live one has no native pact-witness coordinate yet), the verified-subset test
 projection (one differential test per real coordinate), measured perf and CI
-facts, and the Git custody preflight of bundle assembly.
+facts, and the Git custody preflight of bundle assembly. The hermetic tree has
+no Git, so the bundle reads its findings ledger from the tree instead of the
+blob at the source commit; tests/tools/test_release_exit_gate.py keeps the real
+blob read.
 """
 
 from __future__ import annotations
@@ -65,6 +68,24 @@ vs = pem.vs
 
 SOURCE_SHA = "a" * 40
 SIGNABLE = "S0"
+LEDGER = "docs/agent/V1_HANDOFF_FINDINGS.md"
+CLOSED_LEDGER = """# Findings
+
+## Open: release blockers
+
+| ID | Finding | Evidence |
+|----|---------|----------|
+
+## Fixed after the handoff
+
+| ID | Defect | Integrated fix and verification boundary |
+|----|--------|------------------------------------------|
+| HF-F1 (was HF-1) | A closed defect. | Fixed at 1234567; its regression passes. |
+"""
+OPEN_LEDGER = CLOSED_LEDGER.replace(
+    "|----|---------|----------|\n",
+    "|----|---------|----------|\n| HF-7 | An open defect. | CI run 7. |\n",
+)
 E2_REQUIREMENT = "H0.perf.cpython_floor_scoreboard"
 CPYTHON_BASELINE = "3.12.13"
 TRIPLES = {"native": "x86_64-pc-windows-msvc", "wasm": "wasm32-wasip1"}
@@ -165,6 +186,14 @@ def _checked_out(root: Path, source_sha: str) -> None:
     assert (root / rcr.KIND_TO_TOOL[rcr.KIND_VERIFIED_SUBSET]).is_file()
 
 
+def _ledger_in_tree(root: Path, source_sha: str) -> tuple[str, str]:
+    """The ledger read at the bundle source; the hermetic tree has no Git."""
+    assert source_sha == SOURCE_SHA
+    data = (root / LEDGER).read_bytes()
+    blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    return blob, data.decode("utf-8")
+
+
 _REAL_RELEASE_SCOREBOARD_PROBLEMS = pa.release_scoreboard_problems
 
 
@@ -190,6 +219,7 @@ def _admit_fixture_inputs(patch: pytest.MonkeyPatch) -> None:
     patch.setattr(reg, "_shared_scientific_registry_coordinates", _registry)
     patch.setattr(vs, "validate_manifest", _validation)
     patch.setattr(reg, "_assert_clean_landed_source", _checked_out)
+    patch.setattr(reg, "_ledger_at_source", _ledger_in_tree)
     patch.setattr(ps, "_git_rev", lambda: SOURCE_SHA)
 
 
@@ -214,6 +244,8 @@ def _source_root(base: Path) -> Path:
     (root / "config" / "legacy_inventory.toml").write_text(
         f'schema = "{li.SCHEMA}"\n', encoding="utf-8", newline="\n"
     )
+    (root / LEDGER).parent.mkdir(parents=True, exist_ok=True)
+    (root / LEDGER).write_text(CLOSED_LEDGER, encoding="utf-8", newline="\n")
     return root
 
 
@@ -1412,3 +1444,61 @@ def test_phase_input_allocation_does_not_reserve_policy_headroom(tmp_path):
     peaks = [row["peak"] for row in measurements]
     # A seven-MiB increase in permission must not allocate that unused space.
     assert peaks[1] - peaks[0] < 256 * 1024
+
+
+def test_open_finding_at_the_release_commit_is_an_open_obligation(
+    workspace: dict[str, Any], tmp_path: Path
+) -> None:
+    (workspace["root"] / LEDGER).write_text(OPEN_LEDGER, encoding="utf-8", newline="\n")
+    bundle, bundle_report = _release_bundle(
+        workspace, workspace["board"], tmp_path / "open-dist"
+    )
+    assert bundle_report.problems == ()
+    assert bundle_report.status == reg.STATUS_FAIL
+    assert bundle_report.open_findings == ("HF-7",)
+    held = {**workspace, "bundle": bundle}
+
+    output, report = _assemble(held)
+
+    assert _load(output)["open_obligations"] == ["HF-7"]
+    assert not report.green
+    assert "obligations: open obligations remain: HF-7" in report.problems
+    with pytest.raises(ValueError, match="open obligations remain: HF-7"):
+        _prepare(held)
+
+    # Dropping the finding from a re-signed manifest cannot hide it.
+    _resign(output, lambda manifest: manifest.update(open_obligations=[]))
+    hidden = _verify(held)
+    assert "obligations: open finding HF-7 is not listed as open" in hidden.problems
+
+
+def test_phase_rereads_the_ledger_instead_of_the_recorded_join(
+    workspace: dict[str, Any],
+) -> None:
+    output, report = _assemble(workspace)
+    assert report.green, report.problems
+    (workspace["root"] / LEDGER).write_text(OPEN_LEDGER, encoding="utf-8", newline="\n")
+
+    reread = _verify(workspace)
+
+    assert not reread.green
+    assert "obligations: open finding HF-7 is not listed as open" in reread.problems
+    assert any(
+        "findings.open omits findings open at the source: HF-7" in problem
+        for problem in reread.problems
+    )
+    assert _load(output)["open_obligations"] == []
+
+
+def test_phase_obligations_must_not_use_finding_ids(tmp_path: Path) -> None:
+    requirements = tmp_path / "phase_exit_requirements.toml"
+    requirements.write_text(
+        pem.REQUIREMENTS_PATH.read_text(encoding="utf-8").replace(
+            'id = "KA"\n', 'id = "HF-3"\n'
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(ValueError, match="obligation HF-3 uses a finding ID"):
+        pem.load_phases(requirements)

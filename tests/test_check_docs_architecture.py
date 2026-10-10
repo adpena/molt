@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from tools import finding_status
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "check_docs_architecture.py"
@@ -546,3 +548,124 @@ def test_checker_rejects_an_open_row_its_fixed_row_closed(tmp_path: Path) -> Non
         'was HF-91; remove the resurrected row, or write "(was part of HF-91)" '
         "when the fix was partial"
     ]
+
+
+def test_checker_rejects_a_renamed_v1_requirement_that_stays_open(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_ledger(
+        tmp_path,
+        [
+            "| V1-31 | Phase obligations omit open findings. | Join them. |",
+            "| HF-F167 (was V1-31) | Phase obligations omitted findings. | Joined. |",
+        ],
+    )
+    module.ROOT = tmp_path
+
+    errors = [error for error in module.check_repo() if "fixed row says" in error]
+
+    assert errors == [
+        "docs/agent/V1_HANDOFF_FINDINGS.md: V1-31 is open, but a fixed row says it "
+        'was V1-31; remove the resurrected row, or write "(was part of V1-31)" '
+        "when the fix was partial"
+    ]
+
+
+def test_checker_rejects_a_fixed_row_without_evidence(tmp_path: Path) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/agent/V1_HANDOFF_FINDINGS.md",
+        "# Ledger\n\n## Fixed after the handoff\n\n"
+        "| ID | Defect | Integrated fix and verification boundary |\n"
+        "|----|--------|------------------------------------------|\n"
+        "| HF-F9 | A defect. | Fixed at 1234567. |\n"
+        "| HF-F10 | A defect with no evidence. |   |\n"
+        "| HF-F11 | A short row. |\n",
+    )
+    module.ROOT = tmp_path
+
+    errors = [error for error in module.check_repo() if "V1_HANDOFF" in error]
+
+    assert errors == [
+        "docs/agent/V1_HANDOFF_FINDINGS.md: fixed row HF-F10 (line 8) records no "
+        "fix or verification evidence",
+        "docs/agent/V1_HANDOFF_FINDINGS.md: row HF-F11 (line 9) needs an ID cell, "
+        "a finding cell and an evidence cell",
+    ]
+
+
+LEDGER_TEXT = """# Ledger
+
+| V1-2 | Before any section, a row is open. | Acceptance. |
+
+## Release decision and exit scope
+
+| ID | Open release requirement | Acceptance |
+|----|--------------------------|------------|
+| V1-10 | A requirement. | Acceptance. |
+| V1-13 | A requirement with a fixed part. | Acceptance. |
+
+## Open: release blockers
+
+| ID | Finding | Evidence | Next step |
+|----|---------|----------|-----------|
+| HF-120 | A finding. | CI run. | Repair. |
+| HF-9 | A finding. | CI run. | Repair. |
+
+## Fixed after the handoff
+
+| ID | Defect | Integrated fix and verification boundary |
+|----|--------|------------------------------------------|
+| HF-F3 (was HF-3) | A defect. | Fixed at 1234567. |
+| HF-F4 (was part of HF-9) | Part of a defect. | Fixed at 89abcde. |
+| HF-67 | A defect fixed under its open ID. | Fixed at 1111111. |
+
+## Fixed during the handoff (for traceability)
+
+| ID | Defect | Fix |
+|----|--------|-----|
+| V1-13 (shared msghdr widths) | A part of V1-13. | Fixed at 2222222. |
+| HF-F1 | A defect. | 3333333 |
+"""
+
+
+def test_projection_gives_each_row_the_state_of_its_section() -> None:
+    status = finding_status.project(LEDGER_TEXT)
+
+    assert status.problems == ()
+    states = {row.key: row.state for row in status.rows}
+    assert states == {
+        "V1-2": "open",
+        "V1-10": "open",
+        "V1-13": "open",
+        "HF-120": "open",
+        "HF-9": "open",
+        "HF-F3": "fixed",
+        "HF-F4": "fixed",
+        "HF-67": "fixed",
+        "V1-13 (shared msghdr widths)": "fixed",
+        "HF-F1": "fixed",
+    }
+    # Only an exact "(was X)" renames a finding; a part closes nothing.
+    renamed = {row.key: row.renamed_from for row in status.rows if row.renamed_from}
+    assert renamed == {"HF-F3": "HF-3"}
+    # Canonical order is by ID family, then by number.
+    assert status.open_keys == ("HF-9", "HF-120", "V1-2", "V1-10", "V1-13")
+
+
+def test_projection_names_open_and_fixed_resurrections() -> None:
+    status = finding_status.project(
+        LEDGER_TEXT
+        + "| HF-F5 (was HF-120) | A defect. | Fixed at 4444444. |\n"
+        + "| HF-F6 (was HF-67) | A defect. | Fixed at 5555555. |\n"
+    )
+
+    assert status.problems == (
+        "HF-67 keeps a fixed row (line 25), but another row says it was HF-67; "
+        "give each finding one row",
+        "HF-120 is open, but a fixed row says it was HF-120; remove the resurrected "
+        'row, or write "(was part of HF-120)" when the fix was partial',
+    )

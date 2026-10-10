@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Assemble and verify the portable, source-addressed E1-E4 release bundle."""
+"""Assemble and verify the portable, source-addressed E1-E4 release bundle.
+
+The bundle also joins the findings ledger at its source revision. The gate
+reads the ledger blob that `source_sha` names through `tools/finding_status.py`
+and records every open finding. Status is PASS only when every typed receipt
+passes and no finding is open.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +33,7 @@ from molt.exact_json import ExactJsonError, loads_exact, write_exact  # noqa: E4
 from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
 from molt.verified_subset import VerifiedSubsetCoordinate  # noqa: E402
+from tools import finding_status  # noqa: E402
 from tools import pact_witness_receipt as pwr  # noqa: E402
 from tools import perf_authority as pa  # noqa: E402
 from tools import release_criterion_receipt as rcr  # noqa: E402
@@ -37,7 +44,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 _COMMANDS = CommandExecutor.for_file(__file__)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 KIND = "molt-release-exit"
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
@@ -62,8 +69,17 @@ BASE_EVIDENCE_ROLES = frozenset(
     }
 )
 _ROOT_KEYS = frozenset(
-    {"schema_version", "kind", "source_sha", "status", "registry", "evidence"}
+    {
+        "schema_version",
+        "kind",
+        "source_sha",
+        "status",
+        "registry",
+        "evidence",
+        "findings",
+    }
 )
+_FINDINGS_KEYS = frozenset({"ledger", "ledger_blob", "open"})
 _EVIDENCE_KEYS = frozenset({"role", "path", "sha256", "size"})
 _REGISTRY_KEYS = frozenset({"target", "variant", "packages"})
 _VARIANT_KEYS = frozenset({"cpython", "abi_tier", "target_triple"})
@@ -99,6 +115,16 @@ class ReleaseGateReport:
     status: str | None
     passed: bool
     problems: tuple[str, ...]
+    # The open findings of the ledger at source_sha, read by the verifier.
+    open_findings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceFindings:
+    """The findings ledger blob at one source revision and its projection."""
+
+    ledger_blob: str
+    status: finding_status.FindingStatus
 
 
 def _load_json(path: Path, *, label: str) -> Mapping[str, Any]:
@@ -136,6 +162,82 @@ def _git_output(repo_root: Path, *args: str) -> str:
         detail = result.stderr.strip() or result.stdout.strip()
         raise ValueError(f"git {' '.join(args)} failed: {detail}")
     return result.stdout.strip()
+
+
+def _ledger_at_source(repo_root: Path, source_sha: str) -> tuple[str, str]:
+    """Read the findings ledger blob that the release source commit names.
+
+    The bundle is source-addressed, so the ledger comes from the Git object at
+    `source_sha`, never from the checkout. Return the blob ID and its text.
+    """
+    if not _valid_source_sha(source_sha):
+        raise ValueError("release source_sha must be lowercase 40- or 64-hex")
+    # Without --verify, Git names the missing path or commit in its error.
+    spec = f"{source_sha}^{{commit}}:{finding_status.LEDGER_PATH.as_posix()}"
+    blob = _git_output(repo_root, "rev-parse", spec)
+    if not is_git_object_id(blob):
+        raise ValueError(f"findings ledger at {source_sha} has no blob ID: {blob!r}")
+    try:
+        result = _COMMANDS.run(
+            ["git", "-C", str(repo_root), "cat-file", "blob", blob],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"findings ledger read failed: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"git cat-file blob {blob} failed: {detail}")
+    try:
+        text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"findings ledger blob {blob} is not UTF-8: {exc}") from exc
+    return blob, text
+
+
+def source_findings(repo_root: Path, source_sha: str) -> SourceFindings:
+    """Project the findings ledger at the release source revision."""
+    blob, text = _ledger_at_source(repo_root, source_sha)
+    return SourceFindings(blob, finding_status.project(text))
+
+
+def _findings_record(findings: SourceFindings) -> dict[str, Any]:
+    return {
+        "ledger": finding_status.LEDGER_PATH.as_posix(),
+        "ledger_blob": findings.ledger_blob,
+        "open": list(findings.status.open_keys),
+    }
+
+
+def _validate_findings_record(value: object) -> tuple[tuple[str, ...], list[str]]:
+    """Check the shape of a recorded findings join; verification proves it."""
+    if not rcr._is_exact_object(value, _FINDINGS_KEYS):
+        return (), ["manifest findings must contain exactly ledger, ledger_blob, open"]
+    problems: list[str] = []
+    if value.get("ledger") != finding_status.LEDGER_PATH.as_posix():
+        problems.append(
+            f"manifest findings.ledger must be {finding_status.LEDGER_PATH.as_posix()}"
+        )
+    if not is_git_object_id(value.get("ledger_blob")):
+        problems.append("manifest findings.ledger_blob must be a Git object ID")
+    recorded = value.get("open")
+    if not isinstance(recorded, list) or not all(
+        finding_status.is_finding_key(key) for key in recorded
+    ):
+        problems.append("manifest findings.open must be a list of finding IDs")
+        return (), problems
+    if recorded != sorted(set(recorded), key=finding_status.finding_sort_key):
+        problems.append("manifest findings.open must be sorted and unique")
+    return tuple(recorded), problems
+
+
+def recorded_open_findings(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the open findings a bundle records; the verifier proves them."""
+    recorded, problems = _validate_findings_record(manifest.get("findings"))
+    if problems:
+        raise ValueError("; ".join(problems))
+    return recorded
 
 
 def _assert_clean_landed_source(repo_root: Path, source_sha: str) -> None:
@@ -436,10 +538,15 @@ def _typed_receipt_problems(
     )
 
 
-def _derive_status(typed_receipts: Sequence[Mapping[str, Any]]) -> str:
+def _derive_status(
+    typed_receipts: Sequence[Mapping[str, Any]],
+    open_findings: Sequence[str],
+) -> str:
+    """PASS needs every typed receipt to pass and every finding to be closed."""
     return (
         STATUS_PASS
-        if all(receipt.get("status") == rcr.STATUS_PASS for receipt in typed_receipts)
+        if not open_findings
+        and all(receipt.get("status") == rcr.STATUS_PASS for receipt in typed_receipts)
         else STATUS_FAIL
     )
 
@@ -560,7 +667,7 @@ def verify_release_bundle(
     try:
         payload = _load_json(manifest, label="release-exit manifest")
     except ValueError as exc:
-        return ReleaseGateReport(None, None, False, (str(exc),))
+        return ReleaseGateReport(None, None, False, (str(exc),), ())
     problems: list[str] = []
     if set(payload) != _ROOT_KEYS:
         problems.append(
@@ -581,6 +688,29 @@ def verify_release_bundle(
     status = payload.get("status")
     if status not in {STATUS_PASS, STATUS_FAIL}:
         problems.append("release-exit status must be PASS or FAIL")
+
+    recorded_findings, findings_problems = _validate_findings_record(
+        payload.get("findings")
+    )
+    problems.extend(findings_problems)
+    open_findings: tuple[str, ...] = ()
+    findings_proved = False
+    if expected_source_sha:
+        try:
+            source = source_findings(repo_root, expected_source_sha)
+        except (OSError, ValueError) as exc:
+            problems.append(f"cannot read the findings ledger at the source: {exc}")
+        else:
+            problems.extend(
+                f"findings ledger at the source: {problem}"
+                for problem in source.status.problems
+            )
+            open_findings = source.status.open_keys
+            findings_proved = not source.status.problems
+            if not findings_problems:
+                problems.extend(
+                    _findings_drift(payload["findings"], source, recorded_findings)
+                )
 
     bundle_root = manifest.parent
     expected_bundle_files = {manifest.resolve()}
@@ -738,9 +868,9 @@ def verify_release_bundle(
         if receipt is not None:
             typed_payloads.append(receipt)
 
-    derived_status = _derive_status(typed_payloads)
+    derived_status = _derive_status(typed_payloads, open_findings)
     expected_typed_receipt_count = len(expected_e3_coordinates) + len(typed_roles)
-    if len(typed_payloads) != expected_typed_receipt_count:
+    if len(typed_payloads) != expected_typed_receipt_count or not findings_proved:
         derived_status = STATUS_FAIL
     if status != derived_status:
         problems.append(
@@ -764,7 +894,36 @@ def verify_release_bundle(
         status if isinstance(status, str) else None,
         passed,
         tuple(problems),
+        open_findings,
     )
+
+
+def _findings_drift(
+    record: Mapping[str, Any],
+    source: SourceFindings,
+    recorded_open: Sequence[str],
+) -> list[str]:
+    """Name each way a recorded join differs from the ledger at the source."""
+    problems: list[str] = []
+    if record.get("ledger_blob") != source.ledger_blob:
+        problems.append(
+            "manifest findings.ledger_blob is not the ledger at the source: "
+            f"expected={source.ledger_blob}, got={record.get('ledger_blob')!r}"
+        )
+    actual = source.status.open_keys
+    unlisted = [key for key in actual if key not in recorded_open]
+    closed = [key for key in recorded_open if key not in actual]
+    if unlisted:
+        problems.append(
+            "manifest findings.open omits findings open at the source: "
+            + ", ".join(unlisted)
+        )
+    if closed:
+        problems.append(
+            "manifest findings.open lists findings not open at the source: "
+            + ", ".join(closed)
+        )
+    return problems
 
 
 def _copy_exact(source: Path, destination: Path) -> Path:
@@ -922,6 +1081,12 @@ def assemble_release_bundle(
 
     root = repo_root.resolve(strict=True)
     _assert_clean_landed_source(root, source_sha)
+    findings = source_findings(root, source_sha)
+    if findings.status.problems:
+        raise ValueError(
+            "findings ledger at the release source is invalid: "
+            + "; ".join(findings.status.problems)
+        )
     if len(e1_receipts) != 2:
         raise ValueError("release assembly requires exactly two E1 receipts")
     if len(e4_receipts) != 4:
@@ -1103,9 +1268,10 @@ def assemble_release_bundle(
             "schema_version": SCHEMA_VERSION,
             "kind": KIND,
             "source_sha": source_sha,
-            "status": _derive_status(typed_payloads),
+            "status": _derive_status(typed_payloads, findings.status.open_keys),
             "registry": _registry_snapshot(registry),
             "evidence": evidence,
+            "findings": _findings_record(findings),
         }
         write_exact(stage_manifest, manifest_payload, exclusive=True)
         stage_report = verify_release_bundle(
@@ -1136,6 +1302,11 @@ def _print_report(report: ReleaseGateReport) -> None:
     if report.problems:
         for problem in report.problems:
             print(f"[release-exit] {problem}")
+    if report.open_findings:
+        print(
+            f"[release-exit] open findings ({len(report.open_findings)}): "
+            + ", ".join(report.open_findings)
+        )
     if report.passed:
         print(
             f"[release-exit] PASS source_sha={report.source_sha}",

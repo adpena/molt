@@ -95,8 +95,12 @@ def verify_release_exit_manifest(
             f"release-exit bundle source differs from release plan: expected {source_sha}, got {report.source_sha}"
         )
     if not report.passed or report.problems:
+        reasons = list(report.problems)
+        if report.open_findings:
+            reasons.append("open findings: " + ", ".join(report.open_findings))
         raise ValueError(
-            "release-exit gate did not pass: " + "; ".join(report.problems)
+            "release-exit gate did not pass: "
+            + ("; ".join(reasons) or f"status is {report.status!r}")
         )
     return report
 

@@ -24,6 +24,35 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SHA = "a" * 40
 NOW = dt.datetime(2026, 8, 14, 1, 0, tzinfo=dt.timezone.utc)
 _REAL_TOOLCHAIN_PROBLEMS = release_exit_gate.pa.scoreboard_observed_toolchain_problems
+_REAL_LEDGER_AT_SOURCE = release_exit_gate._ledger_at_source
+LEDGER = "docs/agent/V1_HANDOFF_FINDINGS.md"
+_LEDGER_HEAD = """# Findings
+
+## Open: release blockers
+
+| ID | Finding | Evidence |
+|----|---------|----------|
+"""
+_LEDGER_FIXED = """
+## Fixed after the handoff
+
+| ID | Defect | Integrated fix and verification boundary |
+|----|--------|------------------------------------------|
+| HF-F1 (was HF-1) | A closed defect. | Fixed at 1234567; its regression passes. |
+"""
+# Each ledger states its open rows literally; the tests compare the gate with
+# these literals, never with a second parse.
+CLOSED_LEDGER = _LEDGER_HEAD + _LEDGER_FIXED
+OPEN_LEDGER = (
+    _LEDGER_HEAD
+    + "| HF-7 | An open defect. | CI run 7. |\n"
+    + "| V1-3 | An open requirement. | Its acceptance obligation. |\n"
+    + _LEDGER_FIXED
+)
+RESURRECTED_LEDGER = (
+    _LEDGER_HEAD + "| HF-1 | Brought back by a merge. | CI run 1. |\n" + _LEDGER_FIXED
+)
+UNEVIDENCED_LEDGER = CLOSED_LEDGER + "| HF-F2 | A defect with no evidence. |  |\n"
 
 
 @pytest.mark.parametrize("target", [[], {}, None, True])
@@ -62,6 +91,11 @@ def _load_gate(
     monkeypatch.setattr(module.pa.perf_schema, "validate_board", lambda _doc: [])
     if stub_source:
         monkeypatch.setattr(module, "_assert_clean_landed_source", lambda *_args: None)
+        # The synthetic source SHA names no Git commit. Its ledger holds only
+        # fixed rows; the real-Git controls below keep the actual blob read.
+        monkeypatch.setattr(
+            module, "_ledger_at_source", lambda *_args: ("c" * 40, CLOSED_LEDGER)
+        )
     monkeypatch.setattr(
         module,
         "_shared_scientific_registry_coordinates",
@@ -660,8 +694,15 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
         "status",
         "registry",
         "evidence",
+        "findings",
     }
     assert payload["status"] == gate.STATUS_PASS
+    assert payload["findings"] == {
+        "ledger": LEDGER,
+        "ledger_blob": "c" * 40,
+        "open": [],
+    }
+    assert report.open_findings == ()
     assert [item["role"] for item in payload["evidence"]] == sorted(
         gate._expected_evidence_roles(verified_subset.verified_subset_coordinates())
     )
@@ -1142,3 +1183,180 @@ def test_verification_rejects_unadmitted_e2_toolchains(tmp_path, monkeypatch):
         "E2:" in problem and "used-byte admission receipt is unavailable" in problem
         for problem in report.problems
     )
+
+
+def _git(repo: Path, *args: str) -> str:
+    return run_guarded_test_process(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+
+@pytest.fixture()
+def ledger_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "ledger-repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "dev@example.com")
+    _git(root, "config", "user.name", "Dev")
+    _git(root, "config", "commit.gpgsign", "false")
+    return root
+
+
+def _commit_ledger(repo: Path, text: str) -> str:
+    path = repo / LEDGER
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    _git(repo, "add", "--", LEDGER)
+    _git(repo, "commit", "-q", "-m", "Record the findings ledger")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _ledger_from(monkeypatch: pytest.MonkeyPatch, gate, repo: Path, sha: str) -> None:
+    """Read the real ledger blob of *sha* for the synthetic release source.
+
+    The synthetic receipts bind source "a" * 40, which names no commit. Only
+    the commit lookup moves to the temporary repository; the Git blob read, the
+    projection and the status derivation stay real.
+    """
+    monkeypatch.setattr(
+        gate, "_ledger_at_source", lambda *_args: _REAL_LEDGER_AT_SOURCE(repo, sha)
+    )
+
+
+def test_source_findings_read_the_ledger_blob_at_the_source_revision(
+    ledger_repo: Path,
+) -> None:
+    gate = release_exit_gate
+    opened = _commit_ledger(ledger_repo, OPEN_LEDGER)
+    closed = _commit_ledger(ledger_repo, CLOSED_LEDGER)
+    # A dirty checkout must not change the facts of a committed revision.
+    (ledger_repo / LEDGER).write_text(OPEN_LEDGER, encoding="utf-8", newline="\n")
+
+    at_open = gate.source_findings(ledger_repo, opened)
+    at_closed = gate.source_findings(ledger_repo, closed)
+
+    assert at_open.status.open_keys == ("HF-7", "V1-3")
+    assert at_open.status.problems == ()
+    assert at_open.ledger_blob == _git(ledger_repo, "rev-parse", f"{opened}:{LEDGER}")
+    assert at_closed.status.open_keys == ()
+    assert at_closed.ledger_blob == _git(ledger_repo, "rev-parse", f"{closed}:{LEDGER}")
+    with pytest.raises(ValueError, match="invalid object name"):
+        gate.source_findings(ledger_repo, "b" * 40)
+    tree = _git(ledger_repo, "rev-parse", f"{closed}^{{tree}}")
+    with pytest.raises(ValueError, match="rev-parse"):
+        gate.source_findings(ledger_repo, tree)
+
+
+def test_open_finding_at_the_source_refuses_pass_and_names_every_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ledger_repo: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gate = _load_gate(monkeypatch)
+    opened = _commit_ledger(ledger_repo, OPEN_LEDGER)
+    _ledger_from(monkeypatch, gate, ledger_repo, opened)
+
+    manifest_path, report = _assemble(tmp_path, gate)
+
+    # Every typed receipt passes; only the open findings hold the release.
+    assert report.problems == ()
+    assert report.passed is False
+    assert report.status == gate.STATUS_FAIL
+    assert report.open_findings == ("HF-7", "V1-3")
+    payload = _read(manifest_path)
+    assert payload["status"] == gate.STATUS_FAIL
+    assert payload["findings"] == {
+        "ledger": LEDGER,
+        "ledger_blob": _git(ledger_repo, "rev-parse", f"{opened}:{LEDGER}"),
+        "open": ["HF-7", "V1-3"],
+    }
+    gate._print_report(report)
+    assert "open findings (2): HF-7, V1-3" in capsys.readouterr().out
+
+    payload["status"] = gate.STATUS_PASS
+    _write(manifest_path, payload)
+    forged_status = gate.verify_release_bundle(
+        manifest_path, repo_root=REPO_ROOT, now=NOW
+    )
+    assert forged_status.passed is False
+    assert any("status is not derived" in problem for problem in forged_status.problems)
+
+    payload["findings"]["open"] = []
+    _write(manifest_path, payload)
+    forged_join = gate.verify_release_bundle(
+        manifest_path, repo_root=REPO_ROOT, now=NOW
+    )
+    assert forged_join.passed is False
+    assert (
+        "manifest findings.open omits findings open at the source: HF-7, V1-3"
+        in forged_join.problems
+    )
+
+
+def test_zero_open_ledger_passes_until_the_source_ledger_disagrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ledger_repo: Path,
+) -> None:
+    gate = _load_gate(monkeypatch)
+    closed = _commit_ledger(ledger_repo, CLOSED_LEDGER)
+    opened = _commit_ledger(ledger_repo, OPEN_LEDGER)
+    _ledger_from(monkeypatch, gate, ledger_repo, closed)
+
+    manifest_path, report = _assemble(tmp_path, gate)
+
+    assert report.passed is True
+    assert report.open_findings == ()
+    assert _read(manifest_path)["findings"]["open"] == []
+
+    # The verifier rereads the source ledger; it never trusts the recorded join.
+    _ledger_from(monkeypatch, gate, ledger_repo, opened)
+    reread = gate.verify_release_bundle(manifest_path, repo_root=REPO_ROOT, now=NOW)
+    assert reread.passed is False
+    assert reread.open_findings == ("HF-7", "V1-3")
+    assert (
+        "manifest findings.open omits findings open at the source: HF-7, V1-3"
+        in reread.problems
+    )
+    assert any("status is not derived" in problem for problem in reread.problems)
+    assert any(
+        "ledger_blob is not the ledger" in problem for problem in reread.problems
+    )
+
+
+@pytest.mark.parametrize(
+    ("ledger", "defect"),
+    [
+        (RESURRECTED_LEDGER, "HF-1 is open, but a fixed row says it was HF-1"),
+        (UNEVIDENCED_LEDGER, "fixed row HF-F2 (line 13) records no fix"),
+    ],
+    ids=["resurrected", "unevidenced"],
+)
+def test_invalid_source_ledger_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ledger_repo: Path,
+    ledger: str,
+    defect: str,
+) -> None:
+    gate = _load_gate(monkeypatch)
+    manifest_path, report = _assemble(tmp_path / "closed", gate)
+    assert report.passed is True
+    invalid = _commit_ledger(ledger_repo, ledger)
+    _ledger_from(monkeypatch, gate, ledger_repo, invalid)
+
+    with pytest.raises(
+        ValueError, match="findings ledger at the release source"
+    ) as exc:
+        _assemble(tmp_path / "invalid", gate)
+    assert defect in str(exc.value)
+
+    reread = gate.verify_release_bundle(manifest_path, repo_root=REPO_ROOT, now=NOW)
+    assert reread.passed is False
+    assert any(defect in problem for problem in reread.problems)

@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4459b81e4d295215ef12c4d88122fb03f0f8735d519adb3cb05dfb5a83bc06d1",
+  "authority_sha256": "8d332628ca65c109a54f72ec0ab5f9531a83974c5f562b5d8145967681aaddf8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8151,7 +8151,8 @@
         "globs": [
           "docs/**/*.md",
           "tools/update_status_blocks.py",
-          "tools/check_docs_architecture.py"
+          "tools/check_docs_architecture.py",
+          "tools/finding_status.py"
         ],
         "name": "docs-architecture"
       },
@@ -8503,6 +8504,7 @@
         ],
         "globs": [
           "tools/phase_exit_manifest.py",
+          "tools/finding_status.py",
           "tools/legacy_inventory.py",
           "config/phase_exit_requirements.toml",
           "config/legacy_inventory.toml",

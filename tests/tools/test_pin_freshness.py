@@ -13,7 +13,7 @@ import pytest
 from molt import tool_releases
 from molt.binaryen_toolchain import BinaryenConfigError, load_binaryen_manifest
 from molt.llvm_toolchain import load_llvm_releases
-from tools import pin_freshness
+from tools import finding_status, pin_freshness
 from tools.pin_freshness import Pin, PinFreshnessError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,7 +92,7 @@ def test_a_hold_must_name_a_known_pin() -> None:
 
 
 def test_repository_holds_cite_open_ledger_rows() -> None:
-    open_rows = pin_freshness.open_ledger_rows(ROOT)
+    open_rows = finding_status.read_ledger(ROOT).open_keys
     for name, row in pin_freshness.HOLDS.items():
         assert row in open_rows, (name, row)
 
