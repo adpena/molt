@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import copy
 from contextlib import contextmanager
 import hashlib
 import io
+import importlib.machinery
 import json
 import os
 from pathlib import Path
 import stat
 import shutil
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from tools.command_execution import CommandExecutor
@@ -1454,3 +1456,217 @@ def test_runtime_startup_projection_preserves_actual_native_selection(
     observed.contracts = ("original-contract",)
     observed.macho_identities = {first_image: (3, 4)}
     assert runtime.current_python_runtime_selection() != baseline
+
+
+class _CustodyImportReached(Exception):
+    """Stop the real facade at the first package import, after admission."""
+
+
+def _execute_probe_to_package_import(source: Path, imports: list[str]) -> None:
+    original_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name == "tools" or name.startswith("tools."):
+            raise AssertionError("installed probe requires repository-only tools")
+        if name == "molt" or name.startswith("molt."):
+            imports.append(name)
+            raise _CustodyImportReached(name)
+        return original_import(name, *args, **kwargs)
+
+    # Execute the complete, current facade, not a copied bootstrap algorithm or
+    # AST-selected prefix. The import observer is only the stopping boundary;
+    # package/source validation and standard helper loading are production code.
+    exec(
+        compile(source.read_bytes(), str(source), "exec"),
+        {
+            "__name__": "__main__",
+            "__package__": "",
+            "__file__": str(source),
+            "__builtins__": {**vars(builtins), "__import__": observe_import},
+        },
+    )
+
+
+@pytest.fixture
+def standalone_probe_source(tmp_path, monkeypatch):
+    installed = tmp_path / "installed" / "molt"
+    installed.mkdir(parents=True)
+    original = Path(identity.__file__).resolve().parent
+    for name in ("python_environment_identity.py", "package_import_custody.py"):
+        (installed / name).write_bytes((original / name).read_bytes())
+    (installed / "__init__.py").write_text("", encoding="utf-8")
+    for name in tuple(sys.modules):
+        if name == "molt" or name.startswith("molt."):
+            monkeypatch.delitem(sys.modules, name)
+    monkeypatch.delitem(sys.modules, "_molt_package_import_custody", raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    return (installed / "python_environment_identity.py").resolve()
+
+
+@pytest.mark.parametrize("package_state", ["absent", "selected", "namespace"])
+def test_standalone_probe_admits_selected_package_without_repository_tools(
+    standalone_probe_source, package_state, monkeypatch
+):
+    source = standalone_probe_source
+    selected = source.parent
+    if package_state != "absent":
+        root = ModuleType("molt")
+        root.__file__ = str(selected / "__init__.py")
+        root.__path__ = [str(selected)]
+        monkeypatch.setitem(sys.modules, "molt", root)
+    if package_state == "namespace":
+        nested = selected / "plugins"
+        nested.mkdir()
+        namespace = ModuleType("molt.plugins")
+        namespace.__path__ = [str(nested)]
+        spec = importlib.machinery.ModuleSpec("molt.plugins", None, is_package=True)
+        spec.submodule_search_locations = list(namespace.__path__)
+        namespace.__spec__ = spec
+        monkeypatch.setitem(sys.modules, "molt.plugins", namespace)
+        prior_path, prior_spec = namespace.__path__, namespace.__spec__
+    imports = []
+    with pytest.raises(_CustodyImportReached, match="molt.python_identity_common"):
+        _execute_probe_to_package_import(source, imports)
+    assert imports == ["molt.python_identity_common"]
+    assert sys.path[0] == str(selected.parent)
+    authority = sys.modules["_molt_package_import_custody"]
+    assert authority.__file__ == str(selected / "package_import_custody.py")
+    assert authority.__package__ == ""
+    assert not (selected.parent / "tools").exists()
+    if package_state == "namespace":
+        assert namespace.__path__ is prior_path
+        assert namespace.__spec__ is prior_spec
+
+
+@pytest.mark.parametrize("foreign_kind", ["root", "descendant", "namespace"])
+@pytest.mark.parametrize("authority_preloaded", [False, True])
+def test_standalone_probe_refuses_foreign_package_before_custody_imports(
+    standalone_probe_source, foreign_kind, authority_preloaded, monkeypatch, capsys
+):
+    source = standalone_probe_source
+    selected = source.parent
+    foreign = selected.parent.parent / "foreign" / "molt"
+    foreign.mkdir(parents=True)
+    root = ModuleType("molt")
+    root.__file__ = str(selected / "__init__.py")
+    root.__path__ = [str(selected)]
+    monkeypatch.setitem(sys.modules, "molt", root)
+    poisoned = root
+    if foreign_kind == "root":
+        root.__file__ = str(foreign / "__init__.py")
+        root.__path__ = [str(foreign)]
+        # A descendant loaded through the foreign root (CI's custody hook can
+        # import one mid-test) must not hide the root as the reported cause.
+        stray = ModuleType("molt.stray")
+        stray.__file__ = str(selected.parent.parent / "elsewhere" / "stray.py")
+        monkeypatch.setitem(sys.modules, "molt.stray", stray)
+    elif foreign_kind == "descendant":
+        poisoned = ModuleType("molt.foreign")
+        poisoned.__file__ = str(foreign / "foreign.py")
+        monkeypatch.setitem(sys.modules, "molt.foreign", poisoned)
+    else:
+        nested = selected / "plugins"
+        nested.mkdir()
+        poisoned = ModuleType("molt.plugins")
+        poisoned.__path__ = [str(nested), str(foreign)]
+        spec = importlib.machinery.ModuleSpec("molt.plugins", None, is_package=True)
+        spec.submodule_search_locations = list(poisoned.__path__)
+        poisoned.__spec__ = spec
+        monkeypatch.setitem(sys.modules, "molt.plugins", poisoned)
+    prior_metadata = vars(poisoned).copy()
+    prior_locations = tuple(getattr(poisoned, "__path__", ()))
+    prior_spec_locations = tuple(
+        getattr(getattr(poisoned, "__spec__", None), "submodule_search_locations", ())
+        or ()
+    )
+    if authority_preloaded:
+        prior_authority = identity._load_package_import_custody(
+            selected / "package_import_custody.py"
+        )
+    before_path = list(sys.path)
+    before_packages = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "molt" or name.startswith("molt.")
+    }
+    imports = []
+    with pytest.raises(SystemExit) as raised:
+        _execute_probe_to_package_import(source, imports)
+    assert raised.value.code == 2
+    assert imports == []
+    diagnostic = capsys.readouterr().err
+    assert "package source admission failed" in diagnostic
+    assert str(selected) in diagnostic
+    assert str(foreign) in diagnostic
+    assert sys.path == before_path
+    assert vars(poisoned) == prior_metadata
+    assert tuple(getattr(poisoned, "__path__", ())) == prior_locations
+    assert (
+        tuple(
+            getattr(
+                getattr(poisoned, "__spec__", None), "submodule_search_locations", ()
+            )
+            or ()
+        )
+        == prior_spec_locations
+    )
+    assert {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "molt" or name.startswith("molt.")
+    } == before_packages
+    if authority_preloaded:
+        assert sys.modules["_molt_package_import_custody"] is prior_authority
+    else:
+        assert "_molt_package_import_custody" not in sys.modules
+
+
+def test_standalone_probe_preserves_explicit_failed_authority_binding(
+    standalone_probe_source, monkeypatch, capsys
+):
+    monkeypatch.setitem(sys.modules, "_molt_package_import_custody", None)
+    before_path = list(sys.path)
+    imports = []
+    with pytest.raises(SystemExit) as raised:
+        _execute_probe_to_package_import(standalone_probe_source, imports)
+    assert raised.value.code == 2
+    assert imports == []
+    assert "already loaded from another authority" in capsys.readouterr().err
+    assert sys.path == before_path
+    assert "_molt_package_import_custody" in sys.modules
+    assert sys.modules["_molt_package_import_custody"] is None
+
+
+def test_capture_authority_preserves_installed_package_and_explicit_source_owners(
+    tmp_path, monkeypatch
+):
+    installed = tmp_path / "installation" / "molt"
+    selected = tmp_path / "compiler-source"
+    monkeypatch.setattr(
+        identity, "__file__", str(installed / "python_environment_identity.py")
+    )
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(selected))
+
+    captured = identity.python_capture_authority_paths()
+    assert installed / "python_environment_identity.py" in captured
+    assert installed / "package_import_custody.py" in captured
+    assert selected / "src/molt/package_import_custody.py" not in captured
+
+    projected = identity.python_capture_authority_paths(source_root=selected)
+    assert selected / "src/molt/python_environment_identity.py" in projected
+    assert selected / "src/molt/package_import_custody.py" in projected
+    assert installed / "package_import_custody.py" not in projected
+
+
+def test_promoted_default_paths_belongs_to_loaded_and_projected_python_custody(
+    tmp_path,
+):
+    captured = identity.python_capture_authority_paths()
+    assert Path(identity.__file__).parent / "default_paths.py" in captured
+    assert not any(
+        path.as_posix().endswith("molt/cli/default_paths.py") for path in captured
+    )
+    assert (
+        tmp_path / "src/molt/default_paths.py"
+        in identity.python_capture_authority_paths(source_root=tmp_path)
+    )

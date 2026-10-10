@@ -1930,7 +1930,6 @@ def test_extension_build_emits_wheel_and_manifest(
     out_dir = project_root / "dist"
     monkeypatch.chdir(project_root)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
-    monkeypatch.setenv("MOLT_HASH_SEED", "0")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -2027,7 +2026,6 @@ def test_extension_build_cli_rejects_invalid_target_before_artifact_creation(
     out_dir = project_root / "dist"
     monkeypatch.chdir(project_root)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
-    monkeypatch.setenv("MOLT_HASH_SEED", "0")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -2309,7 +2307,6 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
     out_dir = project_root / "dist"
     monkeypatch.chdir(project_root)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
-    monkeypatch.setenv("MOLT_HASH_SEED", "0")
     monkeypatch.setattr(
         sys,
         "argv",

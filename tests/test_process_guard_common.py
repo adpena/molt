@@ -27,7 +27,10 @@ def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> N
     result = process_guard_common.run_guarded_test_process(
         ["python3", "-c", "print('ok')"],
         prefix="MOLT_UNIT_TEST",
-        env={"MOLT_UNIT_TEST_TIMEOUT_SEC": "12"},
+        env={
+            **process_guard_common.guard_custody_env(),
+            "MOLT_UNIT_TEST_TIMEOUT_SEC": "12",
+        },
     )
 
     assert result.returncode == 0
@@ -148,6 +151,7 @@ def test_nested_guard_defaults_cannot_undercut_owning_proof_budget(
         command,
         prefix=prefix,
         env={
+            **process_guard_common.guard_custody_env(),
             PROOF_COMMAND_TIMEOUT_ENV: "1200",
             f"{prefix}_TIMEOUT_SEC": "300",
         },
@@ -173,7 +177,10 @@ def test_explicit_nested_operation_timeout_remains_narrower_than_owner(
     process_guard_common.run_guarded_test_process(
         ["node", "probe.js"],
         prefix="MOLT_WASM_TEST",
-        env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
+        env={
+            **process_guard_common.guard_custody_env(),
+            PROOF_COMMAND_TIMEOUT_ENV: "1200",
+        },
         timeout=10,
     )
 

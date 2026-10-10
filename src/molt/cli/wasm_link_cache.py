@@ -12,7 +12,7 @@ from typing import Collection, Generator, Mapping
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_locks import _acquire_file_lock, _release_file_lock
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.exact_json import loads_exact
 
 

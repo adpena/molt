@@ -16,7 +16,7 @@ import molt.dx as molt_dx
 from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
-from tests.process_guard_common import current_thread_only
+from tests.process_guard_common import current_thread_only, guard_custody_env
 
 # Limit resolution here must not inherit the CI plan's guard caps.
 pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
@@ -942,7 +942,11 @@ def test_guarded_completed_process_writes_command_profile(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
         operation_role="build",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log), "MOLT_SESSION_ID": "unit"},
+        env={
+            **guard_custody_env(),
+            "MOLT_GUARD_PROFILE_LOG": str(profile_log),
+            "MOLT_SESSION_ID": "unit",
+        },
         limits=limits,
     )
 
@@ -1062,7 +1066,10 @@ def test_guarded_completed_process_profiles_incident_by_default(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
-        env={"PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)"},
+        env={
+            **guard_custody_env(),
+            "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
+        },
         limits=limits,
     )
 
@@ -1180,6 +1187,7 @@ def test_guarded_completed_process_rotates_command_profile(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
         env={
+            **guard_custody_env(),
             "MOLT_GUARD_PROFILE_LOG": str(profile_log),
             "MOLT_GUARD_PROFILE_MAX_MB": "0.001",
         },
@@ -1223,7 +1231,7 @@ def test_guarded_completed_process_streamed_commands_emit_keepalive(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_WASM_TEST",
-        env={"MOLT_WASM_TEST_KEEPALIVE_SEC": "3"},
+        env={**guard_custody_env(), "MOLT_WASM_TEST_KEEPALIVE_SEC": "3"},
         limits=limits,
         capture_output=False,
     )
@@ -1266,7 +1274,7 @@ def test_guarded_completed_process_capture_commands_use_explicit_keepalive(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_BENCH",
-        env={"MOLT_BENCH_KEEPALIVE_SEC": "4"},
+        env={**guard_custody_env(), "MOLT_BENCH_KEEPALIVE_SEC": "4"},
         limits=limits,
         capture_output=True,
         progress_label="throughput matrix build",
@@ -1640,7 +1648,7 @@ def test_guarded_completed_process_reports_guard_parent_signal(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
         prefix="MOLT_TEST",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
 
@@ -1701,7 +1709,7 @@ def test_guarded_completed_process_profiles_secondary_guard_signal(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
         prefix="MOLT_TEST",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
 
@@ -2146,7 +2154,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
         prefix="MOLT_CLI",
         input=b"ir",
         cwd=tmp_path,
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         timeout=10.0,
         progress_label="Backend compile",
         limits=limits,
@@ -3740,7 +3748,8 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
 
     assert result.stdout == stdout
     assert result.child_stderr == child_stderr
-    assert result.descendants_closed is True
+    # The guard's own stderr names the closure condition that failed.
+    assert result.descendants_closed is True, result.stderr
     assert result.sampling_telemetry is not None
     assert result.sampling_interval_s > 0
     assert result.timed_out is (termination == "timeout")
@@ -3812,3 +3821,98 @@ def test_absent_raw_capture_is_not_reconstructed_from_diagnostics(
     observed = run([sys.executable, "-c", "pass"], prefix="MOLT_TEST")
     assert observed.child_stderr is None
     assert "guard-only" in (observed.stderr.decode() if tempfiles else observed.stderr)
+
+
+@pytest.mark.parametrize("kind", ["file", "relative"])
+def test_artifact_guard_preserves_unused_tool_state_until_managed_selection(
+    tmp_path, monkeypatch, kind
+):
+    root = tmp_path / "source"
+    root.mkdir()
+    state = {
+        "file": str(tmp_path / "state-file"),
+        "relative": "relative-tools",
+    }[kind]
+    if kind == "file":
+        Path(state).write_text("not a directory", encoding="utf-8")
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    from molt import tool_releases
+
+    monkeypatch.setattr(
+        tool_releases,
+        "discover_pinned_tool",
+        lambda *_a, **_k: pytest.fail("artifact guard cannot select a tool"),
+    )
+    env = {"MOLT_TARGET_ROOT": state, "MOLT_EXT_ROOT": str(tmp_path / "artifacts")}
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_PLATFORM_TOOLCHAIN", env, repo_root=root
+    )
+    assert context.env["MOLT_TARGET_ROOT"] == state
+    assert (
+        harness_memory_guard.canonical_harness_env(context.env, repo_root=root)
+        == context.env
+    )
+    assert (
+        sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+        == before
+    )
+    if kind != "relative":
+        with pytest.raises(molt_dx.DxConfigError):
+            molt_dx.canonical_toolchain_root(root, context.env, require_exists=False)
+    else:
+        assert (
+            molt_dx.canonical_toolchain_root(
+                root, context.env, require_exists=False, cwd=root
+            )
+            == root / state
+        )
+
+
+def test_artifact_guard_binds_installed_default_before_cache_defaults(tmp_path):
+    from molt.default_paths import _default_molt_home
+
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    env = {home_key: str(tmp_path / "user")}
+    expected = _default_molt_home(environ=env) / "target-root"
+    resolved = harness_memory_guard.canonical_harness_env(env, repo_root=source)
+    assert Path(resolved["MOLT_TARGET_ROOT"]) == expected
+    assert (
+        molt_dx.canonical_toolchain_root(source, resolved, require_exists=False)
+        == expected
+    )
+    assert not expected.exists()
+
+
+def test_platform_query_guard_does_not_select_unused_managed_tools(
+    tmp_path, monkeypatch
+):
+    from molt import platform_toolchain
+
+    invalid = tmp_path / "invalid-state"
+    invalid.write_text("file", encoding="utf-8")
+    observed = []
+
+    def completed(command, **kwargs):
+        observed.append((tuple(command), kwargs["env"]))
+        assert kwargs["env"]["MOLT_TARGET_ROOT"] == str(invalid)
+        return harness_memory_guard.GuardedCompletedProcess(
+            command, 0, "selected platform\n", "", elapsed_s=0.0, child_stderr=""
+        )
+
+    monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", completed)
+    env = {
+        "MOLT_TARGET_ROOT": str(invalid),
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+    }
+    assert (
+        platform_toolchain._query(["selected-external-tool", "--version"], env)
+        == "selected platform"
+    )
+    assert observed[0][0] == ("selected-external-tool", "--version")
+    assert len(observed) == 1
+    assert invalid.read_text(encoding="utf-8") == "file"

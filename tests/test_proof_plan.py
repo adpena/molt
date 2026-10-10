@@ -387,6 +387,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "generated_artifact_custody",
         "ir_contract_validation",
         "generated_object_abi_link",
+        "native_artifact_facts",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -5095,6 +5096,16 @@ def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypat
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "independent-process-boundary"
+
+
+def test_execution_authority_includes_promoted_tool_state_home_owner():
+    ROOT = Path(__file__).resolve().parents[1]
+    assert ROOT / "src/molt/default_paths.py" in python_capture_authority_paths(
+        source_root=ROOT
+    )
+    source = (ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    assert '"src/molt/default_paths.py"' in source
+    assert '"src/molt/cli/default_paths.py"' not in source
 
 
 def test_native_build_declaration_rejects_retired_field_and_normalizes_roles():

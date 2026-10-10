@@ -587,6 +587,53 @@ def assert_execution_context_rejects_substitutions(
         execution_nonce="a" * 64,
         returncode=0,
     )
+    original_live_custody = context["live_input_custody"]
+    for apparatus in (None, "unrecognized-operational-lock"):
+        event = {"action": "inotify:0x8", "path": str(tmp_path / ".lock")}
+        if apparatus is not None:
+            event["apparatus"] = apparatus
+        forged = {
+            "schema": execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA,
+            "watch_roots": 1,
+            "events": [],
+            "apparatus_events": [event],
+            "errors": [],
+            "state": "DRAINED",
+            "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
+            "stable": True,
+        }
+        forged["identity_sha256"] = execution_custody.live_custody_identity_sha256(
+            events=[],
+            apparatus_events=[event],
+            errors=[],
+            state="DRAINED",
+            lifecycle=forged["lifecycle"],
+        )
+        context["live_input_custody"] = (
+            supervisor_custody._publish_live_custody_receipt(
+                forged, cas_root=tmp_path / "custody-cas"
+            )
+        )
+        context["execution_custody_sha256"] = (
+            supervisor_custody.execution_custody_sha256(
+                context, run_id="run-one", returncode=0
+            )
+        )
+        with pytest.raises(
+            ValueError, match="environment lock event differs from captured owners"
+        ):
+            runner._validated_execution_context(
+                context,
+                execution_path=execution_path,
+                envelope=envelope,
+                run_id="run-one",
+                execution_nonce="a" * 64,
+                returncode=0,
+            )
+    context["live_input_custody"] = original_live_custody
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
     original_verifier = runner._COMMANDS.run
     for substituted_field in ("receipt_sha256", "receipt_bytes"):
         # Preserve the real/issued verifier invocation and valid capability;

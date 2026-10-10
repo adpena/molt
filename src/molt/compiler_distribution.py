@@ -27,7 +27,7 @@ from molt.portable_paths import (
     portable_relative_path,
 )
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
-from molt.source_root import packaged_distribution_root
+from molt.source_root import MANIFEST_NAME, installed_distribution_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_content_identity,
@@ -35,7 +35,6 @@ from molt.toolchain_identity import (
 )
 from molt.verified_subset import current_host_coordinate
 
-MANIFEST_NAME = "release-compiler-source.json"
 MANIFEST_SCHEMA = "molt.release-compiler-source.v5"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
@@ -517,17 +516,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     manifest_path = source_root / MANIFEST_NAME
     if not manifest_path.exists() and not is_link_like(manifest_path):
         # A damaged installation is installed damage, never source mode.
-        bundle = os.environ.get("MOLT_BUNDLE_ROOT")
-        packaged = packaged_distribution_root()
-        expected = [
-            root
-            for root in (
-                Path(bundle) / "source" if bundle else None,
-                packaged / "source" if packaged is not None else None,
-            )
-            if root is not None
-        ]
-        if any(source_root.resolve() == root.resolve() for root in expected):
+        if installed_distribution_root(source_root) is not None:
             raise ValueError("Installed compiler manifest is missing; reinstall Molt")
         return None
     source_root = resolve_owned_path(source_root)

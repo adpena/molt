@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from molt.source_root import compiler_source_root
+from molt.target_python import FRONTEND_PYTHON_REQUIREMENT, frontend_python_supported
 from molt.tool_releases import ToolReleaseError, require_pinned_tool
 from molt.dx import DX_ENV_KEYS, DxProject, configured_artifact_root
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.cli.installation_diagnostics import installation_checks
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
@@ -274,7 +275,7 @@ def _python_setup_advice(system: str) -> list[str]:
         return ["brew install python@3.12", "Ensure python3 is on PATH"]
     if system == "Windows":
         return ["winget install Python.Python.3.12", "Reopen your terminal"]
-    return ["Install Python 3.12+ via your package manager"]
+    return [f"Install {FRONTEND_PYTHON_REQUIREMENT} via your package manager"]
 
 
 def _uv_setup_advice(system: str) -> list[str]:
@@ -374,11 +375,13 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
                 warnings.append(message)
         checks.append(entry)
 
-    python_ok = sys.version_info >= (3, 12)
+    python_ok = frontend_python_supported(
+        sys.version_info[:3], implementation=sys.implementation.name
+    )
     record(
         "python",
         python_ok,
-        f"{sys.version.split()[0]} at {sys.executable} (requires >=3.12)",
+        f"{sys.version.split()[0]} at {sys.executable} (requires {FRONTEND_PYTHON_REQUIREMENT})",
         level="error",
         advice=_python_setup_advice(system) if not python_ok else None,
     )

@@ -87,12 +87,18 @@ from molt.disk_capacity import (  # noqa: E402
 )
 from molt.custody_layout import custody_root  # noqa: E402
 from molt.dx import (  # noqa: E402
+    # noqa: E402,
     cargo_target_dir_for_artifact_root,
     configured_artifact_root,
+    session_targets_dir,
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
-from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
+from tools.memory_guard_core.active_custody import (  # noqa: E402
+    CUSTODY_COMMAND,
+    active_guard_blockers,
+    has_active_guard_marker,
+)
 
 _GB = 1024**3
 
@@ -136,7 +142,9 @@ PROTECTED_TARGET_NAMES = frozenset(
     }
 )
 
-REGISTRY_RELPATH = Path("target") / ".disk_guard" / "registry.jsonl"
+# The guard's registry lives in the artifact root's Cargo target, whose
+# layout molt.dx owns (HF-145).
+REGISTRY_NAME = Path(".disk_guard") / "registry.jsonl"
 LOG_RELDIR = Path("logs") / "disk_guard"
 
 
@@ -536,8 +544,10 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
     if rp.name in PROTECTED_TARGET_NAMES:
         return None
     parts = rp.relative_to(root).parts
+    sessions = _session_targets(root).relative_to(root).parts
+    target = _target_root(root).relative_to(root).parts
     # sessions/<child>
-    if len(parts) == 3 and parts[0] == "target" and parts[1] == "sessions":
+    if len(parts) == len(sessions) + 1 and parts[: len(sessions)] == sessions:
         return "sessions"
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
@@ -546,11 +556,21 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
     if len(parts) == 1 and parts[0].startswith("cargo-target-"):
         return "cargo-target"
     # per-lane isolated target dir directly under <root>/target/
-    if len(parts) == 2 and parts[0] == "target":
-        name = parts[1]
+    if len(parts) == len(target) + 1 and parts[: len(target)] == target:
+        name = parts[-1]
         if any(_fnmatch(name, g) for g in lane_globs):
             return "lane"
     return None
+
+
+def _target_root(owner_root: Path) -> Path:
+    """The artifact root's unscoped Cargo target, as molt.dx lays it out."""
+    return cargo_target_dir_for_artifact_root(owner_root, None)
+
+
+def _session_targets(owner_root: Path) -> Path:
+    """The directory holding the artifact root's pinned session targets."""
+    return session_targets_dir(_target_root(owner_root))
 
 
 def _fnmatch(name: str, pattern: str) -> bool:
@@ -736,7 +756,7 @@ class _FileLock:
 
 
 def _registry_path(root: Path) -> Path:
-    return root / REGISTRY_RELPATH
+    return _target_root(root) / REGISTRY_NAME
 
 
 def register_lane_target(
@@ -817,6 +837,36 @@ def _has_active_guard(root: Path) -> bool:
     )
 
 
+def _active_guard_custody(roots: Iterable[Path]) -> list[dict]:
+    """Name the records that keep each owner root active, and the next step.
+
+    This reads files only. The custody tool takes the process snapshot that
+    tells a live guard from a stale or inconclusive record.
+    """
+    directories = sorted(
+        {markers for root in roots for markers in active_guard_marker_dirs_of(root)},
+        key=str,
+    )
+    custody = []
+    for markers in directories:
+        blockers = active_guard_blockers(markers)
+        if not blockers:
+            continue
+        custody.append(
+            {
+                "active_dir": str(markers),
+                "blocking_records": len(blockers),
+                "examples": list(blockers[:5]),
+                "next_step": (
+                    f"{CUSTODY_COMMAND} --active-dir {markers} names the live, "
+                    "stale and inconclusive records; add --apply to resolve "
+                    "the stale ones"
+                ),
+            }
+        )
+    return custody
+
+
 def discover_candidates(
     root: Path,
     config: GuardConfig,
@@ -873,11 +923,11 @@ def discover_candidates(
         registry = read_registry(owner_root)
         guard_active = _has_active_guard(owner_root)
         # sessions/<child>
-        for child in _iter_dir(owner_root / "target" / "sessions"):
+        for child in _iter_dir(_session_targets(owner_root)):
             if child.is_dir():
                 add(child, "sessions", owner_root, guard_active=guard_active)
         # per-lane target dirs under target/
-        for child in _iter_dir(owner_root / "target"):
+        for child in _iter_dir(_target_root(owner_root)):
             if (
                 child.is_dir()
                 and _is_reclaimable(child, owner_root, config.lane_globs) == "lane"
@@ -915,7 +965,7 @@ def _iter_dir(path: Path) -> list[Path]:
 
 def _iter_quarantine_dirs(root: Path) -> list[Path]:
     out: list[Path] = []
-    target = root / "target"
+    target = _target_root(root)
     for state_parent in (target, *[p for p in _iter_dir(target) if p.is_dir()]):
         qroot = state_parent / ".molt_state" / "quarantine" / "cargo_incremental"
         if qroot.is_dir():
@@ -939,6 +989,8 @@ class ReclaimResult:
     skipped: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     mode: str = "apply"
+    # Active guard records that blocked a candidate, with the next step.
+    custody: list[dict] = field(default_factory=list)
 
     @property
     def reclaimed_bytes(self) -> int:
@@ -958,6 +1010,7 @@ class ReclaimResult:
             "reclaimed": self.reclaimed,
             "skipped": self.skipped,
             "errors": self.errors,
+            "custody": self.custody,
         }
 
 
@@ -1039,6 +1092,11 @@ def ensure_free(
         result.skipped.append(
             {"path": str(cand.path), "reason": why, "kind": cand.kind}
         )
+    result.custody = _active_guard_custody(
+        cand.owner_root or resolved_root
+        for cand, why in plan.skipped
+        if why == "active-guard"
+    )
 
     deadline = time.monotonic() + budget_s
     free_now = free_before
@@ -1135,6 +1193,9 @@ def gc(
         min_idle_s=cfg.min_idle_s,
         protected=protected,
     )
+    result.custody = _active_guard_custody(
+        cand.owner_root or resolved_root for cand in cands if cand.guard_active
+    )
     collected_norms: set[str] = set()
     for cand in collectable:
         if apply:
@@ -1178,9 +1239,10 @@ def reclaim_completed_lane(
 ) -> ReclaimResult:
     """Immediately reclaim one completed registered lane target."""
     env = os.environ if env is None else env
+    resolved_target = target.resolve()
     inferred_root = root or (
-        target.resolve().parents[1]
-        if target.resolve().parent.name == "target"
+        resolved_target.parents[1]
+        if _target_root(resolved_target.parents[1]) == resolved_target.parent
         else None
     )
     resolved_root = resolve_root(inferred_root, env=env)
@@ -1211,6 +1273,8 @@ def reclaim_completed_lane(
     )
     if not allowed:
         result.skipped.append({"path": str(target), "reason": reason})
+        if reason == "lane-active":
+            result.custody = _active_guard_custody((resolved_root,))
         return result
     if not target.is_dir():
         return result
@@ -1455,6 +1519,11 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
         print(f"  skip: {skip['path']} ({skip['reason']})")
     for err in result.errors[:10]:
         _eprint(f"  ERROR {err}")
+    for item in result.custody:
+        print(
+            f"  active guard records: {item['blocking_records']} in "
+            f"{item['active_dir']}; next step: {item['next_step']}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

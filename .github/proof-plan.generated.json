@@ -173,6 +173,7 @@
     "src/molt/artifact_publication.py",
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
+    "src/molt/default_paths.py",
     "src/molt/environment_registry.py",
     "src/molt/_environment_registry.py",
     "src/molt/environment_registry.toml",
@@ -237,6 +238,7 @@
     "src/molt/cli/source_extension_invocation.py",
     "src/molt/cli/source_extension_compiler_inputs.py",
     "src/molt/cli/source_extension_link_inputs.py",
+    "src/molt/package_import_custody.py",
     "src/molt/python_environment_identity.py",
     "src/molt/python_environment_location.py",
     "src/molt/python_environment_custody.py",
@@ -340,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "d6f412b9bffd76220239374d01ac6fd346c15880a19227fd46deb6995f974a36",
+  "authority_sha256": "bdd76724ccc47de1f10f1c0f7b684ad6cab334e0b43b854942ff8ccc5252b7ec",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2017,31 +2019,6 @@
         "uv",
         "run",
         "python3",
-        "tools/update_status_blocks.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.status-blocks.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
         "tools/bench_report.py",
         "--manifest",
         "bench/results/docs_manifest.json",
@@ -2589,6 +2566,7 @@
         "tests/tools/test_perf_schema.py",
         "tests/tools/test_check_perf_gate_wiring.py",
         "tests/tools/test_analysis_capsule.py",
+        "tests/tools/test_binary_size_analysis.py",
         "tests/tools/test_runtime_bridge_test_stubs.py",
         "tests/tools/test_runtime_app_bootstrap_authority.py",
         "tests/tools/test_cargo_test_truth.py",
@@ -4424,12 +4402,16 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_codecs_graph_stays_minimal_and_prunes_lazy_regex",
+        "tests/cli/test_cli_import_collection.py::test_compile_with_backend_daemon_reports_missing_output_in_result",
+        "tests/cli/test_cli_import_collection.py::test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
         "tests/cli/test_cli_lowering_context_ast_idempotent.py",
         "tests/cli/test_cli_lowering_context_class_memo.py",
         "tests/cli/test_cli_lowering_context_encoder_fixed_point.py",
+        "tests/cli/test_cli_memory_guard_launches.py",
         "tests/cli/test_cli_mlir_backend_authority.py",
         "tests/cli/test_cli_module_cache_authority.py",
         "tests/cli/test_cli_module_dependencies_authority.py",
@@ -4567,12 +4549,16 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_codecs_graph_stays_minimal_and_prunes_lazy_regex",
+        "tests/cli/test_cli_import_collection.py::test_compile_with_backend_daemon_reports_missing_output_in_result",
+        "tests/cli/test_cli_import_collection.py::test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
         "tests/cli/test_cli_lowering_context_ast_idempotent.py",
         "tests/cli/test_cli_lowering_context_class_memo.py",
         "tests/cli/test_cli_lowering_context_encoder_fixed_point.py",
+        "tests/cli/test_cli_memory_guard_launches.py",
         "tests/cli/test_cli_mlir_backend_authority.py",
         "tests/cli/test_cli_module_cache_authority.py",
         "tests/cli/test_cli_module_dependencies_authority.py",
@@ -5946,6 +5932,8 @@
         "ir_contract_validation",
         "--test",
         "generated_object_abi_link",
+        "--test",
+        "native_artifact_facts",
         "-p",
         "molt-artifact-publish",
         "-p",
@@ -6968,12 +6956,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1140,
+        "headroom_seconds": 1260,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2340,
-        "required_job_seconds": 2460,
+        "projected_makespan_seconds": 2220,
+        "required_job_seconds": 2340,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2145
+          "repository-policy": 2070
         }
       },
       "rust": {

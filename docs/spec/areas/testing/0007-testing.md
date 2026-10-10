@@ -156,8 +156,11 @@ as generated programs; a pass on one host cannot establish the whole matrix.
   Sampling, an attempted direct-child `RLIMIT_RSS`, actual platform enforcement
   and generation-owned cleanup have different scopes. Missing samples or census
   rows cannot establish closure. Process groups, numeric PIDs and invocation
-  text do not grant custody over escaped or reparented descendants; preserve
-  unrelated processes and the host control plane. The actual platform receipt
+  text do not grant custody over escaped or reparented descendants, with one
+  exact exception: the live members of the group the guarded root leads,
+  observed after the root exits and before the guard reaps it. The unreaped
+  root keeps that group ID reserved, so each such member descends from the
+  root. Preserve unrelated processes and the host control plane. The actual platform receipt
   and independent failure/cleanup controls must qualify each cell before it
   counts as release evidence. These obligations remain open under
   [V1-12](../../../agent/V1_HANDOFF_FINDINGS.md); see the
@@ -291,6 +294,18 @@ child that runs repository tooling on the real checkout, pass the session's
 run context back with the `checkout_run_context` fixture. To find such a
 test, run the family under `tools/hosted_ci_env.py` in a plain clone (not a
 checkout-family worktree, whose roots lie outside the tree).
+
+Guards that tests start never write the host's guard records. The session
+fixture `test_guard_custody_roots` in `tests/conftest.py` points
+`MOLT_MEMORY_GUARD_STATE_ROOT` at `<basetemp>/gc/memory_guard`, so every guard a
+test starts, in process or as a child, keeps its marker, scratch generation and
+lease target in that session's basetemp, which the run's outer guard reclaims.
+The outer guard keeps the host root: it is a real guard of the run, and its
+marker protects the checkout from disk reclamation while the run lasts. The
+pytest bootstrap keeps the current-test path it admitted under that root, so
+the outer guard still names the running test. A test that needs another root
+sets its own. `tests/test_memory_guard_wiring.py` proves that a guarded child
+leaves no record in the host roots.
 
 A host test that exercises Molt stdlib sources loads them by path, through
 `tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,

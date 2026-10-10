@@ -97,6 +97,29 @@ positive grammar: unknown or external-input/helper selectors fail before probes.
 Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
 the producer's source/input/seal validation or prove an ecosystem matrix cell.
 
+Python custody probes admit the loaded Molt package before importing capture
+code. The interpreter must leave Molt unloaded or load it from the selected
+facade's package directory, including descendants and namespace search paths.
+Isolated site startup ignores `PYTHONPATH`; external source-root admission
+does not replace a loaded package. A foreign editable binding fails with a
+source-admission diagnostic; select the environment belonging to that checkout.
+Repository tools validate every loaded package before atomically reanchoring
+unexecuted namespaces. A failed bootstrap must preserve existing module and
+parent bindings; canonical aliases are published only after initialization.
+These compiler/development boundaries add no emitted-guest checks.
+
+Python location runs the exact admitted launcher before the input monitor is
+armed. Full environment capture then executes that selected lexical interpreter
+directly, after checking the selection's image hashes, using the shared `-B -I`
+probe suffix, unchanged admitted environment and effective source cwd. The
+captured process-image closure must still agree with the pre-arm selection.
+This avoids repeating uv synchronization during capture; the admitted payload
+invocation and options are unchanged by capture. The closed startup capability policy
+admits only reviewed hooks and absolute declarative `.pth` entries, so capture
+does not reconstruct uv's `PATH` or `VIRTUAL_ENV` activation. `UV_ENV_FILE` shares
+the existing unbound-environment policy: inherited values are omitted and
+explicit overrides refuse, matching the unmodeled `--env-file` option.
+
 The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapshot.
 Users cannot override it. The Python bootstrap exposes that same checkout's
 `src` only to the typed Molt module payload, including under `-P`; unrelated
@@ -104,6 +127,27 @@ module, script, directory/ZIP, command and stdin import behavior is unchanged.
 Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
+
+Linux writable-close notifications remain input events: they can be the only
+notification of a closed writable mapping, including a write followed by a
+restore. A selected uv environment's pre-existing empty regular lock has one
+narrow operational class. After full capture and before action, the monitor
+joins the captured uv owner to the captured Python environment's root `.lock`
+file node, verifies a zero-byte single-link file, and retains its stable file
+identity until drain. Only the exact `IN_CLOSE_WRITE` event is operational;
+creation, writes, truncation, metadata, replacement and mixed events remain
+input failures. The file remains in full environment and endpoint custody.
+Already recorded events remain unchanged on admission. Queued inotify events
+have no timestamps: an earlier pure close can be delivered after admission.
+Zero-byte capture is essential here; mapping nonempty data before admission
+requires an earlier growth/truncation interval, whose mutation events remain
+failures. Apparatus events bind the selected uv and Python eligibility context;
+this does not identify the writer. Receipt acceptance validates both captured
+identities and checks their join again.
+There is no filename-based lock exclusion or dependency-check replacement.
+This classification adds no guest instrumentation. Kernel notifications do not
+identify a writer, and inotify does not directly report mmap stores; this is
+bounded event custody, not proof against every possible external writer.
 
 WASI Cargo library links use the selected SDK's raw linker with Rust's
 self-contained C runtime disabled. C and C++ compilation retain their selected
@@ -371,11 +415,13 @@ generations and unknown legacy owners are not retroactively opted in. Source,
 toolchains, terminal receipts, output inventories and timing evidence are retained.
 Capacity admission still measures actual free space against its unchanged floor.
 
-Guard markers and terminal receipts are custody metadata, not disposable build
-payloads. A new guard does not prune earlier markers by age or count: unresolved
-ownership and terminal parent/child closure evidence must remain available.
-Legacy unbound markers remain conservative protection, not a license to infer
-process death or artifact ownership from their age, PID or command text.
+Guard markers are custody metadata, not disposable build payloads. A new guard
+never prunes another execution's marker by age or count. A marker leaves
+`active/` only through its own guard's retirement or through evidence-based
+reconciliation, and `retired/` keeps a bounded history (`docs/OPERATIONS.md`,
+guard-marker custody). Unreadable markers remain conservative protection, not a
+license to infer process death or artifact ownership from their age, PID or
+command text.
 
 Each Cargo generation owns an `owner.json` under its exclusive identity lease;
 `state.json` is only a latest-generation navigation pointer. Closing a lease
@@ -528,7 +574,12 @@ kernel-equivalent tree guarantee. The guard records the original POSIX process
 group and session before its independent exit-clock reaper starts, while the
 owned child PID is still reserved. A completed child never authorizes querying
 a recycled PID or inventing missing group identity. Indeterminate closure
-preserves the allocation.
+preserves the allocation until marker reconciliation proves the run's guard,
+child and child group gone, or an operator attests it. The payload then takes
+the failure path below through `resolve_guard_scratch`. It records no finish
+time, so retention keeps it only behind real failures. A payload that is
+already gone resolves with a receipt that says so; a target that is now another
+directory stays blocked. A busy lock means a live owner and defers the work.
 After proven closure the parent exclusively retires the payload into its own
 `gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
 receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.
@@ -542,9 +593,16 @@ Index publication stages stay inside the locked generation; the shared pending
 namespace contains only complete entries. Discovery snapshots are reconciled
 under each generation's lock before reading the index or counting retained
 bytes. A disappeared entry is accepted only when verified terminal custody proves
-that generation was reclaimed; missing retained-owner indexes and malformed
-entries remain failures, never existence-check retries or ignored corruption.
-Owner/terminal/error receipts survive payload cleanup. Guard summaries and command
+that generation was reclaimed, or when the generation directory itself is gone:
+only the reclaimed transition removes it. Missing retained-owner indexes and
+malformed entries remain failures, never existence-check retries or ignored
+corruption. A reclaimed generation holds no custody, so its receipts are removed:
+after the generation lock is released, the generation moves into `gs/removing/`
+and is deleted, and only then is its index dropped. The generation namespace
+holds only live, retained, blocked and unresolved work. If the move cannot run
+now (Windows refuses while a contender holds the lock file), the index stays and
+the next sweep removes it; the sweep reports it under `deferred`. Guard summaries
+keep the outcome and closure evidence. Guard summaries and command
 profiles expose outcome, evidence path and finalization time; elapsed command
 time includes cleanup. `child_returncode` records the actual child result;
 `infrastructure_failure` records independent scratch-custody failures. Such a

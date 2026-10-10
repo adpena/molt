@@ -11,7 +11,7 @@ from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     RUNTIME_STDLIB_PROFILE_TIERS,
 )
-from molt.cli.default_paths import _configured_artifact_root_text
+from molt.default_paths import configured_artifact_root_text
 from molt.dx import project_cargo_target_dir
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
@@ -106,7 +106,7 @@ def _build_state_root(project_root: Path) -> Path:
         os.fspath(project_root),
         os.environ.get("MOLT_BUILD_STATE_DIR"),
         os.fspath(_cargo_target_root(project_root)),
-        _configured_artifact_root_text(os.environ),
+        configured_artifact_root_text(os.environ),
     )
 
 
@@ -173,6 +173,6 @@ def _runtime_wasm_artifact_path_from_env(
         os.fspath(project_root),
         artifact_name,
         env.get("MOLT_WASM_RUNTIME_DIR"),
-        _configured_artifact_root_text(env),
+        configured_artifact_root_text(env),
         os.fspath(Path.cwd()),
     )

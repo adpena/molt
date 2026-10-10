@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass
 from collections.abc import Mapping, MutableMapping
 from typing import Any, Literal
 
+from molt.default_paths import expand_user_path
+
 from molt.source_root import compiler_source_root, source_file_revision
 from molt.file_hashing import content_change_time_ns
 from molt.file_publication import staged_file_path
@@ -50,7 +52,6 @@ from molt.wasi_sdk_identity import (
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     find_executable,
-    expand_user_path,
     stable_executable_probe,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
@@ -732,14 +733,17 @@ def provisioned_wasi_sdk_prefix(
     root: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> Path:
-    """Locate this host's SDK under checkout custody without provisioning it."""
+    """Locate this host's SDK in selected tool state without provisioning it."""
 
-    from molt.dx import DxConfigError, checkout_custody
+    from molt.dx import DxConfigError, canonical_toolchain_root
 
     environment = os.environ if environ is None else environ
     try:
-        toolchain_root = checkout_custody(root, environment).toolchain_root
+        toolchain_root = canonical_toolchain_root(
+            root, environment, require_exists=False, cwd=cwd
+        )
     except (DxConfigError, OSError, ValueError) as exc:
         raise LlvmToolchainConfigError(
             f"WASI SDK toolchain custody is unresolved: {exc}"
@@ -812,6 +816,7 @@ def selected_wasi_sdk_prefix(
     root: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> Path:
     """Return the SDK prefix an environment selects; never install one.
 
@@ -823,29 +828,33 @@ def selected_wasi_sdk_prefix(
     environment = os.environ if environ is None else environ
     sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
     if sdk:
-        prefix = expand_user_path(sdk, environment=environment).absolute()
+        prefix = expand_user_path(sdk, environment=environment)
+        if not prefix.is_absolute():
+            prefix = (Path.cwd() if cwd is None else cwd) / prefix
+        prefix = prefix.absolute()
         return prefix.parent if prefix.name == SDK_DIRNAME else prefix
-    return provisioned_wasi_sdk_prefix(root, environ=environment)
+    return provisioned_wasi_sdk_prefix(root, environ=environment, cwd=cwd)
 
 
 def selected_wasi_sdk_installation(
     root: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> WasiSdkInstallation | None:
     """Admit the selected SDK, or return None when none exists; never install."""
 
-    prefix = selected_wasi_sdk_prefix(root, environ=environ)
+    prefix = selected_wasi_sdk_prefix(root, environ=environ, cwd=cwd)
     if not prefix.exists():
         return None
     return load_wasi_sdk_installation(root, prefix, verify_tree=False)
 
 
 def capture_wasi_sdk_selection(
-    *, root: Path, env: Mapping[str, str]
+    *, root: Path, env: Mapping[str, str], cwd: Path | None = None
 ) -> dict[str, object]:
     """Capture the selected finite generation for developer proof identities."""
-    installation = selected_wasi_sdk_installation(root, environ=env)
+    installation = selected_wasi_sdk_installation(root, environ=env, cwd=cwd)
     if installation is None:
         raise ValueError("selected WASI SDK is unavailable")
     receipt, generation = capture_exact(
@@ -1143,22 +1152,16 @@ def tablegen_prefix_env_var(major: int) -> str:
     return f"TABLEGEN_{major * 10}_PREFIX"
 
 
-def managed_llvm_prefix(root: Path, pin: LlvmBackendPin | None = None) -> Path:
+def managed_llvm_prefix(
+    root: Path,
+    pin: LlvmBackendPin | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path:
     """Return Molt's content-versioned managed LLVM/MLIR installation root."""
 
-    resolved_pin = pin if pin is not None else required_llvm_backend_pin(root)
-    if resolved_pin is None:
-        raise LlvmToolchainConfigError(
-            f"could not resolve LLVM backend feature pin under {root}"
-        )
-    from molt.dx import canonical_toolchain_root
-
-    managed = (
-        canonical_toolchain_root(root, require_exists=False)
-        / "toolchains"
-        / f"llvm-{resolved_pin.default_release}"
-    )
-    return managed
+    return managed_llvm_paths(root, pin, environ=environ, cwd=cwd).prefix
 
 
 def managed_llvm_paths(
@@ -1166,6 +1169,8 @@ def managed_llvm_paths(
     pin: LlvmBackendPin | None = None,
     *,
     version: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> LlvmManagedPaths:
     """Return the one durable source/build/download/install custody family."""
 
@@ -1175,9 +1180,17 @@ def managed_llvm_paths(
             f"could not resolve LLVM backend feature pin under {root}"
         )
     release = version or resolved_pin.default_release
-    from molt.dx import canonical_toolchain_root
+    from molt.dx import DxConfigError, canonical_toolchain_root
 
-    custody = canonical_toolchain_root(root, require_exists=False) / "toolchains"
+    try:
+        custody = (
+            canonical_toolchain_root(root, environ, require_exists=False, cwd=cwd)
+            / "toolchains"
+        )
+    except DxConfigError as exc:
+        raise LlvmToolchainConfigError(
+            f"LLVM toolchain custody is unresolved: {exc}"
+        ) from exc
     return LlvmManagedPaths(
         root=custody,
         prefix=custody / f"llvm-{release}",
@@ -1261,16 +1274,24 @@ def _llvm_config_candidates(
     env: dict[str, str],
     explicit_prefix: Path | None,
     llvm_sys_search_prefix: Path | None,
+    *,
+    cwd: Path | None = None,
 ) -> tuple[tuple[Path, str], ...]:
     candidates: list[tuple[Path, str]] = []
     if configured := env.get("LLVM_CONFIG_PATH", "").strip():
-        candidates.append((Path(configured).expanduser(), "LLVM_CONFIG_PATH"))
+        candidates.append(
+            (_normalized_prefix(configured, environ=env, cwd=cwd), "LLVM_CONFIG_PATH")
+        )
 
     prefixes = [explicit_prefix] if explicit_prefix is not None else []
     if llvm_sys_search_prefix is not None:
         prefixes.append(llvm_sys_search_prefix)
     if explicit_prefix is None:
-        prefixes.append(managed_llvm_prefix(root, pin))
+        if (
+            not env.get("LLVM_CONFIG_PATH", "").strip()
+            and llvm_sys_search_prefix is None
+        ):
+            prefixes.append(managed_llvm_prefix(root, pin, environ=env, cwd=cwd))
     for prefix in prefixes:
         assert prefix is not None
         for name in llvm_config_names(pin):
@@ -1293,6 +1314,7 @@ def discover_llvm_toolchain(
     root: Path,
     *,
     environ: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> LlvmToolchainDiscovery | None:
     """Discover one version-correct LLVM executable/prefix identity.
 
@@ -1314,7 +1336,7 @@ def discover_llvm_toolchain(
     )
 
     explicit = {
-        _normalized_prefix(value)
+        _normalized_prefix(value, environ=env, cwd=cwd)
         for name in sdk_authority_names
         if (value := env.get(name, "").strip())
     }
@@ -1326,13 +1348,13 @@ def discover_llvm_toolchain(
         )
     explicit_prefix = next(iter(explicit), None)
     llvm_sys_search_prefix = (
-        _normalized_prefix(value)
+        _normalized_prefix(value, environ=env, cwd=cwd)
         if (value := env.get(pin.env_var, "").strip())
         else None
     )
     rejected: list[str] = []
     for candidate, source in _llvm_config_candidates(
-        root, pin, env, explicit_prefix, llvm_sys_search_prefix
+        root, pin, env, explicit_prefix, llvm_sys_search_prefix, cwd=cwd
     ):
         if not candidate.is_file():
             continue
@@ -1818,10 +1840,18 @@ def _llvm_attestation_custody(
     root: Path,
     prefix: Path,
     release: LlvmRelease | None,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> str:
     if release is None:
         return "development-noncanonical"
-    managed = managed_llvm_paths(root, version=release.version).prefix.resolve()
+    from molt.dx import selected_toolchain_contains
+
+    if not selected_toolchain_contains(root, prefix, environ):
+        return "manifest-release-noncanonical-prefix"
+    managed = managed_llvm_paths(
+        root, version=release.version, environ=environ
+    ).prefix.resolve()
     return (
         "canonical-managed-release"
         if prefix.expanduser().resolve() == managed
@@ -1845,10 +1875,11 @@ def verify_llvm_toolchain_prefix(
     require_attestation: bool = False,
     llvm_config_override: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
+    environ: Mapping[str, str] | None = None,
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
-    resolved = prefix.expanduser().resolve()
+    resolved = _normalized_prefix(prefix, environ=environ)
     pin = required_llvm_backend_pin(root)
     if pin is None:
         raise LlvmToolchainConfigError(
@@ -1856,7 +1887,7 @@ def verify_llvm_toolchain_prefix(
         )
     contract = load_llvm_architecture_contract(root)
     llvm_config = (
-        llvm_config_override.expanduser().resolve()
+        _normalized_prefix(llvm_config_override, environ=environ)
         if llvm_config_override is not None
         else llvm_config_executable(resolved)
     )
@@ -1867,11 +1898,14 @@ def verify_llvm_toolchain_prefix(
     config_identity = stable_regular_file_identity(
         llvm_config, label="LLVM configuration authority"
     )
-    actual_version = _run_llvm_config(llvm_config, "--version")
     expected_version = version or pin.default_release
     release = llvm_release(expected_version, root)
-    managed = managed_llvm_paths(root, pin, version=expected_version).prefix.resolve()
-    canonical_contract = resolved == managed or require_attestation
+    canonical_contract = (
+        require_attestation
+        or _llvm_attestation_custody(root, resolved, release, environ=environ)
+        == "canonical-managed-release"
+    )
+    actual_version = _run_llvm_config(llvm_config, "--version")
     if canonical_contract and release is None:
         raise LlvmToolchainConfigError(
             f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
@@ -2020,7 +2054,9 @@ def verify_llvm_toolchain_prefix(
             "link_closure": list(link_closure),
             "link_probe": list(link_probe),
             "release": asdict(release) if release is not None else None,
-            "custody": _llvm_attestation_custody(root, resolved, release),
+            "custody": _llvm_attestation_custody(
+                root, resolved, release, environ=environ
+            ),
             "build_config": {
                 "projects": sorted(contract.required_projects),
                 "targets": list(built_targets),
@@ -2306,8 +2342,16 @@ def _llvm_config_version(executable: str) -> tuple[int, int, str]:
     return int(match.group(1)), int(match.group(2)), rendered
 
 
-def _normalized_prefix(path: str | Path) -> Path:
-    return Path(path).expanduser().resolve(strict=False)
+def _normalized_prefix(
+    path: str | Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path:
+    expanded = expand_user_path(path, environment=environ)
+    if not expanded.is_absolute():
+        expanded = (Path.cwd() if cwd is None else cwd) / expanded
+    return expanded.resolve(strict=False)
 
 
 def resolve_llvm_toolchain_prefix(
@@ -2334,15 +2378,20 @@ def verify_available_llvm_toolchain(
         return None
     pin = required_llvm_backend_pin(root)
     assert pin is not None
-    managed = managed_llvm_prefix(root, pin).resolve()
+    release = llvm_release(pin.default_release, root)
+    managed = (
+        _llvm_attestation_custody(root, discovery.prefix, release, environ=environ)
+        == "canonical-managed-release"
+    )
     return verify_llvm_toolchain_prefix(
         root,
         discovery.prefix,
         version=pin.default_release,
         expected_targets=required_llvm_targets_for_host(root),
-        require_attestation=discovery.prefix.resolve() == managed,
+        require_attestation=managed,
         llvm_config_override=discovery.llvm_config,
         content_policy=content_policy,
+        environ=environ,
     )
 
 
@@ -2351,10 +2400,13 @@ def _explicit_wasm_tool(
     *,
     selector: str,
     environment: dict[str, str],
+    cwd: Path | None = None,
 ) -> Path:
     """Resolve one role-selected executable without consulting ambient state."""
 
-    direct = Path(raw).expanduser()
+    direct = expand_user_path(raw, environment=environment)
+    if not direct.is_absolute():
+        direct = (Path.cwd() if cwd is None else cwd) / direct
     if direct.is_file():
         candidate = direct.absolute()
     else:
@@ -2369,11 +2421,13 @@ def _explicit_wasm_tool(
                 f"{selector} must select one executable without arguments"
             )
         selected = argv[0]
-        selected_path = Path(selected).expanduser()
+        selected_path = expand_user_path(selected, environment=environment)
         if selected_path.is_absolute() or "/" in selected or "\\" in selected:
+            if not selected_path.is_absolute():
+                selected_path = (Path.cwd() if cwd is None else cwd) / selected_path
             candidate = selected_path.absolute()
         else:
-            resolved = find_executable(selected, environment=environment)
+            resolved = find_executable(selected, environment=environment, cwd=cwd)
             if resolved is None:
                 raise LlvmToolchainConfigError(
                     f"{selector} executable is unavailable: {selected}"
@@ -2391,6 +2445,7 @@ def resolve_wasi_sdk_tool(
     role: Literal["wasm-ld", "llvm-nm", "clang", "clang++"],
     *,
     environ: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> Path:
     """Select an explicit role tool or a provisioned SDK; never install one.
 
@@ -2398,7 +2453,7 @@ def resolve_wasi_sdk_tool(
     from the provision receipt; external tools retain live execution custody.
     """
     if role in {"clang", "clang++"}:
-        installation = selected_wasi_sdk_installation(root, environ=environ)
+        installation = selected_wasi_sdk_installation(root, environ=environ, cwd=cwd)
         if installation is None:
             raise LlvmToolchainConfigError(
                 "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py"
@@ -2421,10 +2476,10 @@ def resolve_wasi_sdk_tool(
     configured = environment.get(selector, "").strip()
     if configured:
         selected = _explicit_wasm_tool(
-            configured, selector=selector, environment=environment
+            configured, selector=selector, environment=environment, cwd=cwd
         )
     else:
-        prefix = selected_wasi_sdk_prefix(root, environ=environment)
+        prefix = selected_wasi_sdk_prefix(root, environ=environment, cwd=cwd)
         if not prefix.exists():
             raise LlvmToolchainConfigError(
                 f"WebAssembly {role} is unavailable: no wasi-sdk is provisioned at "
@@ -2461,6 +2516,11 @@ def managed_wasm_llvm_nm(
 ) -> WasmLlvmNmVerification[WasiSdkInstallation] | None:
     """Project an already selected reader; external readers keep live custody."""
     environment = dict(os.environ if environ is None else environ)
+    if not (environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")):
+        from molt.dx import selected_toolchain_contains
+
+        if not selected_toolchain_contains(root, path, environment):
+            return None
     prefix = selected_wasi_sdk_prefix(root, environ=environment)
     asset = wasi_sdk_host_asset(root)
     canonical_entrypoint = path.parent.resolve(strict=True) / path.name

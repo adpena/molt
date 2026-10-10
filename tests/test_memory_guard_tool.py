@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import types
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 import pytest
 
 from tools.memory_guard_core import (
+    active_custody,
     cargo_quarantine,
     memory_limits,
     process_custody,
@@ -32,6 +34,7 @@ import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    guard_custody_env,
     install_module_os_view,
     install_module_view,
     start_owned_test_process,
@@ -43,6 +46,12 @@ from molt.memory_guard_paths import (
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+# The real scratch authority, for tests that prove custody end to end in a
+# private state root; the autouse fixture below replaces it for all others.
+_REAL_SCRATCH = (
+    memory_guard._temporary_artifacts.acquire_guard_scratch,
+    memory_guard._temporary_artifacts.finish_guard_scratch,
+)
 
 
 @pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
@@ -162,7 +171,8 @@ def isolated_guard_scratch(
         if not closed:
             state = "indeterminate"
         elif success:
-            state = "reclaimed"
+            # The real authority removes a reclaimed generation's receipts.
+            return {"state": "reclaimed", "receipt": None}
         else:
             state = "retained"
         return {"state": state, "receipt": str(tmp_path / "owner.json")}
@@ -908,6 +918,125 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     assert set(marker_dir.glob("*.json")) == {*prior, new_marker}
     assert set(marker_dir.glob("*.lock")) == {new_marker.with_suffix(".lock")}
     assert {path: path.read_bytes() for path in prior} == prior
+
+
+def _use_real_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    acquire, finish = _REAL_SCRATCH
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts, "acquire_guard_scratch", acquire
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts, "finish_guard_scratch", finish
+    )
+
+
+def _guarded_pass(state_root: Path) -> memory_guard.GuardResult:
+    return memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+    )
+
+
+def test_completed_guard_retires_its_marker_lock_and_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_real_scratch(monkeypatch)
+    state_root = tmp_path / "memory_guard"
+    assert _guarded_pass(state_root).returncode == 0
+    assert list((state_root / "active").iterdir()) == []
+    (retired,) = (state_root / "retired").glob("guard-*.json")
+    payload = json.loads(retired.read_text(encoding="utf-8"))
+    assert payload["pid"] == os.getpid()
+    assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is True
+    assert payload["temporary_artifacts"]["state"] == "reclaimed"
+    assert payload["temporary_artifacts"]["receipt"] is None
+    generations = [
+        path.name for path in (tmp_path / "gs").iterdir() if len(path.name) == 32
+    ]
+    assert generations == []
+
+
+def test_unproven_closure_keeps_the_completed_marker_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proven = memory_guard._temporary_artifact_descendant_closure
+
+    def unproven(**kwargs: Any) -> tuple[bool, dict[str, object]]:
+        _closed, evidence = proven(**kwargs)
+        return False, {**evidence, "closed": False}
+
+    monkeypatch.setattr(
+        memory_guard, "_temporary_artifact_descendant_closure", unproven
+    )
+    state_root = tmp_path / "memory_guard"
+    _guarded_pass(state_root)
+    active = state_root / "active"
+    (marker,) = active.glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is False
+    # Orphans may still run beside its artifacts: it protects them.
+    assert not active_custody.read_marker_record(marker).terminal
+    assert active_custody.has_active_guard_marker(active)
+
+
+def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
+    state_root = tmp_path / "memory_guard"
+    missing = tmp_path / "molt-no-such-command"
+    with pytest.raises(FileNotFoundError):
+        memory_guard.run_guarded(
+            [str(missing)],
+            max_rss_kb=512 * 1024,
+            poll_interval=0.01,
+            child_rlimit_kb=None,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+        )
+    (marker,) = (state_root / "active").glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["status"] == "guard_exception"
+    assert payload["child_launch_state"] == "failed"
+    assert payload["child_process"] is None
+    assert payload["spawn_error_type"] == "FileNotFoundError"
+    record = active_custody.read_marker_record(marker)
+    # Once the guard pid is gone, nothing can still hold its launch.
+    observation = active_custody.observe_custody(record, {})
+    assert observation.state == "closed"
+
+
+def test_exiting_guard_sweeps_dead_custody_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_real_scratch(monkeypatch)
+    state_root = tmp_path / "memory_guard"
+    active = state_root / "active"
+    live = set(process_model.sample_processes())
+    dead = [pid for pid in range(70_000, 90_000) if pid not in live][
+        : active_custody.AUTO_SWEEP_GROWTH + 1
+    ]
+    for pid in dead:
+        token = f"{pid:032x}"
+        active_custody.write_active_guard_marker(
+            active / f"guard-{pid}-{token}.json",
+            {
+                "schema_version": 2,
+                "pid": pid,
+                "token": token,
+                "status": "launch_prepared",
+                "guard_process": {"pid": pid, "started_at_ns": 1},
+                "child_process": None,
+                "child_launch_state": "not_started",
+            },
+        )
+    assert _guarded_pass(state_root).returncode == 0
+    assert list(active.iterdir()) == []
+    assert len(list((state_root / "retired").glob("guard-*.json"))) == len(dead) + 1
+    receipt = json.loads((state_root / "sweep.json").read_text(encoding="utf-8"))
+    assert receipt["remaining"] == 0
 
 
 def test_active_guard_markers_follow_external_artifact_custody(
@@ -5206,6 +5335,220 @@ def test_process_group_permission_error_is_live_unknown(
     assert not memory_guard._process_group_exited_or_unobservable(300, grace=0.01)
 
 
+def test_process_group_probe_observes_through_refusal_until_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EPERM is presence, not an unknown that ends the window (HF-155).
+
+    XNU refuses every group signal while all members exit or wait for their
+    reap, and the group vanishes only at that reap, which a loaded host can
+    delay. A probe that stops at the first EPERM reports a closed tree live.
+    """
+    now = [0.0]
+    monkeypatch.setattr(
+        process_custody,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        ),
+    )
+
+    def killpg(pgid: int, sig: int) -> None:
+        assert (pgid, sig) == (300, 0)
+        if now[0] < 0.5:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        raise ProcessLookupError
+
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
+    install_module_view(monkeypatch, "os", os, process_custody, killpg=killpg)
+
+    assert process_custody.process_group_exited_or_unobservable(300, grace=2.0)
+    assert 0.5 <= now[0] <= 2.0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+def test_process_group_probe_observes_an_exited_group_until_its_reap() -> None:
+    """The kernel is the oracle (HF-155).
+
+    The session leader exits at once and stays a zombie until a timer reaps
+    it. Darwin answers the group probe with EPERM until then and Linux with
+    success; either way the probe reports absence only after the reap, and
+    within its window.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    reaper = threading.Timer(0.5, proc.wait)
+    try:
+        time.sleep(0.3)  # Let the child exit; nothing reaps it yet.
+        started = time.monotonic()
+        reaper.start()
+        closed = process_custody.process_group_exited_or_unobservable(
+            proc.pid, grace=10.0
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        reaper.join(15.0)
+        proc.wait(timeout=15.0)
+    assert closed
+    assert elapsed >= 0.4
+
+
+@pytest.mark.parametrize("group_vanishes", [True, False])
+def test_refused_group_signal_resolves_only_by_an_observed_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    group_vanishes: bool,
+) -> None:
+    """A group whose members all exit refuses every signal (XNU EPERM).
+
+    The refusal is neither delivery nor failure (HF-155): the guard keeps
+    observing, and only the group's observed absence completes the target.
+    A refusal that outlasts every window stays incomplete.
+    """
+    now = [0.0]
+    reaped_at = 0.3 if group_vanishes else float("inf")
+    signals: list[tuple[int, int]] = []
+
+    def killpg(pgid: int, signum: int) -> None:
+        if signum:
+            signals.append((pgid, signum))
+        if now[0] >= reaped_at:
+            raise ProcessLookupError
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        types.SimpleNamespace(
+            name="posix", getpid=lambda: 999, getpgrp=lambda: 999, killpg=killpg
+        ),
+    )
+    monkeypatch.setattr(
+        process_custody,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        ),
+    )
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    root = process_custody.ProcessSample(
+        101, 999, 10, "python root.py", pgid=101, started_at_ns=11
+    )
+    child = process_custody.ProcessSample(
+        202, 101, 20, "python child.py", pgid=101, started_at_ns=22
+    )
+    tracker = process_custody.ProcessTreeTracker(101)
+    tracker.update({101: root, 202: child})
+    # The root is reaped. Its child is still listed while it exits.
+    exiting = {202: dataclasses.replace(child, ppid=1)}
+
+    def sample() -> dict[int, process_custody.ProcessSample]:
+        return dict(exiting) if now[0] < reaped_at else {}
+
+    cleanup = process_custody.cleanup_tracked_orphans(
+        101, tracker=tracker, sampler=sample, grace=0.25, root_reaped=True
+    )
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=tracker,
+        sampler=sample,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=cleanup.termination_reports,
+        probe_grace=0.25,
+    )
+
+    (report,) = cleanup.termination_reports
+    group_results = [
+        (action.signal_name, action.result)
+        for action in report.actions
+        if (action.target_kind, action.target_id) == ("process_group", 101)
+    ]
+    assert signals == [(101, signal.SIGTERM), (101, custody_signal.SIGKILL)]
+    assert group_results[:2] == [("SIGTERM", "still_live"), ("SIGKILL", "refused")]
+    assert closed is group_vanishes, evidence
+    if group_vanishes:
+        assert group_results[-1] == (None, "exited")
+        assert report.remaining_pgids == ()
+        assert cleanup.process_groups == (101,)
+    else:
+        assert group_results[-1] == (None, "still_live")
+        assert report.remaining_pgids == (101,)
+        assert cleanup.process_groups == ()
+
+
+def test_tracker_admits_the_reserved_root_group_from_the_exit_census() -> None:
+    """Census rules (HF-146): the root leads its group and is not yet reaped."""
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker.update({100: sample(100, 1, 10, "root", pgid=100, started_at_ns=100)})
+    released = sample(105, 1, 1, "transferred", pgid=100, started_at_ns=170)
+    assert tracker.released_identities is not None
+    tracker.released_identities[105] = memory_guard.process_identity(released)
+    orphan = sample(101, 1, 1, "orphaned child", pgid=100, started_at_ns=150)
+    census = {
+        100: sample(100, 1, 10, "root", pgid=100, started_at_ns=100),
+        101: orphan,
+        102: sample(102, 1, 1, "other group", pgid=102, started_at_ns=160),
+        103: sample(103, 1, 1, "no birth", pgid=100, started_at_ns=None),
+        104: sample(104, 1, 1, "born before the root", pgid=100, started_at_ns=50),
+        105: released,
+    }
+
+    assert tracker.admit_reserved_group_members(census) == {101}
+    assert tracker.admit_reserved_group_members(census) == set()
+    # Parentage follows the admitted member as it does any tracked process.
+    grandchild = sample(106, 101, 1, "grandchild", pgid=100, started_at_ns=180)
+    assert tracker.update({101: orphan, 106: grandchild}) == {101, 106}
+
+
+@pytest.mark.parametrize(
+    ("probe_error", "samples_table"),
+    [
+        (None, True),
+        (ProcessLookupError(errno.ESRCH, "No such process"), False),
+        (PermissionError(errno.EPERM, "Operation not permitted"), False),
+        (OSError(errno.EINVAL, "Invalid argument"), True),
+    ],
+)
+def test_exit_census_reads_the_table_only_when_a_member_can_take_a_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    probe_error: OSError | None,
+    samples_table: bool,
+) -> None:
+    """A group the kernel finds absent, or whose members all refuse signals
+    (the exiting root alone on XNU), holds no member the guard could end; the
+    census skips the table read that every guarded command would pay."""
+    probes: list[tuple[int, int]] = []
+
+    def killpg(pgid: int, sig: int) -> None:
+        probes.append((pgid, sig))
+        if probe_error is not None:
+            raise probe_error
+
+    table = {7: memory_guard.ProcessSample(7, 1, 1, "member", pgid=100)}
+    reads: list[bool] = []
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        reads.append(True)
+        return table
+
+    install_module_view(monkeypatch, "os", os, process_custody, killpg=killpg)
+    census = process_custody.reserved_group_exit_census(100, sampler)
+
+    assert probes == [(100, 0)]
+    assert reads == ([True] if samples_table else [])
+    assert census == (table if samples_table else {})
+
+
 def test_completed_process_group_does_not_emit_redundant_member_kill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5577,7 +5920,7 @@ def test_run_command_timeout_teardown_uses_bounded_wait(
         max_rss_kb=1_000_000,
         poll_interval=0.001,
         timeout=0.001,
-        env={"MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
+        env={**guard_custody_env(), "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
         sampler=lambda: {},
     )
 
@@ -5640,7 +5983,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -5668,7 +6011,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -5724,7 +6067,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
     return result, calls, report
@@ -5801,6 +6144,86 @@ def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
     finally:
         if grandchild_pid is not None:
             _kill_test_grandchild(grandchild_pid, marker)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group census")
+def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The child exits right after it starts a grandchild in its own group.
+
+    The guard samples once at launch and then waits on the child's exit, so
+    no sample sees the grandchild under a live parent: the kernel reparents
+    it at the child's exit. Only the census of the child's group, taken
+    before the reap while the group ID is still reserved, puts it under
+    custody (HF-146). Without it the group keeps a live member and closure
+    stays unproven.
+    """
+    monkeypatch.setattr(memory_guard, "DEFAULT_FAST_START_POLL_INTERVAL_SEC", 60.0)
+    pid_file = tmp_path / "grandchild.pid"
+    marker = f"group-orphan-of-{tmp_path.name}"
+    script = (
+        "import pathlib, subprocess, sys\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        ")\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
+    )
+    grandchild_pid: int | None = None
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", script],
+            max_rss_kb=1_000_000,
+            poll_interval=60.0,
+            timeout=120.0,
+        )
+        grandchild_pid = _wait_for_pid_file(pid_file)
+
+        assert result.returncode == 0, result.stderr
+        assert result.child_process is not None
+        assert result.child_process.pid in result.orphaned_process_groups
+        assert result.descendants_closed is True
+        assert result.temporary_artifacts is not None
+        census = result.temporary_artifacts["closure"]["root_exit_census"]
+        assert census == {"admitted_pids": [grandchild_pid]}
+        assert _test_grandchild_gone(grandchild_pid, marker)
+    finally:
+        if grandchild_pid is not None:
+            _kill_test_grandchild(grandchild_pid, marker)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owned-child reap")
+def test_timeout_closure_survives_a_late_reap_of_the_killed_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded host can reap the killed child late (HF-155).
+
+    Until the reap XNU refuses every signal and probe to the child's group
+    with EPERM. Each observation window must keep watching through that
+    refusal; ending it early left closure unproven on hosted macOS.
+    """
+    real_wait4 = os.wait4
+
+    def late_wait4(pid: int, options: int):
+        time.sleep(0.5)  # The reaper thread is starved for half a second.
+        return real_wait4(pid, options)
+
+    # The view confines the late reap to the clock under test.
+    install_module_view(monkeypatch, "os", os, process_custody, wait4=late_wait4)
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.05,
+        timeout=0.5,
+    )
+
+    assert result.timed_out is True
+    assert result.descendants_closed is True, result.stderr
+    assert result.infrastructure_failure is None
+    (report,) = result.termination_reports
+    assert report.reason == "timeout"
+    assert report.remaining_pgids == report.remaining_pids == ()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX sampled process-tree RSS")
@@ -8077,8 +8500,8 @@ def test_posix_launch_identity_survives_reap_before_clock_returns(
 ):
     real_clock = process_custody.ChildExecutionClock
 
-    def reap_before_return(proc, started):
-        clock = real_clock(proc, started)
+    def reap_before_return(proc, started, **kwargs):
+        clock = real_clock(proc, started, **kwargs)
         # Force the adversarial schedule through the actual sole reaper.
         # No timing race or repeated fast-command loop is needed.
         assert proc.wait(timeout=5) == 0

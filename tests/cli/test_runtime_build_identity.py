@@ -1630,7 +1630,8 @@ class _SessionInput:
         self.owner.verifications += 1
         if self.owner.verify is not None:
             self.owner.verify()
-        self.owner.lines.put(self.owner.digest + "\n")
+        if self.owner.respond_to_verify:
+            self.owner.lines.put(self.owner.digest + "\n")
 
     def flush(self):
         pass
@@ -1674,6 +1675,7 @@ class _CaptureSession:
         self.returncode = None
         self.verifications = 0
         self.verify = None
+        self.respond_to_verify = True
 
     def poll(self):
         return self.returncode
@@ -1831,19 +1833,45 @@ def test_python_identity_failed_close_revokes_admission(python_session):
     assert len(calls) == 1
 
 
-def test_python_identity_timeout_revokes_without_retry(python_session, monkeypatch):
+@pytest.mark.parametrize("phase", ["admission", "reuse"])
+def test_python_identity_timeout_revokes_without_retry(
+    python_session, monkeypatch, phase
+):
     admission, selected, session, calls = python_session
-    session.lines.get_nowait()
-    # Initial content capture owns the admission budget; later verify requests
-    # use the separate response budget. Exercise the boundary capture calls.
-    monkeypatch.setattr(admission, "_ADMISSION_TIMEOUT", 0.001)
     owner = admission.BuildPythonAdmission()
+    environment = {"MOLT_BUILD_PYTHON": str(selected)}
+    if phase == "admission":
+        session.lines.get_nowait()
+        monkeypatch.setattr(admission, "_ADMISSION_TIMEOUT", 0.001)
+        expected_timeout = admission._ADMISSION_TIMEOUT
+    else:
+        owner.capture(environment)
+        session.respond_to_verify = False
+        expected_timeout = admission._RESPONSE_TIMEOUT
+    response_get = owner._responses.get
+    timeouts = []
+
+    def bounded_get(*, timeout):
+        timeouts.append(timeout)
+        assert timeout == expected_timeout
+        # Exercise the real queue-empty timeout path without waiting the full
+        # reuse budget. Only this operation's response queue is intercepted.
+        return response_get(timeout=0.001)
+
+    monkeypatch.setattr(owner._responses, "get", bounded_get)
     with pytest.raises(ValueError, match="timed out"):
-        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+        owner.capture(environment)
+    assert timeouts == [expected_timeout]
+    assert session.verifications == (phase == "reuse")
+    assert len(session.fresh_calls) == (phase == "reuse")
+    if session.fresh_calls:
+        assert session.fresh_calls[0][1]["timeout"] == admission._RESPONSE_TIMEOUT
     assert session.closed
+    assert owner.terminal
     assert len(calls) == 1
     with pytest.raises(ValueError, match="revoked"):
-        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+        owner.capture(environment)
+    assert len(calls) == 1
 
 
 def test_build_python_scope_borrows_only_live_operation_owner(python_session):
