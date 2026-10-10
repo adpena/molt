@@ -53,6 +53,24 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     assert closure["kind"] == "named-lane"
     assert closure["descendants"] == "declared-toolchains"
     assert set(lane.toolchains) <= set(closure["toolchains"])
+    # Native differential/Pact lanes cold-build the runtime, including mimalloc.
+    # WASM-only and reference-only lanes must not acquire native C custody.
+    native_runtime = lane_id in {
+        "runtime.abi-fixture-authorities",
+        "pact.witness.acceptance.native",
+        "r6.target-version-parity.py312",
+        "r6.target-version-parity.py313",
+        "r6.target-version-parity.py314",
+    }
+    assert envelope["cargo_native_units"] == (
+        {
+            "target": ["c"]
+            if lane_id == "runtime.abi-fixture-authorities"
+            else ["c", "c++"]
+        }
+        if native_runtime
+        else {}
+    )
 
 
 def test_abi_fixture_lane_declares_native_c_through_cargo_wrapping() -> None:
@@ -61,8 +79,8 @@ def test_abi_fixture_lane_declares_native_c_through_cargo_wrapping() -> None:
     lane = PLAN.named_lane("runtime.abi-fixture-authorities")
     wrapped = _canonical_cargo_proof_command(list(lane.argv[1:]))
     envelope = command_admission.envelope_for_command(wrapped)
-    assert envelope["cargo_native_c_units"] == ["target"]
-    assert envelope["delegated"]["cargo_native_c_units"] == ["target"]
+    assert envelope["cargo_native_units"] == {"target": ["c"]}
+    assert envelope["delegated"]["cargo_native_units"] == {"target": ["c"]}
     assert {"cargo", "rustc", "python"} <= set(envelope["toolchains"])
     spec = pact._named_lane_spec(lane.id)
     assert spec["command"] == wrapped

@@ -605,27 +605,34 @@ def test_native_identity_rejects_extra_sdk_closure_even_with_valid_digest(tmp_pa
         "missing-unit",
     ],
 )
-def test_native_c_reuse_revalidates_actual_selection_and_images(
-    tmp_path, monkeypatch, mutation
+@pytest.mark.parametrize("operation", ["c", "c++"])
+def test_native_build_reuse_revalidates_actual_selection_and_images(
+    tmp_path, monkeypatch, mutation, operation
 ):
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
     from molt.exact_json import canonical_json_sha256
     from tools.proof_queue_pkg import toolchain_capture
 
-    identity, tools, env, command, _calls = _native_c_capture_fixture(
-        tmp_path, monkeypatch, armed=False
+    identity, tools, env, command, _calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, armed=False, operation=operation
     )
     monkeypatch.setattr(
         command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
     )
+    requirements = {"target": ["c"]} if operation == "c" else {"host": ["c++"]}
+    driver, frontend, selector = (
+        ("selected-gcc", "cc1", "HOST_CC")
+        if operation == "c"
+        else ("selected-g++", "cc1plus", "HOST_CXX")
+    )
     if mutation in {"compiler", "helper", "archiver"}:
         tools[
-            {"compiler": "selected-gcc", "helper": "cc1", "archiver": "selected-ar"}[
+            {"compiler": driver, "helper": frontend, "archiver": "selected-ar"}[
                 mutation
             ]
         ].write_bytes(b"changed")
     elif mutation == "selector":
-        env["HOST_CC"] = str(tools["linker"])
+        env[selector] = str(tools["linker"])
     elif mutation == "helper-shadow":
         first = tmp_path / "earlier"
         first.mkdir()
@@ -634,7 +641,7 @@ def test_native_c_reuse_revalidates_actual_selection_and_images(
         shadow.chmod(0o755)
         env["PATH"] = str(first) + os.pathsep + env["PATH"]
     elif mutation == "missing-unit":
-        identity["link_selection"]["native_c"] = []
+        identity["link_selection"]["native_build"] = []
         material = {
             key: value for key, value in identity.items() if key != "identity_sha256"
         }
@@ -650,7 +657,7 @@ def test_native_c_reuse_revalidates_actual_selection_and_images(
         cwd=tmp_path,
         env=env,
         command_argv=command,
-        native_c_units=["target"],
+        native_units=requirements,
     ) is (mutation == "none")
 
 
@@ -659,9 +666,9 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
     tmp_path, monkeypatch, role
 ):
     from molt import process_guard, rust_toolchain
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
 
-    _identity, tools, environment, command, phase_calls = _native_c_capture_fixture(
+    _identity, tools, environment, command, phase_calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, required=False
     )
     proxy_dir = tmp_path / "proxies"
@@ -975,9 +982,9 @@ def test_rust_reuse_binds_archive_claim_to_actual_producer_command(
 ):
     import copy
     from molt.exact_json import canonical_json_sha256
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
 
-    identity, _tools, env, command, _calls = _native_c_capture_fixture(
+    identity, _tools, env, command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, required=False
     )
     policy = next(
@@ -1038,9 +1045,9 @@ def test_rust_receiver_binds_modeled_wrapper_to_its_exact_payload(
     tmp_path, monkeypatch, transport
 ):
     from molt.exact_json import canonical_json_sha256
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
 
-    identity, tools, _env, _command, _calls = _native_c_capture_fixture(
+    identity, tools, _env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, required=False
     )
     wrapper = "venv_exec.py" if transport == "venv" else "uv_project_env.py"

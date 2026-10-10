@@ -138,19 +138,32 @@ class MatrixCell:
     data: dict[str, str]
 
 
-def cargo_native_c_units(data: Mapping[str, Any]) -> tuple[str, ...]:
-    """The command declaration alone grants native C build-unit custody."""
-    raw = data.get("cargo_native_c_units", [])
+def cargo_native_units(data: Mapping[str, Any]) -> dict[str, list[str]]:
+    """The command alone grants native build roles and source languages."""
+    raw = data.get("cargo_native_units", {})
     if (
-        not isinstance(raw, list)
-        or any(value not in ("target", "host") for value in raw)
-        or len(set(raw)) != len(raw)
+        "cargo_native_c_units" in data
+        or not isinstance(raw, dict)
+        or set(raw) - {"target", "host"}
+        or any(
+            not isinstance(languages, list)
+            or not languages
+            or any(language not in ("c", "c++") for language in languages)
+            or len(set(languages)) != len(languages)
+            for languages in raw.values()
+        )
     ):
-        raise ValueError("cargo_native_c_units must contain unique target/host units")
+        raise ValueError(
+            "cargo_native_units requires target/host roles with unique c/c++ languages"
+        )
     tools = data.get("toolchains", [])
     if raw and (not isinstance(tools, list) or not {"cargo", "rustc"}.issubset(tools)):
-        raise ValueError("native C build units require cargo and rustc toolchains")
-    return tuple(unit for unit in ("target", "host") if unit in raw)
+        raise ValueError("native C/C++ build units require cargo and rustc toolchains")
+    return {
+        unit: [language for language in ("c", "c++") if language in raw[unit]]
+        for unit in ("target", "host")
+        if unit in raw
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,8 +436,8 @@ class ProofPlan:
     @classmethod
     def load(cls, path: Path = DEFAULT_MANIFEST) -> "ProofPlan":
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != "molt.proof-plan.v5":
-            raise ValueError(f"{path}: expected schema molt.proof-plan.v5")
+        if data.get("schema") != "molt.proof-plan.v6":
+            raise ValueError(f"{path}: expected schema molt.proof-plan.v6")
         families = tuple(
             ProofFamily(str(entry.get("name", "")), dict(entry))
             for entry in data.get("ci_family", [])
@@ -507,12 +520,12 @@ class ProofPlan:
             extra = (
                 set(lane.data)
                 - set(REQUIRED_NAMED_LANE_FIELDS)
-                - {"id", "cargo_output_lifetime", "cargo_native_c_units"}
+                - {"id", "cargo_output_lifetime", "cargo_native_units"}
             )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
             try:
-                cargo_native_c_units(lane.data)
+                cargo_native_units(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
             argv = lane.argv
@@ -1270,7 +1283,7 @@ class ProofPlan:
             ):
                 errors.append(f"{command.id}: argv must be a non-empty string list")
             try:
-                cargo_native_c_units(command.data)
+                cargo_native_units(command.data)
             except ValueError as exc:
                 errors.append(f"{command.id}: {exc}")
             toolchains = command.data.get("toolchains")

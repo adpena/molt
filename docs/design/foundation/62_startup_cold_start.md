@@ -21,7 +21,8 @@
 > (1) **the ~70 ms macOS first-launch code-signature tax is paid by every freshly
 > built user binary because molt never ad-hoc-signs the user artifact at build
 > time** (it signs only the daemon binary + BOLT output); and (2) **page-in of the
-> linked image is unordered** — `bolt.rs::generate_order_file` is a *stub*, so the
+> linked image is unordered** — measured profile-derived order-file generation
+> remains unimplemented, so the
 > ld64 `-order_file` / section-ordering lever that turns "fault N scattered pages"
 > into "fault 1 hot run of pages" is unbuilt. This arc retires the **CLASS** of
 > "cold-start surprises that scale with artifact growth" by (a) **paying the
@@ -106,8 +107,8 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Native ad-hoc codesign** | `src/molt/cli/native_toolchain.py` `_codesign_binary` (`codesign -f -s -`) | Ad-hoc signs a Mach-O; called for the **daemon binary** (`__init__.py:27484`) and **BOLT output** (`_atomic_copy_file(codesign=True)`) | **NOT called for the user binary** after `_post_link_strip(output_binary)` (`__init__.py:20842`) — the load-bearing gap (§3.1) |
 | **Real-identity codesign** | `src/molt/cli/__init__.py` `_codesign_sign` / `_codesign_identity_info` (lines ~3750–3805) | `codesign -s <identity>` + display/verify for a configured Developer-ID | The "preferred over ad-hoc when configured" branch the build-time signer dispatches to (§3.1) |
 | **Native link driver** | `native_link_plan.py` + `native_link_command.py::_build_native_link_plan`; finalization in `build_results.py::_finalize_native_link_candidate` | target-specific dead stripping, export policy, validation, stripping, and atomic publication | No measured order-file / ordered-section policy for page-in locality yet; profile through the canonical link benchmark before changing it (§3.2) |
-| **Order-file generator (STUB)** | `runtime/molt-passes/src/tir/bolt.rs` `generate_order_file` (lines 124–136) | Writes a *placeholder* order file ("# Add function symbols in hot-to-cold order"); BOLT/`perf2bolt` (Linux) + Instruments (macOS) scaffolding exists | **The stub never emits real symbols** — this arc derives the startup-hot symbol order and feeds it to the linker (§3.2) |
-| **BOLT post-link** | `tools/bolt_optimize.sh` + `native_toolchain.py::_run_bolt_post_link` (`--bolt`) | Optional BOLT reordering of an existing binary (re-codesigns via `_atomic_copy_file(codesign=True)`) | The *opt-in heavyweight* path; this arc adds the *always-on lightweight* static startup order (§3.2) and reuses BOLT's reorder as the heavy tier |
+| **Profile-derived order file (unimplemented)** | Existing `native_link_plan.py` / `native_link_command.py` link authority | The former Rust BOLT placeholder is retired; it never emitted measured symbols and had no production callers | Measured macOS profile import and startup-hot order generation remain open (§3.2); integrate with the existing link plan |
+| **BOLT post-link** | `tools/bolt_optimize.sh` + `native_toolchain.py::_run_bolt_post_link` (`--bolt`); [native link contract](native_link_plan.md) | Release-only Linux ELF instrumentation, training, profile merge and optimization; the final candidate is stripped, validated and atomically published | Preserve this implemented authority; it does not implement macOS profile-derived order files |
 | **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Disjoint native file/section accounting with explicit unknowns and unavailable Mach-O symbol extents; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
 | **WASM launch (host/JS)** | `wasm/run_wasm.js` (`new WebAssembly.Module(buffer)` ~4552, `WebAssembly.instantiate(runtimeBuffer/wasmBuffer)` ~5584/5612); `deploy/cloudflare/worker.js` (serves 13.4 MB `falcon-ocr.wasm`) | Eager compile + instantiate from a fully-downloaded buffer | No `compileStreaming`/`instantiateStreaming`; no compiled-`Module` cache across cold invokes (§3.3) |
@@ -162,8 +163,9 @@ Work backward from the §0 end-state to the mechanisms that make it inevitable.
      statically-derivable ordered list of the symbols on the cold path (the *static*
      tier, always on, zero profiling needed) — emitted by the backend and consumed
      by the linker via `-order_file` (Darwin) / ordered `.text.*` sections + a
-     linker order map (ELF). A *profile-refined* tier (Instruments/`perf2bolt`,
-     reusing `bolt.rs`) is the heavy opt-in that *sharpens* the same fact.
+     linker order map (ELF). A future *profile-refined* tier must join this
+     link plan; reuse the existing CLI BOLT path for Linux ELF, while measured
+     Instruments-derived ordering on macOS remains open.
 
 - **END:** "the cold path is a budget that ratchets down, including release-output."
   → **requires** the budget board to distinguish **first-launch** (page-cold +
@@ -206,9 +208,9 @@ Phase 1  BUILD-TIME CODESIGN of the user artifact (the single highest-leverage,
    ├── Phase 4  WASM/edge streaming + module cache (compileStreaming + cache).
    │             Independent of 1/2 (different artifact + host).
    │
-   ├── Phase 5  PROFILE-REFINED StartupOrder (Instruments/perf2bolt via bolt.rs) —
+   ├── Phase 5  PROFILE-REFINED StartupOrder (unimplemented macOS profile import) —
    │             the heavy opt-in tier that sharpens Phase 2's static order.
-   │             DEPENDS on 2 (the order-file plumbing) + existing BOLT.
+   │             DEPENDS on 2 (the order-file plumbing); preserve Linux BOLT authority.
    │
    └── Phase 6  runtime-init micro-budget guard (anti-regression for the dead
                  lever). Independent; tiny.
@@ -322,11 +324,12 @@ StartupOrder (a derived backend fact, emitted alongside the artifact):
     keeps them adjacent at the image head.
   - **Windows:** `/ORDER:@<path>` (MSVC link) — the COFF analogue; lower priority
     (Windows cold-start is download-gated, §3.1).
-- **Profile-refined tier (opt-in, Phase 5).** Reuse `bolt.rs::generate_order_file`
-  (today a stub): an Instruments (`xctrace`)/`perf2bolt` startup profile of the
-  *actual* cold path refines the static order (catches the real callee order through
-  intrinsic dispatch). This is the `--bolt`-class heavyweight; the static tier is the
-  always-on floor it sharpens. **The stub is completed here**, not left as debt.
+- **Profile-refined tier (opt-in, Phase 5; unimplemented).** A measured Instruments
+  (`xctrace`) startup profile must refine the static macOS order through the
+  existing native link plan. Preserve the implemented Linux ELF BOLT pipeline
+  in `native_toolchain.py` and `tools/bolt_optimize.sh`; do not create another
+  optimizer in the pass crate. The retired Rust placeholder provided no profile
+  import or measured ordering to reuse.
 - **`__DATA`/`__const` cold prefix.** The same order applies to the data the cold
   path touches first (the intrinsic function-pointer table `resolve_symbol`, the
   capability/audit statics) — grouped so the cold path's data reads hit a contiguous
@@ -557,23 +560,24 @@ different load path). Size cross-check: `wasm_size_audit.py` numbers unchanged
 **Independently valuable:** yes — edge/browser cold invoke is a distinct, important
 cold-start surface (the deploy story).
 
-### Phase 5 — Profile-refined `StartupOrder` (complete the `bolt.rs` stub)
+### Phase 5 — Profile-refined `StartupOrder` (unimplemented)
 
-**Deliverable:** complete `runtime/molt-passes/src/tir/bolt.rs::generate_order_file`
-(today a stub) to emit a *real* startup-hot order from an Instruments
-(`xctrace record --template 'Time Profiler'`)/`perf2bolt` cold-path profile,
-refining Phase 2's static order; wire it behind the existing `--bolt`-class opt-in
-so the heavy tier sharpens the always-on static tier.
+**Deliverable (open):** admit a measured macOS Instruments cold-path profile
+and derive a startup-hot order that refines Phase 2 through the existing
+`native_link_plan.py` / `native_link_command.py` authority. The former Rust
+placeholder is retired, not completed. Linux ELF post-link optimization remains
+owned by `native_toolchain.py::_run_bolt_post_link` and `tools/bolt_optimize.sh`;
+its implementation is not evidence of macOS ordering support.
 
-**Gates:** with profiling tools absent, `generate_order_file` returns a clear
-error / falls back to the static order (no crash — mirrors the existing
-`test_generate_order_file`); with a profile present, the refined order is a superset
-ordering of the static hot symbols (the static floor is never *worse*). The
+**Gates:** an explicitly requested profile refinement with unavailable selected
+tools or invalid profile data must fail before publication. The static tier
+remains separately selectable. With an admitted profile, the refined order must
+retain the static hot symbols; ordering alone does not prove a speedup. The
 profile-refined page-cold first launch is ≤ the static-order first launch on the
 large benchmark.
 
-**Independently valuable:** yes — the opt-in sharpening for ship artifacts; **closes
-the stub** (no debt left).
+**Independently valuable:** yes — measured opt-in refinement for ship artifacts.
+Implementation and performance acceptance remain open.
 
 ### Phase 6 — runtime-init micro-budget guard (anti-regression for the dead lever)
 
@@ -622,7 +626,7 @@ The arc's measurement obeys the Performance Constitution: **cold AND warm**,
 
 Every PR touching this arc runs: the budget-schema test, the codesign-verify gate
 (Darwin), the order-file head-of-`__TEXT` check, and (Phase 4) the WASM
-streaming-mode smoke. The Rust-touching phases (2 backend emit, 5 bolt.rs) serialize
+streaming-mode smoke. Rust-touching work in Phase 2 (backend emit) serializes
 through the daemon socket (max 2 build agents).
 
 ---
@@ -704,10 +708,11 @@ build (serialize). Phase 3 coordinates with arc 64's owner.
 | 2 | `runtime/molt-backend/src/native_backend/simple_backend.rs` (additive `startup_order` emit); `native_link_command.py::_build_native_link_plan` order-file policy | **yes (additive emit)** | independent; feeds 5; serialize Rust build |
 | 3 | `bench/scoreboard/cold_start_budget.json` (seed); `tools/perf_scoreboard.py` (two-axis budget consumption) | no | blocked-by 0,1; **coordinate arc 64** |
 | 4 | `wasm/run_wasm.js`; `deploy/cloudflare/*.js`; `deploy/browser/*.js` | no | independent |
-| 5 | `runtime/molt-passes/src/tir/bolt.rs` (complete `generate_order_file`); `src/molt/cli/native_toolchain.py` (`_run_bolt_post_link` order-file hook) | **yes** | blocked-by 2; serialize Rust build |
+| 5 | Existing `src/molt/cli/native_link_plan.py` / `native_link_command.py`; preserve `native_toolchain.py` + `tools/bolt_optimize.sh` Linux authority | no pass-crate implementation planned | blocked-by 2; measured macOS profile import/order generation remains open |
 | 6 | `tools/perf_scoreboard.py` (`init_budget_us` cell) or `bench/scoreboard/cold_start_budget.json`; a guard test | no | independent |
 
-Five of seven phases (0,1,3,4,6) never trigger a Rust build → maximal parallelism.
+Only Phase 2 plans a Rust implementation change; the other phases use the
+existing compiler and link authorities.
 Phases 1, 4, 6 can run simultaneously the moment the arc starts.
 
 ---
@@ -808,10 +813,11 @@ made a release-gating correctness property, not an aspiration.**
   `--gc-sections` / `--version-script`); Windows `/OPT:REF` (~20241).
 - **Per-function-section emit (Phase 2, ELF ordering relies on it):**
   `simple_backend.rs:2604–2606` (`per_function_section(true)`).
-- **Order-file generator to complete (Phase 5):** `runtime/molt-passes/src/tir/bolt.rs`
-  `generate_order_file` (lines 124–136, **stub**); BOLT scaffolding
-  (`optimize_with_bolt`, `collect_perf_profile`) in the same file; CLI hook
-  `native_toolchain.py::_run_bolt_post_link` (lines 57–192).
+- **Profile-derived ordering (Phase 5, open):** extend the existing native link
+  plan only after measured profile admission and ordering are implemented. The
+  Rust placeholder was retired without production callers. Preserve the actual
+  Linux BOLT owner, `native_toolchain.py::_run_bolt_post_link` and
+  `tools/bolt_optimize.sh`; see [native link contract](native_link_plan.md).
 - **Runtime-init ladder (Phase 6, dead-lever evidence):**
   `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` (726–818),
   `trace_runtime_init` (668–681), eager capability load (808–813, **do not defer —

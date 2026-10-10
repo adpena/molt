@@ -20,7 +20,7 @@ from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
-ENVELOPE_SCHEMA = "molt.proof-command-envelope.v6"
+ENVELOPE_SCHEMA = "molt.proof-command-envelope.v7"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -504,7 +504,7 @@ def _proof_command_registry() -> dict[str, object]:
         named[argv] = {
             "id": lane.id,
             "toolchains": tuple(lane.toolchains),
-            "cargo_native_c_units": proof_plan.cargo_native_c_units(lane.data),
+            "cargo_native_units": proof_plan.cargo_native_units(lane.data),
         }
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
@@ -519,12 +519,12 @@ def _proof_command_registry() -> dict[str, object]:
             exact[argv] = {
                 "ids": [command.id],
                 "toolchains": declared,
-                "cargo_native_c_units": proof_plan.cargo_native_c_units(command.data),
+                "cargo_native_units": proof_plan.cargo_native_units(command.data),
             }
         else:
             if existing["toolchains"] != declared or existing[
-                "cargo_native_c_units"
-            ] != proof_plan.cargo_native_c_units(command.data):
+                "cargo_native_units"
+            ] != proof_plan.cargo_native_units(command.data):
                 raise ValueError(
                     "identical proof-plan argv has conflicting toolchain authorities: "
                     f"{existing['ids']!r}, {command.id!r}"
@@ -579,7 +579,7 @@ def _command_registration(
     has_uv: bool,
     typed_python: Mapping[str, object] | None = None,
     execution_argv: Sequence[str] | None = None,
-) -> tuple[str, list[str], list[str], list[str]]:
+) -> tuple[str, list[str], list[str], dict[str, list[str]]]:
     registry = _proof_command_registry()
     exact = registry["exact"]
     assert isinstance(exact, dict)
@@ -597,7 +597,10 @@ def _command_registration(
             "proof-plan",
             toolchains,
             [str(command_id) for command_id in command_ids],
-            list(exact_match["cargo_native_c_units"]),
+            {
+                unit: list(languages)
+                for unit, languages in exact_match["cargo_native_units"].items()
+            },
         )
     named = registry["named"]
     assert isinstance(named, dict)
@@ -614,7 +617,10 @@ def _command_registration(
             "named-lane",
             toolchains,
             [str(lane_match["id"])],
-            list(lane_match["cargo_native_c_units"]),
+            {
+                unit: list(languages)
+                for unit, languages in lane_match["cargo_native_units"].items()
+            },
         )
 
     if typed_python is not None and typed_python.get("family") == "prepared-named-lane":
@@ -625,7 +631,7 @@ def _command_registration(
             "named-lane",
             _toolchain_dependency_closure(plan.named_lane(lane_id).toolchains),
             [lane_id],
-            list(proof_plan.cargo_native_c_units(plan.named_lane(lane_id).data)),
+            proof_plan.cargo_native_units(plan.named_lane(lane_id).data),
         )
 
     entrypoint = _command_entrypoint(argv)
@@ -676,7 +682,7 @@ def _command_registration(
                 "typed-python-family",
                 _toolchain_dependency_closure(toolchains),
                 [],
-                [],
+                {},
             )
         if has_uv:
             add("uv")
@@ -686,7 +692,7 @@ def _command_registration(
             if console is not None:
                 for name in console:
                     add(name)
-        return "python", _toolchain_dependency_closure(toolchains), [], []
+        return "python", _toolchain_dependency_closure(toolchains), [], {}
 
     if not argv:
         raise ValueError("proof command has no executable registration")
@@ -706,7 +712,7 @@ def _command_registration(
             add("cargo-deny")
         elif invocation.subcommand == "audit":
             add("cargo-audit")
-    return "toolchain", _toolchain_dependency_closure(toolchains), [], []
+    return "toolchain", _toolchain_dependency_closure(toolchains), [], {}
 
 
 _CARGO_LEAF_SUBCOMMANDS = frozenset(
@@ -1666,7 +1672,7 @@ def _envelope_for_command(
     ):
         invocation = parse_python_invocation(_python_invocation_argv(argv, python))
         typed_python = _typed_python_command_family(argv, python, invocation)
-    registration_kind, toolchains, proof_plan_command_ids, native_c_units = (
+    registration_kind, toolchains, proof_plan_command_ids, native_units = (
         _command_registration(
             submitted_argv,
             has_python=python is not None,
@@ -1749,8 +1755,8 @@ def _envelope_for_command(
         "python": python,
         "toolchains": toolchains,
         "proof_plan_command_ids": proof_plan_command_ids,
-        "cargo_native_c_units": (
-            native_c_units if delegated is None else delegated["cargo_native_c_units"]
+        "cargo_native_units": (
+            native_units if delegated is None else delegated["cargo_native_units"]
         ),
         "guarded_exec": (
             {key: value for key, value in guarded_exec.items() if key != "nested"}
@@ -1894,7 +1900,7 @@ def admission_envelope(
             "python": None,
             "toolchains": [],
             "proof_plan_command_ids": [],
-            "cargo_native_c_units": [],
+            "cargo_native_units": {},
             "guarded_exec": None,
             "delegated": None,
             "typed_command": None,

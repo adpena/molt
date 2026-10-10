@@ -821,46 +821,56 @@ capture context and verifier. Source, Cargo/tool configuration and artifact
 publication checks remain fresh at their existing boundaries; only successful
 live runtime verification permits reuse of the immutable semantic projection.
 
-### Native C processes in development proofs
+### Native C/C++ processes in development proofs
 
-A proof command that builds native C units declares `cargo_native_c_units` in
-`tools/proof_plan.toml`: `target`, `host`, or both. This is an operation
+A proof command that compiles native C or C++ declares `cargo_native_units`
+in `tools/proof_plan.toml`, with explicit build roles and source languages, for
+example `{ target = ["c", "c++"], host = ["c++"] }`. This is an operation
 requirement, not a property of every Rust dependency. Equal target and host
-units share one capture. Runtime-only WASI builds use their existing managed
-SDK closure and do not acquire a native C obligation.
+triples share one archiver and resource inventory while retaining every declared
+role and the union of their languages. Host-only C++ selects no unused C driver.
+Runtime-only WASI builds use their managed SDK closure and do not acquire a
+native build obligation. Native runtime commands that accept the full stdlib
+profile carry both languages because full builds compile simdutf; the MLIR
+TableGen proc macro requires host C++. Pure Rust, C-only LLVM wrappers and
+native micro-runtime operations retain their narrower requirements.
 
-The existing Cargo selector owns CC/AR precedence: target spelling, underscored
-target spelling, HOST_/TARGET_ spelling, then the unqualified variable. Native
-defaults come from the same target plan as ordinary Cargo; cross selections
-require explicit tools. Full Cargo native C proofs currently require the C unit
+The existing Cargo selector owns CC/CXX/AR precedence: target spelling,
+underscored target spelling, HOST_/TARGET_ spelling, then the unqualified
+variable. Each language consumes its own CFLAGS or CXXFLAGS. Native defaults
+come from the same target plan as ordinary Cargo; cross selections require
+explicit tools. Full Cargo native proofs currently require each native unit's
 target to equal the Rust compiler host: paths alone do not establish cc-rs's
-target-specific default flags. Host C units in cross Rust builds remain valid;
-source-extension commands retain their separate explicit target authority.
-The selected C compiler is independent of the Rust
-linker and bindgen's CLANG_PATH. Unresolved Cargo configuration overrides,
-package-relative resource paths and unsupported compiler wrappers fail before
-capture. Pre-arm binding publishes the captured physical RUSTC/CARGO paths and
-target-qualified C tools, so the payload does not reselect them through rustup
-or ambient defaults.
+target-specific default flags. Host C/C++ units in cross Rust builds remain
+valid; source-extension commands retain their separate explicit target authority.
+Selected source compilers are independent of the Rust linker and bindgen's
+CLANG_PATH. Unresolved Cargo configuration overrides, package-relative resource
+paths and unsupported compiler wrappers fail before capture. Pre-arm binding
+publishes captured physical RUSTC/CARGO paths and target-qualified CC/CXX/AR
+selections, so the payload does not reselect them through rustup or ambient
+defaults.
 
-The Rust capture records the actual C and preprocessed-assembly driver phases,
-independently selected archiver, mutable resource inputs, and helper images.
-GCC helpers may reside outside the driver's directory; their reported commands
-supply the image paths. The existing MSVC cl/lib policy retains its in-process
-C frontend. Native source-extension C/C++ roles use this same phase authority;
-freestanding WASM has a frontend phase but no GNU assembly unit. Managed WASI
-compiler roles keep their existing SDK image authority.
+Rust capture records each selected language's actual frontend and
+preprocessed-assembly driver phases, the independently selected archiver,
+mutable resource inputs, and helper images. GCC helpers such as cc1plus may
+reside outside the driver's directory; their reported commands supply the image
+paths. MSVC cl/lib retains its in-process frontends. Native source-extension
+C/C++ roles use this same phase authority; freestanding WASM has a frontend
+phase but no GNU assembly unit. Managed WASI compiler roles keep their existing
+SDK image authority.
 
-Required units and helpers are validated through image projection, armed
-capture, persisted CAS receipts and reuse. Warm reuse checks current selection
-and bytes without rerunning driver phases. Rustup component selection is resolved
-before a cache lookup; unchanged proxy bytes do not pin an old override. Mutable
-C resource and Node package contents are inventoried once after watcher arming;
-discovery retains selected roots and finite resolver/manifest facts. New members
-between discovery and arming enter that complete inventory. Full receipts require
-the inventory, and live watches cover subsequent membership changes. It supplies
-the same boundary's file checks. The same captured files enter the
-Cargo cache key and live mutation guard. Build-script-specific flags may select
+Build roles, languages and helpers are validated through image projection,
+armed capture, persisted CAS receipts and reuse. The current plan, command
+envelope and Rust selection schemas reject earlier C-only records; omitted or
+substituted languages cannot be accepted by resealing a receipt. Warm reuse
+checks current selection and bytes without rerunning driver phases. Rustup
+component selection is resolved before a cache lookup; unchanged proxy bytes do
+not pin an old override. Shared C/C++ resource and Node package contents are
+inventoried once after watcher arming; discovery retains selected roots and
+finite resolver/manifest facts. New members between discovery and arming enter
+that complete inventory. Full receipts require the inventory, and live watches
+cover subsequent membership changes. The same captured files enter the Cargo
+cache key and live mutation guard. Build-script-specific flags may select
 additional children; they must satisfy actual child custody, never a guessed
 helper allowlist. These are development-proof costs and do not add checks or
 instrumentation to emitted guests. A resource-guarded benchmark alone does not

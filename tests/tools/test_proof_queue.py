@@ -17022,7 +17022,8 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     assert actual == [str(expected), *payload[1:]]
     if mode != "direct":
         assert exact[1 : len(prefix)] == prefix[1:]
-        assert exact[len(prefix)] == custody_spelling(
+        # Launch preserves filesystem spelling; custody identities below normalize it.
+        assert exact[len(prefix)] == str(
             (state.ROOT / "tools/guarded_exec.py").resolve()
         )
         assert delegated["path"] == custody_spelling(expected)
@@ -17220,12 +17221,15 @@ def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_i
         )
     )
     envelope = command_admission.envelope_for_command(command)
-    assert envelope["cargo_native_c_units"] == ["target"]
+    assert envelope["cargo_native_units"] == {"target": ["c"]}
     command_admission.validate_envelope(envelope, command)
     changed = dict(envelope)
-    changed["cargo_native_c_units"] = []
+    changed["cargo_native_units"] = {}
     with pytest.raises(ValueError):
         command_admission.validate_envelope(changed, command)
+    retired = dict(envelope, schema="molt.proof-command-envelope.v6")
+    with pytest.raises(ValueError):
+        command_admission.validate_envelope(retired, command)
 
 
 @pytest.mark.parametrize("spelling", ["split", "equals"])

@@ -150,7 +150,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
 
     switch_to_block_materialized(builder, load_block);
     seal_block_once(builder, sealed_blocks, load_block);
-    let obj_ptr = unbox_ptr_value(builder, obj_bits, nbc);
+    let obj_ptr = unbox_ptr_value(builder, obj_bits);
     let offset = builder.ins().iconst(types::I64, offset_bytes);
     let callee = import_func_ref(
         module,
