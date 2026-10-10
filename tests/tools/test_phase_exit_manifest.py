@@ -186,10 +186,18 @@ def _checked_out(root: Path, source_sha: str) -> None:
     assert (root / rcr.KIND_TO_TOOL[rcr.KIND_VERIFIED_SUBSET]).is_file()
 
 
-def _ledger_in_tree(root: Path, source_sha: str) -> tuple[str, str]:
-    """The ledger read at the bundle source; the hermetic tree has no Git."""
+def _source_in_tree(root: Path, source_sha: str, path: Any) -> tuple[str, str]:
+    """Source facts at the bundle source; the hermetic tree has no Git.
+
+    The ledger comes from the tree. H0 is the v1 contract phase, so the
+    project version is a v1 fixture rather than the checkout's version.
+    """
     assert source_sha == SOURCE_SHA
-    data = (root / LEDGER).read_bytes()
+    if path == reg.PYPROJECT_PATH:
+        data = b'[project]\nname = "molt"\nversion = "1.0.0"\n'
+    else:
+        assert path.as_posix() == LEDGER
+        data = (root / LEDGER).read_bytes()
     blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
     return blob, data.decode("utf-8")
 
@@ -219,7 +227,7 @@ def _admit_fixture_inputs(patch: pytest.MonkeyPatch) -> None:
     patch.setattr(reg, "_shared_scientific_registry_coordinates", _registry)
     patch.setattr(vs, "validate_manifest", _validation)
     patch.setattr(reg, "_assert_clean_landed_source", _checked_out)
-    patch.setattr(reg, "_ledger_at_source", _ledger_in_tree)
+    patch.setattr(reg, "_blob_at_source", _source_in_tree)
     patch.setattr(ps, "_git_rev", lambda: SOURCE_SHA)
 
 

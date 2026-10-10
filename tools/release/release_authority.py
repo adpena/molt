@@ -11,7 +11,6 @@ import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
-import tomllib
 from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +74,7 @@ from tools.release.release_model import (  # noqa: E402
     release_exit_archive_filename,
     phase_exit_filename,
     phase_exit_attestation_filename,
+    project_version,
     stable_release,
     release_subjects,
     sha256_file,
@@ -218,8 +218,7 @@ def _git(*args: str) -> str:
 
 
 def _project_version() -> str:
-    with (ROOT / "pyproject.toml").open("rb") as handle:
-        return normalized_version(str(tomllib.load(handle)["project"]["version"]))
+    return project_version((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 def _write_github_outputs(path: Path, outputs: dict[str, str]) -> None:
