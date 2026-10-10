@@ -133,7 +133,6 @@ from tools.memory_guard_core.sample_records import (  # noqa: E402
     _stream_sample_payload as _stream_sample_payload,
 )
 from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
-    DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP as DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
     CargoIncrementalQuarantine as CargoIncrementalQuarantine,
     CargoIncrementalObservation as CargoIncrementalObservation,
     observe_owned_incremental_state as observe_owned_incremental_state,
@@ -152,7 +151,6 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _command_invokes_cargo_build_state as _command_invokes_cargo_build_state,
     _command_tokens as _command_tokens,
     _effective_guard_cwd as _effective_guard_cwd,
-    _prune_cargo_incremental_quarantine as _prune_cargo_incremental_quarantine,
     _quarantine_cargo_incremental_state as _quarantine_cargo_incremental_state,
     _samples_include_cargo_build_state as _samples_include_cargo_build_state,
     _token_executable_name as _token_executable_name,

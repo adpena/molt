@@ -537,10 +537,8 @@ def test_recovery_never_prunes_older_quarantine_evidence(tmp_path):
             observations=observed,
             eligible_observations=frozenset(observed),
             descendants_closed=True,
-            retention_keep=2,
         )
     assert receipt.ownership_status == "quarantined"
-    assert receipt.pruned_quarantine_dirs == ()
     assert sorted(path.name for path in parent.iterdir()) == sorted(
         [*stale_names, Path(receipt.quarantine_dir).name]
     )

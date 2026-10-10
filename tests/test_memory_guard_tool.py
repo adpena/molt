@@ -2278,6 +2278,8 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2824,6 +2826,8 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2872,6 +2876,8 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2917,6 +2923,8 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -8338,3 +8346,61 @@ def test_untracked_watch_cannot_admit_children_of_an_absent_root():
     sample = memory_guard.ProcessSample
     samples = {200: sample(200, 100, 1, "stale parent pid", started_at_ns=200)}
     assert memory_guard.watched_pids(samples, 100) == set()
+
+
+def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero grace means "kill now", not "vanish within 20 ms" (HF-48).
+
+    The escaped descendant leaves the process table 0.2 s after SIGKILL, which
+    a loaded host can take. A probe window shorter than that sees it live and
+    the guard reports incomplete cleanup.
+    """
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
+    )
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    root = process_custody.ProcessSample(
+        101, 999, 10, "python root.py", pgid=101, started_at_ns=11
+    )
+    child = process_custody.ProcessSample(
+        202, 101, 20, "python child.py", pgid=101, started_at_ns=22
+    )
+    tracker = process_custody.ProcessTreeTracker(101)
+    tracker.update({101: root, 202: child})
+    live = {202: dataclasses.replace(child, ppid=1, pgid=202)}
+    killed: list[int] = []
+    teardown_s = 0.2
+
+    def send(pid: int, signum: int):
+        if signum == custody_signal.SIGKILL:
+            killed.append(pid)
+        return process_custody._termination_action(
+            target_kind="process", target_id=pid, signum=signum, result="sent"
+        )
+
+    def probe(pid: int, *, grace: float) -> bool:
+        if not killed:
+            return False  # The TERM grace expires with the target alive.
+        if grace < teardown_s:
+            return False  # The window closed before the kernel finished.
+        live.clear()
+        return True
+
+    monkeypatch.setattr(process_custody, "_send_pid_signal_action", send)
+    monkeypatch.setattr(process_custody, "_pid_exited_or_unobservable", probe)
+    monkeypatch.setattr(process_custody, "_process_group_exited_or_unobservable", probe)
+
+    cleanup = process_custody.cleanup_tracked_orphans(
+        101, tracker=tracker, sampler=lambda: dict(live), grace=0.0, root_reaped=True
+    )
+
+    (report,) = cleanup.termination_reports
+    assert killed == [202]
+    assert report.actions[-1].result == "exited"
+    assert report.remaining_pids == ()
