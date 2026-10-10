@@ -304,9 +304,7 @@ fn pickle_encode_text(_py: &crate::PyToken<'_>, text: &str, encoding: &str) -> R
 }
 
 mod protocol01;
-pub use protocol01::{
-    molt_pickle_dumps_protocol01, molt_pickle_encode_protocol0, molt_pickle_loads_protocol01,
-};
+pub use protocol01::{molt_pickle_dumps_protocol01, molt_pickle_loads_protocol01};
 mod binary;
 #[cfg(test)]
 pub(crate) use binary::pickle_apply_build;

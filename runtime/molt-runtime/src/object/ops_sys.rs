@@ -2889,20 +2889,6 @@ pub extern "C" fn molt_traceback_payload(source_bits: u64, limit_bits: u64) -> u
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_exception_components(value_bits: u64, limit_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let limit = match traceback_limit_from_bits(_py, limit_bits) {
-            Ok(limit) => limit,
-            Err(bits) => return bits,
-        };
-        match traceback_exception_components_payload(_py, value_bits, limit) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_exception_chain_payload(value_bits: u64, limit_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let limit = match traceback_limit_from_bits(_py, limit_bits) {

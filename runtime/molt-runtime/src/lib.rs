@@ -820,8 +820,6 @@ pub(crate) use molt_obj_model::{
     resolve_ptr,
 };
 #[cfg(feature = "stdlib_collections")]
-pub use molt_runtime_collections::argparse::*;
-#[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections::collections_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use molt_runtime_compression::bz2::*;

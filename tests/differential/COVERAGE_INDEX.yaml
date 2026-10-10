@@ -141,6 +141,7 @@ stdlib:
   unittest:
     tests:
       - tests/differential/stdlib/test_unittest_basic.py
+      - tests/differential/stdlib/unittest_import_closure.py
   __future__:
     tests:
       - tests/differential/stdlib/future_module.py
@@ -1479,6 +1480,7 @@ stdlib:
   argparse:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_argparse_e750ee7c.py
+      - tests/differential/stdlib/unittest_main_argv.py
   array:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_array_19edc121.py
@@ -3018,6 +3020,7 @@ stdlib:
   unittest.async_case:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_async_case_a5f154b7.py
+      - tests/differential/stdlib/unittest_import_closure.py
   unittest.case:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_case_3adfebd2.py
@@ -3027,6 +3030,7 @@ stdlib:
   unittest.main:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_main_e038ff1b.py
+      - tests/differential/stdlib/unittest_main_argv.py
   unittest.mock:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_mock_b8ea7264.py

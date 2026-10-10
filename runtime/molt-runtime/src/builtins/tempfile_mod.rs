@@ -331,10 +331,3 @@ pub extern "C" fn molt_tempfile_cleanup(path_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-
-/// `tempfile.tempdir_path()` -> str  (the system temp directory)
-/// Alias for gettempdir for internal use.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_tempdir_path() -> u64 {
-    molt_tempfile_gettempdir()
-}

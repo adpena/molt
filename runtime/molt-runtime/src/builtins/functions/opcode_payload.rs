@@ -443,13 +443,6 @@ pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_token_payload_312_json() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        alloc_runtime_payload_str(_py, TOKEN_PAYLOAD_312_JSON)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_token_payload_312() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let parsed: JsonValue = match serde_json::from_str(TOKEN_PAYLOAD_312_JSON) {

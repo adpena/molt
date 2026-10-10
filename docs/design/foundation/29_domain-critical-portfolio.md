@@ -194,7 +194,7 @@ mmap implementation requires the buffer protocol completion (Subsystem 2) to be 
 
 ### Current State
 
-**Engine architecture.** The regex engine is entirely in Python (`src/molt/stdlib/re/` — wait, this directory does not exist; `re.py` is a 4.6KB wrapper). The Rust satellite `molt-runtime-regex` (`runtime/molt-runtime-regex/src/regex.rs:1-80`) provides lookaround helpers (`molt_re_positive_lookahead`, `molt_re_negative_lookahead`, `molt_re_positive_lookbehind`, `molt_re_negative_lookbehind`), verbose-strip, `fullmatch_check`, named-backref advance. The main `functions_re.rs` provides `molt_re_literal_matches` and character-class fast paths.
+**Engine architecture.** The regex engine is entirely in Python (`src/molt/stdlib/re/` — wait, this directory does not exist; `re.py` is a 4.6KB wrapper). The Rust satellite `molt-runtime-regex` (`runtime/molt-runtime-regex/src/regex.rs:1-80`) provided lookaround helpers (`molt_re_positive_lookahead`, `molt_re_negative_lookahead`, `molt_re_positive_lookbehind`, `molt_re_negative_lookbehind`), verbose-strip, `fullmatch_check`, named-backref advance, and `functions_re.rs` provided `molt_re_literal_matches` and character-class fast paths. No module read them; HF-110 deleted all but verbose-strip (2026-10-09), and doc 37 corrects the rest of this paragraph.
 
 The engine itself is pure Python with Rust-backed literal and lookaround fast paths. There is no NFA/DFA compiled engine, no regex crate, no RE2/PCRE2 integration.
 

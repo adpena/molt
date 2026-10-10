@@ -153,60 +153,6 @@ pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
 // @unique / duplicate-value checking
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Check that a list of (name_bits, value_bits) member pairs has no duplicate
-/// values.  Returns True if all values are unique, False otherwise.
-///
-/// `members_bits` must be a list of 2-tuples [(name, value), ...].
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(members_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        };
-        let type_id = unsafe { object_type_id(ptr) };
-        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        }
-        let Some(elems) = (unsafe {
-            crate::object::seq_access::snapshot(_py, ptr, "enum member snapshot allocation failed")
-        }) else {
-            return MoltObject::none().bits();
-        };
-        let mut seen_values: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        for &elem_bits in elems.iter() {
-            let elem_obj = obj_from_bits(elem_bits);
-            let Some(eptr) = elem_obj.as_ptr() else {
-                continue;
-            };
-            let etype = unsafe { object_type_id(eptr) };
-            if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "each member must be a (name, value) tuple",
-                );
-            }
-            let pair = if etype == TYPE_ID_TUPLE {
-                unsafe { crate::object::seq_access::tuple_pair(eptr) }
-            } else {
-                unsafe {
-                    crate::object::seq_access::with_borrowed(eptr, |pair| {
-                        (pair.len() >= 2).then(|| (pair[0], pair[1]))
-                    })
-                }
-            };
-            let Some((_, val_bits)) = pair else {
-                return raise_exception::<_>(_py, "ValueError", "each member must have 2 elements");
-            };
-            if !seen_values.insert(val_bits) {
-                return MoltObject::from_bool(false).bits();
-            }
-        }
-        MoltObject::from_bool(true).bits()
-    })
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // StrEnum helper
 // ─────────────────────────────────────────────────────────────────────────────

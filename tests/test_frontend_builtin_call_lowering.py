@@ -1741,7 +1741,7 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
         "def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):\n"
         "    from _intrinsics import require_intrinsic as _require\n"
         "    return _require(name, namespace)\n"
-        "_HOOK = _require_intrinsic('molt_importlib_module_spec_is_package')\n"
+        "_HOOK = _require_intrinsic('molt_importlib_source_hash')\n"
     )
     if local:
         source = "def probe():\n" + indent(source, "    ")
@@ -1754,7 +1754,7 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
     assert (
         any(
             op.get("kind") == "builtin_func"
-            and op.get("s_value") == "molt_importlib_module_spec_is_package"
+            and op.get("s_value") == "molt_importlib_source_hash"
             for op in ops
         )
         is local
@@ -1766,7 +1766,7 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
         call = _positional_call(ops, targets, 1)
         assert any(
             op.get("kind") == "const_str"
-            and op.get("s_value") == "molt_importlib_module_spec_is_package"
+            and op.get("s_value") == "molt_importlib_source_hash"
             and op.get("out") == call["args"][1]
             for op in ops
         )

@@ -199,18 +199,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_operator_index",
             crate::molt_operator_index as *const (),
         )),
-        "molt_operator_itemgetter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_operator_itemgetter",
-            crate::molt_operator_itemgetter as *const (),
-        )),
-        "molt_operator_attrgetter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_operator_attrgetter",
-            crate::molt_operator_attrgetter as *const (),
-        )),
-        "molt_operator_methodcaller" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_operator_methodcaller",
-            crate::molt_operator_methodcaller as *const (),
-        )),
         "molt_operator_itemgetter_type" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_operator_itemgetter_type",
             crate::molt_operator_itemgetter_type as *const (),

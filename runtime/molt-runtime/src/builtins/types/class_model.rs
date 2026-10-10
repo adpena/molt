@@ -206,17 +206,6 @@ fn trace_isinstance_enabled() -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_is_string_obj(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
-        let is_string = obj
-            .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
-        MoltObject::from_bool(is_string).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);

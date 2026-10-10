@@ -29,10 +29,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_json_dumps_ex",
             crate::molt_json_dumps_ex as *const (),
         )),
-        "molt_json_loads" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_json_loads",
-            crate::molt_json_loads as *const (),
-        )),
         "molt_json_loads_ex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_json_loads_ex",
             crate::molt_json_loads_ex as *const (),
