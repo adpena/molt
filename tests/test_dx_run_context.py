@@ -891,6 +891,54 @@ def test_artifact_root_is_what_canonical_env_exports(tmp_path: Path) -> None:
         assert Path(exported["MOLT_EXT_ROOT"]) == dx.artifact_root(lane, env)
 
 
+def test_root_env_enters_only_the_family_molt_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A test session builds where a developer run does (HF-114)."""
+    family, lane = _family(tmp_path)
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    caller = {
+        "TMPDIR": str(tmp_path / "caller-tmp"),
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "caller-venv"),
+        "MOLT_SESSION_ID": "pytest-41",
+        "MOLT_SESSION_ID_GENERATED": "1",
+    }
+
+    env = RunContext(lane, session_prefix="pytest").root_env(caller)
+
+    # Only the Molt roots enter; tool caches, scratch and the session stay.
+    assert set(env) == set(caller) | set(dx.MOLT_ROOT_ENV_KEYS)
+    assert {key: env[key] for key in caller} == caller
+    assert env["MOLT_EXT_ROOT"] == str(family)
+    # A generated session id never scopes the target: the family's stable one.
+    assert env["CARGO_TARGET_DIR"] == str(family / "target")
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(family / "target")
+    for key in dx.MOLT_ROOT_ENV_KEYS:
+        path = Path(env[key])
+        assert lane not in (path, *path.parents), (key, path)
+    assert not (family / "target").exists()
+
+
+def test_root_env_keeps_explicit_roots_and_pinned_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path)
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    explicit = tmp_path / "explicit-target"
+
+    kept = RunContext(lane).root_env({"CARGO_TARGET_DIR": str(explicit)})
+    pinned = RunContext(lane).root_env({"MOLT_SESSION_ID": "shard-a"})
+
+    assert kept["CARGO_TARGET_DIR"] == str(explicit.resolve())
+    assert kept["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit.resolve())
+    assert pinned["CARGO_TARGET_DIR"] == str(family / "target" / "sessions" / "shard-a")
+    assert pinned["MOLT_SESSION_ID"] == "shard-a"
+
+
 def test_configured_artifact_root_is_none_when_unset_or_blank(tmp_path: Path) -> None:
     assert dx.configured_artifact_root({}, relative_to=tmp_path) is None
     assert dx.configured_artifact_root(

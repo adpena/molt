@@ -746,6 +746,70 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             Path(captured["env"]["MOLT_PYTEST_CURRENT_TEST_FILE"]).parent
             == summary.parent
         )
+    # The guard and every test process start inside the run context (HF-114):
+    # Cargo builds go to the artifact root's stable target, not the CLI's
+    # `<checkout>/target` default.
+    child_env = captured["env"]
+    assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
+    assert Path(child_env["CARGO_TARGET_DIR"]) == (
+        Path(child_env["MOLT_EXT_ROOT"]) / "target"
+    )
+    assert "MOLT_EXT_ROOT" not in env
+
+
+def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for key in dx.MOLT_ROOT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    explicit_cache = tmp_path / "explicit-cache"
+    monkeypatch.setenv("MOLT_CACHE", str(explicit_cache))
+    monkeypatch.setenv("MOLT_SESSION_ID", "pytest-41")
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+
+    pytest_memory_guard_bootstrap.install_pytest_run_context()
+
+    assert os.environ["MOLT_CACHE"] == str(explicit_cache.resolve())
+    assert os.environ["MOLT_SESSION_ID"] == "pytest-41"
+    target = Path(os.environ["CARGO_TARGET_DIR"])
+    artifact_root = dx.configured_artifact_root(relative_to=REPO_ROOT)
+    # A pytest session id never scopes a target, least of all in the checkout.
+    assert artifact_root is not None
+    assert target == artifact_root / "target"
+    assert REPO_ROOT / "target" / "sessions" not in target.parents
+
+
+def test_checkout_target_oracle_reports_what_a_session_adds(tmp_path: Path) -> None:
+    from tests import conftest as pytest_conftest
+
+    target = tmp_path / "checkout" / "target"
+    empty = pytest_conftest.checkout_target_entries(target)
+    assert empty == frozenset()
+
+    (target / "sessions" / "pytest-41" / ".molt_state").mkdir(parents=True)
+    (target / "release-fast").mkdir()
+    after = pytest_conftest.checkout_target_entries(target)
+
+    # A checkout outside its artifact root gains nothing at all.
+    assert pytest_conftest.checkout_target_leaks(
+        empty, after, cargo_target_in_checkout=False
+    ) == (
+        "target",
+        "target/release-fast",
+        "target/sessions",
+        "target/sessions/pytest-41",
+    )
+    # A plain clone builds in its own target, never under a pytest session.
+    assert pytest_conftest.checkout_target_leaks(
+        empty, after, cargo_target_in_checkout=True
+    ) == ("target/sessions/pytest-41",)
+    # What existed before the session is not the session's.
+    assert (
+        pytest_conftest.checkout_target_leaks(
+            after, after, cargo_target_in_checkout=False
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize("kind", ["pytest", "test-custody"])

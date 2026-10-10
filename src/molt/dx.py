@@ -39,7 +39,11 @@ ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 # operator mounted (a macOS RAM disk). Molt never creates or mounts one.
 SCRATCH_STORAGE_ENV = "MOLT_SCRATCH_STORAGE"
 SHARED_MEMORY_ROOT = Path("/dev/shm")
-CANONICAL_ROOT_ENV_KEYS = (
+# The Molt roots of a run context: artifact root, Cargo targets, toolchain
+# root, compile cache and differential scratch. A test session enters exactly
+# these (`RunContext.root_env`), so code under test builds where a developer
+# run does; tool caches, TMPDIR and the uv environment stay the caller's.
+MOLT_ROOT_ENV_KEYS = (
     ARTIFACT_ROOT_ENV,
     "CARGO_TARGET_DIR",
     "MOLT_DIFF_CARGO_TARGET_DIR",
@@ -47,6 +51,9 @@ CANONICAL_ROOT_ENV_KEYS = (
     "MOLT_CACHE",
     "MOLT_DIFF_ROOT",
     "MOLT_DIFF_TMPDIR",
+)
+CANONICAL_ROOT_ENV_KEYS = (
+    *MOLT_ROOT_ENV_KEYS,
     "UV_CACHE_DIR",
     "UV_PROJECT_ENVIRONMENT",
     "PIP_CACHE_DIR",
@@ -1666,6 +1673,20 @@ class RunContext:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+        return env
+
+    def root_env(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Return ``base`` with this context's Molt roots; create nothing.
+
+        Only `MOLT_ROOT_ENV_KEYS` change, to the values `canonical_env`
+        resolves: an explicit value stays, absolute. Tool caches, scratch
+        (``TMPDIR``), the uv environment and the session keep the caller's
+        values. A test session enters its roots this way (HF-114).
+        """
+
+        env = dict(os.environ if base is None else base)
+        canonical = self.canonical_env(env, create_dirs=False)
+        env.update({key: canonical[key] for key in MOLT_ROOT_ENV_KEYS})
         return env
 
     def dx_env(

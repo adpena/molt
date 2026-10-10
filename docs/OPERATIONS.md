@@ -591,6 +591,15 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   session guard drains daemon groups created during that pytest run at session
   finish; xdist workers use worker-scoped session ids and skip the serial
   session sentinel.
+- **Test sessions build where a developer run does**: the pytest memory-guard
+  handoff, and every pytest process, enters the Molt roots of the run context
+  (`molt.dx.MOLT_ROOT_ENV_KEYS` through `RunContext.root_env`): `MOLT_EXT_ROOT`,
+  `CARGO_TARGET_DIR`, `MOLT_CACHE` and the differential roots. Explicit values
+  stay; tool caches, `TMPDIR` and the uv environment keep the caller's values.
+  A generated pytest session id never scopes the Cargo target, so code under
+  test never writes `<checkout>/target/sessions/pytest-*`. `tests/conftest.py`
+  fails a session that adds entries to the checkout's own `target/` (for a
+  plain clone, which builds in its own `target/`, only `sessions/pytest-*`).
 - **One-shot backend capture**: one-shot native backend compiles must capture stdout/stderr through temp-file-backed handles instead of pipe-backed `capture_output=True`. Child/grandchild toolchain processes may inherit stdio; temp-file capture avoids silent stalls where the parent waits forever on a still-open pipe after codegen has already finished.
 - **Native runtime overlap**: native builds start runtime verification/build overlap after cache/setup and join it only at the true native link boundary. `emit=obj` skips that async runtime work because there is no native link step to hide it behind.
 - **Bootstrap command**: `uv run --python 3.12 python -m molt.cli dx env`
