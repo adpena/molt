@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
@@ -310,6 +311,52 @@ def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[
                 owner=request.node.nodeid, root=MOLT_STDLIB_ROOT
             )
         )
+
+
+@dataclass(frozen=True)
+class GuardCustodyRoots:
+    """Where guards keep custody in this session, and where they must not."""
+
+    # The state root of every guard a test starts.
+    state_root: Path
+    # The roots this session's own outer guard uses (the host's by default).
+    host_state_root: Path
+    host_scratch_root: Path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_guard_custody_roots(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[GuardCustodyRoots]:
+    """Guards that tests start keep their custody inside this session.
+
+    This pytest run's own outer guard is a real guard of the run: its marker
+    and scratch stay in the host's guard state root, where disk reclamation
+    sees them, and they protect the checkout while the run lasts. Every guard
+    a test starts, in process or as a child, inherits the state root set
+    here. Its marker, scratch generation and lease target then live under
+    this session's basetemp, which the outer guard reclaims with the run, so
+    no test writes the host's guard records. A test that needs another root
+    sets its own.
+    """
+    from molt import pytest_memory_guard_bootstrap, temporary_artifacts
+    from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
+
+    # Admit this process's current-test record under the outer guard's root
+    # first: the bootstrap keeps a path it admitted.
+    pytest_memory_guard_bootstrap.install_pytest_current_test_file_env()
+    roots = GuardCustodyRoots(
+        state_root=tmp_path_factory.mktemp("gc", numbered=False) / "memory_guard",
+        host_state_root=memory_guard_state_root(ROOT, os.environ),
+        host_scratch_root=temporary_artifacts.scratch_root(ROOT, os.environ),
+    )
+    previous = os.environ.get(STATE_ROOT_ENV)
+    os.environ[STATE_ROOT_ENV] = str(roots.state_root)
+    yield roots
+    if previous is None:
+        os.environ.pop(STATE_ROOT_ENV, None)
+    else:
+        os.environ[STATE_ROOT_ENV] = previous
 
 
 def _ensure_src_on_path() -> None:
