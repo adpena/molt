@@ -71,13 +71,24 @@ These fixture errors and two unused production imports are corrected; successor
 compilation and full execution remain required. Windows/macOS process cells
 remain unverified.
 
-Standalone Linux/aarch64 ABI execution reports 759 passes, two failures and one
-explicit developer timing probe ignored, with complete native custody and no
-violations. One failed fixture unlawfully replaces the pending exception inside
-a native deallocator; its replacement must observe and restore the exact error
-through the public API. The other failure is an obsolete source-spelling count;
-existing behavioral lifetime controls own that invariant. Neither failure is
-waived, and replacement consumer execution remains required.
+The earlier standalone Linux/aarch64 ABI run reports 759 passes, two failures
+and one explicit developer timing probe ignored. Its member fixture and obsolete
+source-spelling assertion are corrected. The ownership successor compiles and
+reports 762 passes, eight failures and one ignored probe across 56 test summaries,
+with complete native process custody and no custody violations. Failures expose
+an integer conversion publication-order defect, unlawful error-replacing native
+fixture destructors, stale dictionary mock retirement, and an incomplete
+metaclass fixture; two CFunction failures are secondary poisoned locks. The
+integer repair retains the private index owner through each converter's actual
+CPython publication phase, including overflow-output visibility. The fixture
+migration observes and restores exact errors and exercises ordinary dictionary
+retirement through the real public consumers. Independent source review rejects
+the metaclass fixture: it marks undersized static storage as a ready heap type
+and asserts immediate destruction despite the normal MRO self-cycle. That
+invalid fixture and its private callbacks are deleted; existing descriptor
+retirement and real heap-metaclass collector controls retain the valid lifetime
+oracles. Replacement execution remains required; no semantic obligation is
+waived or reclassified as a subset exclusion.
 
 The C percent-formatting repair deletes the duplicate parser and migrates its
 complete versioned hook family, reusing the runtime formatter for arbitrary-width

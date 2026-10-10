@@ -1862,15 +1862,28 @@ fn with_numeric_warning_provider(run: impl FnOnce()) {
 }
 
 unsafe extern "C" fn owned_index_slot_result(_object: *mut PyObject) -> *mut PyObject {
+    INDEX_OVERFLOW_OUTPUT.with(|output| {
+        if !output.get().is_null() {
+            INDEX_OVERFLOW_AT_CALL.with(|seen| seen.set(unsafe { *output.get() }));
+        }
+    });
     SLOT_RESULT.with(|value| value.replace(0)) as *mut PyObject
 }
 
 thread_local! {
     static INDEX_RESULT_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static INDEX_OVERFLOW_OUTPUT: Cell<*mut i32> = const { Cell::new(ptr::null_mut()) };
+    static INDEX_OVERFLOW_AT_CALL: Cell<i32> = const { Cell::new(99) };
+    static INDEX_OVERFLOW_AT_RETIREMENT: Cell<i32> = const { Cell::new(99) };
 }
 
 unsafe extern "C" fn index_result_finalizer(_object: *mut PyObject) {
     INDEX_RESULT_FINALIZERS.with(|count| count.set(count.get() + 1));
+    INDEX_OVERFLOW_OUTPUT.with(|output| {
+        if !output.get().is_null() {
+            INDEX_OVERFLOW_AT_RETIREMENT.with(|seen| seen.set(unsafe { *output.get() }));
+        }
+    });
     // A legal native deallocator sees and restores the exact extraction error.
     unsafe {
         let error = molt_cpython_abi::api::errors::PyErr_GetRaisedException();
@@ -2060,6 +2073,132 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
         assert_eq!(INDEX_RESULT_ERROR.with(Cell::get), error.as_ptr().addr());
         drop(error);
         drop(args);
+        assert_eq!(object.ob_refcnt, 1);
+    });
+}
+
+#[test]
+fn indexed_integer_conversion_retires_at_the_cpython_publication_phase() {
+    use molt_cpython_abi::api::{errors, numbers, refcount};
+    let _abi_test = init();
+    struct ResetOutput;
+    impl Drop for ResetOutput {
+        fn drop(&mut self) {
+            INDEX_OVERFLOW_OUTPUT.with(|output| output.set(ptr::null_mut()));
+        }
+    }
+    let _reset_output = ResetOutput;
+    with_numeric_warning_provider(|| unsafe {
+        let mut slots: PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = owned_index_slot_result as *const () as *mut c_void;
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        class.tp_name = c"IndexProducer".as_ptr();
+        class.tp_as_number = (&raw mut slots).cast();
+        let mut object = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        let mut subtype = support::StaticType::new();
+        subtype.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        subtype.tp_base = &raw mut molt_cpython_abi::abi_types::PyLong_Type;
+        subtype.tp_name = c"IndexResult".as_ptr();
+        subtype.tp_dealloc = Some(index_result_finalizer);
+        // Objects/longobject.c in CPython 3.12/3.13/3.14: AsLongLong publishes
+        // its byte-extraction error before decref; AsLong/AsInt publish after
+        // AndOverflow retires; masks and AndOverflow do not raise overflow.
+        for minor in [12, 13, 14] {
+            TARGET_MINOR.with(|target| target.set(minor));
+            for negative in [false, true] {
+                for converter in [
+                    "longlong",
+                    "long",
+                    "int",
+                    "long-overflow",
+                    "longlong-overflow",
+                    "long-mask",
+                    "longlong-mask",
+                ] {
+                    let mut result =
+                        physical_long_fixture(subtype.as_ptr(), negative, (1u128 << 100) + 13);
+                    SLOT_RESULT.with(|value| value.set((&raw mut result) as usize));
+                    INDEX_RESULT_FINALIZERS.with(|count| count.set(0));
+                    INDEX_RESULT_ERROR.with(|seen| seen.set(usize::MAX));
+                    INDEX_OVERFLOW_AT_CALL.with(|seen| seen.set(99));
+                    INDEX_OVERFLOW_AT_RETIREMENT.with(|seen| seen.set(99));
+                    let mut overflow = 77;
+                    let reports_overflow = converter.ends_with("-overflow");
+                    INDEX_OVERFLOW_OUTPUT.with(|output| {
+                        output.set(if reports_overflow {
+                            &raw mut overflow
+                        } else {
+                            ptr::null_mut()
+                        })
+                    });
+                    let value = match converter {
+                        "longlong" => numbers::PyLong_AsLongLong(&raw mut object) as i128,
+                        "long" => numbers::PyLong_AsLong(&raw mut object) as i128,
+                        "int" => numbers::PyLong_AsInt(&raw mut object) as i128,
+                        "long-overflow" => {
+                            numbers::PyLong_AsLongAndOverflow(&raw mut object, &raw mut overflow)
+                                as i128
+                        }
+                        "longlong-overflow" => numbers::PyLong_AsLongLongAndOverflow(
+                            &raw mut object,
+                            &raw mut overflow,
+                        ) as i128,
+                        "long-mask" => numbers::PyLong_AsUnsignedLongMask(&raw mut object) as i128,
+                        "longlong-mask" => {
+                            numbers::PyLong_AsUnsignedLongLongMask(&raw mut object) as i128
+                        }
+                        _ => unreachable!(),
+                    };
+                    INDEX_OVERFLOW_OUTPUT.with(|output| output.set(ptr::null_mut()));
+                    let expected = match converter {
+                        "long-mask" => {
+                            (if negative { 0u64.wrapping_sub(13) } else { 13 })
+                                as std::os::raw::c_ulong as i128
+                        }
+                        "longlong-mask" => {
+                            (if negative { 0u64.wrapping_sub(13) } else { 13 }) as i128
+                        }
+                        _ => -1,
+                    };
+                    assert_eq!(value, expected, "{minor} {negative} {converter}");
+                    assert_eq!(SLOT_RESULT.with(Cell::get), 0);
+                    assert_eq!(INDEX_RESULT_FINALIZERS.with(Cell::get), 1);
+                    assert_eq!(result.ob_base.ob_refcnt, 0);
+                    if reports_overflow {
+                        let sign = if negative { -1 } else { 1 };
+                        assert_eq!(overflow, sign);
+                        assert_eq!(INDEX_OVERFLOW_AT_CALL.with(Cell::get), 0);
+                        assert_eq!(INDEX_OVERFLOW_AT_RETIREMENT.with(Cell::get), sign);
+                    }
+                    let raises = matches!(converter, "longlong" | "long" | "int");
+                    if raises {
+                        assert_eq!(
+                            errors::PyErr_ExceptionMatches(
+                                (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast()
+                            ),
+                            1
+                        );
+                    }
+                    let error =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(!error.as_ptr().is_null(), raises);
+                    assert_eq!(
+                        INDEX_RESULT_ERROR.with(Cell::get),
+                        if converter == "longlong" {
+                            error.as_ptr().addr()
+                        } else {
+                            0
+                        },
+                        "{minor} {negative} {converter}"
+                    );
+                    drop(error);
+                }
+            }
+        }
         assert_eq!(object.ob_refcnt, 1);
     });
 }

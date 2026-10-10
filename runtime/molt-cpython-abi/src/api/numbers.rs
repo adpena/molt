@@ -70,8 +70,8 @@ fn fresh_word_long(magnitude: u64, sign: i32, inline_bits: Option<u64>) -> *mut 
 //      "an integer is required" (`AsSsize_t`/`AsUnsigned*`, `PyLong_Check` only);
 //   2. an int outside the C target range raises OverflowError with the exact
 //      converter diagnostic (long-long uses "int too big to convert");
-//   3. `-1` is returned ONLY with an exception set — never as a bare sentinel a
-//      caller could mistake for the value -1.
+//   3. -1 is also a valid signed result. Failure is distinguished by the
+//      pending exception or the explicit AndOverflow output parameter.
 // The pre-fix `py_long_as_i64` violated all three (silent -1, silent
 // truncation, no `__index__`), which numpy consumed as real shape/index values.
 
@@ -96,9 +96,8 @@ enum LongError {
 }
 
 /// Read physical long storage shared by C constructors, runtime projections,
-/// bool and int subtypes. Only APIs with `use_index` consult the non-int index
-/// protocol. NULL raises SystemError like CPython's NULL guard.
-fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongError> {
+/// bool and int subtypes. NULL raises SystemError like CPython's NULL guard.
+fn py_long_value(op: *mut PyObject) -> Result<LongValue, LongError> {
     if op.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(LongError::Raised);
@@ -109,23 +108,37 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
     if let Some(tag) = unsafe { layout_long_tag(op) } {
         return unsafe { layout_long_value(op, tag) };
     }
-    if !use_index {
-        return Err(LongError::NotInt);
-    }
-    // Every index result has physical long storage. Read it before retiring
-    // its C owner; LongValue contains no borrowed runtime handle.
-    let index = unsafe { crate::api::abstract_number::number_index(op) };
-    if index.is_null() {
-        return Err(LongError::Raised);
-    }
-    let result = py_long_value(index, false);
-    unsafe { crate::api::refcount::Py_DECREF(index) };
-    match result {
+    Err(LongError::NotInt)
+}
+
+/// Keep a private index result alive through the converter's specified phase.
+/// CPython's AsLongLong publishes overflow before decref; AsLong delegates to
+/// AsLongAndOverflow and publishes it afterwards. The caller chooses that phase
+/// without changing the ordinary retirement policy or materializing an exact int.
+fn with_indexed_long_value<T>(
+    op: *mut PyObject,
+    consume: impl FnOnce(Result<LongValue, LongError>) -> T,
+) -> T {
+    match py_long_value(op) {
         Err(LongError::NotInt) => {
-            set_long_type_error();
-            Err(LongError::Raised)
+            let index = unsafe {
+                crate::api::refcount::OwnedPyObject::from_owned(
+                    crate::api::abstract_number::number_index(op),
+                )
+            };
+            if index.as_ptr().is_null() {
+                return consume(Err(LongError::Raised));
+            }
+            let value = match py_long_value(index.as_ptr()) {
+                Err(LongError::NotInt) => {
+                    set_long_type_error();
+                    Err(LongError::Raised)
+                }
+                other => other,
+            };
+            consume(value)
         }
-        other => other,
+        value => consume(value),
     }
 }
 
@@ -158,12 +171,11 @@ enum CheckedLongError {
 }
 
 fn checked_signed_value(
-    op: *mut PyObject,
-    use_index: bool,
+    value: Result<LongValue, LongError>,
     min: i64,
     max: i64,
 ) -> Result<i64, CheckedLongError> {
-    match py_long_value(op, use_index) {
+    match value {
         Ok(LongValue::Signed(value)) if value >= min && value <= max => Ok(value),
         Ok(LongValue::Signed(value)) => {
             Err(CheckedLongError::Overflow(if value < 0 { -1 } else { 1 }))
@@ -175,8 +187,33 @@ fn checked_signed_value(
     }
 }
 
+unsafe fn signed_value_and_overflow(
+    op: *mut PyObject,
+    overflow: *mut c_int,
+    min: i64,
+    max: i64,
+) -> i64 {
+    if !overflow.is_null() {
+        unsafe { *overflow = 0 };
+    }
+    with_indexed_long_value(op, |value| match checked_signed_value(value, min, max) {
+        Ok(value) => value,
+        Err(CheckedLongError::Overflow(sign)) => {
+            if !overflow.is_null() {
+                unsafe { *overflow = sign as c_int };
+            }
+            -1
+        }
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            -1
+        }
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
+    })
+}
+
 fn checked_unsigned_value(op: *mut PyObject, max: u64) -> Result<u64, CheckedLongError> {
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(value)) if value < 0 => Err(CheckedLongError::Negative),
         Ok(LongValue::Wide { sign, .. }) if sign < 0 => Err(CheckedLongError::Negative),
         Ok(LongValue::Signed(value)) if value as u64 <= max => Ok(value as u64),
@@ -194,13 +231,13 @@ fn masked_unsigned_value(op: *mut PyObject, width: u32) -> Result<u64, CheckedLo
     } else {
         (1u64 << width) - 1
     };
-    match py_long_value(op, true) {
+    with_indexed_long_value(op, |value| match value {
         Ok(LongValue::Signed(value)) => Ok((value as u64) & mask),
         Ok(LongValue::Big(value)) => Ok(value & mask),
         Ok(LongValue::Wide { low_u64, .. }) => Ok(low_u64 & mask),
         Err(LongError::NotInt) => Err(CheckedLongError::NotInt),
         Err(LongError::Raised) => Err(CheckedLongError::Raised),
-    }
+    })
 }
 
 const PYLONG_BITS_IN_DIGIT: usize = 30;
@@ -654,7 +691,7 @@ pub(crate) fn is_int_like(op: *mut PyObject) -> bool {
 /// (`_PyEval_SliceIndex`, Python/ceval.c). Returns `None` with a pending
 /// exception when `op` is not an int or reference admission failed.
 pub(crate) fn py_long_as_ssize_clamped(op: *mut PyObject) -> Option<isize> {
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(v)) => {
             // On 32-bit targets (wasm32) clamp rather than truncate.
             Some(v.clamp(isize::MIN as i64, isize::MAX as i64) as isize)
@@ -981,7 +1018,7 @@ pub unsafe extern "C" fn _PyLong_Sign(op: *mut PyObject) -> c_int {
     if let Some(tag) = unsafe { layout_long_tag(op) } {
         return layout_long_sign(tag) as c_int;
     }
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(value)) => value.signum() as c_int,
         Ok(LongValue::Big(_)) => 1,
         Ok(LongValue::Wide { sign, .. }) => sign.signum() as c_int,
@@ -997,7 +1034,7 @@ pub unsafe extern "C" fn PyUnstable_Long_IsCompact(
     if let Some(tag) = unsafe { layout_long_tag(obj) } {
         return ((tag >> 3) < 2) as c_int;
     }
-    match py_long_value(obj, false) {
+    match py_long_value(obj) {
         Ok(LongValue::Signed(value)) => (value.unsigned_abs() < (1u64 << 30)) as c_int,
         Ok(LongValue::Big(value)) => (value < (1u64 << 30)) as c_int,
         Ok(LongValue::Wide { .. }) | Err(_) => 0,
@@ -1020,7 +1057,7 @@ pub unsafe extern "C" fn PyUnstable_Long_CompactValue(
             digit
         };
     }
-    match py_long_value(obj, false) {
+    match py_long_value(obj) {
         Ok(LongValue::Signed(value)) if value.unsigned_abs() < (1u64 << 30) => value as Py_ssize_t,
         Ok(LongValue::Big(value)) if value < (1u64 << 30) => value as Py_ssize_t,
         _ => 0,
@@ -1155,35 +1192,23 @@ pub unsafe extern "C" fn _PyLong_FromByteArray(
 /// CPython `PyLong_AsLong` (Objects/longobject.c): accepts int and any object
 /// with `__index__` (via `_PyNumber_Index`); raises OverflowError
 /// "Python int too large to convert to C long" when the value does not fit the
-/// platform `long` (32-bit on Windows/wasm32); returns -1 only with an
-/// exception set. The pre-fix body silently truncated (`as c_long`) and
-/// returned bare -1 sentinels.
+/// platform `long` (32-bit on Windows/wasm32). A returned -1 signals failure
+/// only when an exception is set; the integer -1 remains a valid result.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
-    match checked_signed_value(
-        op,
-        true,
-        crate::platform::C_LONG_MIN,
-        crate::platform::C_LONG_MAX,
-    ) {
-        Ok(value) => value as c_long,
-        Err(CheckedLongError::Overflow(_)) => {
-            set_long_overflow_msg(c"Python int too large to convert to C long");
-            -1
-        }
-        Err(CheckedLongError::NotInt) => {
-            set_long_type_error();
-            -1
-        }
-        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
+    let mut overflow = 0;
+    let value = unsafe { PyLong_AsLongAndOverflow(op, &raw mut overflow) };
+    if overflow != 0 {
+        set_long_overflow_msg(c"Python int too large to convert to C long");
     }
+    value
 }
 
 /// CPython 3.14 `PyLong_IsZero`: return 1 for a zero int, 0 for a non-zero
 /// int, and -1 with TypeError for any non-int object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_IsZero(op: *mut PyObject) -> c_int {
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(value)) => (value == 0) as c_int,
         Ok(LongValue::Big(value)) => (value == 0) as c_int,
         Ok(LongValue::Wide { .. }) => 0,
@@ -1202,7 +1227,7 @@ pub unsafe extern "C" fn PyLong_IsZero(op: *mut PyObject) -> c_int {
 /// physical digits with the same ties-to-even rule as CPython.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(v)) => v as c_double,
         Ok(LongValue::Big(v)) => v as c_double,
         Err(LongError::NotInt) => {
@@ -1261,35 +1286,21 @@ unsafe fn layout_long_to_f64_rounded(op: *mut PyObject, tag: usize) -> f64 {
 
 /// CPython `PyLong_AsLongAndOverflow`: on out-of-range returns **-1** with
 /// `*overflow = ±1` and NO exception (the caller handles the overflow); a
-/// non-int dispatches `__index__` and raises TypeError with `*overflow = 0`.
-/// The pre-fix body returned a clamped MAX/MIN (divergent) and a silent -1.
+/// non-int dispatches `__index__`; protocol failure leaves an exception and
+/// `*overflow = 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
     op: *mut PyObject,
     overflow: *mut c_int,
 ) -> c_long {
-    let mut ov: c_int = 0;
-    let result = match checked_signed_value(
-        op,
-        true,
-        crate::platform::C_LONG_MIN,
-        crate::platform::C_LONG_MAX,
-    ) {
-        Ok(value) => value as c_long,
-        Err(CheckedLongError::Overflow(sign)) => {
-            ov = sign as c_int;
-            -1
-        }
-        Err(CheckedLongError::NotInt) => {
-            set_long_type_error();
-            -1
-        }
-        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
-    };
-    if !overflow.is_null() {
-        unsafe { *overflow = ov };
+    unsafe {
+        signed_value_and_overflow(
+            op,
+            overflow,
+            crate::platform::C_LONG_MIN,
+            crate::platform::C_LONG_MAX,
+        ) as c_long
     }
-    result
 }
 
 /// CPython `PyLong_AsSsize_t` (Objects/longobject.c): `PyLong_Check` only — NO
@@ -1300,7 +1311,7 @@ pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
 /// numpy's reshape-"infer" sentinel).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsSsize_t(op: *mut PyObject) -> isize {
-    match checked_signed_value(op, false, isize::MIN as i64, isize::MAX as i64) {
+    match checked_signed_value(py_long_value(op), isize::MIN as i64, isize::MAX as i64) {
         Ok(value) => value as isize,
         Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C ssize_t");
@@ -1321,22 +1332,24 @@ pub unsafe extern "C" fn PyLong_AsSize_t(op: *mut PyObject) -> usize {
 }
 
 /// CPython `PyLong_AsLongLong`: `__index__` dispatch, OverflowError
-/// "int too big to convert" beyond i64, -1 only with
-/// an exception set (was: silent truncation through the unchecked hook).
+/// "int too big to convert" beyond i64. Failure returns -1 with an exception;
+/// successful conversion of the integer -1 leaves no exception.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLongLong(op: *mut PyObject) -> c_longlong {
-    match checked_signed_value(op, true, i64::MIN, i64::MAX) {
-        Ok(value) => value as c_longlong,
-        Err(CheckedLongError::Overflow(_)) => {
-            set_long_overflow_msg(c"int too big to convert");
-            -1
+    with_indexed_long_value(op, |value| {
+        match checked_signed_value(value, i64::MIN, i64::MAX) {
+            Ok(value) => value as c_longlong,
+            Err(CheckedLongError::Overflow(_)) => {
+                set_long_overflow_msg(c"int too big to convert");
+                -1
+            }
+            Err(CheckedLongError::NotInt) => {
+                set_long_type_error();
+                -1
+            }
+            Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
         }
-        Err(CheckedLongError::NotInt) => {
-            set_long_type_error();
-            -1
-        }
-        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
-    }
+    })
 }
 
 /// CPython `PyLong_AsLongLongAndOverflow`: same contract as the `long` variant
@@ -1348,23 +1361,7 @@ pub unsafe extern "C" fn PyLong_AsLongLongAndOverflow(
     op: *mut PyObject,
     overflow: *mut c_int,
 ) -> c_longlong {
-    let mut ov: c_int = 0;
-    let result = match checked_signed_value(op, true, i64::MIN, i64::MAX) {
-        Ok(value) => value as c_longlong,
-        Err(CheckedLongError::Overflow(sign)) => {
-            ov = sign as c_int;
-            -1
-        }
-        Err(CheckedLongError::NotInt) => {
-            set_long_type_error();
-            -1
-        }
-        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
-    };
-    if !overflow.is_null() {
-        unsafe { *overflow = ov };
-    }
-    result
+    unsafe { signed_value_and_overflow(op, overflow, i64::MIN, i64::MAX) as c_longlong }
 }
 
 /// CPython `PyLong_AsUnsignedLong` (Objects/longobject.c): `PyLong_Check` only;
@@ -1588,7 +1585,7 @@ pub unsafe extern "C" fn PyLong_AsUnsignedLongLongMask(op: *mut PyObject) -> c_u
 /// (the pre-fix body returned a bare NULL on every failure).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsVoidPtr(op: *mut PyObject) -> *mut c_void {
-    match py_long_value(op, false) {
+    match py_long_value(op) {
         Ok(LongValue::Signed(v)) if v < 0 => match isize::try_from(v) {
             Ok(v) => v as *mut c_void,
             Err(_) => {
