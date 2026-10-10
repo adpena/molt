@@ -485,112 +485,6 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
     }
 
 
-_R6_TARGET_VERSION_PARITY_FILES = (
-    "tests/differential/stdlib/sys_metadata_intrinsics.py",
-    "tests/differential/stdlib/sys_stat_version_gate.py",
-    "tests/differential/stdlib/stat_api_surface_versioned.py",
-    "tests/differential/stdlib/queue_shutdown_version_gate.py",
-    "tests/differential/stdlib/removed_stdlib_modules_version_gate.py",
-)
-
-
-def _normalize_r6_target_version_fixtures(
-    requested: Sequence[str] | None,
-) -> list[str]:
-    if not requested:
-        return list(_R6_TARGET_VERSION_PARITY_FILES)
-    by_alias: dict[str, str] = {}
-    for fixture in _R6_TARGET_VERSION_PARITY_FILES:
-        path = Path(fixture)
-        aliases = {
-            fixture,
-            fixture.replace("\\", "/"),
-            path.name,
-            path.stem,
-        }
-        for alias in aliases:
-            by_alias[alias.lower()] = fixture
-    selected: list[str] = []
-    for raw in requested:
-        normalized = raw.replace("\\", "/").lower()
-        fixture = by_alias.get(normalized)
-        if fixture is None:
-            allowed = ", ".join(
-                Path(item).name for item in _R6_TARGET_VERSION_PARITY_FILES
-            )
-            raise SystemExit(
-                f"unknown R6 target-version fixture {raw!r}; choose one of: {allowed}"
-            )
-        if fixture not in selected:
-            selected.append(fixture)
-    return selected
-
-
-def _r6_target_version_fixture_suffix(fixtures: Sequence[str]) -> str:
-    if tuple(fixtures) == _R6_TARGET_VERSION_PARITY_FILES:
-        return ""
-    stems = [state._slug(Path(fixture).stem) for fixture in fixtures]
-    suffix = "-".join(stems)
-    if len(suffix) <= 96:
-        return suffix
-    digest = hashlib.sha256("|".join(fixtures).encode("utf-8")).hexdigest()[:10]
-    return f"{stems[0]}-plus-{len(stems) - 1}-{digest}"
-
-
-def _r6_target_version_parity_spec(
-    python_version: str,
-    timeout: float | None = None,
-    fixtures: Sequence[str] | None = None,
-) -> NamedProofSpec:
-    normalized_version = python_version.strip()
-    if not normalized_version:
-        raise SystemExit("--python-version must not be empty")
-    target_tag = "py" + "".join(normalized_version.split(".")[:2])
-    selected_fixtures = _normalize_r6_target_version_fixtures(fixtures)
-    fixture_suffix = _r6_target_version_fixture_suffix(selected_fixtures)
-    logical_id = f"r6-target-version-parity-{target_tag}"
-    if fixture_suffix:
-        logical_id = f"{logical_id}-{fixture_suffix}"
-    return {
-        "logical_id": logical_id,
-        "reason": (
-            "Run the R6 target-version parity shard through queue custody with "
-            "the differential harness and TargetPythonVersion command authority."
-        ),
-        "command": policy._uv_active_python_command(
-            "tests/molt_diff.py",
-            "--jobs",
-            "1",
-            "--python-version",
-            normalized_version,
-            "--build-profile",
-            "dev",
-            "--fail-fast",
-            *selected_fixtures,
-        ),
-        "resource_family": "python",
-        "contention_key": f"python:r6-target-version-{target_tag}",
-        "scopes": [
-            "src/molt/python_interpreter.py",
-            "tests/molt_diff.py",
-            "src/molt/target_python.py",
-            "src/molt/stdlib/sys.py",
-            "src/molt/stdlib/stat.py",
-            "src/molt/stdlib/queue.py",
-            *selected_fixtures,
-        ],
-        "env_overrides": {},
-        "notes": [
-            "Named R6 parity lane runs sys metadata plus stdlib version-gated "
-            "stat, queue shutdown, and PEP 594 removed-module fixtures with "
-            "serial fail-fast differential custody; missing target interpreters "
-            "fail closed through src/molt/python_interpreter.py.",
-            "Selected R6 fixtures: " + ", ".join(selected_fixtures),
-        ],
-        "timeout": timeout if timeout is not None else 900.0,
-    }
-
-
 def _native_molt_run_spec(
     entry: str,
     *,
@@ -822,17 +716,6 @@ _DEDICATED_NAMED_LANE_HANDLERS = {
     "pact.witness.acceptance.wasm": _cmd_pact_witness_acceptance,
     "pact.witness.oracle": _cmd_pact_witness_oracle,
 }
-
-
-def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
-    return _run_named_spec(
-        args,
-        _r6_target_version_parity_spec(
-            args.python_version,
-            args.timeout,
-            args.fixture,
-        ),
-    )
 
 
 def _cmd_native_molt_run(args: argparse.Namespace) -> int:

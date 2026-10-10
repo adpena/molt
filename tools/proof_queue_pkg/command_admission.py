@@ -1209,6 +1209,37 @@ def _canonical_uv_prefix(
     return exact_prefix, effective
 
 
+def _names_guarded_exec(value: str) -> bool:
+    """Whether one path or module token names the guarded_exec seam.
+
+    A token names it only by its own name: ``tools/guarded_exec.py`` and
+    ``tools.guarded_exec`` do, pytest's ``tests/tools/test_guarded_exec.py``
+    does not.
+    """
+    name = _basename(value)
+    stem, dot, suffix = name.rpartition(".")
+    if dot and suffix in {"py", "pyc", "pyw"}:
+        name = stem
+    return name.rsplit(".", 1)[-1] == "guarded_exec"
+
+
+def _python_arguments_reach_guarded_exec(values: Sequence[str]) -> bool:
+    """Whether Python arguments name the seam outside the direct target slot.
+
+    ``-c`` code is opaque, so any mention there counts.
+    """
+    previous = ""
+    for value in values:
+        text = str(value)
+        if previous == "-c":
+            if "guarded_exec" in text.casefold():
+                return True
+        elif _names_guarded_exec(text):
+            return True
+        previous = text
+    return False
+
+
 def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
     """Parse every canonical spelling of the queue's guarded delegation seam."""
     if not argv:
@@ -1231,6 +1262,7 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
         ):
             python_index = 2
     else:
+        # Another program's arguments are opaque, so any mention counts.
         if any("guarded_exec" in str(value).casefold() for value in payload):
             raise ValueError("guarded_exec delegation must be the direct Python target")
         return None
@@ -1248,16 +1280,13 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
             mode = "module"
             target_indices = [offset + python_index, offset + after_target]
             after_target += 1
-        elif "guarded_exec" in module.casefold():
+        elif _names_guarded_exec(module):
             raise ValueError(f"ambiguous guarded_exec module authority {module!r}")
     elif _basename(target) == "guarded_exec.py":
         mode = "script"
         target_indices = [offset + python_index]
     if mode is None:
-        if any(
-            "guarded_exec" in str(value).casefold()
-            for value in payload[python_index + 1 :]
-        ):
+        if _python_arguments_reach_guarded_exec(payload[python_index:]):
             raise ValueError("guarded_exec delegation must be the direct Python target")
         return None
     try:
@@ -1652,7 +1681,12 @@ def _envelope_for_command(
         )
 
     typed_python = None
-    if python is not None:
+    # An exact plan command is its own authority, even when a named lane runs
+    # the same program with other arguments.
+    if (
+        python is not None
+        and tuple(map(str, submitted_argv)) not in _proof_command_registry()["exact"]
+    ):
         invocation = parse_python_invocation(_python_invocation_argv(argv, python))
         typed_python = _typed_python_command_family(argv, python, invocation)
     registration_kind, toolchains, proof_plan_command_ids, native_c_units = (
