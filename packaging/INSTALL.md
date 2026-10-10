@@ -11,7 +11,9 @@ without any host Python installation or hidden CPython fallback.
 
 ## Requirements
 
-- **Python 3.12+** available as `python3` (or `python` on Windows).
+- **CPython 3.12+** available as `python3` (or `python` on Windows);
+  Python 3.14 hosts require **3.14.1+**. Version 3.14.0 emits compiler warnings
+  during AST-only parsing and cannot preserve Molt target-version diagnostics.
 - **uv** manages a binary bundle's private CLI dependencies directly from the
   bundled `uv.lock`, including artifact hashes and Python/platform markers.
   Platform wheels use the pip environment and do not require uv for normal
@@ -37,7 +39,8 @@ without any host Python installation or hidden CPython fallback.
 
 Set `PYTHON` to a CPython executable path to select an interpreter explicitly;
 the native launcher on every platform honors the same override.
-The bootstrap checks the CPython 3.12+ minimum. Verified versions and target
+The bootstrap checks the CPython 3.12+ minimum; project package admission and
+the source frontend also exclude CPython 3.14.0. Verified versions and target
 support remain those listed in the release matrix. Source parsing uses this
 interpreter: to target Python 3.N, the CLI must run on CPython 3.N or newer.
 Homebrew binds its frontend to Python 3.14 for the current 3.12-3.14 policies.
@@ -232,7 +235,7 @@ Example JSON shape (values vary):
   "status": "ok",
   "data": {
     "checks": [
-      {"name": "python", "ok": true, "detail": "3.12.x (requires >=3.12)"},
+      {"name": "python", "ok": true, "detail": "3.12.x at <python> (requires CPython 3.12+ (Python 3.14 requires 3.14.1+))"},
       {"name": "uv", "ok": true, "detail": "<path-to-uv>"},
       {"name": "molt-runtime", "ok": true, "detail": "<count> shipped runtime cells verified under <runtime-root>"}
     ]
@@ -246,10 +249,10 @@ Failed checks include a `level` and optional `advice` list in `data.checks`.
 
 ## Common failures (doctor)
 
-- **python**: install Python 3.12+ and reopen your terminal.
+- **python**: install a [supported CPython host](#requirements) and reopen your terminal.
   - macOS: `brew install python@3.12`
   - Windows: `winget install Python.Python.3.12`
-  - Linux: install Python 3.12+ via your package manager
+  - Linux: install a supported CPython version via your package manager
 - **uv** (binary bundles): install uv for their private CLI environment.
   - macOS: `brew install uv`
   - Windows: `winget install Astral.Uv` or `scoop install uv`

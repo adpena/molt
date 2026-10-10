@@ -8,7 +8,13 @@ from pathlib import Path
 import subprocess
 from typing import Literal
 
-from molt.dx import TOOLCHAINS_DIRNAME, canonical_toolchain_root
+from molt.default_paths import executable_environment_value, expand_user_path
+
+from molt.dx import (
+    TOOLCHAINS_DIRNAME,
+    canonical_toolchain_root,
+    selected_toolchain_contains,
+)
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
@@ -18,10 +24,8 @@ from molt.file_hashing import _sha256_file
 from molt.rust_toolchain import RustToolSearch, rustc_host, rustc_printed_sysroot
 from molt.toolchain_identity import (
     executable_candidates,
-    executable_environment_value,
     executable_name_candidates,
     executable_search_directories,
-    expand_user_path,
     find_executable,
     resolve_executable,
 )
@@ -230,10 +234,16 @@ def _managed_llvm_bin_directories(
     ).strip()
     if raw_target_root:
         roots.append(Path(raw_target_root))
-    # Each source checkout's durable toolchain custody (molt.dx), which a
-    # worktree shares with its common checkout's family.
+    # Each source checkout's default tool state (molt.dx): a worktree shares
+    # its checkout family's root and an installed compiler uses its Molt home.
+    # An explicit MOLT_TARGET_ROOT is already the selected root above.
+    defaults = {
+        name: value
+        for name, value in environment.items()
+        if name.casefold() != "molt_target_root"
+    }
     roots.extend(
-        canonical_toolchain_root(checkout, require_exists=False)
+        canonical_toolchain_root(checkout, defaults, require_exists=False)
         for checkout in _source_checkout_roots()
     )
 
@@ -813,21 +823,17 @@ def resolve_llvm_wasi_tool_family(
         role: _selected_tool_command(command, environment=effective_environment)
         for role, command in (explicit_commands or {}).items()
     }
-    installation = (
-        selected_wasi_sdk_installation(
-            compiler_source_root(), environ=effective_environment
+    installation = None
+    installation_checked = False
+    managed = {}
+    sdk_requested = any(
+        executable_environment_value(effective_environment, key).strip()
+        for key in (
+            "WASI_SDK_PATH",
+            "WASI_SDK_PREFIX",
+            "MOLT_WASI_SYSROOT",
+            "WASI_SYSROOT",
         )
-        if target_family == "wasm"
-        else None
-    )
-    managed = (
-        {}
-        if installation is None
-        else {
-            os.path.normcase(os.path.abspath(installation.sdk / fact["path"])): fact
-            for fact in installation.facts["tools"].values()
-            if fact is not None
-        }
     )
     resolved: dict[LlvmToolRole, ResolvedLlvmTool | None] = {}
     search_directories = list(sibling_directories)
@@ -846,6 +852,30 @@ def resolve_llvm_wasi_tool_family(
             resolved[role] = None
             continue
         path = candidates[0]
+        if (
+            target_family == "wasm"
+            and not installation_checked
+            and (
+                sdk_requested
+                or selected_toolchain_contains(
+                    compiler_source_root(), path, effective_environment
+                )
+            )
+        ):
+            # An external freestanding family does not select managed SDK state.
+            # A selected SDK or a winning managed entrypoint retains admission.
+            installation = selected_wasi_sdk_installation(
+                compiler_source_root(), environ=effective_environment
+            )
+            installation_checked = True
+            if installation is not None:
+                managed = {
+                    os.path.normcase(
+                        os.path.abspath(installation.sdk / fact["path"])
+                    ): fact
+                    for fact in installation.facts["tools"].values()
+                    if fact is not None
+                }
         search_directories.append(path.parent)
         key = os.path.normcase(os.path.realpath(path))
         if key not in identity_by_path:

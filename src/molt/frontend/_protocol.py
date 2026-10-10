@@ -89,7 +89,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -1019,6 +1018,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_finalbody(
         self, scope: TryScope, *, pending_return: ScratchCell | None = ...
     ) -> None: ...
+
+    def _emit_finally_transfer_warnings(self, module_node: ast.Module) -> None: ...
 
     def _emit_for_loop(
         self,

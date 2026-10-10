@@ -122,7 +122,6 @@ def _case_env(
         repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["PYTHONHASHSEED"] = "0"
-    env["MOLT_HASH_SEED"] = "0"
     env["MOLT_EXT_ROOT"] = str(molt_ext_root)
     env["CARGO_TARGET_DIR"] = str(target_root)
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_root)

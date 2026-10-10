@@ -155,7 +155,7 @@ def test_kqueue_registration_race_only_reaps_owned_reserved_child(monkeypatch):
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
     assert proc.wait(timeout=2) == 0 and clock.posix_kqueue
     proc.send_signal(15)
-    assert waits == [1, 0] and closed == [True] and not kills
+    assert waits == [0] and closed == [True] and not kills
 
 
 def test_kqueue_unknown_registration_failure_disables_signaling(monkeypatch):
@@ -229,9 +229,7 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
 
     def wait4(pid, flags):
         waits.append(flags)
-        return (
-            (0, 0, None) if len(waits) == 1 else (pid, 0, SimpleNamespace(ru_maxrss=64))
-        )
+        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
 
     monkeypatch.setattr(
         process_custody,
@@ -268,6 +266,7 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
     assert awaiting.wait(2)
     proc.send_signal(15)
     assert proc.wait(timeout=2) == 0 and clock.finished is not None
+    assert waits == [0]
 
 
 def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
@@ -306,7 +305,7 @@ def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
     assert proc.wait(timeout=2) == 0
     assert clock.error is None and clock.finished is not None
     assert clock.usage is not None and clock.usage.max_rss_kb > 0
-    assert waits == [1, 0]
+    assert waits == [0]
 
 
 def test_kqueue_error_event_is_registration_evidence_not_exit(monkeypatch):
@@ -348,14 +347,14 @@ def test_kqueue_error_event_is_registration_evidence_not_exit(monkeypatch):
         assert clock.done.wait(2)
         if code == errno.ESRCH:
             # The unreaped child keeps its PID: ESRCH is exit evidence.
-            assert proc.wait(timeout=1) == 0 and waits == [1, 0]
+            assert proc.wait(timeout=1) == 0 and waits == [0]
         else:
             # Unknown registration failure: never block on a possibly live
             # child, and never mistake the record for an exit.
             with pytest.raises(OSError) as caught:
                 proc.wait(timeout=1)
             assert caught.value.errno == errno.EPERM
-            assert waits == [1, 1] and clock.finished is None
+            assert waits == [1] and clock.finished is None
 
 
 def test_reaper_failure_never_raises_from_popen_lifecycle(monkeypatch):
@@ -473,6 +472,9 @@ def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
         clock.finished = None
         clock.usage = None
         clock.done = threading.Event()
+        clock.exit_census = None
+        clock.exit_census_samples = None
+        clock.exit_census_error = None
         clock.posix_kqueue = False
         clock.posix_waitid = True
 
@@ -498,3 +500,121 @@ def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
             worker.join(2)
         assert not worker.is_alive() and sender_errors == [failure]
         assert waiter_errors == ([] if path == "waitid" else [failure])
+
+
+def _census_os(events, *, waitid=True):
+    def wait4(pid, flags):
+        # After waitid(WNOWAIT) the child is a zombie, so WNOHANG reaps it.
+        # A kqueue NOTE_EXIT can precede the zombie: only flags 0 reaps then.
+        events.append(f"wait4:{flags}")
+        reaped = waitid or flags == 0
+        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if reaped else (0, 0, None)
+
+    api = SimpleNamespace(
+        name="posix",
+        wait4=wait4,
+        WNOHANG=1,
+        waitstatus_to_exitcode=lambda status: 0,
+        kill=lambda *args: None,
+    )
+    if waitid:
+        api.waitid = lambda *args: events.append("waitid")
+        api.WNOWAIT = 2
+        api.WEXITED = 4
+        api.P_PID = 8
+    return api
+
+
+def test_waitid_exit_census_precedes_the_reap(monkeypatch):
+    # Until the reap the child's PID, and the group it leads, stay reserved;
+    # a census after the reap could see a reused group ID (HF-146).
+    events = []
+    census = {7: "member"}
+    monkeypatch.setattr(process_custody, "os", _census_os(events))
+
+    def take():
+        events.append("census")
+        return census
+
+    proc = _owned_handle()
+    process_custody.ChildExecutionClock(proc, time.perf_counter(), exit_census=take)
+    assert proc.wait(timeout=2) == 0
+    assert events == ["waitid", "census", "wait4:1"]
+    assert process_custody.take_child_exit_census(proc) == (census, None)
+    assert process_custody.take_child_exit_census(proc) == (None, None)
+
+
+def test_kqueue_exit_census_precedes_the_reap(monkeypatch):
+    import errno
+
+    for exit_evidence in ("note_exit", "attach_esrch", "ev_error_esrch"):
+        events = []
+
+        class Queue:
+            def control(self, *args):
+                if exit_evidence == "attach_esrch":
+                    raise ProcessLookupError(errno.ESRCH, "child already exited")
+                if exit_evidence == "ev_error_esrch":
+                    return [_exit_event(123, flags=16, data=errno.ESRCH)]
+                return [_exit_event(123)]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(process_custody, "os", _census_os(events, waitid=False))
+        monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+
+        def take():
+            events.append("census")
+            return {}
+
+        proc = _owned_handle()
+        clock = process_custody.ChildExecutionClock(
+            proc, time.perf_counter(), exit_census=take
+        )
+        assert proc.wait(timeout=2) == 0 and clock.posix_kqueue
+        # No WNOHANG reap may precede the census, even for a child that had
+        # already exited when the watch began.
+        assert events == ["census", "wait4:0"], exit_evidence
+
+
+def test_uncertain_exit_takes_no_census(monkeypatch):
+    import errno
+
+    events = []
+
+    class Queue:
+        def control(self, *args):
+            return [_exit_event(123, flags=16, data=errno.EPERM)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(process_custody, "os", _census_os(events, waitid=False))
+    monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+    proc = _owned_handle()
+    clock = process_custody.ChildExecutionClock(
+        proc, time.perf_counter(), exit_census=lambda: events.append("census")
+    )
+    assert clock.done.wait(2)
+    assert events == ["wait4:1"]
+    assert process_custody.take_child_exit_census(proc) == (None, None)
+
+
+def test_exit_census_failure_is_recorded_and_the_child_is_still_reaped(monkeypatch):
+    events = []
+    monkeypatch.setattr(process_custody, "os", _census_os(events))
+
+    def broken():
+        raise RuntimeError("process table unavailable")
+
+    proc = _owned_handle()
+    clock = process_custody.ChildExecutionClock(
+        proc, time.perf_counter(), exit_census=broken
+    )
+    assert proc.wait(timeout=2) == 0 and clock.error is None
+    assert events == ["waitid", "wait4:1"]
+    assert process_custody.take_child_exit_census(proc) == (
+        None,
+        "RuntimeError: process table unavailable",
+    )

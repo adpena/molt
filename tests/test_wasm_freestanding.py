@@ -701,6 +701,11 @@ def test_precompile_produces_host_container(tmp_path):
             str(output),
             "--linked-output",
             str(linked),
+            # The dev profile selects the dev-fast molt-wasm-host that
+            # wasm.build.host provisions; precompile never falls back to
+            # another profile's host.
+            "--profile",
+            "dev",
             "--precompile",
         ],
         cwd=PROJECT_ROOT,

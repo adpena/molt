@@ -86,6 +86,19 @@ sync_test = "tests/test_proof_plan.py"
 discovery_only = false
 
 [[generator]]
+tool = "tools/update_status_blocks.py"
+outputs = ["docs/spec/STATUS.md"]
+# Only the GENERATED:compat-summary block is projected; the rest of STATUS.md
+# is hand-written and passes through unchanged.
+source = "docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md + docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md + tools/generator_io.py"
+check_mode = true
+check_command = "tools/update_status_blocks.py --check"
+idempotent = true
+sync_test = "tests/test_update_status_blocks.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
 source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"

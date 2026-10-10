@@ -16,7 +16,7 @@ import tomllib
 from typing import Literal, cast
 
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,

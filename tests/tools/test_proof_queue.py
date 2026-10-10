@@ -1504,8 +1504,8 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     envelope = command_admission.envelope_for_command(command)
     prefix, effective = command_admission._canonical_uv_prefix(envelope, cwd=tmp_path)
     exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
-    probe = command_identity._python_probe_command(
-        envelope, exact, source_root=effective
+    probe = command_identity._python_auxiliary_command(
+        envelope, exact, arguments=("--locate-active-environment",), no_site=True
     )
     assert probe is not None
     assert effective == runtime.resolve()
@@ -1514,15 +1514,124 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "python",
         "-B",
         "-I",
+        "-S",
         str(Path(python_environment_identity.__file__).resolve()),
-        "--capture-active-environment",
-        "--with-custody",
-        "--hash-workers",
-        "1",
-        "--admit-virtualenv-bootstrap",
-        "--admit-external-root",
-        str(effective.resolve()),
+        "--locate-active-environment",
     ]
+
+
+def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
+    prefix = tmp_path / "selected-environment"
+    prefix.mkdir()
+    prefix = prefix.resolve()
+    executable = prefix / "python"
+    executable.write_bytes(b"selected lexical launcher fixture")
+    base = (tmp_path / "base-python").resolve()
+    base.write_bytes(b"base interpreter fixture")
+    location = {
+        "schema": "molt.python-environment-location.v1",
+        "prefix": str(prefix),
+        "selected_executable": str(executable),
+        "base_executable": str(base),
+        "roots": [str(prefix)],
+        "external_roots": [],
+        "file_paths": [str(base)],
+    }
+    location["identity_sha256"] = canonical_json_sha256(location)
+    selection = {
+        **command_identity.python_selection(location),
+        "external_roots": [],
+        "location": location,
+    }
+    # The selection rule hashes the actual images; the fixture bytes are the
+    # independent oracle for those digests.
+    assert (
+        selection["executable_sha256"]
+        == hashlib.sha256(executable.read_bytes()).hexdigest()
+    )
+    assert (
+        selection["base_executable_sha256"]
+        == hashlib.sha256(base.read_bytes()).hexdigest()
+    )
+    return selection
+
+
+@pytest.mark.parametrize("kind", ["direct", "py-launcher", "uv", "uv-console-script"])
+def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    selection = _selected_python_capture_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    python = {"kind": kind}
+    if kind.startswith("uv"):
+        python["prefix"] = ["uv", "run", "--directory", "project", "--project", "."]
+    elif kind == "py-launcher":
+        python["selector"] = "-3.12"
+    envelope = {"python": python}
+    environment = {"PATH": "unchanged caller path", "VIRTUAL_ENV": "caller-selection"}
+    observed = []
+
+    class CaptureBoundaryReached(Exception):
+        pass
+
+    def capture(command, *, cwd, env, timeout):
+        observed.append((command, cwd, env, timeout))
+        raise CaptureBoundaryReached
+
+    monkeypatch.setattr(command_identity, "_run_captured", capture)
+    with pytest.raises(CaptureBoundaryReached):
+        command_identity._python_identity(
+            envelope,
+            cwd=tmp_path,
+            env=environment,
+            source_root=project,
+            selection=selection,
+            hash_workers=4,
+        )
+    assert observed == [
+        (
+            [
+                selection["executable"],
+                "-B",
+                "-I",
+                str(Path(python_environment_identity.__file__).resolve()),
+                "--capture-active-environment",
+                "--with-custody",
+                "--hash-workers",
+                "4",
+                "--admit-virtualenv-bootstrap",
+                "--admit-external-root",
+                str(project.resolve()),
+            ],
+            (project if kind.startswith("uv") else tmp_path).resolve(),
+            environment,
+            120.0,
+        )
+    ]
+    assert observed[0][2] is environment
+
+
+@pytest.mark.parametrize("image", ["executable", "base_executable"])
+def test_full_python_capture_rejects_changed_selection_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image: str
+) -> None:
+    selection = _selected_python_capture_fixture(tmp_path)
+    Path(selection[image]).write_bytes(b"changed after selection")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("changed interpreter must not be launched")
+
+    monkeypatch.setattr(command_identity, "_run_captured", forbidden)
+    with pytest.raises(ValueError, match="selection differs from its location receipt"):
+        command_identity._python_identity(
+            {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
+            cwd=tmp_path,
+            env={},
+            source_root=tmp_path,
+            selection=selection,
+            hash_workers=1,
+        )
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -1628,8 +1737,38 @@ def test_toolchain_identity_rejects_incomplete_python_closure() -> None:
 
 
 def test_toolchain_identity_rejects_real_but_out_of_policy_version(
-    guarded_execution_authorities: GuardedExecutionAuthorities,
+    custody_python: Path,
 ) -> None:
+    # The version oracle needs real capture/validation, not the separate
+    # editable development-environment fixture and its site startup packages.
+    command = [str(custody_python), "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    _roots, selections, _telemetry, _selected_env = (
+        execution_environment._locate_toolchain_watch_roots(
+            envelope,
+            command,
+            cwd=state.ROOT,
+            env=os.environ,
+            supervisor_binary=custody_python,
+        )
+    )
+    captured = command_identity._python_identity(
+        envelope,
+        cwd=state.ROOT,
+        env=os.environ,
+        source_root=state.ROOT,
+        selection=selections["python"],
+        hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
+    )
+    assert captured is not None
+    admitted_plan = SimpleNamespace(
+        toolchain_policies=(
+            proof_plan.ToolchainPolicy(
+                name="python", data={"version_pattern": r"^Python 3\."}
+            ),
+        )
+    )
+    command_identity._validate_toolchain_identity(admitted_plan, "python", captured)
     plan = SimpleNamespace(
         toolchain_policies=(
             proof_plan.ToolchainPolicy(
@@ -1638,9 +1777,7 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version(
         )
     )
     with pytest.raises(ValueError, match="violates canonical policy"):
-        command_identity._validate_toolchain_identity(
-            plan, "python", guarded_execution_authorities.python_identity
-        )
+        command_identity._validate_toolchain_identity(plan, "python", captured)
 
 
 def test_environment_selected_executable_inputs_are_content_bound(
@@ -1859,6 +1996,89 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     assert (before["identity_sha256"] != after["identity_sha256"]) == (
         mutation == "content"
     )
+
+
+def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "captured-é"
+    root.mkdir()
+    executable = root / ("uv.exe" if os.name == "nt" else "uv")
+    executable.write_bytes(b"independent uv image fixture, never executed")
+    executable.chmod(0o755)
+    environment = {"PATH": str(root)}
+    envelope = {"python": None, "toolchains": ["uv"]}
+    # The tool owner inspects the actual outer command grammar even though this
+    # unit captures only uv's identity and never executes the payload.
+    exact = [str(executable), "run", "--no-sync", "python", "-c", "pass"]
+
+    def version(command, **kwargs):
+        # The owner runs the admitted custody coordinate (Windows: the actual
+        # entry spelling with a lower-case drive), never a PATH respelling.
+        assert list(command) == [
+            str(process_image_capture.custody_path(executable)),
+            "--version",
+        ]
+        return subprocess.CompletedProcess(command, 0, "uv 0.12.23 (fixture)\n", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    located = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(), "uv", envelope, exact, cwd=root, env=environment
+    )
+    material = {
+        key: value for key, value in located.items() if key != "identity_sha256"
+    }
+    selection_digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    full_digest = hashlib.sha256(
+        json.dumps(
+            material, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+    assert located["identity_sha256"] == selection_digest
+    assert selection_digest != full_digest
+    python, full = execution_environment._capture_toolchains(
+        envelope,
+        exact,
+        cwd=root,
+        env=environment,
+        source_root=root,
+        hash_workers=1,
+        located_toolchains={"uv": located},
+    )
+    assert python is None
+    assert full["uv"]["identity_sha256"] == full_digest
+    assert (
+        execution_custody.validated_uv_environment_lock_capture(full).uv_identity_sha256
+        == full_digest
+    )
+    for change in ("selection-serializer", "stale-material"):
+        substituted = copy.deepcopy(full)
+        if change == "selection-serializer":
+            substituted["uv"]["identity_sha256"] = selection_digest
+        else:
+            substituted["uv"]["version"] = "uv 0.12.23 (changed fixture)"
+        with pytest.raises(
+            ValueError, match="uv operational owner identity digest is invalid"
+        ):
+            execution_custody.validated_uv_environment_lock_capture(substituted)
+
+
+@pytest.mark.parametrize("name", ["UV_ENV_FILE", "uv_env_file"])
+def test_uv_dotenv_uses_existing_unbound_environment_policy(name: str) -> None:
+    unowned_value = "unowned dotenv path must not enter a diagnostic"
+    selected, contract = execution_environment._deterministic_execution_environment(
+        {"PATH": "selected-tools", "UV_CACHE_DIR": "owned-cache", name: unowned_value},
+        override_names=[],
+    )
+    assert selected == {"PATH": "selected-tools", "UV_CACHE_DIR": "owned-cache"}
+    assert contract["omitted_names"] == [name]
+    error = execution_environment.environment_override_policy_error(
+        {name: unowned_value}
+    )
+    assert error == f"nondeterministic environment override {name!r} is forbidden"
+    assert unowned_value not in json.dumps(contract) + error
 
 
 def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -> None:
@@ -2082,15 +2302,11 @@ def test_secret_input_is_rejected_before_database_log_or_evidence_projection(
 def _capture_probe_command(
     executable: Path, source_root: Path, *, hash_workers: int = 1
 ) -> list[str]:
-    exact = [str(executable), "-c", "pass"]
-    command = command_identity._python_probe_command(
-        command_admission.envelope_for_command(exact),
-        exact,
+    return command_identity._python_probe_command(
+        executable,
         source_root=source_root,
         hash_workers=hash_workers,
     )
-    assert command is not None
-    return command
 
 
 @pytest.mark.slow
@@ -2538,7 +2754,6 @@ class GuardedExecutionAuthorities:
     """
 
     python_identity: dict[str, object]
-    command: list[str]
     envelope: dict[str, object]
     selection: Mapping[str, object]
     # The unpatched capture authority: _execute_request monkeypatches
@@ -2573,7 +2788,6 @@ class GuardedExecutionAuthorities:
                     return self.python_identity
         identity = self.capture(
             self.envelope,
-            self.command,
             cwd=state.ROOT,
             env=os.environ,
             source_root=Path(str(self.python_identity["source_root"])),
@@ -2781,7 +2995,6 @@ def _capture_guarded_execution_authorities(
     )
     identity = command_identity._python_identity(
         envelope,
-        command,
         cwd=state.ROOT,
         env=os.environ,
         source_root=source_root,
@@ -2791,7 +3004,6 @@ def _capture_guarded_execution_authorities(
     assert identity is not None
     return GuardedExecutionAuthorities(
         python_identity=identity,
-        command=command,
         envelope=envelope,
         selection=selections["python"],
         capture=command_identity._python_identity,
@@ -2912,7 +3124,6 @@ def test_python_selection_location_join_preserves_coordinate_and_content(
     def receive():
         return command_identity._python_identity(
             authorities.envelope,
-            authorities.command,
             cwd=state.ROOT,
             env=os.environ,
             source_root=Path(str(captured["source_root"])),
@@ -2939,7 +3150,8 @@ def test_python_selection_location_join_preserves_coordinate_and_content(
             ValueError, match="selection differs from its location receipt"
         ):
             receive()
-    assert len(probes) == 1
+    # A changed selection is refused before the capture probe launches.
+    assert len(probes) == (1 if mutation == "selected-drive-case" else 0)
     assert location == location_before
 
 
@@ -2951,6 +3163,13 @@ def _rebind_cached_python_identity(
     location = identity["location"]
     assert selection["location"] == location, "cached Python selection changed"
     assert isinstance(location, dict)
+    # The selection spells its paths through the one projection rule; on
+    # Windows that rule's custody coordinate differs from the reported one.
+    projected = command_identity.python_selection(location)
+    assert {key: selection[key] for key in projected} == projected
+    selected_images = {row["role"]: row["sha256"] for row in identity["process_images"]}
+    assert selection["executable_sha256"] == selected_images["selected-interpreter"]
+    assert selection["base_executable_sha256"] == selected_images["base-interpreter"]
     environment = identity["environment"]
     assert isinstance(environment, dict)
     from molt.python_environment_custody import (
@@ -3050,7 +3269,6 @@ def _execute_request(
 
         def cached_python_identity(
             envelope: dict[str, object],
-            exact: list[str],
             *,
             cwd: Path,
             env: dict[str, str],
@@ -3059,14 +3277,7 @@ def _execute_request(
             hash_workers: int,
         ) -> dict[str, object] | None:
             del cwd, env, hash_workers
-            if (
-                command_identity._python_probe_command(
-                    envelope,
-                    exact,
-                    source_root=source_root,
-                )
-                is None
-            ):
+            if envelope.get("python") is None:
                 return None
             return _rebind_cached_python_identity(
                 authorities.current(),
@@ -16690,7 +16901,6 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     # execution must never consult it, so a recapture is a contract failure.
     authority = GuardedExecutionAuthorities(
         python_identity={},
-        command=command,
         envelope=command_admission.envelope_for_command(command),
         selection={},
         capture=never_recapture,
@@ -17209,3 +17419,201 @@ def test_rust_proof_projection_preserves_raw_cluster_and_key_spelling(arguments)
     assert command_admission.rustc_crate_types((*arguments, "--crate-type=cdylib")) == (
         "cdylib",
     )
+
+
+@pytest.mark.parametrize(
+    "prefix,options,mode,target,arguments",
+    [
+        (["-Rmmolt.cli", "--help"], ("-R",), "module", "molt.cli", ("--help",)),
+        (["-Ommolt.cli", "-R"], ("-O",), "module", "molt.cli", ("-R",)),
+        (["-BRcprint(1)", "-I"], ("-BR",), "command", "print(1)", ("-I",)),
+        (
+            ["-tBWignore", "-X", "-R", "-m", "pkg"],
+            ("-tB", "-Wignore", "-X", "-R"),
+            "module",
+            "pkg",
+            (),
+        ),
+        (["-BW", "-x", "-c", "pass"], ("-B", "-W", "-x"), "command", "pass", ()),
+        (
+            ["-IXdev", "script.py", "-E"],
+            ("-I", "-Xdev"),
+            "script",
+            "script.py",
+            ("-E",),
+        ),
+        (["--", "-R", "arg"], (), "script", "-R", ("arg",)),
+        (["--", "-", "-R"], (), "stdin", None, ("-R",)),
+        (["-", "-I"], (), "stdin", None, ("-I",)),
+        (
+            ["--check-hash-based-pycs", "never", "-c", "pass"],
+            ("--check-hash-based-pycs", "never"),
+            "command",
+            "pass",
+            (),
+        ),
+    ],
+)
+def test_python_invocation_grouped_consumed_option_boundaries(
+    prefix, options, mode, target, arguments
+):
+    invocation = command_admission.parse_python_invocation(["python", *prefix])
+    assert invocation.interpreter_options == options
+    assert (invocation.mode, invocation.target, invocation.arguments) == (
+        mode,
+        target,
+        arguments,
+    )
+
+
+@pytest.mark.parametrize("flag", ["R", "E", "I", "B", "x"])
+@pytest.mark.parametrize("option", ["-W", "-X", "-BW", "-BX"])
+def test_python_option_values_never_become_interpreter_flags(flag, option):
+    invocation = command_admission.parse_python_invocation(
+        ["python", option, "-" + flag, "-c", "pass"]
+    )
+    assert command_admission._interpreter_flag_present(
+        invocation.interpreter_options, flag
+    ) is (flag == "B" and option.startswith("-B"))
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, ["python", option, "-" + flag, "-c", "pass"]
+    )
+    assert rewritten[-3:] == ["command", "0", "pass"]
+    if not option.startswith("-B"):
+        assert rewritten[1] == "-B"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [["-Rc"], ["-BW"], ["-IX"], ["-Om", ""], ["--check-hash-based-pycs", "-R"]],
+)
+def test_python_grouped_options_require_their_actual_value(prefix):
+    with pytest.raises(ValueError, match="requires"):
+        command_admission.parse_python_invocation(["python", *prefix])
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [["-Oc"], ["-tOc"], ["-BW", "-x", "-c"], ["-X", "-R", "-c"], ["-IXdev", "-c"]],
+)
+def test_grouped_python_command_bootstrap_matches_actual_cpython(tmp_path, prefix):
+    code = "import sys;print((sys.flags.optimize,sys.flags.isolated,sys._xoptions,sys.argv))"
+    command = [sys.executable, *prefix, code, "-E", "-R"]
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, command
+    )
+    direct = run_custody_subject_process(
+        command,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    guarded = run_custody_subject_process(
+        rewritten,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == guarded.returncode == 0, (direct.stderr, guarded.stderr)
+    assert direct.stdout == guarded.stdout
+
+
+@pytest.mark.parametrize(
+    "prefix", ["-Omargument_probe", "-Rmargument_probe", "-tBmargument_probe"]
+)
+def test_grouped_python_module_bootstrap_matches_actual_cpython(tmp_path, prefix):
+    (tmp_path / "argument_probe.py").write_text(
+        "import sys;print((sys.flags.optimize,sys.flags.hash_randomization,sys.argv))\n",
+        encoding="utf-8",
+    )
+    command = [sys.executable, prefix, "-E"]
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, command
+    )
+    direct = run_custody_subject_process(
+        command,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    guarded = run_custody_subject_process(
+        rewritten,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == guarded.returncode == 0, (direct.stderr, guarded.stderr)
+    assert direct.stdout == guarded.stdout
+
+
+def test_tool_release_provision_and_read_share_frozen_child_state(
+    tmp_path, monkeypatch
+):
+    from tests.test_tool_releases import _installed_demo
+
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    selected = tmp_path / "target-root"
+    # The actual child mapping, not the ambient controller mapping, owns selection.
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "wrong-controller-root"))
+    monkeypatch.setattr(state, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        guarded_execution, "tool_release_toolchains", lambda _plan: frozenset({"demo"})
+    )
+    observed = []
+    provision = tool_releases.provision_tool
+
+    def warm_provision(release, root):
+        observed.append(root)
+        return provision(release, root)
+
+    monkeypatch.setattr(tool_releases, "provision_tool", warm_provision)
+    cwd = tmp_path / "guest"
+    cwd.mkdir()
+    child = {"MOLT_TARGET_ROOT": str(selected), "PATH": ""}
+    resolved, prefixes = guarded_execution.prefer_tool_release_prefixes(
+        child, ["demo"], cwd=cwd
+    )
+    assert observed == [selected]
+    assert prefixes == {"demo": str(discovery.prefix)}
+    assert resolved["PATH"].split(os.pathsep)[0] == str(discovery.executable.parent)
+    assert (
+        tool_releases.require_pinned_tool("demo", tmp_path, environ=resolved, cwd=cwd)
+        == discovery
+    )
+    assert not (cwd / "target-root").exists()
+
+
+def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain
+
+    source = tmp_path / "compiler-source"
+    guest = tmp_path / "guest"
+    selected = guest / "tools/llvm"
+    monkeypatch.setattr(state, "ROOT", source)
+    monkeypatch.setattr(
+        guarded_execution, "llvm_family_toolchains", lambda _plan: frozenset({"clang"})
+    )
+    seen = []
+
+    def discover(root, *, environ, cwd):
+        seen.append((root, environ, cwd))
+        return SimpleNamespace(prefix=selected)
+
+    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
+    env = {"MOLT_TARGET_ROOT": "tools", "PATH": ""}
+    resolved, prefix = guarded_execution.prefer_canonical_llvm_prefix(
+        env, ["clang"], cwd=guest
+    )
+    assert seen == [(source, env, guest)]
+    assert prefix == str(selected)
+    assert resolved["PATH"].split(os.pathsep)[0] == str(selected / "bin")

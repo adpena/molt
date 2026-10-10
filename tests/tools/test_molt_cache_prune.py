@@ -154,3 +154,45 @@ def test_budget_comes_from_flags_then_projected_env_then_dx_defaults() -> None:
     projected = {"MOLT_CACHE_MAX_GB": "7.5", "MOLT_CACHE_MAX_AGE_DAYS": "3"}
     assert module.resolve_budget(None, None, projected) == (7.5, 3)
     assert module.resolve_budget(2.0, 1, projected) == (2.0, 1)
+
+
+def test_pruner_never_evicts_the_selected_home_or_bin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_molt_cache_prune()
+    for name in ("MOLT_HOME", "MOLT_BIN"):
+        monkeypatch.delenv(name, raising=False)
+    cache_root = tmp_path / "cache"
+    tools = cache_root / "home" / "target-root" / "toolchains" / "tool"
+    tools.parent.mkdir(parents=True)
+    tools.write_bytes(b"provisioned tool state")
+    stale = cache_root / "stale-entry"
+    stale.mkdir()
+    (stale / "payload").write_bytes(b"evictable")
+    old = time.time() - 30 * 86400
+    for path in (tools, tools.parent, cache_root / "home", stale / "payload", stale):
+        os.utime(path, (old, old))
+
+    summary = module._prune(cache_root, max_bytes=0, max_age_days=0, dry_run=False)
+
+    assert not stale.exists()
+    assert tools.read_bytes() == b"provisioned tool state"
+    assert summary["protected_state"] == [str((cache_root / "home").resolve())]
+
+
+def test_pruner_evicts_a_cache_home_that_is_not_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_molt_cache_prune()
+    cache_root = tmp_path / "cache"
+    unselected = cache_root / "home"
+    unselected.mkdir(parents=True)
+    (unselected / "payload").write_bytes(b"old build output")
+    selected = tmp_path / "selected-home"
+    monkeypatch.setenv("MOLT_HOME", str(selected))
+    monkeypatch.setenv("MOLT_BIN", str(selected / "bin"))
+
+    summary = module._prune(cache_root, max_bytes=0, max_age_days=None, dry_run=False)
+
+    assert not unselected.exists()
+    assert summary["protected_state"] == []

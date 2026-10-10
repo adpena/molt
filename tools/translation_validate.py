@@ -66,7 +66,7 @@ from molt import python_interpreter  # noqa: E402
 from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root,
-    cargo_target_dir_for_artifact_root,
+    cargo_target_dir_for_environment,
     scratch_dir,
     scratch_root,
 )
@@ -91,9 +91,8 @@ def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
     explicit = env_view.get("CARGO_TARGET_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    return cargo_target_dir_for_artifact_root(
-        artifact_root(_REPO_ROOT, env_view),
-        env_view.get("MOLT_SESSION_ID") or f"translation-validate-{os.getpid()}",
+    return cargo_target_dir_for_environment(
+        artifact_root(_REPO_ROOT, env_view), env_view
     )
 
 

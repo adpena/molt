@@ -527,6 +527,10 @@ def test_wasm_test_build_env_delegates_cargo_parallelism_and_cache_policy(
 
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
     monkeypatch.delenv("MOLT_USE_SCCACHE", raising=False)
+    # The lane is a fact of the running process; an xdist worker names its
+    # own (test_wasm_test_target_dir_preserves_explicit_and_worker_lanes).
+    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setattr(
         wasm_runner,
         "development_artifact_env",

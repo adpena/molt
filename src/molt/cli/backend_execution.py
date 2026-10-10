@@ -900,22 +900,20 @@ def _backend_daemon_request_payload_bytes(
     return encoded + b"\n", None
 
 
-def _write_backend_ir_json_file(path: Path, ir: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        _write_backend_ir_text(handle, ir)
-
-
 def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
+    """Publish one uniquely named IR lease; a failed write leaves no file."""
     lease_dir = scratch_dir(project_root, "backend-ir-leases")
     lease_dir.mkdir(parents=True, exist_ok=True)
     lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.json"
-    _write_backend_ir_json_file(lease_path, ir)
+    try:
+        with lease_path.open("x", encoding="utf-8") as handle:
+            _write_backend_ir_text(handle, ir)
+    except BaseException:
+        # The IR streams element by element, so an encoder error can stop it
+        # midway. Nothing returned the path yet, so nothing else owns it.
+        lease_path.unlink(missing_ok=True)
+        raise
     return lease_path
-
-
-def _write_backend_daemon_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
-    return _write_backend_ir_lease(project_root, ir)
 
 
 def _backend_daemon_artifact_contract_error(
@@ -1548,8 +1546,8 @@ def _compile_with_backend_daemon(
             return full_request_bytes, None
         if ir_lease_path is None:
             try:
-                ir_lease_path = _write_backend_daemon_ir_lease(project_root, ir)
-            except OSError as exc:
+                ir_lease_path = _write_backend_ir_lease(project_root, ir)
+            except (OSError, TypeError, ValueError) as exc:
                 return None, f"backend daemon IR lease write failed: {exc}"
         full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
             ir=None,

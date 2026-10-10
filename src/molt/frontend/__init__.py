@@ -253,6 +253,9 @@ def compile_to_tir(
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
     fallback_policy: FallbackPolicy = "error",
 ) -> dict[str, Any]:
+    from molt.target_python import require_frontend_python
+
+    require_frontend_python()
     tree = ast.parse(source)
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,

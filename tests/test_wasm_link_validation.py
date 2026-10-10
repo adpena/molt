@@ -5557,16 +5557,20 @@ def test_debug_preservation_policy_invalidates_both_optimizer_cache_keys(
     )
 
 
+@pytest.mark.parametrize(
+    "version", ("wasm-opt version 130", "wasm-opt version 130 (version_130)")
+)
 def test_wasm_optimizer_cache_fact_and_outer_admission_bind_binaryen_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
 ) -> None:
     from molt import wasm_optimizer_identity as identity_authority
     from molt.cli.non_native_output import _load_optimizer_publication
 
     optimizer_identity = _wasm_optimizer_identity(
         (tmp_path / "wasm-opt").resolve(),
-        version="wasm-opt version 130 (version_130)",
+        version=version,
     )
     resolutions = []
 
@@ -5579,6 +5583,7 @@ def test_wasm_optimizer_cache_fact_and_outer_admission_bind_binaryen_version(
         identity_authority, "wasm_optimizer_executable_identity", resolve_cache_identity
     )
     cache_fact = identity_authority.wasm_optimizer_cache_fact()
+    assert cache_fact["binaryen_version"] == version
     assert set(cache_fact) == {"tool", "sha256", "binaryen_version"}
     assert resolutions == [("wasm-opt", False)]
     artifact = tmp_path / "linked.wasm"
@@ -5616,7 +5621,13 @@ def test_wasm_optimizer_cache_fact_and_outer_admission_bind_binaryen_version(
         )
         == attestation
     )
+    opposite_spelling = (
+        "wasm-opt version 130 (version_130)"
+        if version == "wasm-opt version 130"
+        else "wasm-opt version 130"
+    )
     for invalid in (
+        {**cache_fact, "binaryen_version": opposite_spelling},
         {**cache_fact, "path": str(tmp_path / "other-host")},
         {**cache_fact, "sha256": "f" * 64},
         {**cache_fact, "binaryen_version": "wasm-opt version 129 (version_129)"},
@@ -5708,6 +5719,15 @@ def test_wasm_opt_version_invalidates_optimizer_cache_with_same_binary(
     assert version_129 is not None
     assert version_130 is not None
     assert version_129 != version_130
+    untagged_130 = wasm_link_optimizer_policy._split_app_optimize_cache_key(
+        **cache_key_args,
+        optimizer_identity=_wasm_optimizer_identity(
+            executable,
+            version="wasm-opt version 130",
+        ),
+    )
+    assert untagged_130 is not None
+    assert untagged_130 != version_130
 
 
 def test_split_app_optimization_fails_closed_without_invocation_identity(
@@ -12272,3 +12292,28 @@ def test_call_indirect_aliases_do_not_infer_unsupported_arity_from_symbols() -> 
         app, _facts_provider(runtime_bytes)
     )
     assert entries == [(f"opaque.{i}", i + 1, 0xC0) for i in range(13)]
+
+
+def test_linker_tool_and_sdk_generation_share_request_cwd(tmp_path, monkeypatch):
+    from molt.cli import wasm_toolchain
+
+    cwd = tmp_path / "request"
+    (cwd / "relative-tools").mkdir(parents=True)
+    installation = provisioned_wasi_sdk_fixture(
+        RuntimeFixtureRoot(cwd / "relative-tools")
+    )
+    prefix = installation.prefix
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+    monkeypatch.setattr(
+        wasm_toolchain,
+        "_wasm_linker_binary_identity",
+        lambda *_a, **_k: pytest.fail("managed receipt owns tool identity"),
+    )
+    actual = wasm_toolchain.resolve_wasm_linker(
+        env={"MOLT_TARGET_ROOT": "relative-tools/toolchains"}, cwd=cwd
+    )
+    assert actual.path.parent == prefix / "sdk/bin"
+    assert actual.wasi_sdk_llvm_version == installation.asset.llvm_version
+    assert not (ambient / "relative-tools").exists()

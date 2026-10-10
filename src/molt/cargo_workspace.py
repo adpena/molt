@@ -10,6 +10,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from collections.abc import Callable
 from typing import Any, Literal
 
 
@@ -113,6 +114,56 @@ class LocalCargoManifestFacts:
     dependencies: tuple[LocalCargoDependency, ...]
 
 
+def _table(value: object, field: str, manifest: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{manifest}: {field} must be a table")
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{manifest}: {field} keys must be strings")
+        result[key] = item
+    return result
+
+
+def _local_manifest(value: object, base: Path, field: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{base}: {field} must be a nonempty path")
+    return (base.parent / value / "Cargo.toml").resolve()
+
+
+def cargo_workspace_manifest(
+    manifest: Path,
+    load: Callable[[Path], dict[str, Any]] = _read_manifest,
+    *,
+    data: dict[str, Any] | None = None,
+) -> Path | None:
+    """Return the manifest of the workspace ``manifest`` belongs to.
+
+    This is Cargo's rule: a manifest with ``[workspace]`` is its own root,
+    ``package.workspace`` names the root, and otherwise the nearest ancestor
+    manifest with ``[workspace]`` is. None means a standalone package. Cargo
+    builds a workspace into ``<root>/target`` by default.
+    """
+    data = load(manifest) if data is None else data
+    if "workspace" in data:
+        _table(data["workspace"], "workspace", manifest)
+        return manifest
+    package = _table(data.get("package", {}), "package", manifest)
+    if "workspace" in package:
+        owner = _local_manifest(package["workspace"], manifest, "package.workspace")
+        _table(load(owner).get("workspace"), "workspace", owner)
+        return owner
+    for directory in manifest.parent.parents:
+        owner = directory / "Cargo.toml"
+        if not owner.is_file():
+            continue
+        owner_data = load(owner)
+        if "workspace" in owner_data:
+            _table(owner_data["workspace"], "workspace", owner)
+            return owner
+    return None
+
+
 def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
     """Collect conservative local inputs and declared edges, not resolved facts.
 
@@ -137,40 +188,13 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
             pending.append(manifest)
         return documents[manifest]
 
-    def table(value: object, field: str, manifest: Path) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            raise ValueError(f"{manifest}: {field} must be a table")
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ValueError(f"{manifest}: {field} keys must be strings")
-            result[key] = item
-        return result
-
-    def local_manifest(value: object, base: Path, field: str) -> Path:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{base}: {field} must be a nonempty path")
-        return (base.parent / value / "Cargo.toml").resolve()
-
     def inheritance_workspace(manifest: Path, data: dict[str, Any]) -> Path:
-        if "workspace" in data:
-            table(data["workspace"], "workspace", manifest)
-            return manifest
-        package = table(data.get("package", {}), "package", manifest)
-        if "workspace" in package:
-            owner = local_manifest(package["workspace"], manifest, "package.workspace")
-            owner_data = include(owner)
-            table(owner_data.get("workspace"), "workspace", owner)
-            return owner
-        for directory in manifest.parent.parents:
-            owner = directory / "Cargo.toml"
-            if not owner.is_file():
-                continue
-            owner_data = include(owner)
-            if "workspace" in owner_data:
-                table(owner_data["workspace"], "workspace", owner)
-                return owner
-        raise ValueError(f"{manifest}: inherited dependency has no workspace authority")
+        owner = cargo_workspace_manifest(manifest, include, data=data)
+        if owner is None:
+            raise ValueError(
+                f"{manifest}: inherited dependency has no workspace authority"
+            )
+        return owner
 
     def dependencies(
         specs: object,
@@ -180,10 +204,10 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
         kind: Literal["normal", "build", "dev"] | None = None,
         target: str | None = None,
     ) -> None:
-        for name, spec in table(specs, field, manifest).items():
+        for name, spec in _table(specs, field, manifest).items():
             if isinstance(spec, str):
                 continue
-            spec = table(spec, f"{field}.{name}", manifest)
+            spec = _table(spec, f"{field}.{name}", manifest)
             base = manifest
             if "workspace" in spec:
                 if spec["workspace"] is not True:
@@ -191,7 +215,7 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
                         f"{manifest}: {field}.{name}.workspace must be true"
                     )
                 base = inheritance_workspace(manifest, documents[manifest])
-                shared = table(
+                shared = _table(
                     documents[base]["workspace"].get("dependencies", {}),
                     "workspace.dependencies",
                     base,
@@ -201,13 +225,13 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
                 spec = shared[name]
                 if isinstance(spec, str):
                     continue
-                spec = table(spec, f"workspace.dependencies.{name}", base)
+                spec = _table(spec, f"workspace.dependencies.{name}", base)
                 if "workspace" in spec:
                     raise ValueError(
                         f"{base}: workspace dependency cannot inherit itself: {name}"
                     )
             if "path" in spec:
-                dependency = local_manifest(spec["path"], base, f"{field}.{name}.path")
+                dependency = _local_manifest(spec["path"], base, f"{field}.{name}.path")
                 include(dependency)
                 if kind is not None:
                     edges[
@@ -229,7 +253,7 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
         manifest = pending[index]
         index += 1
         data = documents[manifest]
-        package = table(data.get("package", {}), "package", manifest)
+        package = _table(data.get("package", {}), "package", manifest)
         if "workspace" in package or any(
             isinstance(value, dict) and value.get("workspace") is True
             for value in package.values()
@@ -240,10 +264,10 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
         for field, kind in dependency_tables.items():
             if field in data:
                 dependencies(data[field], manifest, field, kind=kind)
-        for target, target_data in table(
+        for target, target_data in _table(
             data.get("target", {}), "target", manifest
         ).items():
-            target_data = table(target_data, f"target.{target}", manifest)
+            target_data = _table(target_data, f"target.{target}", manifest)
             for field, kind in dependency_tables.items():
                 if field in target_data:
                     dependencies(
@@ -255,7 +279,7 @@ def workspace_manifest_facts(project_root: Path) -> LocalCargoManifestFacts:
                     )
         # Cargo honors patches/replacements only at the workspace being resolved.
         if manifest == root_manifest:
-            for source, specs in table(
+            for source, specs in _table(
                 data.get("patch", {}), "patch", manifest
             ).items():
                 dependencies(specs, manifest, f"patch.{source}")

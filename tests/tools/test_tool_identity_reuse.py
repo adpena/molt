@@ -385,7 +385,11 @@ def test_wasi_compiler_identity_selects_sdk_before_outer_command_or_path(
     compiler.write_bytes(b"SDK image")
     selected = []
 
-    def resolve(root, role, *, environ):
+    def resolve(root, role, *, environ, cwd):
+        # The request cwd anchors a relative tool-state selection.
+        assert root == proof_plan.ROOT
+        assert cwd == tmp_path
+        assert environ == {}
         selected.append(role)
         return compiler
 

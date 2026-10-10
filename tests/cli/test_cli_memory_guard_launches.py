@@ -295,6 +295,10 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     tmp_path: Path,
 ) -> None:
     COMPILER_METADATA._rustc_version.cache_clear()
+    # A guarded pytest session puts tmp_path inside its command scratch, where
+    # the CLI refuses persistent daemon paths (tests/test_backend_daemon_argv.py
+    # owns that refusal). This test spawns from paths outside any scratch.
+    monkeypatch.delenv("MOLT_GUARD_SCRATCH_ROOT", raising=False)
     backend = tmp_path / "molt-backend"
     backend.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"

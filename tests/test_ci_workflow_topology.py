@@ -179,7 +179,15 @@ def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
         < steps.index(restore)
         < steps.index(record)
     )
-    assert sum("actions/cache/restore@" in str(step.get("uses")) for step in steps) == 1
+    # One Cargo restore; the Lean and actionlint restores are main-only twins.
+    assert (
+        sum(
+            "actions/cache/restore@" in str(step.get("uses"))
+            and "~/.cargo/registry/index" in str((step.get("with") or {}).get("path"))
+            for step in steps
+        )
+        == 1
+    )
     assert "cache-uv requires uv" in normalizer
     assert "sync requires uv" in normalizer
     assert "cache-cargo requires rust-toolchain" in normalizer
@@ -422,10 +430,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert '"-m", "not slow"' in proof_plan_text
     assert "native.integration.bench-cli" in proof_plan_text
     assert "native.integration.capability-manifest" in proof_plan_text
-    assert (
-        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest"
-        in proof_plan_text
-    )
+    assert '"tests/test_manifest_pipeline_e2e.py"' in proof_plan_text
     assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
         ci_text
     )
@@ -976,13 +981,17 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "curl" not in source_step["run"]
     assert sum("apt-get" in str(step.get("run", "")) for step in action_steps) == 1
     assert "lld-$LLVM_MAJOR" not in action_text
-    cache = steps["Restore verified wasi-sdk archive"]
-    assert cache["if"] == "inputs.wasi == 'true'"
+    cache = steps["Cache verified wasi-sdk archive"]
+    assert cache["if"] == "inputs.wasi == 'true' && github.ref == 'refs/heads/main'"
     assert re.fullmatch(r"actions/cache@[0-9a-f]{40}", cache["uses"])
     assert cache["with"] == {
         "path": "${{ runner.temp }}/molt-wasi-sdk-downloads",
         "key": "${{ steps.contract.outputs.wasi_sdk_cache_key }}",
     }
+    restore = steps["Restore verified wasi-sdk archive"]
+    assert restore["if"] == "inputs.wasi == 'true' && github.ref != 'refs/heads/main'"
+    assert re.fullmatch(r"actions/cache/restore@[0-9a-f]{40}", restore["uses"])
+    assert restore["with"] == cache["with"]
     provision = steps["Provision pinned host wasi-sdk"]
     assert provision["if"] == "inputs.wasi == 'true'"
     assert provision["id"] == "wasi-sdk"
@@ -2218,3 +2227,59 @@ def test_workflows_root_no_artifact_state_inside_the_checkout() -> None:
         "printf 'MOLT_WASM_TEST_CARGO_TARGET_DIR=%s\\n' \"$CARGO_TARGET_DIR\""
         in wasm_text
     )
+
+
+_MAIN_REF = "github.ref == 'refs/heads/main'"
+
+
+def _workflow_and_action_steps() -> list[tuple[str, dict[str, object]]]:
+    found: list[tuple[str, dict[str, object]]] = []
+    for pattern in (".github/workflows/*.yml", ".github/actions/*/action.yml"):
+        for path in sorted(REPO_ROOT.glob(pattern)):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            runs = document.get("runs")
+            if isinstance(runs, dict):
+                found.extend((relative, step) for step in runs.get("steps", []))
+            for job in (document.get("jobs") or {}).values():
+                found.extend((relative, step) for step in job.get("steps", []))
+    return found
+
+
+def test_only_main_saves_github_actions_caches() -> None:
+    # The repository has a 10 GB cache quota. Other refs can restore main's
+    # entries but not each other's, so a branch's own copy of a content-keyed
+    # cache only duplicates main's and evicts main's Cargo caches (HF-139).
+    steps = _workflow_and_action_steps()
+    saving = []
+    for path, step in steps:
+        uses = str(step.get("uses", ""))
+        condition = str(step.get("if", ""))
+        if uses.startswith(("actions/cache@", "actions/cache/save@")):
+            assert _MAIN_REF in condition, (path, step.get("name"))
+            saving.append((path, step))
+        elif uses.startswith("astral-sh/setup-uv@"):
+            assert step["with"]["save-cache"] == "${{ " + _MAIN_REF + " }}", path
+        elif uses.startswith("actions/setup-node@") and "cache" in (
+            step.get("with") or {}
+        ):
+            # setup-node has no save switch; its npm entries are under 1 MB.
+            assert step["with"]["cache"] == "npm", path
+    assert saving, "the policy must see the cache steps it governs"
+    # Every main-only restore-and-save step has a restore-only twin for other
+    # refs with the same path and key.
+    for path, step in saving:
+        if not str(step["uses"]).startswith("actions/cache@"):
+            continue
+        twin_condition = str(step["if"]).replace(
+            _MAIN_REF, "github.ref != 'refs/heads/main'"
+        )
+        twins = [
+            other
+            for other_path, other in steps
+            if other_path == path
+            and str(other.get("uses", "")).startswith("actions/cache/restore@")
+            and other.get("if") == twin_condition
+            and other.get("with") == step["with"]
+        ]
+        assert len(twins) == 1, (path, step.get("name"))

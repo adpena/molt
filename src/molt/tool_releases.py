@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-from molt.dx import TOOLCHAINS_DIRNAME
+from molt.dx import TOOLCHAINS_DIRNAME, DxConfigError, canonical_toolchain_root
 from molt.file_locks import (
     _acquire_file_lock,
     _file_lock_owned_operation,
@@ -672,32 +672,48 @@ def provision_tool(
 
 
 def discover_pinned_tool(
-    name: str, repo_root: Path | None = None
+    name: str,
+    repo_root: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> ToolDiscovery | None:
     """Read the one manifest-owned installation, without PATH or network fallback."""
-    from molt.dx import checkout_custody
-
     root = compiler_source_root() if repo_root is None else repo_root
     release = load_tool_releases(root).get(name)
     if release is None:
         return None
-    return discover_tool(release, checkout_custody(root).toolchain_root)
+    try:
+        toolchain_root = canonical_toolchain_root(
+            root, environ, require_exists=False, cwd=cwd
+        )
+    except DxConfigError as exc:
+        raise ToolReleaseError(str(exc)) from exc
+    return discover_tool(release, toolchain_root)
 
 
-def pinned_executable(name: str, repo_root: Path) -> Path | None:
+def pinned_executable(
+    name: str, repo_root: Path, *, environ: Mapping[str, str] | None = None
+) -> Path | None:
     """Return the attested managed executable, if present.
 
     Optional host consumers such as Node retain their explicit host-selection
     policy. Compiler validation consumers use require_pinned_tool instead.
     """
-    discovery = discover_pinned_tool(name, repo_root)
+    discovery = discover_pinned_tool(name, repo_root, environ=environ)
     return None if discovery is None else discovery.executable
 
 
-def require_pinned_tool(name: str, repo_root: Path | None = None) -> ToolDiscovery:
+def require_pinned_tool(
+    name: str,
+    repo_root: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> ToolDiscovery:
     """Require the managed release; a stale ambient executable is never a substitute."""
     root = compiler_source_root() if repo_root is None else repo_root
-    discovery = discover_pinned_tool(name, root)
+    discovery = discover_pinned_tool(name, root, environ=environ, cwd=cwd)
     if discovery is None:
         release = tool_release(name, root)
         raise ToolReleaseError(
@@ -718,7 +734,9 @@ def run_pinned_tool(
     **kwargs: Any,
 ) -> _ToolResult:
     """Bind the caller's existing guarded runner to one attested tool generation."""
-    discovery = require_pinned_tool(name, repo_root)
+    discovery = require_pinned_tool(
+        name, repo_root, environ=kwargs.get("env"), cwd=kwargs.get("cwd")
+    )
     try:
         with stable_executable_probe(discovery.executable, label=f"pinned {name}") as (
             entrypoint,
@@ -734,14 +752,12 @@ def run_pinned_tool(
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    from molt.dx import checkout_custody
-
     parser = argparse.ArgumentParser(
         description="Provision or inspect pinned tool releases under custody."
     )
     parser.add_argument("action", choices=("list", "discover", "provision"))
     parser.add_argument("tool", nargs="?")
-    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--repo-root", type=Path, default=compiler_source_root())
     parser.add_argument(
         "--github-path",
         type=Path,
@@ -756,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.tool:
         parser.error("tool is required")
     release = tool_release(args.tool, args.repo_root)
-    toolchain_root = checkout_custody(args.repo_root).toolchain_root
+    toolchain_root = canonical_toolchain_root(args.repo_root, require_exists=False)
     discovery = (
         provision_tool(release, toolchain_root)
         if args.action == "provision"
