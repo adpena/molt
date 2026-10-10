@@ -10,7 +10,6 @@ import io
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tarfile
@@ -4165,37 +4164,45 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
 def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     tmp_path: Path,
 ) -> None:
-    sleeper = tmp_path / "sleeper.py"
-    sleeper.write_text(
-        "import time\ntime.sleep(5.0)\n",
-        encoding="utf-8",
-    )
+    """A child that keeps the captured streams open neither blocks the run
+    nor outlives it: the guard ends it once the command exits.
+
+    The parent exits right after it starts the child, so no periodic sample
+    can see the child under its parent. The guard must still find it (POSIX:
+    the census of the command's process group before the reap; Windows: the
+    Job) and close the tree, or the run fails as an infrastructure failure.
+    """
+    from tools.memory_guard_core.process_model import process_command_argv
+
+    marker = f"inherited-pipes-{tmp_path.name}"
     child_pid_file = tmp_path / "sleeper.pid"
     parent = tmp_path / "parent.py"
     parent.write_text(
         "import pathlib, subprocess, sys\n"
-        f"child = subprocess.Popen([sys.executable, {str(sleeper)!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        "child = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', 'import time; time.sleep(5.0)', {marker!r}],\n"
+        "    stdout=sys.stdout,\n"
+        "    stderr=sys.stderr,\n"
+        ")\n"
         f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "print('parent-done', flush=True)\n",
         encoding="utf-8",
     )
 
-    try:
-        start = time.perf_counter()
-        result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
-            [sys.executable, str(parent)],
-            timeout=2.0,
-        )
-        elapsed = time.perf_counter() - start
-    finally:
-        if child_pid_file.exists():
-            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-            with contextlib.suppress(OSError):
-                os.kill(child_pid, signal.SIGTERM)
+    start = time.perf_counter()
+    result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
+        [sys.executable, str(parent)],
+        timeout=2.0,
+    )
+    elapsed = time.perf_counter() - start
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
     assert result.returncode == 0
     assert "parent-done" in cli._subprocess_output_text(result.stdout)
     assert elapsed < 2.5
+    assert result.descendants_closed is True
+    argv = process_command_argv(child_pid)
+    assert argv is None or marker not in argv
 
 
 def test_build_module_lowering_metadata_precomputes_module_flags(
@@ -19131,7 +19138,7 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         )
 
 
-def test_codecs_graph_retains_reentrant_os_guard_but_prunes_lazy_regex() -> None:
+def test_codecs_graph_stays_minimal_and_prunes_lazy_regex() -> None:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]
     roots = module_roots + [stdlib_root]
@@ -19153,11 +19160,11 @@ def test_codecs_graph_retains_reentrant_os_guard_but_prunes_lazy_regex() -> None
     graph = discovery_result.graph
     _explicit_imports = discovery_result.explicit_imports
 
+    # codecs imports only sys and the intrinsic loader at module level (its
+    # os reentrancy guard left with d2fafa188); lazy regex and warnings stay out.
     assert "codecs" in graph
-    assert "os" in graph
-    assert "typing" in graph
-    assert "warnings" not in graph
-    assert "re" not in graph
+    for heavy in ("os", "typing", "warnings", "re"):
+        assert heavy not in graph, heavy
 
 
 def test_decimal_graph_keeps_intrinsic_dependencies_without_typing_or_regex(
@@ -29588,6 +29595,7 @@ def test_compile_with_backend_daemon_fails_fast_when_daemon_dies_mid_request(
 
 def test_compile_with_backend_daemon_reports_missing_output_in_result(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     def _fake_request(
         socket_path: Path,
@@ -29618,7 +29626,7 @@ def test_compile_with_backend_daemon_reports_missing_output_in_result(
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
-        backend_output=Path("/tmp/definitely-missing-output.o"),
+        backend_output=tmp_path / "definitely-missing-output.o",
         target_triple=None,
         cache_key=None,
         function_cache_key=None,

@@ -156,8 +156,11 @@ as generated programs; a pass on one host cannot establish the whole matrix.
   Sampling, an attempted direct-child `RLIMIT_RSS`, actual platform enforcement
   and generation-owned cleanup have different scopes. Missing samples or census
   rows cannot establish closure. Process groups, numeric PIDs and invocation
-  text do not grant custody over escaped or reparented descendants; preserve
-  unrelated processes and the host control plane. The actual platform receipt
+  text do not grant custody over escaped or reparented descendants, with one
+  exact exception: the live members of the group the guarded root leads,
+  observed after the root exits and before the guard reaps it. The unreaped
+  root keeps that group ID reserved, so each such member descends from the
+  root. Preserve unrelated processes and the host control plane. The actual platform receipt
   and independent failure/cleanup controls must qualify each cell before it
   counts as release evidence. These obligations remain open under
   [V1-12](../../../agent/V1_HANDOFF_FINDINGS.md); see the
