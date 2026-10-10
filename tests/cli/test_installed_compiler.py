@@ -727,3 +727,43 @@ print('isolated-source::' + sys.modules['molt'].__file__)
     )
     assert Path(origin).samefile(root / "src/molt/__init__.py")
     assert not marker.exists()
+
+
+def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path):
+    # packaging/bootstrap.py runs this file with a plain CPython before any
+    # Molt environment exists, so the module must stay stdlib-only.
+    from tests.cli.process_guard import run_cli_test_process
+
+    root = Path(__file__).resolve().parents[2]
+    cache = tmp_path / "selected-cache"
+    code = (
+        "import importlib.util, sys\n"
+        "assert importlib.util.find_spec('molt') is None, 'molt is importable'\n"
+        "ns = {'__name__': 'molt_bootstrap_default_paths'}\n"
+        "exec(compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec'), ns)\n"
+        "assert 'molt' not in sys.modules\n"
+        "print(ns['_default_molt_home']())\n"
+    )
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith(("MOLT_", "PYTHON"))
+    }
+    env["MOLT_CACHE"] = str(cache)
+    result = run_cli_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            code,
+            str(root / "src/molt/default_paths.py"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == cache / "home"
