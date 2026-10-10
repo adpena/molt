@@ -802,6 +802,9 @@ independent executable-link custody. Executable doctests retain a separate
 Rustdoc can select different linkers. Default Cargo test and explicit `--doc`
 include it; `--lib`, other explicit target filters and `--no-run` do not.
 Documentation commands include it when effective documenter flags request `--test`.
+Registered Python drivers that declare Cargo children retain compiler target and
+host capability without being parsed as direct Cargo invocations. Their existing
+typed declaration does not imply a documenter witness.
 Direct rustc metadata/object emission needs no linker. Repeated `--emit` options
 are additive, including configured flags: an effective `--emit=link` can restore
 a target link requirement during check, and forwarded metadata emission does not
