@@ -26,7 +26,6 @@ from molt.cli.models import (
     EmitMode,
     FallbackPolicy,
     ParseCodec,
-    Target,
     TypeHintPolicy,
 )
 from molt.cli.output import emit_json as _emit_json
@@ -150,7 +149,7 @@ def _internal_batch_build_server(
                         active_build_fn = build_fn
                     rc = active_build_fn(
                         file_path=params.get("file_path"),
-                        target=cast(Target, target),
+                        target=target,
                         codegen_backend=codegen_backend,
                         parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
                         type_hint_policy=cast(

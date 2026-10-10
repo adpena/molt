@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
+
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import (
     backend_binary,
@@ -221,6 +223,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         cargo_timeout=None,
         backend_timeout=None,
         resolved_capability_policy=CapabilityManifest().resolve(),
+        codegen=CodegenSelection(),
     )
     result = backend_pipeline._run_backend_pipeline(
         prepared_build_preamble=preamble,
