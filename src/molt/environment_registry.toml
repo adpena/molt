@@ -3612,6 +3612,22 @@ owner = "src/molt/pytest_memory_guard_bootstrap.py"
 summary = "Path of the proof queue's SQLite database (suffix .sqlite3); the queue runner sets it for each guarded run, and the pytest guard bootstrap and the final WASM runtime preflight read it to verify the run's custody."
 
 [[variable]]
+name = "MOLT_PROOF_QUEUE_RETAIN_GB"
+audience = "developer"
+kind = "float"
+default = "8"
+owner = "tools/proof_queue_pkg/run_retention.py"
+summary = "Byte bound in GiB (a positive number) for the newest reclaimable proof queue runs whose evidence files retention keeps; proof_queue.py retention --keep-gb overrides it; default 8."
+
+[[variable]]
+name = "MOLT_PROOF_QUEUE_RETAIN_RUNS"
+audience = "developer"
+kind = "int"
+default = "200"
+owner = "tools/proof_queue_pkg/run_retention.py"
+summary = "Number of newest reclaimable proof queue runs (a positive integer) whose evidence files retention keeps; failed, unresolved, pinned and dependency runs are kept beyond it; proof_queue.py retention --keep-runs overrides it; default 200."
+
+[[variable]]
 name = "MOLT_PROOF_QUEUE_RUN_ID"
 audience = "internal"
 kind = "string"
