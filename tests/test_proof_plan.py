@@ -368,7 +368,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert test_packages(core) == {"molt-passes", "molt-backend-wasm", "molt-runtime"}
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
-    assert set(core.toolchains) == {"cargo", "node", "wasm-ld"}
+    assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
+    assert proof_plan.cargo_native_c_units(core.data) == ("target",)
+    assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
     assert "--lib" in core.argv
     assert [
         core.argv[index + 1]
@@ -4882,6 +4884,21 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "rust.test.default-truth",
         "rust.test.runtime-extension-admission",
         "runtime.cost.candidate",
+        "native.integration.bench-cli",
+        "native.integration.capability-manifest",
+        "llvm.test.differential",
+        "wasm.test.finally-pending-observer-parity",
+        "rust.test.ir-wasm-runtime-authorities",
+        "portability.rust.macos.runtime-gate",
+        "rust.test.runtime-cold-lifecycle",
+        "nightly.shards.prepare",
+        "nightly.determinism.compiler-prewarm",
+        "nightly.determinism.runtime",
+        "nightly.verification-t3.compiler-prewarm",
+        "nightly.verification-t3.reproducibility",
+        "nightly.verification-t3.fuzz-compiler",
+        "nightly.verification-t3.translation",
+        "wasm.test.import-from-codec-parity",
     }
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
         row = next(row for row in plan.commands if row.id == name)

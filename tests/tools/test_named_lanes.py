@@ -53,6 +53,16 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     assert closure["kind"] == "named-lane"
     assert closure["descendants"] == "declared-toolchains"
     assert set(lane.toolchains) <= set(closure["toolchains"])
+    # Native differential/Pact lanes cold-build the runtime, including mimalloc.
+    # WASM-only and reference-only lanes must not acquire native C custody.
+    native_runtime = lane_id in {
+        "runtime.abi-fixture-authorities",
+        "pact.witness.acceptance.native",
+        "r6.target-version-parity.py312",
+        "r6.target-version-parity.py313",
+        "r6.target-version-parity.py314",
+    }
+    assert envelope["cargo_native_c_units"] == (["target"] if native_runtime else [])
 
 
 def test_abi_fixture_lane_declares_native_c_through_cargo_wrapping() -> None:
