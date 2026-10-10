@@ -4,8 +4,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
+
+from tests.process_guard_common import run_guarded_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -140,23 +141,17 @@ def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
         if key not in {"MOLT_HOME", "MOLT_CACHE", "MOLT_BIN"}
     }
 
-    dry = subprocess.run(
-        module.build_cache_prune_command(apply=False, cache_root=cache),
-        capture_output=True,
-        text=True,
-        env=env,
-        check=True,
+    dry = run_guarded_test_process(
+        module.build_cache_prune_command(apply=False, cache_root=cache), env=env
     )
+    assert dry.returncode == 0, dry.stderr
     assert "removed.entries=1" in dry.stdout
     assert (cache / "stale-entry").is_dir()
 
-    subprocess.run(
-        module.build_cache_prune_command(apply=True, cache_root=cache),
-        capture_output=True,
-        text=True,
-        env=env,
-        check=True,
+    applied = run_guarded_test_process(
+        module.build_cache_prune_command(apply=True, cache_root=cache), env=env
     )
+    assert applied.returncode == 0, applied.stderr
     assert not (cache / "stale-entry").exists()
 
 
