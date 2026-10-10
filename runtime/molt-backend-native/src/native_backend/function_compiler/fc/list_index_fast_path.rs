@@ -61,9 +61,7 @@ pub(in crate::native_backend::function_compiler) fn observe_generic_list_storage
             is_int: builder.use_var(is_int),
         };
     }
-    let masked = builder.ins().band_imm(object, POINTER_MASK as i64);
-    let shifted = builder.ins().ishl_imm(masked, 16);
-    let pointer = builder.ins().sshr_imm(shifted, 16);
+    let pointer = unbox_ptr_value(builder, object);
     let storage = builder
         .ins()
         .load(types::I64, MemFlagsData::trusted(), pointer, 0);
@@ -600,9 +598,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
                 observe_generic_list_storage(builder, fast_paths, &name, *obj);
                 continue;
             }
-            let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-            let shifted = builder.ins().ishl_imm(masked, 16);
-            let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+            let obj_ptr = unbox_ptr_value(builder, *obj);
             let storage_ptr = builder
                 .ins()
                 .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
