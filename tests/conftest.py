@@ -34,6 +34,17 @@ def _restore_process_environment() -> Iterator[None]:
         os.environ.update(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def _disk_scratch_projections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Project scratch paths for disk storage in every test.
+
+    The operator's ``MOLT_SCRATCH_STORAGE`` governs the guarded session, whose
+    scratch the memory guard allocated before pytest started. Tests assert
+    projected scratch paths; a test of memory storage sets it explicitly.
+    """
+    monkeypatch.delenv("MOLT_SCRATCH_STORAGE", raising=False)
+
+
 # Process-global names the intrinsic loader (src/_intrinsics.py) reads.
 _INTRINSIC_BUILTINS = (
     "_molt_intrinsics",
