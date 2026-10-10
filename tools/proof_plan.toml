@@ -775,16 +775,6 @@ target = "host"
 profile = "test"
 
 [[matrix_cell]]
-id = "macos-arm64-py312-unit-collection"
-runner = "macos-14"
-os = "macos"
-arch = "aarch64"
-python = "3.12"
-backend = "python-tooling"
-target = "host"
-profile = "test"
-
-[[matrix_cell]]
 id = "linux-x86_64-py312-native-dev"
 runner = "ubuntu-latest"
 os = "linux"
@@ -1018,7 +1008,7 @@ dependencies = []
 
 [[ci_family]]
 name = "python_unit_collection"
-description = "The whole CLI import-collection suite on Linux and macOS, in its own job so its memory never shares a runner with other unit partitions."
+description = "The whole CLI import-collection suite on Linux, in its own job so its memory never shares a runner with other unit partitions."
 inputs = [".github/actions/setup-project/**", ".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "Cargo.toml", ".cargo/**", "runtime/**/Cargo.toml", "src/**", "tests/**", "tools/**"]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
@@ -2626,25 +2616,14 @@ toolchains = ["python", "uv"]
 # The whole CLI import-collection file (804 tests, about 580 s on hosted Linux
 # at -n 2). Its build-pipeline tests read rustc and cargo identity from PATH;
 # the five that validate WASM with the pinned wasm-tools run in
-# wasm.host.runner-fixtures, which provisions that tool (HF-160). It has its
-# own job: beside another unit partition on the 7 GB macOS runner, the guard
-# stopped both for unsafe memory pressure (HF-68, run 38093166637).
+# wasm.host.runner-fixtures, which provisions that tool (HF-160). It runs in
+# its own Linux job: its process tree peaks at 4.97 GB at -n 2, above the
+# 3.3 GB the 7 GB macOS runner had free, so the guard stopped it there even
+# alone (run 38094633303; HF-170 owns the test memory, HF-68 the runner).
 [[command]]
 id = "python.unit.cli.import-collection"
 family = "python_unit_collection"
 cell = "linux-x86_64-py312-unit-collection"
-tiers = ["pr", "main"]
-resource_class = "python-tests"
-timeout_seconds = 900
-cache_domain = "pytest"
-dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_cli_import_collection.py", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
-toolchains = ["python", "uv", "rustc", "cargo"]
-
-[[command]]
-id = "python.unit.cli.import-collection.macos"
-family = "python_unit_collection"
-cell = "macos-arm64-py312-unit-collection"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 900
