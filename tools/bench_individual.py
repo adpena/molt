@@ -38,6 +38,7 @@ from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.build_state_layout import project_build_state_root  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
 import perf_authority  # noqa: E402
 
@@ -193,10 +194,7 @@ class BackendDaemonCleanupReport:
 
 
 def _build_state_root_from_env(env: dict[str, str]) -> Path:
-    return daemon_custody.backend_daemon_build_state_root_from_env(
-        env,
-        project_root=REPO_ROOT,
-    )
+    return project_build_state_root(REPO_ROOT, env)
 
 
 def _current_session_identity_files(

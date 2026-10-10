@@ -10,16 +10,14 @@ struct TestTempDir {
 impl TestTempDir {
     fn new() -> Self {
         static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("molt-backend manifest must live under runtime/molt-backend");
         let temp_id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after unix epoch")
             .as_nanos();
-        let path = repo_root.join("tmp").join(format!(
+        // The platform temp directory, never the checkout: a run context
+        // points it at the run scratch root.
+        let path = std::env::temp_dir().join(format!(
             "native-batch-worker-spawn-{}-{temp_id}-{nonce}",
             std::process::id(),
         ));

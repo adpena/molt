@@ -232,17 +232,24 @@ def test_missing_selected_wasm_host_does_not_use_other_builds(
     )
 
 
-def test_relative_cargo_host_directory_is_relative_to_build_root(
+def test_relative_cargo_host_directory_follows_the_cli_target_rule(
     monkeypatch, tmp_path: Path
 ) -> None:
+    from molt.cli.runtime_paths import _cargo_target_root
+
+    root = tmp_path / "root"
+    (tmp_path / "cwd").mkdir()
+    monkeypatch.chdir(tmp_path / "cwd")
+    cwd = Path.cwd()
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", "selected target")
-    host = tmp_path / "selected target" / "dev-fast" / molt_wasm_host_exe_name()
+    # Cargo reads a relative CARGO_TARGET_DIR from the working directory, and
+    # so does the CLI that builds the runtime there.
+    host = cwd / "selected target" / "dev-fast" / molt_wasm_host_exe_name()
     host.parent.mkdir(parents=True)
     host.write_bytes(b"selected host")
-    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") == str(
-        host
-    )
+    assert resolve_molt_wasm_host_binary(root, cargo_profile="dev-fast") == str(host)
+    assert host.parent.parent == _cargo_target_root(root)
 
 
 def test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit(
