@@ -500,10 +500,10 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     return None
 
 
-def _bench_session_id(env: dict[str, str] | None = None) -> str:
+def _bench_session_id(env: dict[str, str] | None = None) -> str | None:
+    """The caller's pinned session, or None to share the warm Cargo target."""
     source = env if env is not None else os.environ
-    explicit = source.get("MOLT_SESSION_ID", "").strip()
-    return explicit or f"bench-{os.getpid()}"
+    return source.get("MOLT_SESSION_ID", "").strip() or None
 
 
 def _bench_tmp_root(env: dict[str, str]) -> Path:
