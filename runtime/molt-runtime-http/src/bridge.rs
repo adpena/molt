@@ -278,7 +278,7 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn __molt_http_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_http_molt_float_from_obj(val_bits: u64) -> u64;
+    fn __molt_http_float_from_object_value(val_bits: u64, out: *mut f64) -> i32;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -338,8 +338,10 @@ pub fn int_bits_from_bigint(_py: &CoreGilToken, value: num_bigint::BigInt) -> u6
     unsafe { __molt_http_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
-pub fn molt_float_from_obj(val_bits: u64) -> u64 {
-    unsafe { __molt_http_molt_float_from_obj(val_bits) }
+pub fn float_from_object_value(val_bits: u64) -> Option<f64> {
+    let mut value = 0.0;
+    let ok = unsafe { __molt_http_float_from_object_value(val_bits, &mut value) };
+    (ok != 0).then_some(value)
 }
 
 // ---------------------------------------------------------------------------

@@ -50,7 +50,7 @@ def test_complete_parallel_and_fresh_process_ledger_passes(tmp_path):
         **{name: None for name in gate.ISOLATED},
         support.EXIT: 2,
     }
-    assert len(children) == 8
+    assert len(children) == 10
     assert "--test-threads=4" in selections["parallel"][0]
     for name in gate.ISOLATED:
         assert selections[name][0] == [
@@ -490,3 +490,47 @@ def test_child_failure_summary_bounds_long_failure_lists():
     assert lines[2] == "    t::000" and lines[41] == "    t::039"
     assert lines[42] == "    ... 5 more in the receipts"
     assert len(lines) == 43
+
+
+FRESH_OWNERS = (
+    "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
+    "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
+)
+DEVELOPMENT_PROBES = (
+    "c_api::tests::dictionary_snapshot_materialization_components",
+    "cpython_abi_hooks::generic_attributes_tests::mutation_consumers::managed_mutation_projection_profile",
+)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_ignored_runtime_inventory_has_explicit_semantic_and_profile_owners(platform):
+    # Names are independent observations of Rust #[ignore] contracts, not a
+    # table copied from the selection under test. Missing declarations fail.
+    inventory = sorted(
+        set(
+            gate.ISOLATED
+            + gate.probes_for(platform)
+            + FRESH_OWNERS
+            + DEVELOPMENT_PROBES
+            + ("ordinary",)
+        )
+    )
+    selected = gate.selections(inventory, 4, platform)
+    assert selected["parallel"][1] == {"ordinary"}
+    for name in FRESH_OWNERS:
+        assert selected[name] == (
+            ["--exact", name, "--ignored", "--test-threads=1", "--nocapture"],
+            {name},
+        )
+    for name in DEVELOPMENT_PROBES:
+        assert name in gate.probes_for(platform)
+        assert name not in selected
+        assert all(name not in tests for _argv, tests in selected.values())
+
+
+@pytest.mark.parametrize("name", FRESH_OWNERS)
+def test_new_fresh_semantic_owner_cannot_remain_ignored(tmp_path, name):
+    children, selected, binding = fixture_ledger(tmp_path)
+    children[name][0]["test_results"][0]["status"] = "ignored"
+    with pytest.raises(RuntimeError):
+        gate.validate_children(children, selected, **binding)

@@ -94,7 +94,7 @@ extern PyObject *PyObject_Repr(PyObject *op);
 extern PyObject *PyObject_Str(PyObject *op);
 extern PyObject *PyObject_ASCII(PyObject *op);
 extern int PyType_Check(PyObject *op);
-extern PyObject *molt_capi_type_fully_qualified_name(PyTypeObject *type);
+extern PyObject *molt_capi_type_fully_qualified_name(PyTypeObject *type, unsigned char separator);
 extern PyObject *PyBytes_FromStringAndSize(const char *s, Py_ssize_t size);
 extern PyObject *PyList_New(Py_ssize_t size);
 extern int PyList_SetItem(PyObject *op, Py_ssize_t i, PyObject *value);
@@ -1232,50 +1232,15 @@ static int molt_unicode_format_append_type_name(
     if (type == NULL) {
         return molt_unicode_format_system_error("NULL type argument in PyUnicode_FromFormat");
     }
-    PyObject *name = molt_capi_type_fully_qualified_name(type);
+    PyObject *name = molt_capi_type_fully_qualified_name(
+        type, (flags & MOLT_FMT_ALT) ? ':' : '.');
     if (name == NULL) {
         if (PyErr_Occurred() == NULL) {
             molt_unicode_format_system_error("type name conversion failed without an exception");
         }
         return 0;
     }
-    int ok;
-    if (flags & MOLT_FMT_ALT) {
-        Py_ssize_t size = 0;
-        const char *text = PyUnicode_AsUTF8AndSize(name, &size);
-        if (text == NULL || size < 0) {
-            if (PyErr_Occurred() == NULL) {
-                molt_unicode_format_system_error("type name conversion failed without an exception");
-            }
-            ok = 0;
-        }
-        else {
-            MoltUnicodeFormatBuffer alternate;
-            molt_unicode_format_buffer_init(&alternate);
-            ok = molt_unicode_format_append_bytes(&alternate, text, (size_t)size);
-            if (ok) {
-                char *dot = NULL;
-                for (size_t i = 0; i < alternate.len; i++) {
-                    if (alternate.data[i] == '.') dot = alternate.data + i;
-                }
-                if (dot != NULL) *dot = ':';
-                ok = molt_unicode_format_append_utf8_value(
-                    buf,
-                    alternate.data == NULL ? "" : alternate.data,
-                    alternate.len,
-                    width,
-                    precision,
-                    flags,
-                    0,
-                    0);
-            }
-            molt_unicode_format_buffer_absorb_allocations(buf, &alternate);
-            molt_unicode_format_buffer_dealloc(&alternate);
-        }
-    }
-    else {
-        ok = molt_unicode_format_append_unicode(buf, name, width, precision, flags);
-    }
+    int ok = molt_unicode_format_append_unicode(buf, name, width, precision, flags);
     Py_DECREF(name);
     return ok;
 }

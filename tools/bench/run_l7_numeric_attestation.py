@@ -243,6 +243,50 @@ RUNTIME_CASES = (
         for scalar, value in (("int", 1000), ("float", 1.25))
         for operation in ("construct_extract_release", "runtime_hold_roundtrip")
     )
+    + (
+        (
+            "runtime.convert.int_from_float",
+            "runtime_numeric_conversion",
+            {
+                "entry": "molt_number_long",
+                "input": 1.25,
+                "expected": 1,
+                "operation": "convert_extract_release",
+                "real_runtime_hooks": True,
+            },
+        ),
+        (
+            "runtime.convert.float_from_int",
+            "runtime_numeric_conversion",
+            {
+                "entry": "molt_number_float",
+                "input": 7,
+                "expected": 7.0,
+                "operation": "convert_extract_release",
+                "real_runtime_hooks": True,
+            },
+        ),
+    )
+    + tuple(
+        (
+            f"runtime.percent.{entry_name}.{kind}",
+            "runtime_percent_format",
+            {
+                "entry": entry,
+                "template": template,
+                "argument": argument,
+                "expected_utf8": expected,
+                "operation": "format_utf8_witness_release",
+                "managed_result_c_bridge_included": entry_name == "managed",
+                "real_runtime_hooks": True,
+            },
+        )
+        for entry_name, entry in (("managed", "molt_mod"), ("c", "PyUnicode_Format"))
+        for kind, template, argument, expected in (
+            ("int", "%08d", 7, "00000007"),
+            ("float", "%.2f", 1.25, "1.25"),
+        )
+    )
 )
 
 
@@ -268,7 +312,7 @@ COMPONENTS = {
         "function": "l7_numeric_runtime_performance_attestation",
         "prefix": "L7_NUMERIC_RUNTIME_ATTESTATION=",
         "kind": "l7_numeric_runtime_performance_attestation",
-        "allocator_scope": "test_feature_counting_wrapper_over_production_mimalloc",
+        "allocator_scope": "rust_global_mimalloc_traffic_native_libc_unobserved",
         "invariant_metric": "numeric_hook_calls_per_op",
         "features": ["l7-attestation-probe"],
         "timing_instrumentation": (

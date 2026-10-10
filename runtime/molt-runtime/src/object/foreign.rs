@@ -81,7 +81,17 @@ pub(crate) fn foreign_release(c_ptr: usize) {
     // entries and Py_DECREF the C object (balances the Py_INCREF the bridge did
     // when it minted this wrapper). Direct cross-crate call — the ABI is
     // statically linked into the same binary as the runtime.
-    unsafe {
+    retire_native_reference(|| unsafe {
         molt_cpython_abi::bridge::molt_foreign_object_release(c_ptr);
-    }
+    });
+}
+
+/// Complete native retirement before returning to a runtime operation. Both
+/// foreign-wrapper release and standalone owned C temporaries use this boundary.
+pub(crate) fn retire_native_reference(release: impl FnOnce()) {
+    release();
+    // A valid native deallocator may move the active raised exception between
+    // channels through PyErr_GetRaisedException/PyErr_SetRaisedException.
+    // Complete that native reentry before returning to a runtime consumer.
+    crate::cpython_abi_hooks::transfer_pending_cpython_exception();
 }

@@ -180,6 +180,7 @@ def rust_probe_arguments(
         if span.option == "--emit":
             if documenter:
                 continue  # Rustdoc HTML/dep-info outputs never belong in rustc probes.
+            assert span.value is not None
             result.extend(
                 (
                     "--emit",
@@ -197,6 +198,7 @@ def rust_probe_arguments(
         elif span.codegen is not None and span.codegen.startswith("incremental="):
             result.extend((*leading, "-C", "incremental=" + str(root / "incremental")))
         elif leading != span.leading and span.option is not None:
+            assert span.value is not None
             result.extend((*leading, span.option, span.value))
         else:
             result.extend(arguments[span.start : span.stop])

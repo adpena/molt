@@ -5154,3 +5154,20 @@ def test_native_build_envelope_cannot_mutate_cached_plan_authority(kind):
         command_admission.envelope_for_command(command)["cargo_native_units"]
         == expected
     )
+
+
+def test_runtime_public_consumers_lane_uses_canonical_diff_outputs() -> None:
+    lane = PLAN.named_lane("runtime.public-consumers.native")
+    # File outputs inherit the queue-issued differential root. JSON stdout uses
+    # the queue capture; explicit file sinks would create a second owner and can
+    # mutate the source checkout. Check that invariant without pinning unrelated
+    # interpreter, target, or fixture arguments.
+    options = {argument.split("=", 1)[0] for argument in lane.argv}
+    assert "--json" in options
+    assert not {
+        "--json-output",
+        "--log-dir",
+        "--log-file",
+        "--log-aggregate",
+        "--failures-output",
+    }.intersection(options)

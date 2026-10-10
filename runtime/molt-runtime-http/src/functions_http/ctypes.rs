@@ -157,26 +157,9 @@ pub(super) fn ctypes_coerce_float(
     value_bits: u64,
     width: i64,
 ) -> Result<u64, u64> {
-    let float_bits = molt_float_from_obj(value_bits);
-    if exception_pending(_py) {
-        if obj_from_bits(float_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, float_bits);
-        }
-        return Err(float_bits);
-    }
-    let Some(value) = to_f64(obj_from_bits(float_bits)) else {
-        if obj_from_bits(float_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, float_bits);
-        }
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "ctypes scalar value must be float-compatible",
-        ));
+    let Some(value) = float_from_object_value(value_bits) else {
+        return Err(MoltObject::none().bits());
     };
-    if obj_from_bits(float_bits).as_ptr().is_some() {
-        dec_ref_bits(_py, float_bits);
-    }
     let out = if width == 32 {
         (value as f32) as f64
     } else {

@@ -2266,7 +2266,16 @@ mod process_worker_lifetime_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let registry = ProcessRegistry::new();
         let mut command = inert_command();
-        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
+        // The self-image fixture prints a libtest prelude. Keep its unused
+        // streams private; INHERIT would overwrite the builder's null defaults.
+        let stdio = configure_native_stdio(
+            &execution.token(),
+            &mut command,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+        )
+        .unwrap();
         let state = registry
             .spawn(&execution.token(), &mut command, stdio, false)
             .unwrap();
@@ -2457,7 +2466,16 @@ mod process_worker_lifetime_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let registry = ProcessRegistry::new();
         let mut command = inert_command();
-        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
+        // The self-image fixture prints a libtest prelude. Keep its unused
+        // streams private; INHERIT would overwrite the builder's null defaults.
+        let stdio = configure_native_stdio(
+            &execution.token(),
+            &mut command,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+        )
+        .unwrap();
         let state = registry
             .spawn(&execution.token(), &mut command, stdio, false)
             .unwrap();
@@ -2584,7 +2602,16 @@ mod process_worker_lifetime_tests {
         let origin = (runtime_state(py) as *const RuntimeState).expose_provenance();
         let registry = &runtime_state(py).process_registry;
         let mut command = inert_command();
-        let stdio = configure_native_stdio(py, &mut command, 0, 0, 0).unwrap();
+        // The self-image fixture prints a libtest prelude. Keep its unused
+        // streams private; INHERIT would overwrite the builder's null defaults.
+        let stdio = configure_native_stdio(
+            py,
+            &mut command,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+        )
+        .unwrap();
         let state = registry.spawn(py, &mut command, stdio, false).unwrap();
         let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let worker_observed = Arc::clone(&observed);

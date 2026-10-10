@@ -119,7 +119,7 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
         return Err(LongError::Raised);
     }
     let result = py_long_value(index, false);
-    unsafe { crate::api::errors::release_preserving_error(&[index]) };
+    unsafe { crate::api::refcount::Py_DECREF(index) };
     match result {
         Err(LongError::NotInt) => {
             set_long_type_error();
@@ -629,6 +629,16 @@ pub(crate) unsafe fn numeric_native_value(op: *mut PyObject) -> Option<RuntimeVa
     }
     unsafe { crate::api::errors::PyErr_BadInternalCall() };
     None
+}
+
+/// Transfer the existing physical numeric storage projection to a runtime
+/// consumer. This does not call a subtype's conversion overrides or expose a
+/// borrowed handle after its physical owner retires.
+pub unsafe fn native_numeric_payload(op: *mut PyObject) -> crate::hooks::OwnedHandleResult {
+    match unsafe { numeric_native_value(op) } {
+        Some(value) => crate::hooks::OwnedHandleResult::ok(value.into_owned_bits()),
+        None => crate::hooks::OwnedHandleResult::error(),
+    }
 }
 
 /// True for physical int/bool storage, including int subtypes. The slice fast
@@ -1645,7 +1655,7 @@ unsafe fn native_bytes_non_int(
             return -1;
         }
         let result = unsafe { PyLong_AsNativeBytes(index, buffer, n_bytes, flags & !16) };
-        unsafe { crate::api::errors::release_preserving_error(&[index]) };
+        unsafe { crate::api::refcount::Py_DECREF(index) };
         return result;
     }
     set_long_type_error();
@@ -2050,7 +2060,7 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
             crate::bridge::ensure_result_error(c"float conversion returned no float payload")
         };
     }
-    unsafe { crate::api::errors::release_preserving_error(&[converted]) };
+    unsafe { crate::api::refcount::Py_DECREF(converted) };
     value.unwrap_or(-1.0)
 }
 
@@ -2684,7 +2694,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
             let Ok((actual, kind)) = (unsafe {
                 numeric_result_class(result, &raw mut crate::abi_types::PyComplex_Type)
             }) else {
-                unsafe { crate::api::errors::release_preserving_error(&[result]) };
+                unsafe { crate::api::refcount::Py_DECREF(result) };
                 return Py_complex {
                     real: -1.0,
                     imag: 0.0,
@@ -2702,7 +2712,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                             .cast::<crate::abi_types::PyObject>(),
                         message.as_ptr(),
                     );
-                    crate::api::errors::release_preserving_error(&[result]);
+                    crate::api::refcount::Py_DECREF(result);
                 }
                 return Py_complex {
                     real: -1.0,
@@ -2722,7 +2732,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                     )
                 } != 0
                 {
-                    unsafe { crate::api::errors::release_preserving_error(&[result]) };
+                    unsafe { crate::api::refcount::Py_DECREF(result) };
                     return Py_complex {
                         real: -1.0,
                         imag: 0.0,
@@ -2736,14 +2746,14 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                     crate::bridge::ensure_result_error(
                         c"complex result has no physical complex payload",
                     );
-                    crate::api::errors::release_preserving_error(&[result]);
+                    crate::api::refcount::Py_DECREF(result);
                 }
                 return Py_complex {
                     real: -1.0,
                     imag: 0.0,
                 };
             };
-            unsafe { crate::api::errors::release_preserving_error(&[result]) };
+            unsafe { crate::api::refcount::Py_DECREF(result) };
             return value;
         }
         Ok(None) => {}

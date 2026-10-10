@@ -1026,7 +1026,7 @@ admission_job = "rust-build-unit-smoke"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-# Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
+# Full parallel runtime plus every gate-declared fresh-process witness is mandatory.
 # The full resource-serialized DAG, including the focused extension witness,
 # has a separate operational allowance inside the job backstop.
 timeout_minutes = 254
@@ -2842,12 +2842,12 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 # Windows x86_64 MSVC cold release-output compilation measured 2097 seconds
 # on source eb625e8d0; 6300 seconds preserves threefold compile headroom.
-# Metadata, discovery and all eight mandatory child guards fit this separate
+# Metadata, discovery and the gate-declared child guards fit this separate
 # 9000-second command envelope. Linux cold timing remains unmeasured.
 timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
-# Full default-feature shipping runtime: parallel remainder plus seven separate
+# Full default-feature shipping runtime: parallel remainder plus all gate-declared
 # fresh-process lifecycle/GIL witnesses. Performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
@@ -4047,7 +4047,7 @@ timeout_seconds = 6300
 [[named_lane]]
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime encoding, stream protocol, text I/O and shared-call consumers against CPython 3.12 on native targets."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json-output", "proof-receipts/evidence/runtime-public-consumers/summary.json", "--log-aggregate", "proof-receipts/evidence/runtime-public-consumers/output.log", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"

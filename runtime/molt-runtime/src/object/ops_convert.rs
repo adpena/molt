@@ -486,7 +486,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
             return val_bits;
         }
         if let Some(value) = crate::builtins::numbers::float_from_number_protocol(_py, val_bits) {
-            return float_result_bits(_py, value);
+            return value.into_bits(_py);
         }
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -559,6 +559,23 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
         let _value_owner = obj_from_bits(float_bits)
             .as_ptr()
             .map(crate::PtrDropGuard::new);
+        let mut projected_owner = None;
+        let float_bits = if as_float_extended(obj_from_bits(float_bits)).is_some() {
+            float_bits
+        } else {
+            let Some(value) = crate::builtins::numbers::float_storage_value(_py, float_bits) else {
+                return MoltObject::none().bits();
+            };
+            let projected = float_result_bits(_py, value);
+            projected_owner = obj_from_bits(projected)
+                .as_ptr()
+                .map(crate::PtrDropGuard::preserving);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            projected
+        };
+        let _projected_owner = projected_owner;
         let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return MoltObject::none().bits();
@@ -964,7 +981,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
             else {
                 return MoltObject::none().bits();
             };
-            (value, 0.0)
+            (value.into_value(), 0.0)
         };
         drop(real_owner);
         let mut im = if !has_imag {
@@ -978,7 +995,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
             else {
                 return MoltObject::none().bits();
             };
-            value
+            value.into_value()
         };
         // Adding an absent zero changes its sign. Only non-orthogonal complex
         // components take the correction path used by complex_new_impl.
@@ -1069,6 +1086,22 @@ pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> 
         let _value_owner = obj_from_bits(int_bits)
             .as_ptr()
             .map(crate::PtrDropGuard::new);
+        let mut projected_owner = None;
+        let int_bits = if crate::builtins::numbers::index_integral_payload_bits(int_bits).is_some()
+        {
+            int_bits
+        } else {
+            let Some(projected) =
+                crate::builtins::numbers::managed_integer_from_storage(_py, int_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            projected_owner = obj_from_bits(projected)
+                .as_ptr()
+                .map(crate::PtrDropGuard::preserving);
+            projected
+        };
+        let _projected_owner = projected_owner;
         let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return MoltObject::none().bits();

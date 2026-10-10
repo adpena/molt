@@ -52,6 +52,35 @@ impl CallbackState {
         TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
         UNICODE_OWNER.store(ptr::null_mut(), Ordering::SeqCst);
         UNICODE_PHASE.store(0, Ordering::SeqCst);
+        for counter in [
+            &PERCENT_INT_CALLS,
+            &PERCENT_INDEX_CALLS,
+            &PERCENT_FLOAT_CALLS,
+            &PERCENT_LEN_CALLS,
+            &PERCENT_MOD_CALLS,
+            &PERCENT_DROPS,
+        ] {
+            counter.store(0, Ordering::SeqCst);
+        }
+        PERCENT_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_DROP_SAW_OVERFLOW.store(false, Ordering::SeqCst);
+        PERCENT_MANAGED_NATIVE_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_KIND.store(0, Ordering::SeqCst);
+        PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_OWNER.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_NAME.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_REMOVE.store(false, Ordering::SeqCst);
+        PERCENT_BIND_FAIL.store(false, Ordering::SeqCst);
+        PERCENT_BOUND_BOOL_SLOT.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_RESULT_KIND.store(0, Ordering::SeqCst);
+        PERCENT_BOUND_RESULT_DROPS.store(0, Ordering::SeqCst);
+        PERCENT_BOUND_RESULT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_INDEX_DROPS.store(0, Ordering::SeqCst);
+        PERCENT_BOUND_INDEX_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_REFLECTED_LEFT.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_REFLECTED_MISSING.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1482,4 +1511,2014 @@ unsafe fn python_text_transport_cases() {
         drop(payload_owner);
         TEXT_PAYLOAD_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
     }
+}
+
+// CPython Objects/unicodeobject.c: PyUnicode_Format, mainformatlong and
+// formatchar. These literals also replace the former four fake-hook formatter
+// tests: every successful output below crosses the production runtime hook.
+unsafe fn percent_tuple(
+    values: &[*mut PyObject],
+    native: Option<*mut PyTypeObject>,
+) -> OwnedPyObject {
+    unsafe {
+        let result = OwnedPyObject::from_owned(match native {
+            Some(class) => {
+                molt_cpython_abi::api::memory::_PyObject_GC_NewVar(class, values.len() as isize)
+                    .cast()
+            }
+            None => sequences::PyTuple_New(values.len() as isize),
+        });
+        assert!(!result.as_ptr().is_null());
+        if native.is_some() {
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(result.as_ptr())
+                    .is_none(),
+                "fixture must exercise physical tuple storage"
+            );
+        }
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(
+                sequences::PyTuple_SetItem(
+                    result.as_ptr(),
+                    index as isize,
+                    object::Py_NewRef(*value)
+                ),
+                0
+            );
+        }
+        result
+    }
+}
+
+unsafe fn percent_raw_long(class: *mut PyTypeObject, digits: &[u32]) -> OwnedPyObject {
+    unsafe {
+        let result = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+            class,
+            digits.len().max(1) as isize,
+        ));
+        if result.as_ptr().is_null() {
+            return result;
+        }
+        let integer = result.as_ptr().cast::<PyLongObject>();
+        (*integer).long_value.lv_tag = if digits.is_empty() {
+            1
+        } else {
+            digits.len() << 3
+        };
+        let tail = (&raw mut (*integer).long_value.ob_digit).cast::<u32>();
+        for (index, digit) in digits.iter().enumerate() {
+            tail.add(index).write(*digit);
+        }
+        result
+    }
+}
+
+unsafe fn percent_error(
+    template: &[u8],
+    arg: *mut PyObject,
+    class: *mut PyTypeObject,
+    message: &[u8],
+) {
+    unsafe {
+        let result = OwnedPyObject::from_owned(percent(template, arg));
+        let matched = errors::PyErr_ExceptionMatches(class.cast());
+        let failure = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!failure.as_ptr().is_null(), "formatter error indicator");
+        assert!(
+            result.as_ptr().is_null(),
+            "invalid format unexpectedly succeeded"
+        );
+        assert_eq!(matched, 1);
+        assert_eq!(take_raw(object::PyObject_Str(failure.as_ptr())), message);
+    }
+}
+
+#[test]
+fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let a = OwnedPyObject::from_owned(raw_fixture(b"ab"));
+        let x = OwnedPyObject::from_owned(raw_fixture(b"xyz"));
+        let seven = OwnedPyObject::from_owned(numbers::PyLong_FromLong(7));
+        let ff = OwnedPyObject::from_owned(numbers::PyLong_FromLong(255));
+        let pi = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(3.14159));
+        let hundred = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(100.0));
+        let half = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(0.5));
+        for native in [None, Some(&raw mut PyTuple_Type)] {
+            let args = percent_tuple(
+                &[a.as_ptr(), seven.as_ptr(), x.as_ptr(), ff.as_ptr()],
+                native,
+            );
+            assert_eq!(
+                take_raw(percent(b"[%5s][%-4d][%.2s][%#x]", args.as_ptr())),
+                b"[   ab][7   ][xy][0xff]"
+            );
+            let args = percent_tuple(&[pi.as_ptr(), hundred.as_ptr(), half.as_ptr()], native);
+            assert_eq!(
+                take_raw(percent(b"%.2f|%e|%g", args.as_ptr())),
+                b"3.14|1.000000e+02|0.5"
+            );
+            let args = percent_tuple(&[a.as_ptr()], native);
+            percent_error(
+                b"%s %s",
+                args.as_ptr(),
+                &raw mut PyExc_TypeError,
+                b"not enough arguments for format string",
+            );
+            let args = percent_tuple(&[a.as_ptr(), x.as_ptr()], native);
+            percent_error(
+                b"%s",
+                args.as_ptr(),
+                &raw mut PyExc_TypeError,
+                b"not all arguments converted during string formatting",
+            );
+            let empty = percent_tuple(&[], native);
+            assert_eq!(
+                take_raw(percent(b"literal %%", empty.as_ptr())),
+                b"literal %"
+            );
+            percent_error(
+                b"%(name)s",
+                empty.as_ptr(),
+                &raw mut PyExc_TypeError,
+                b"format requires a mapping",
+            );
+        }
+        percent_error(
+            b"%d",
+            a.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"%d format: a real number is required, not str",
+        );
+        // A freshly allocated PyLong is a boxed numeric identity, not necessarily
+        // a NaN-box immediate. Both it and genuine unregistered C storage work.
+        let boxed = OwnedPyObject::from_owned(numbers::PyLong_FromLong(0xdc00));
+        let physical = percent_raw_long(&raw mut PyLong_Type, &[0xdc00]);
+        assert!(!physical.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(physical.as_ptr())
+                .is_none()
+        );
+        for number in [boxed.as_ptr(), physical.as_ptr()] {
+            for (format, expected) in [
+                (b"%c".as_slice(), b"\xed\xb0\x80".as_slice()),
+                (b"%d", b"56320"),
+                (b"%i", b"56320"),
+                (b"%u", b"56320"),
+                (b"%o", b"156000"),
+                (b"%x", b"dc00"),
+                (b"%X", b"DC00"),
+                (b"%#010x", b"0x0000dc00"),
+            ] {
+                assert_eq!(take_raw(percent(format, number)), expected);
+            }
+        }
+        // 2**160 + 123 proves the former i128 boundary is gone. The physical
+        // fixture contains six public base-2**30 digits, not a formatter mirror.
+        let huge = OwnedPyObject::from_owned(numbers::PyLong_FromString(
+            c"1461501637330902918203684832716283019655932543099".as_ptr(),
+            ptr::null_mut(),
+            10,
+        ));
+        let native_huge = percent_raw_long(&raw mut PyLong_Type, &[123, 0, 0, 0, 0, 1024]);
+        assert!(!native_huge.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(native_huge.as_ptr())
+                .is_none()
+        );
+        for number in [huge.as_ptr(), native_huge.as_ptr()] {
+            assert_eq!(
+                take_raw(percent(b"%d", number)),
+                b"1461501637330902918203684832716283019655932543099"
+            );
+            assert_eq!(
+                take_raw(percent(b"%#x", number)),
+                b"0x1000000000000000000000000000000000000007b"
+            );
+            percent_error(
+                b"%c",
+                number,
+                &raw mut PyExc_OverflowError,
+                b"%c arg not in range(0x110000)",
+            );
+        }
+        let width = percent_raw_long(&raw mut PyLong_Type, &[6]);
+        let precision = percent_raw_long(&raw mut PyLong_Type, &[4]);
+        let args = percent_tuple(
+            &[width.as_ptr(), precision.as_ptr(), seven.as_ptr()],
+            Some(&raw mut PyTuple_Type),
+        );
+        assert_eq!(take_raw(percent(b"%*.*d", args.as_ptr())), b"  0007");
+        let big_precision = OwnedPyObject::from_owned(numbers::PyLong_FromLongLong(2147483648));
+        let args = percent_tuple(&[big_precision.as_ptr(), seven.as_ptr()], None);
+        percent_error(
+            b"%.*d",
+            args.as_ptr(),
+            &raw mut PyExc_OverflowError,
+            b"Python int too large to convert to C int",
+        );
+        let args = percent_tuple(
+            &[huge.as_ptr(), seven.as_ptr()],
+            Some(&raw mut PyTuple_Type),
+        );
+        percent_error(
+            b"%*d",
+            args.as_ptr(),
+            &raw mut PyExc_OverflowError,
+            b"Python int too large to convert to C ssize_t",
+        );
+        percent_error(
+            b"%.2147483648d",
+            seven.as_ptr(),
+            &raw mut PyExc_ValueError,
+            b"precision too big",
+        );
+        let negative = OwnedPyObject::from_owned(numbers::PyLong_FromLong(-1));
+        percent_error(
+            b"%c",
+            negative.as_ptr(),
+            &raw mut PyExc_OverflowError,
+            b"%c arg not in range(0x110000)",
+        );
+        for (value, kind, expected) in [
+            (
+                f64::NAN,
+                &raw mut PyExc_ValueError,
+                b"cannot convert float NaN to integer".as_slice(),
+            ),
+            (
+                f64::INFINITY,
+                &raw mut PyExc_OverflowError,
+                b"cannot convert float infinity to integer".as_slice(),
+            ),
+        ] {
+            let value = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(value));
+            percent_error(b"%d", value.as_ptr(), kind, expected);
+        }
+        assert!(!crate::exception_pending(py));
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+static PERCENT_INT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_INDEX_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_FLOAT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_LEN_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_MOD_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_RESULT_TYPE: AtomicPtr<PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_DROPS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_DROP_SAW_OVERFLOW: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" fn percent_int(_value: *mut PyObject) -> *mut PyObject {
+    PERCENT_INT_CALLS.fetch_add(1, Ordering::SeqCst);
+    unsafe { numbers::PyLong_FromLong(23) }
+}
+unsafe extern "C" fn percent_index(_value: *mut PyObject) -> *mut PyObject {
+    PERCENT_INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TEXT_CALLBACK_FAILS.load(Ordering::SeqCst) {
+        unsafe {
+            errors::PyErr_SetObject(
+                (&raw mut PyExc_LookupError).cast(),
+                FAILURE.load(Ordering::SeqCst),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let class = PERCENT_RESULT_TYPE.load(Ordering::SeqCst);
+    unsafe {
+        if class.is_null() {
+            numbers::PyLong_FromLong(42)
+        } else {
+            percent_raw_long(class, &[42]).into_ptr()
+        }
+    }
+}
+unsafe extern "C" fn percent_float(_value: *mut PyObject) -> *mut PyObject {
+    PERCENT_FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
+    unsafe { numbers::PyFloat_FromDouble(9.5) }
+}
+unsafe extern "C" fn percent_tuple_len(_value: *mut PyObject) -> isize {
+    PERCENT_LEN_CALLS.fetch_add(1, Ordering::SeqCst);
+    99
+}
+unsafe extern "C" fn percent_long_drop(value: *mut PyObject) {
+    PERCENT_DROPS.fetch_add(1, Ordering::SeqCst);
+    let pending = unsafe { errors::PyErr_ExceptionMatches((&raw mut PyExc_OverflowError).cast()) };
+    PERCENT_DROP_SAW_OVERFLOW.store(pending != 0, Ordering::SeqCst);
+    unsafe {
+        molt_cpython_abi::api::memory::PyObject_Free(value.cast());
+    }
+    if TEXT_DROP_RAISES.load(Ordering::SeqCst) {
+        unsafe {
+            errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast(),
+                c"numeric result cleanup".as_ptr(),
+            );
+        }
+    }
+}
+extern "C" fn percent_managed_mod(_self: u64, _rhs: u64) -> u64 {
+    PERCENT_MOD_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::with_gil_entry_nopanic!(py, {
+        crate::MoltObject::from_ptr(crate::alloc_string(py, b"override")).bits()
+    })
+}
+
+#[test]
+fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|_py| unsafe {
+        let mut slots: PyNumberMethods = std::mem::zeroed();
+        slots.nb_int = percent_int as *const () as *mut _;
+        slots.nb_index = percent_index as *const () as *mut _;
+        slots.nb_float = percent_float as *const () as *mut _;
+        let mut integer_type = NativeType::subtype(&raw mut PyLong_Type, c"percent.NativeInteger");
+        integer_type.tp_as_number = (&raw mut slots).cast();
+        assert_eq!(integer_type.ready(), 0);
+        let integer = percent_raw_long(&raw mut *integer_type, &[17]);
+        assert!(!integer.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(integer.as_ptr())
+                .is_none()
+        );
+        for (format, expected) in [
+            (b"%d".as_slice(), b"17".as_slice()),
+            (b"%x", b"11"),
+            (b"%c", b"\x11"),
+        ] {
+            assert_eq!(take_raw(percent(format, integer.as_ptr())), expected);
+        }
+        let one = OwnedPyObject::from_owned(numbers::PyLong_FromLong(1));
+        let args = percent_tuple(&[integer.as_ptr(), one.as_ptr()], None);
+        assert_eq!(
+            take_raw(percent(b"%*d", args.as_ptr())),
+            b"                1"
+        );
+        assert_eq!(PERCENT_INT_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), 0);
+
+        let mut float_slots: PyNumberMethods = std::mem::zeroed();
+        float_slots.nb_int = percent_int as *const () as *mut _;
+        float_slots.nb_float = percent_float as *const () as *mut _;
+        let mut float_type = NativeType::subtype(&raw mut PyFloat_Type, c"percent.NativeFloat");
+        float_type.tp_as_number = (&raw mut float_slots).cast();
+        assert_eq!(float_type.ready(), 0);
+        let float =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *float_type, 0));
+        assert!(!float.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(float.as_ptr())
+                .is_none()
+        );
+        (*float.as_ptr().cast::<PyFloatObject>()).ob_fval = 1.25;
+        assert_eq!(take_raw(percent(b"%.2f", float.as_ptr())), b"1.25");
+        assert_eq!(PERCENT_FLOAT_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(take_raw(percent(b"%d", float.as_ptr())), b"23");
+        assert_eq!(PERCENT_INT_CALLS.load(Ordering::SeqCst), 1);
+
+        let mut protocol_slots: PyNumberMethods = std::mem::zeroed();
+        protocol_slots.nb_int = percent_int as *const () as *mut _;
+        protocol_slots.nb_index = percent_index as *const () as *mut _;
+        protocol_slots.nb_float = percent_float as *const () as *mut _;
+        let mut protocol_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.Protocol");
+        protocol_type.tp_as_number = (&raw mut protocol_slots).cast();
+        assert_eq!(protocol_type.ready(), 0);
+        let value =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *protocol_type, 0));
+        assert_eq!(take_raw(percent(b"%d", value.as_ptr())), b"23");
+        assert_eq!(take_raw(percent(b"%x", value.as_ptr())), b"2a");
+        assert_eq!(take_raw(percent(b"%c", value.as_ptr())), b"*");
+        assert_eq!(take_raw(percent(b"%.1f", value.as_ptr())), b"9.5");
+        let before = PERCENT_INDEX_CALLS.load(Ordering::SeqCst);
+        let args = percent_tuple(&[value.as_ptr(), one.as_ptr()], None);
+        percent_error(
+            b"%*d",
+            args.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"* wants int",
+        );
+        assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), before);
+        let failure = exception(&raw mut PyExc_LookupError, &[]);
+        FAILURE.store(failure.as_ptr(), Ordering::SeqCst);
+        TEXT_CALLBACK_FAILS.store(true, Ordering::SeqCst);
+        for template in [b"%x".as_slice(), b"%c"] {
+            let result = OwnedPyObject::from_owned(percent(template, value.as_ptr()));
+            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(result.as_ptr().is_null());
+            assert_eq!(error.as_ptr(), failure.as_ptr());
+        }
+        TEXT_CALLBACK_FAILS.store(false, Ordering::SeqCst);
+        FAILURE.store(ptr::null_mut(), Ordering::SeqCst);
+
+        let mut returned_type =
+            NativeType::subtype(&raw mut PyLong_Type, c"percent.ReturnedInteger");
+        returned_type.tp_dealloc = Some(percent_long_drop);
+        assert_eq!(returned_type.ready(), 0);
+        PERCENT_RESULT_TYPE.store(&raw mut *returned_type, Ordering::SeqCst);
+        assert_eq!(take_raw(percent(b"%6x", value.as_ptr())), b"    2a");
+        assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+        assert!(!PERCENT_DROP_SAW_OVERFLOW.load(Ordering::SeqCst));
+        TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+        percent_error(
+            b"%.2147483645x",
+            value.as_ptr(),
+            &raw mut PyExc_OverflowError,
+            b"precision too large",
+        );
+        assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 2);
+        assert!(PERCENT_DROP_SAW_OVERFLOW.load(Ordering::SeqCst));
+        TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+        PERCENT_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+
+        let mut tuple_slots: PySequenceMethods = std::mem::zeroed();
+        tuple_slots.sq_length = percent_tuple_len as *const () as *mut _;
+        let mut tuple_type = NativeType::subtype(&raw mut PyTuple_Type, c"percent.NativeTuple");
+        tuple_type.tp_as_sequence = (&raw mut tuple_slots).cast();
+        assert_eq!(tuple_type.ready(), 0);
+        let args = percent_tuple(
+            &[one.as_ptr(), integer.as_ptr()],
+            Some(&raw mut *tuple_type),
+        );
+        assert_eq!(take_raw(percent(b"%d %d", args.as_ptr())), b"1 17");
+        percent_error(
+            b"%(key)s",
+            args.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"format requires a mapping",
+        );
+        percent_error(
+            b"literal",
+            args.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"not all arguments converted during string formatting",
+        );
+        assert_eq!(PERCENT_LEN_CALLS.load(Ordering::SeqCst), 0);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+#[test]
+fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let name = crate::attr_name_bits_from_bytes(py, b"PercentFormatSubclass").unwrap();
+        let _name_owner =
+            crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
+        let class = crate::molt_class_new(name);
+        let _class_owner =
+            crate::PtrDropGuard::preserving(crate::obj_from_bits(class).as_ptr().unwrap());
+        let base_result = crate::molt_class_set_base(class, crate::builtin_classes(py).str);
+        crate::dec_ref_bits(py, base_result);
+        let method_name = crate::attr_name_bits_from_bytes(py, b"__mod__").unwrap();
+        let _method_name_owner =
+            crate::PtrDropGuard::preserving(crate::obj_from_bits(method_name).as_ptr().unwrap());
+        let callback = crate::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "percent_managed_mod",
+                percent_managed_mod as *const (),
+            ),
+            2,
+        );
+        assert!(!callback.is_null());
+        let _callback_owner = crate::PtrDropGuard::preserving(callback);
+        let callback_bits = crate::MoltObject::from_ptr(callback).bits();
+        let set_result = crate::molt_set_attr_name(class, method_name, callback_bits);
+        crate::dec_ref_bits(py, set_result);
+        crate::object::class_finish_definition(py, crate::obj_from_bits(class).as_ptr().unwrap())
+            .unwrap();
+        let template = OwnedPyObject::from_owned(raw_fixture(b"value=%d"));
+        let input = GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(template.as_ptr())
+            .unwrap()
+            .bits();
+        let subclass = crate::call::bind::call_bind_borrowed(py, class, None, &[input], &[], &[]);
+        let subclass_owner =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(subclass));
+        assert!(!subclass_owner.as_ptr().is_null());
+        assert_eq!(crate::type_of_bits(py, subclass), class);
+        let value = OwnedPyObject::from_owned(numbers::PyLong_FromLong(5000));
+        assert_eq!(
+            take_raw(strings::PyUnicode_Format(
+                subclass_owner.as_ptr(),
+                value.as_ptr()
+            )),
+            b"value=5000"
+        );
+        assert_eq!(PERCENT_MOD_CALLS.load(Ordering::SeqCst), 0);
+        let rendered = crate::molt_mod(subclass, crate::MoltObject::from_int(5000).bits());
+        assert_eq!(
+            take_raw(GLOBAL_BRIDGE.owned_handle_to_pyobj(rendered)),
+            b"override"
+        );
+        assert_eq!(PERCENT_MOD_CALLS.load(Ordering::SeqCst), 1);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+#[test]
+fn diagnostic_type_names_use_current_heap_qualname_and_module() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let mut slots = [PyType_Slot {
+            slot: 0,
+            pfunc: ptr::null_mut(),
+        }];
+        let mut spec = PyType_Spec {
+            name: c"stale.Widget".as_ptr(),
+            basicsize: std::mem::size_of::<PyObject>() as i32,
+            itemsize: 0,
+            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE) as u32,
+            slots: slots.as_mut_ptr(),
+        };
+        let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+        assert!(!class.as_ptr().is_null());
+        let qualname = OwnedPyObject::from_owned(raw_fixture(b"Outer.Inner"));
+        assert_eq!(
+            object::PyObject_SetAttrString(
+                class.as_ptr(),
+                c"__qualname__".as_ptr(),
+                qualname.as_ptr()
+            ),
+            0
+        );
+        let instance =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class.as_ptr().cast(), 0));
+        for (module, expected, alternate) in [
+            (
+                b"pkg".as_slice(),
+                b"pkg.Outer.Inner".as_slice(),
+                b"pkg:Outer.Inner".as_slice(),
+            ),
+            (b"__main__", b"Outer.Inner", b"Outer.Inner"),
+            (b"builtins", b"Outer.Inner", b"Outer.Inner"),
+            (b"", b".Outer.Inner", b":Outer.Inner"),
+            (
+                b"pkg\xed\xa0\x80",
+                b"pkg\xed\xa0\x80.Outer.Inner",
+                b"pkg\xed\xa0\x80:Outer.Inner",
+            ),
+        ] {
+            let module = OwnedPyObject::from_owned(raw_fixture(module));
+            assert_eq!(
+                object::PyObject_SetAttrString(
+                    class.as_ptr(),
+                    c"__module__".as_ptr(),
+                    module.as_ptr()
+                ),
+                0
+            );
+            assert_eq!(
+                take_raw(errors::molt_capi_type_fully_qualified_name(
+                    class.as_ptr().cast(),
+                    b'.'
+                )),
+                expected
+            );
+            assert_eq!(
+                take_raw(errors::molt_capi_type_fully_qualified_name(
+                    class.as_ptr().cast(),
+                    b':'
+                )),
+                alternate
+            );
+            let bits = GLOBAL_BRIDGE
+                .molt_value_for_pyobj(instance.as_ptr())
+                .unwrap();
+            let _owner = crate::obj_from_bits(bits)
+                .as_ptr()
+                .map(crate::PtrDropGuard::preserving);
+            assert_eq!(
+                crate::object::ops_format::format_diagnostic_type_name_bytes(
+                    py,
+                    crate::obj_from_bits(bits)
+                ),
+                expected
+            );
+            if crate::object::ops_sys::runtime_target_minor(py) >= 14 {
+                let mut message = b"%c requires an int or a unicode character, not ".to_vec();
+                message.extend_from_slice(expected);
+                percent_error(b"%c", instance.as_ptr(), &raw mut PyExc_TypeError, &message);
+            }
+        }
+        let module = OwnedPyObject::from_owned(raw_fixture(b"pkg"));
+        assert_eq!(
+            object::PyObject_SetAttrString(class.as_ptr(), c"__module__".as_ptr(), module.as_ptr()),
+            0
+        );
+        assert_eq!(
+            take_raw(errors::PyUnicode_FromFormat(
+                c"%T|%#T|%N|%#N".as_ptr(),
+                instance.as_ptr(),
+                instance.as_ptr(),
+                class.as_ptr(),
+                class.as_ptr()
+            )),
+            b"pkg.Outer.Inner|pkg:Outer.Inner|pkg.Outer.Inner|pkg:Outer.Inner"
+        );
+        percent_error(
+            b"%d",
+            instance.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"%d format: a real number is required, not stale.Widget",
+        );
+        let message = if crate::object::ops_sys::runtime_target_minor(py) < 14 {
+            b"%c requires int or char".as_slice()
+        } else {
+            b"%c requires an int or a unicode character, not pkg.Outer.Inner".as_slice()
+        };
+        percent_error(b"%c", instance.as_ptr(), &raw mut PyExc_TypeError, message);
+        assert_eq!(
+            object::PyObject_SetAttrString(
+                class.as_ptr(),
+                c"__module__".as_ptr(),
+                &raw mut Py_None
+            ),
+            0
+        );
+        assert_eq!(
+            take_raw(errors::molt_capi_type_fully_qualified_name(
+                class.as_ptr().cast(),
+                b'.'
+            )),
+            b"Outer.Inner"
+        );
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+extern "C" fn percent_managed_int(_self: u64) -> u64 {
+    PERCENT_INT_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::MoltObject::from_int(23).bits()
+}
+extern "C" fn percent_managed_index(_self: u64) -> u64 {
+    PERCENT_INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::MoltObject::from_int(42).bits()
+}
+extern "C" fn percent_managed_float(_self: u64) -> u64 {
+    PERCENT_FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::MoltObject::from_float(9.5).bits()
+}
+extern "C" fn percent_managed_trunc(_self: u64) -> u64 {
+    PERCENT_INT_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::MoltObject::from_int(99).bits()
+}
+
+fn percent_managed_protocol<'a, 'py>(
+    py: &'a crate::PyToken<'py>,
+    base: u64,
+    methods: &[(&[u8], extern "C" fn(u64) -> u64)],
+    arguments: &[u64],
+) -> (
+    crate::builtins::exceptions::ExceptionValue<'a, 'py>,
+    crate::builtins::exceptions::ExceptionValue<'a, 'py>,
+) {
+    use crate::builtins::exceptions::ExceptionValue;
+    let name = ExceptionValue::adopt(
+        py,
+        crate::attr_name_bits_from_bytes(py, b"ManagedPercentProtocol").unwrap(),
+    );
+    let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
+    let result = crate::molt_class_set_base(class.bits(), base);
+    crate::dec_ref_bits(py, result);
+    for (name, callback) in methods {
+        let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+        let function = crate::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "percent_managed_protocol",
+                *callback as *const (),
+            ),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(function).bits());
+        let result = crate::molt_set_attr_name(class.bits(), name.bits(), function.bits());
+        crate::dec_ref_bits(py, result);
+    }
+    unsafe {
+        crate::object::class_finish_definition(
+            py,
+            crate::obj_from_bits(class.bits()).as_ptr().unwrap(),
+        )
+    }
+    .unwrap();
+    let instance = ExceptionValue::adopt(py, unsafe {
+        crate::call::bind::call_bind_borrowed(py, class.bits(), None, arguments, &[], &[])
+    });
+    assert!(!crate::exception_pending(py));
+    (class, instance)
+}
+
+#[test]
+fn unicode_percent_format_managed_numeric_protocols_share_canonical_conversion() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let (_class, instance) = percent_managed_protocol(
+            py,
+            crate::builtin_classes(py).object,
+            &[
+                (b"__int__", percent_managed_int),
+                (b"__index__", percent_managed_index),
+            ],
+            &[],
+        );
+        let view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance.bits()));
+        assert!(!view.as_ptr().is_null());
+        assert_eq!(take_raw(percent(b"%d", view.as_ptr())), b"23");
+        assert_eq!(take_raw(percent(b"%x", view.as_ptr())), b"2a");
+        assert_eq!(take_raw(percent(b"%c", view.as_ptr())), b"*");
+        assert_eq!(PERCENT_INT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), 2);
+        let args = percent_tuple(&[view.as_ptr(), view.as_ptr()], None);
+        percent_error(
+            b"%*d",
+            args.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"* wants int",
+        );
+        assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), 2);
+        let (_trunc_class, trunc) = percent_managed_protocol(
+            py,
+            crate::builtin_classes(py).object,
+            &[(b"__trunc__", percent_managed_trunc)],
+            &[],
+        );
+        let trunc_view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(trunc.bits()));
+        assert!(!trunc_view.as_ptr().is_null());
+        percent_error(
+            b"%d",
+            trunc_view.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"%d format: a real number is required, not ManagedPercentProtocol",
+        );
+        assert_eq!(
+            PERCENT_INT_CALLS.load(Ordering::SeqCst),
+            1,
+            "PyNumber_Check must reject __trunc__-only values before conversion"
+        );
+        use crate::builtins::exceptions::ExceptionValue;
+        let text = ExceptionValue::adopt(
+            py,
+            crate::MoltObject::from_ptr(crate::alloc_string(py, b"17")).bits(),
+        );
+        let bytes = ExceptionValue::adopt(
+            py,
+            crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"17")).bits(),
+        );
+        for (base, input) in [
+            (crate::builtin_classes(py).str, text.bits()),
+            (crate::builtin_classes(py).bytes, bytes.bits()),
+            (crate::builtin_classes(py).bytearray, bytes.bits()),
+        ] {
+            let (_class, value) = percent_managed_protocol(
+                py,
+                base,
+                &[(b"__float__", percent_managed_float)],
+                &[input],
+            );
+            let view =
+                OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value.bits()));
+            assert!(!view.as_ptr().is_null());
+            assert_eq!(take_raw(percent(b"%d", view.as_ptr())), b"17");
+        }
+        assert_eq!(
+            PERCENT_FLOAT_CALLS.load(Ordering::SeqCst),
+            0,
+            "numeric admission does not invoke __float__"
+        );
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+static PERCENT_MANAGED_NATIVE_RESULT: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_MANAGED_FACTORY_TYPE: AtomicPtr<PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_MANAGED_FACTORY_KIND: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_MANAGED_DROP_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_OWNER: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_NAME: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_REMOVE: AtomicBool = AtomicBool::new(false);
+static PERCENT_BIND_FAIL: AtomicBool = AtomicBool::new(false);
+static PERCENT_BOUND_BOOL_SLOT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_RESULT_TYPE: AtomicPtr<PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_RESULT_KIND: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_BOUND_RESULT_DROPS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_BOUND_RESULT_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_BOUND_INDEX_DROPS: AtomicUsize = AtomicUsize::new(0);
+static PERCENT_BOUND_INDEX_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_REFLECTED_LEFT: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static PERCENT_REFLECTED_MISSING: AtomicBool = AtomicBool::new(false);
+
+/// Return a genuinely native object from a managed Python special method.
+/// No conversion is performed here: the production shared validator owns it.
+extern "C" fn percent_managed_native_result(_self: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let borrowed = PERCENT_MANAGED_NATIVE_RESULT.load(Ordering::SeqCst);
+            let temporary = if borrowed.is_null() {
+                let class = PERCENT_MANAGED_FACTORY_TYPE.load(Ordering::SeqCst);
+                if class.is_null() {
+                    return crate::raise_exception::<_>(
+                        py,
+                        "SystemError",
+                        "native numeric fixture has no result",
+                    );
+                }
+                match PERCENT_MANAGED_FACTORY_KIND.load(Ordering::SeqCst) {
+                    1 => {
+                        let value =
+                            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class, 0));
+                        if !value.as_ptr().is_null() {
+                            (*value.as_ptr().cast::<PyFloatObject>()).ob_fval = 4.25;
+                        }
+                        value
+                    }
+                    2 => {
+                        let mut digits = [0u32; 138];
+                        digits[137] = 1;
+                        percent_raw_long(class, &digits)
+                    }
+                    _ => percent_raw_long(class, &[5000]),
+                }
+            } else {
+                OwnedPyObject::from_owned(ptr::null_mut())
+            };
+            let value = if borrowed.is_null() {
+                temporary.as_ptr()
+            } else {
+                borrowed
+            };
+            match GLOBAL_BRIDGE.molt_value_for_pyobj(value) {
+                Some(bits) => bits,
+                None => {
+                    super::propagate_native_failure(py, "native numeric callback fixture");
+                    crate::MoltObject::none().bits()
+                }
+            }
+        }
+    })
+}
+
+unsafe extern "C" fn percent_managed_numeric_drop(value: *mut PyObject) {
+    PERCENT_DROPS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        let error = errors::PyErr_GetRaisedException();
+        PERCENT_MANAGED_DROP_ERROR.store(error, Ordering::SeqCst);
+        errors::PyErr_SetRaisedException(error);
+        molt_cpython_abi::api::memory::PyObject_Free(value.cast());
+        if TEXT_DROP_RAISES.load(Ordering::SeqCst) {
+            errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast(),
+                c"numeric result cleanup".as_ptr(),
+            );
+        }
+    }
+}
+
+struct PercentWarningPolicy;
+impl Drop for PercentWarningPolicy {
+    fn drop(&mut self) {
+        crate::molt_warnings_resetwarnings();
+    }
+}
+fn percent_warning_policy(py: &crate::PyToken<'_>, action: &[u8]) {
+    use crate::builtins::exceptions::ExceptionValue;
+    crate::molt_warnings_resetwarnings();
+    let action = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, action).unwrap());
+    let result = crate::molt_warnings_simplefilter(
+        action.bits(),
+        crate::builtins::exceptions::exception_type_bits_from_name(py, "DeprecationWarning"),
+        crate::MoltObject::from_int(0).bits(),
+        crate::MoltObject::from_bool(false).bits(),
+    );
+    crate::dec_ref_bits(py, result);
+    assert!(!crate::exception_pending(py));
+}
+
+#[test]
+fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity() {
+    use crate::builtins::{exceptions::ExceptionValue, numbers as numeric};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let _warnings = PercentWarningPolicy;
+        percent_warning_policy(py, b"ignore");
+        assert_eq!(
+            crate::c_api::molt_int_as_i64(crate::MoltObject::from_float(42.0).bits()),
+            42,
+            "direct integral float carriers retain the existing public extractor domain"
+        );
+        let (_producer_class, producer) = percent_managed_protocol(
+            py,
+            crate::builtin_classes(py).object,
+            &[
+                (b"__int__", percent_managed_native_result),
+                (b"__index__", percent_managed_native_result),
+            ],
+            &[],
+        );
+        let producer_view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(producer.bits()));
+        assert!(!producer_view.as_ptr().is_null());
+        let mut slots: PyNumberMethods = std::mem::zeroed();
+        slots.nb_int = percent_int as *const () as *mut _;
+        slots.nb_index = percent_index as *const () as *mut _;
+        let mut subtype = NativeType::subtype(&raw mut PyLong_Type, c"percent.NativeInteger");
+        subtype.tp_as_number = (&raw mut slots).cast();
+        assert_eq!(subtype.ready(), 0);
+        let exact = percent_raw_long(&raw mut PyLong_Type, &[5000]);
+        let subclass = percent_raw_long(&raw mut *subtype, &[5000]);
+        for (native, is_exact) in [(exact.as_ptr(), true), (subclass.as_ptr(), false)] {
+            assert!(!native.is_null());
+            assert!(GLOBAL_BRIDGE.molt_handle_for_pyobj(native).is_none());
+            let native_bits =
+                ExceptionValue::adopt(py, GLOBAL_BRIDGE.molt_value_for_pyobj(native).unwrap());
+            assert_eq!(
+                crate::object_type_id(crate::obj_from_bits(native_bits.bits()).as_ptr().unwrap()),
+                crate::TYPE_ID_FOREIGN
+            );
+            assert!(numeric::index_integral_payload_bits(native_bits.bits()).is_none());
+            assert!(numeric::index_i64_integral_bits(native_bits.bits()).is_none());
+            assert!(numeric::index_bigint_integral_bits(native_bits.bits()).is_none());
+            PERCENT_MANAGED_NATIVE_RESULT.store(native, Ordering::SeqCst);
+            for (format, expected) in [
+                (b"%d".as_slice(), b"5000".as_slice()),
+                (b"%x", b"1388"),
+                (b"%c", b"\xe1\x8e\x88"),
+            ] {
+                assert_eq!(take_raw(percent(format, producer_view.as_ptr())), expected);
+            }
+            let private =
+                ExceptionValue::adopt(py, numeric::index_from_object(py, producer.bits()));
+            let private_view = OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(private.bits()),
+            );
+            assert_eq!(private_view.as_ptr(), native);
+            assert_eq!(
+                numeric::index_bigint_from_obj(py, producer.bits(), "index expected"),
+                Some(num_bigint::BigInt::from(5000))
+            );
+            assert_eq!(
+                numeric::sequence_index_i64(py, producer.bits(), "list"),
+                Some(5000)
+            );
+            for result in [
+                crate::molt_int_from_obj(producer.bits(), crate::MoltObject::none().bits(), 0),
+                crate::molt_operator_index(producer.bits()),
+            ] {
+                let result = ExceptionValue::adopt(py, result);
+                let view = OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(result.bits()),
+                );
+                assert!(!view.as_ptr().is_null());
+                assert_eq!(numbers::PyLong_CheckExact(view.as_ptr()), 1);
+                assert_eq!(numbers::PyLong_AsLongLong(view.as_ptr()), 5000);
+                assert_eq!(view.as_ptr() == native, is_exact);
+                assert_eq!(crate::c_api::molt_int_as_i64(result.bits()), 5000);
+            }
+            let direct =
+                ExceptionValue::adopt(py, numeric::index_from_object(py, native_bits.bits()));
+            assert_eq!(
+                direct.bits(),
+                native_bits.bits(),
+                "private index ignores native subtype overrides"
+            );
+            let direct_int = ExceptionValue::adopt(
+                py,
+                crate::molt_int_from_obj(native_bits.bits(), crate::MoltObject::none().bits(), 0),
+            );
+            assert_eq!(
+                numeric::integer_storage_i64(py, direct_int.bits()),
+                Some(if is_exact { 5000 } else { 23 })
+            );
+            let (_int_class, managed_subclass) = percent_managed_protocol(
+                py,
+                crate::builtin_classes(py).int,
+                &[],
+                &[producer.bits()],
+            );
+            assert_eq!(
+                numeric::index_i64_integral_bits(managed_subclass.bits()),
+                Some(5000),
+                "sealed int subclass fields require managed carriers"
+            );
+        }
+        assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(PERCENT_INT_CALLS.load(Ordering::SeqCst), 1);
+        PERCENT_MANAGED_NATIVE_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+
+        let (_float_producer_class, float_producer) = percent_managed_protocol(
+            py,
+            crate::builtin_classes(py).object,
+            &[(b"__float__", percent_managed_native_result)],
+            &[],
+        );
+        let float_producer_view = OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(float_producer.bits()),
+        );
+        assert!(!float_producer_view.as_ptr().is_null());
+        let mut float_slots: PyNumberMethods = std::mem::zeroed();
+        float_slots.nb_float = percent_float as *const () as *mut _;
+        let mut float_type = NativeType::subtype(&raw mut PyFloat_Type, c"percent.NativeFloat");
+        float_type.tp_as_number = (&raw mut float_slots).cast();
+        assert_eq!(float_type.ready(), 0);
+        for (class, is_exact) in [(&raw mut PyFloat_Type, true), (&raw mut *float_type, false)] {
+            let native = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class, 0));
+            assert!(!native.as_ptr().is_null());
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(native.as_ptr())
+                    .is_none()
+            );
+            (*native.as_ptr().cast::<PyFloatObject>()).ob_fval = 4.25;
+            let native_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap(),
+            );
+            assert_eq!(
+                crate::object_type_id(crate::obj_from_bits(native_bits.bits()).as_ptr().unwrap()),
+                crate::TYPE_ID_FOREIGN
+            );
+            PERCENT_MANAGED_NATIVE_RESULT.store(native.as_ptr(), Ordering::SeqCst);
+            assert_eq!(
+                take_raw(percent(b"%.2f", float_producer_view.as_ptr())),
+                b"4.25"
+            );
+            assert_eq!(
+                numeric::float_as_double(py, float_producer.bits()),
+                Some(4.25)
+            );
+            let converted =
+                ExceptionValue::adopt(py, crate::molt_float_from_obj(float_producer.bits()));
+            let converted_view = OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(converted.bits()),
+            );
+            assert!(!converted_view.as_ptr().is_null());
+            assert_eq!(numbers::PyFloat_CheckExact(converted_view.as_ptr()), 1);
+            assert_eq!(numbers::PyFloat_AsDouble(converted_view.as_ptr()), 4.25);
+            assert_eq!(converted_view.as_ptr() == native.as_ptr(), is_exact);
+            assert_eq!(crate::c_api::molt_float_as_f64(converted.bits()), 4.25);
+            let capi =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::abstract_number::PyNumber_Float(
+                    float_producer_view.as_ptr(),
+                ));
+            assert!(!capi.as_ptr().is_null());
+            assert_eq!(capi.as_ptr() == native.as_ptr(), is_exact);
+            let complex = ExceptionValue::adopt(
+                py,
+                crate::molt_complex_from_obj(
+                    float_producer.bits(),
+                    crate::MoltObject::none().bits(),
+                    crate::MoltObject::from_bool(false).bits(),
+                ),
+            );
+            let parts =
+                numeric::complex_ref(numeric::complex_ptr_from_bits(complex.bits()).unwrap());
+            assert_eq!((parts.re, parts.im), (4.25, 0.0));
+            let (_float_class, managed_subclass) = percent_managed_protocol(
+                py,
+                crate::builtin_classes(py).float,
+                &[],
+                &[float_producer.bits()],
+            );
+            assert_eq!(
+                crate::object::ops::as_float_extended(crate::obj_from_bits(
+                    managed_subclass.bits()
+                )),
+                Some(4.25)
+            );
+            assert_eq!(numeric::float_as_double(py, native_bits.bits()), Some(4.25));
+            let direct = ExceptionValue::adopt(py, crate::molt_float_from_obj(native_bits.bits()));
+            assert_eq!(
+                numeric::float_storage_value(py, direct.bits()),
+                Some(if is_exact { 4.25 } else { 9.5 })
+            );
+            PERCENT_MANAGED_NATIVE_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+        }
+        assert_eq!(
+            PERCENT_FLOAT_CALLS.load(Ordering::SeqCst),
+            1,
+            "only direct float(subtype) invokes its override"
+        );
+        // Invalid native results retain the real native type in diagnostics.
+        PERCENT_MANAGED_NATIVE_RESULT.store(exact.as_ptr(), Ordering::SeqCst);
+        percent_error(
+            b"%f",
+            float_producer_view.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"ManagedPercentProtocol.__float__ returned non-float (type int)",
+        );
+        let wrong_float =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyFloat_Type, 0));
+        assert!(!wrong_float.as_ptr().is_null());
+        (*wrong_float.as_ptr().cast::<PyFloatObject>()).ob_fval = 4.25;
+        PERCENT_MANAGED_NATIVE_RESULT.store(wrong_float.as_ptr(), Ordering::SeqCst);
+        percent_error(
+            b"%x",
+            producer_view.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"%x format: an integer is required, not ManagedPercentProtocol",
+        );
+        percent_error(
+            b"%d",
+            producer_view.as_ptr(),
+            &raw mut PyExc_TypeError,
+            b"%d format: a real number is required, not ManagedPercentProtocol",
+        );
+        PERCENT_MANAGED_NATIVE_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+#[test]
+fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors() {
+    use crate::builtins::exceptions::ExceptionValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let _warnings = PercentWarningPolicy;
+        let mut integer = NativeType::subtype(&raw mut PyLong_Type, c"percent.ReturnedInteger");
+        integer.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(integer.ready(), 0);
+        let mut float = NativeType::subtype(&raw mut PyFloat_Type, c"percent.ReturnedFloat");
+        float.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(float.ready(), 0);
+        for (method, class, kind, label) in [
+            (
+                b"__int__".as_slice(),
+                &raw mut *integer,
+                0,
+                "__int__ returned non-int (type percent.ReturnedInteger).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+            ),
+            (
+                b"__index__",
+                &raw mut *integer,
+                0,
+                "__index__ returned non-int (type percent.ReturnedInteger).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+            ),
+            (
+                b"__float__",
+                &raw mut *float,
+                1,
+                "ManagedPercentProtocol.__float__ returned non-float (type percent.ReturnedFloat).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
+            ),
+        ] {
+            let (_class, producer) = percent_managed_protocol(
+                py,
+                crate::builtin_classes(py).object,
+                &[(method, percent_managed_native_result)],
+                &[],
+            );
+            let view = OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(producer.bits()),
+            );
+            assert!(!view.as_ptr().is_null());
+            PERCENT_MANAGED_FACTORY_TYPE.store(class, Ordering::SeqCst);
+            PERCENT_MANAGED_FACTORY_KIND.store(kind, Ordering::SeqCst);
+            percent_warning_policy(py, b"error");
+            for constructor in [false, true] {
+                PERCENT_DROPS.store(0, Ordering::SeqCst);
+                PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+                if constructor {
+                    let result = ExceptionValue::adopt(
+                        py,
+                        match method {
+                            b"__int__" => crate::molt_int_from_obj(
+                                producer.bits(),
+                                crate::MoltObject::none().bits(),
+                                0,
+                            ),
+                            b"__index__" => crate::molt_operator_index(producer.bits()),
+                            _ => crate::molt_float_from_obj(producer.bits()),
+                        },
+                    );
+                    assert!(crate::obj_from_bits(result.bits()).is_none());
+                } else {
+                    let template = match method {
+                        b"__int__" => b"%d",
+                        b"__index__" => b"%x",
+                        _ => b"%f",
+                    };
+                    let result = OwnedPyObject::from_owned(percent(template, view.as_ptr()));
+                    assert!(result.as_ptr().is_null());
+                }
+                let matched =
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_DeprecationWarning).cast());
+                let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                assert_eq!(matched, 1);
+                assert_eq!(
+                    take_raw(object::PyObject_Str(error.as_ptr())),
+                    label.as_bytes()
+                );
+                assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    error.as_ptr(),
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst)
+                );
+                TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+            }
+        }
+        percent_warning_policy(py, b"ignore");
+        PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *integer, Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_KIND.store(2, Ordering::SeqCst);
+        let (_class, producer) = percent_managed_protocol(
+            py,
+            crate::builtin_classes(py).object,
+            &[(b"__index__", percent_managed_native_result)],
+            &[],
+        );
+        let view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(producer.bits()));
+        assert!(!view.as_ptr().is_null());
+        for conversion in 0..4 {
+            PERCENT_DROPS.store(0, Ordering::SeqCst);
+            PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+            if conversion == 0 {
+                let result = ExceptionValue::adopt(py, crate::molt_float_from_obj(producer.bits()));
+                assert!(crate::obj_from_bits(result.bits()).is_none());
+            } else {
+                let result = OwnedPyObject::from_owned(percent(
+                    match conversion {
+                        1 => b"%g",
+                        2 => b"%.2147483645x",
+                        _ => b"%c",
+                    },
+                    view.as_ptr(),
+                ));
+                assert!(result.as_ptr().is_null());
+            }
+            let matched = errors::PyErr_ExceptionMatches((&raw mut PyExc_OverflowError).cast());
+            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!error.as_ptr().is_null());
+            assert_eq!(matched, 1);
+            let expected = match conversion {
+                0 | 1 => "int too large to convert to float",
+                2 => "precision too large",
+                _ => "%c arg not in range(0x110000)",
+            };
+            assert_eq!(
+                take_raw(object::PyObject_Str(error.as_ptr())),
+                expected.as_bytes()
+            );
+            assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+            if conversion == 3 {
+                assert!(
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst).is_null(),
+                    "%c retires index before creating its range error"
+                );
+            } else {
+                assert_eq!(
+                    error.as_ptr(),
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst)
+                );
+            }
+            TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+        }
+        PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+#[test]
+fn native_numeric_retirement_completes_error_transport_and_keeps_shielding_explicit() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let _warnings = PercentWarningPolicy;
+        percent_warning_policy(py, b"ignore");
+        let mut returned = NativeType::subtype(&raw mut PyLong_Type, c"percent.RetiredInteger");
+        returned.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(returned.ready(), 0);
+        PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *returned, Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_KIND.store(0, Ordering::SeqCst);
+        let failure = exception(&raw mut PyExc_LookupError, &[]);
+        let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
+            .as_ptr()
+            .unwrap();
+        let trace_bits = crate::alloc_instance_for_class(py, trace_class);
+        let traceback = OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(trace_bits));
+        assert!(!traceback.as_ptr().is_null());
+        assert_eq!(
+            errors::PyException_SetTraceback(failure.as_ptr(), traceback.as_ptr()),
+            0
+        );
+        for shielded in [false, true] {
+            let victim = percent_managed_native_result(0);
+            let victim_ptr = crate::obj_from_bits(victim).as_ptr().unwrap();
+            let victim_owner = crate::PtrDropGuard::new(victim_ptr);
+            assert_eq!(crate::object_type_id(victim_ptr), crate::TYPE_ID_FOREIGN);
+            PERCENT_DROPS.store(0, Ordering::SeqCst);
+            PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            errors::PyErr_SetRaisedException(object::Py_NewRef(failure.as_ptr()));
+            super::propagate_native_failure(py, "retirement error fixture");
+            assert!(crate::exception_pending(py));
+            // A valid deallocator observes and restores the incoming error.
+            // Explicit shielding separately suppresses hostile cleanup errors.
+            TEXT_DROP_RAISES.store(shielded, Ordering::SeqCst);
+            if shielded {
+                errors::with_preserved_error(|| drop(victim_owner));
+            } else {
+                drop(victim_owner);
+            }
+            assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+                if shielded {
+                    ptr::null_mut()
+                } else {
+                    failure.as_ptr()
+                }
+            );
+            assert!(
+                crate::exception_pending(py),
+                "native Get/Set roundtrip must complete into runtime custody"
+            );
+            let restored = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(restored.as_ptr(), failure.as_ptr());
+            let restored_trace =
+                OwnedPyObject::from_owned(errors::PyException_GetTraceback(restored.as_ptr()));
+            assert_eq!(restored_trace.as_ptr(), traceback.as_ptr());
+            TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
+        }
+        // A raw C index result is a separate owned temporary from a foreign
+        // wrapper, and must cross the same native retirement completion boundary.
+        let mut slots: PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = percent_index as *const () as *mut _;
+        let mut producer_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.RetirementProducer");
+        producer_type.tp_as_number = (&raw mut slots).cast();
+        assert_eq!(producer_type.ready(), 0);
+        let producer =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *producer_type, 0));
+        assert!(!producer.as_ptr().is_null());
+        PERCENT_RESULT_TYPE.store(&raw mut *returned, Ordering::SeqCst);
+        PERCENT_DROPS.store(0, Ordering::SeqCst);
+        PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        let result = OwnedPyObject::from_owned(percent(b"%.2147483645x", producer.as_ptr()));
+        let matched = errors::PyErr_ExceptionMatches((&raw mut PyExc_OverflowError).cast());
+        let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(result.as_ptr().is_null());
+        assert!(!error.as_ptr().is_null());
+        assert_eq!(matched, 1);
+        assert_eq!(
+            take_raw(object::PyObject_Str(error.as_ptr())),
+            b"precision too large"
+        );
+        assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            error.as_ptr(),
+            PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst)
+        );
+        PERCENT_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+unsafe extern "C" fn percent_bound_call(
+    _self: *mut PyObject,
+    _args: *mut PyObject,
+    _kwargs: *mut PyObject,
+) -> *mut PyObject {
+    CONSTRUCTOR_CALLS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        if PERCENT_BOUND_REMOVE.load(Ordering::SeqCst)
+            && object::PyObject_SetAttr(
+                PERCENT_BOUND_OWNER.load(Ordering::SeqCst),
+                PERCENT_BOUND_NAME.load(Ordering::SeqCst),
+                ptr::null_mut(),
+            ) < 0
+        {
+            return ptr::null_mut();
+        }
+        if TEXT_CALLBACK_FAILS.load(Ordering::SeqCst) {
+            errors::PyErr_SetRaisedException(object::Py_NewRef(FAILURE.load(Ordering::SeqCst)));
+            ptr::null_mut()
+        } else {
+            let class = PERCENT_BOUND_RESULT_TYPE.load(Ordering::SeqCst);
+            if class.is_null() {
+                object::Py_NewRef(&raw mut Py_None)
+            } else if PERCENT_BOUND_RESULT_KIND.load(Ordering::SeqCst) == 1 {
+                let result = percent_raw_long(class, &[1]);
+                if !result.as_ptr().is_null() {
+                    (*result.as_ptr().cast::<PyLongObject>()).long_value.lv_tag |= 2;
+                }
+                result.into_ptr()
+            } else {
+                typeobj::PyType_GenericAlloc(class, 0)
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn percent_bound_result_drop(value: *mut PyObject) {
+    PERCENT_BOUND_RESULT_DROPS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        let error = errors::PyErr_GetRaisedException();
+        PERCENT_BOUND_RESULT_ERROR.store(error, Ordering::SeqCst);
+        errors::PyErr_SetRaisedException(error);
+        molt_cpython_abi::api::memory::PyObject_Free(value.cast());
+    }
+}
+
+unsafe extern "C" fn percent_bound_index_drop(value: *mut PyObject) {
+    PERCENT_BOUND_INDEX_DROPS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        let error = errors::PyErr_GetRaisedException();
+        PERCENT_BOUND_INDEX_ERROR.store(error, Ordering::SeqCst);
+        errors::PyErr_SetRaisedException(error);
+        molt_cpython_abi::api::memory::PyObject_Free(value.cast());
+    }
+}
+
+unsafe extern "C" fn percent_bound_index(_value: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        percent_raw_long(
+            PERCENT_RESULT_TYPE.load(Ordering::SeqCst),
+            &[0, 0, 0, 0, 0, 1024],
+        )
+        .into_ptr()
+    }
+}
+
+unsafe extern "C" fn percent_bound_get(
+    _self: *mut PyObject,
+    _instance: *mut PyObject,
+    _owner: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        if PERCENT_BIND_FAIL.load(Ordering::SeqCst) {
+            if object::PyObject_SetAttr(
+                PERCENT_BOUND_OWNER.load(Ordering::SeqCst),
+                PERCENT_BOUND_NAME.load(Ordering::SeqCst),
+                ptr::null_mut(),
+            ) < 0
+            {
+                return ptr::null_mut();
+            }
+            errors::PyErr_SetRaisedException(object::Py_NewRef(FAILURE.load(Ordering::SeqCst)));
+            return ptr::null_mut();
+        }
+        // The returned reference is the only owner of this bound callable.
+        typeobj::PyType_GenericAlloc(PERCENT_MANAGED_FACTORY_TYPE.load(Ordering::SeqCst), 0)
+    }
+}
+
+unsafe fn percent_bound_class(metaclass: *mut PyTypeObject, bases: *mut PyObject) -> OwnedPyObject {
+    let mut slots = [
+        PyType_Slot {
+            slot: molt_cpython_abi::type_slots::Py_tp_new,
+            pfunc: typeobj::PyType_GenericNew as *const () as *mut std::ffi::c_void,
+        },
+        PyType_Slot {
+            slot: 0,
+            pfunc: ptr::null_mut(),
+        },
+    ];
+    let mut spec = PyType_Spec {
+        name: c"percent.BoundOwner".as_ptr(),
+        basicsize: std::mem::size_of::<PyObject>() as i32,
+        itemsize: 0,
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
+        slots: slots.as_mut_ptr(),
+    };
+    let class = unsafe {
+        OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
+            metaclass,
+            ptr::null_mut(),
+            &raw mut spec,
+            bases,
+        ))
+    };
+    assert!(!class.as_ptr().is_null());
+    class
+}
+
+// Distinct public consumers select distinct generated dispatch authorities.
+unsafe fn percent_bound_operation(
+    class: *mut PyObject,
+    receiver: *mut PyObject,
+    kind: usize,
+) -> bool {
+    use molt_cpython_abi::api::{abstract_number, abstract_sequence};
+    unsafe {
+        let pointer = match kind {
+            0 => return numbers::PyComplex_AsCComplex(receiver).real == -1.0,
+            1 => object::PyObject_Bytes(receiver),
+            2 => object::PyObject_Format(receiver, ptr::null_mut()),
+            3 => return object::PyObject_LengthHint(receiver, 7) == -1,
+            4 => {
+                let mut args = [receiver];
+                object::PyObject_VectorcallMethod(
+                    PERCENT_BOUND_NAME.load(Ordering::SeqCst),
+                    args.as_mut_ptr(),
+                    1,
+                    ptr::null_mut(),
+                )
+            }
+            5 | 19 => abstract_number::PyNumber_Long(receiver),
+            6 => typeobj::PyObject_Repr(receiver),
+            7 => {
+                let slot = typeobj::PyType_GetSlot(
+                    class.cast(),
+                    molt_cpython_abi::type_slots::Py_am_await,
+                );
+                assert!(!slot.is_null());
+                let invoke: unsafe extern "C" fn(*mut PyObject) -> *mut PyObject =
+                    std::mem::transmute(slot);
+                invoke(receiver)
+            }
+            8 => return object::PyObject_IsTrue(receiver) == -1,
+            10 => {
+                let slot = PERCENT_BOUND_BOOL_SLOT.load(Ordering::SeqCst);
+                assert!(!slot.is_null());
+                let invoke: unsafe extern "C" fn(*mut PyObject) -> std::os::raw::c_int =
+                    std::mem::transmute(slot);
+                return invoke(receiver) == -1;
+            }
+            9 => return object::PyObject_Size(receiver) == -1,
+            11 => return typeobj::PyObject_Hash(receiver) == -1,
+            12 => return abstract_sequence::PySequence_Contains(receiver, &raw mut Py_None) == -1,
+            13 => object::PyObject_GetAttrString(receiver, c"missing_after_binding".as_ptr()),
+            14 => object::PyObject_GetIter(receiver),
+            15 => object::PyObject_CallNoArgs(receiver),
+            16 => {
+                let args = OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+                assert!(!args.as_ptr().is_null());
+                return (*class.cast::<PyTypeObject>())
+                    .tp_init
+                    .expect("generated init")(
+                    receiver, args.as_ptr(), ptr::null_mut()
+                ) == -1;
+            }
+            17 => object::PyObject_CallNoArgs(class),
+            18 => (*class.cast::<PyTypeObject>())
+                .tp_descr_get
+                .expect("generated raw descriptor")(
+                receiver, &raw mut Py_None, class
+            ),
+            _ => unreachable!("bound invocation fixture"),
+        };
+        let result = OwnedPyObject::from_owned(pointer);
+        result.as_ptr().is_null()
+    }
+}
+
+#[test]
+fn native_bound_callable_retirement_preserves_error_identity_and_validation_order() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let _warnings = PercentWarningPolicy;
+        percent_warning_policy(py, b"ignore");
+        let minor = crate::object::ops_sys::runtime_target_minor(py);
+        let failure = exception(&raw mut PyExc_LookupError, &[]);
+        FAILURE.store(failure.as_ptr(), Ordering::SeqCst);
+        let mut callable =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.BoundCallable");
+        callable.tp_call = Some(percent_bound_call);
+        callable.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(callable.ready(), 0);
+        let mut descriptor_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.BoundDescriptor");
+        descriptor_type.tp_descr_get = Some(percent_bound_get);
+        descriptor_type.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(descriptor_type.ready(), 0);
+        PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *callable, Ordering::SeqCst);
+        let mut result_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.BoundResult");
+        result_type.tp_dealloc = Some(percent_bound_result_drop);
+        assert_eq!(result_type.ready(), 0);
+        let mut negative_type = NativeType::subtype(&raw mut PyLong_Type, c"percent.NegativeHint");
+        negative_type.tp_dealloc = Some(percent_bound_result_drop);
+        assert_eq!(negative_type.ready(), 0);
+        let mut index_slots: PyNumberMethods = std::mem::zeroed();
+        index_slots.nb_index = percent_bound_index as *const () as *mut _;
+        let mut index_source_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.LengthIndexSource");
+        index_source_type.tp_as_number = (&raw mut index_slots).cast();
+        index_source_type.tp_dealloc = Some(percent_bound_result_drop);
+        assert_eq!(index_source_type.ready(), 0);
+        let mut index_result_type =
+            NativeType::subtype(&raw mut PyLong_Type, c"percent.LengthIndexResult");
+        index_result_type.tp_dealloc = Some(percent_bound_index_drop);
+        assert_eq!(index_result_type.ready(), 0);
+        let methods = [
+            c"__complex__",
+            c"__bytes__",
+            c"__format__",
+            c"__length_hint__",
+            c"ordinary_method",
+            c"__int__",
+            c"__repr__",
+            c"__await__",
+            c"__bool__",
+            c"__len__",
+            c"__len__",
+            c"__hash__",
+            c"__contains__",
+            c"__getattr__",
+            c"__iter__",
+            c"__call__",
+            c"__init__",
+            c"__new__",
+            c"__get__",
+            c"__trunc__",
+        ];
+        for (kind, method) in methods.into_iter().enumerate() {
+            if kind == 19 && minor >= 14 {
+                continue;
+            }
+            let class = percent_bound_class(ptr::null_mut(), ptr::null_mut());
+            let receiver =
+                OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class.as_ptr().cast(), 0));
+            assert!(!receiver.as_ptr().is_null());
+            let name = OwnedPyObject::from_owned(strings::PyUnicode_FromString(method.as_ptr()));
+            assert!(!name.as_ptr().is_null());
+            PERCENT_BOUND_OWNER.store(class.as_ptr(), Ordering::SeqCst);
+            PERCENT_BOUND_NAME.store(name.as_ptr(), Ordering::SeqCst);
+            let declaration_type = if kind == 18 {
+                &raw mut *callable
+            } else {
+                &raw mut *descriptor_type
+            };
+            let declaration =
+                OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(declaration_type, 0));
+            assert!(!declaration.as_ptr().is_null());
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), name.as_ptr(), declaration.as_ptr()),
+                0
+            );
+            if kind == 10 {
+                assert_eq!(
+                    object::PyObject_SetAttrString(
+                        class.as_ptr(),
+                        c"__bool__".as_ptr(),
+                        declaration.as_ptr()
+                    ),
+                    0
+                );
+                let slot = typeobj::PyType_GetSlot(
+                    class.as_ptr().cast(),
+                    molt_cpython_abi::type_slots::Py_nb_bool,
+                );
+                assert!(!slot.is_null());
+                PERCENT_BOUND_BOOL_SLOT.store(slot, Ordering::SeqCst);
+                assert_eq!(
+                    object::PyObject_SetAttrString(
+                        class.as_ptr(),
+                        c"__bool__".as_ptr(),
+                        ptr::null_mut()
+                    ),
+                    0
+                );
+            }
+            drop(declaration);
+            // The raw __get__ callable removes its namespace entry during its
+            // call; the invocation retain is then its sole owner.
+            PERCENT_BOUND_REMOVE.store(kind == 18, Ordering::SeqCst);
+            TEXT_CALLBACK_FAILS.store(true, Ordering::SeqCst);
+            CONSTRUCTOR_CALLS.store(0, Ordering::SeqCst);
+            PERCENT_DROPS.store(0, Ordering::SeqCst);
+            PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            assert!(
+                percent_bound_operation(class.as_ptr(), receiver.as_ptr(), kind),
+                "{method:?}"
+            );
+            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(error.as_ptr(), failure.as_ptr(), "{method:?}");
+            assert_eq!(CONSTRUCTOR_CALLS.load(Ordering::SeqCst), 1, "{method:?}");
+            assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1, "{method:?}");
+            assert_eq!(
+                PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+                failure.as_ptr(),
+                "{method:?}"
+            );
+            if matches!(kind, 2 | 3 | 5 | 8 | 9 | 11 | 19) {
+                TEXT_CALLBACK_FAILS.store(false, Ordering::SeqCst);
+                PERCENT_DROPS.store(0, Ordering::SeqCst);
+                PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                assert!(
+                    percent_bound_operation(class.as_ptr(), receiver.as_ptr(), kind),
+                    "invalid {method:?}"
+                );
+                let matched = errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast());
+                let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                assert_eq!(matched, 1, "invalid {method:?}");
+                assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+                let expected = if kind == 8 && minor < 14 {
+                    error.as_ptr()
+                } else {
+                    ptr::null_mut()
+                };
+                assert_eq!(
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+                    expected,
+                    "validation {method:?}"
+                );
+            }
+            if matches!(kind, 2 | 3 | 8 | 9 | 11) {
+                // These callback results have no fixture owner. Their distinct
+                // finalizer observes validation independently of the callable.
+                TEXT_CALLBACK_FAILS.store(false, Ordering::SeqCst);
+                PERCENT_BOUND_RESULT_TYPE.store(&raw mut *result_type, Ordering::SeqCst);
+                PERCENT_BOUND_RESULT_KIND.store(0, Ordering::SeqCst);
+                PERCENT_DROPS.store(0, Ordering::SeqCst);
+                PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                PERCENT_BOUND_RESULT_DROPS.store(0, Ordering::SeqCst);
+                PERCENT_BOUND_RESULT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                assert!(percent_bound_operation(
+                    class.as_ptr(),
+                    receiver.as_ptr(),
+                    kind
+                ));
+                let matched = errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast());
+                let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                assert_eq!(matched, 1);
+                assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+                assert_eq!(PERCENT_BOUND_RESULT_DROPS.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    PERCENT_BOUND_RESULT_ERROR.load(Ordering::SeqCst),
+                    if kind == 11 {
+                        ptr::null_mut()
+                    } else {
+                        error.as_ptr()
+                    }
+                );
+                assert_eq!(
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+                    if kind == 8 && minor < 14 {
+                        error.as_ptr()
+                    } else {
+                        ptr::null_mut()
+                    }
+                );
+                if kind == 3 || kind == 9 {
+                    PERCENT_BOUND_RESULT_TYPE.store(
+                        if kind == 3 {
+                            &raw mut *negative_type
+                        } else {
+                            &raw mut *index_source_type
+                        },
+                        Ordering::SeqCst,
+                    );
+                    PERCENT_BOUND_RESULT_KIND
+                        .store(if kind == 3 { 1 } else { 0 }, Ordering::SeqCst);
+                    PERCENT_RESULT_TYPE.store(&raw mut *index_result_type, Ordering::SeqCst);
+                    PERCENT_BOUND_RESULT_DROPS.store(0, Ordering::SeqCst);
+                    PERCENT_BOUND_RESULT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                    PERCENT_BOUND_INDEX_DROPS.store(0, Ordering::SeqCst);
+                    PERCENT_BOUND_INDEX_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                    assert!(percent_bound_operation(
+                        class.as_ptr(),
+                        receiver.as_ptr(),
+                        kind
+                    ));
+                    let expected_class = if kind == 3 {
+                        &raw mut PyExc_ValueError
+                    } else {
+                        &raw mut PyExc_OverflowError
+                    };
+                    let matched = errors::PyErr_ExceptionMatches(expected_class.cast());
+                    let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!error.as_ptr().is_null());
+                    assert_eq!(matched, 1);
+                    assert_eq!(PERCENT_BOUND_RESULT_DROPS.load(Ordering::SeqCst), 1);
+                    assert!(PERCENT_BOUND_RESULT_ERROR.load(Ordering::SeqCst).is_null());
+                    if kind == 9 {
+                        assert_eq!(PERCENT_BOUND_INDEX_DROPS.load(Ordering::SeqCst), 1);
+                        assert_eq!(
+                            PERCENT_BOUND_INDEX_ERROR.load(Ordering::SeqCst),
+                            error.as_ptr()
+                        );
+                    }
+                    PERCENT_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+                }
+                PERCENT_BOUND_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+            }
+            if kind == 19 {
+                percent_warning_policy(py, b"error");
+                CONSTRUCTOR_CALLS.store(0, Ordering::SeqCst);
+                PERCENT_DROPS.store(0, Ordering::SeqCst);
+                PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                assert!(percent_bound_operation(
+                    class.as_ptr(),
+                    receiver.as_ptr(),
+                    kind
+                ));
+                let matched =
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_DeprecationWarning).cast());
+                let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                assert_eq!(matched, 1);
+                assert_eq!(CONSTRUCTOR_CALLS.load(Ordering::SeqCst), 0);
+                assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+                    error.as_ptr()
+                );
+                percent_warning_policy(py, b"ignore");
+            }
+            PERCENT_BOUND_REMOVE.store(false, Ordering::SeqCst);
+        }
+        // A descriptor's self-removal makes the producer's retained descriptor
+        // the final owner when binding fails, independently of invocation.
+        let class = percent_bound_class(ptr::null_mut(), ptr::null_mut());
+        let receiver =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class.as_ptr().cast(), 0));
+        assert!(!receiver.as_ptr().is_null());
+        let name = OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"__format__".as_ptr()));
+        assert!(!name.as_ptr().is_null());
+        PERCENT_BOUND_OWNER.store(class.as_ptr(), Ordering::SeqCst);
+        PERCENT_BOUND_NAME.store(name.as_ptr(), Ordering::SeqCst);
+        let descriptor =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *descriptor_type, 0));
+        assert!(!descriptor.as_ptr().is_null());
+        assert_eq!(
+            object::PyObject_SetAttr(class.as_ptr(), name.as_ptr(), descriptor.as_ptr()),
+            0
+        );
+        drop(descriptor);
+        PERCENT_BIND_FAIL.store(true, Ordering::SeqCst);
+        PERCENT_DROPS.store(0, Ordering::SeqCst);
+        PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(percent_bound_operation(
+            class.as_ptr(),
+            receiver.as_ptr(),
+            2
+        ));
+        let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(error.as_ptr(), failure.as_ptr());
+        assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
+            failure.as_ptr()
+        );
+        PERCENT_BIND_FAIL.store(false, Ordering::SeqCst);
+        PERCENT_BOUND_OWNER.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_BOUND_NAME.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+unsafe extern "C" fn percent_reflected_getattribute(
+    receiver: *mut PyObject,
+    name: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        if strings::PyUnicode_CompareWithASCIIString(name, c"__radd__".as_ptr()) == 0 {
+            if PERCENT_REFLECTED_MISSING.load(Ordering::SeqCst)
+                && receiver == PERCENT_REFLECTED_LEFT.load(Ordering::SeqCst)
+            {
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_AttributeError).cast(),
+                    c"missing reflected method".as_ptr(),
+                );
+                return ptr::null_mut();
+            }
+            return typeobj::PyType_GenericAlloc(
+                PERCENT_BOUND_RESULT_TYPE.load(Ordering::SeqCst),
+                0,
+            );
+        }
+        match PyType_Type.tp_getattro {
+            Some(getattribute) => getattribute(receiver, name),
+            None => {
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_SystemError).cast(),
+                    c"type attribute fixture unavailable".as_ptr(),
+                );
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn percent_reflected_compare(
+    _left: *mut PyObject,
+    _right: *mut PyObject,
+    _operation: std::os::raw::c_int,
+) -> *mut PyObject {
+    unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(FAILURE.load(Ordering::SeqCst))) };
+    ptr::null_mut()
+}
+
+#[test]
+fn native_reflected_comparison_owners_retire_after_error_classification() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let _callbacks = CallbackState::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|_py| unsafe {
+        let failure = exception(&raw mut PyExc_LookupError, &[]);
+        FAILURE.store(failure.as_ptr(), Ordering::SeqCst);
+        let mut comparison_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.ReflectedComparison");
+        comparison_type.tp_richcompare = Some(percent_reflected_compare);
+        comparison_type.tp_dealloc = Some(percent_bound_result_drop);
+        assert_eq!(comparison_type.ready(), 0);
+        let mut callable =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.ReflectedCallable");
+        callable.tp_call = Some(percent_bound_call);
+        callable.tp_dealloc = Some(percent_managed_numeric_drop);
+        assert_eq!(callable.ready(), 0);
+        let mut descriptor_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.ReflectedDescriptor");
+        descriptor_type.tp_descr_get = Some(percent_bound_get);
+        assert_eq!(descriptor_type.ready(), 0);
+        let mut metaclass = NativeType::subtype(&raw mut PyType_Type, c"percent.ReflectedMeta");
+        metaclass.tp_getattro = Some(percent_reflected_getattribute);
+        assert_eq!(metaclass.ready(), 0);
+        PERCENT_BOUND_RESULT_TYPE.store(&raw mut *comparison_type, Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *callable, Ordering::SeqCst);
+        TEXT_CALLBACK_FAILS.store(true, Ordering::SeqCst);
+        let left_class = percent_bound_class(&raw mut *metaclass, ptr::null_mut());
+        let bases = percent_tuple(&[left_class.as_ptr()], None);
+        let right_class = percent_bound_class(&raw mut *metaclass, bases.as_ptr());
+        let declaration =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *descriptor_type, 0));
+        assert!(!declaration.as_ptr().is_null());
+        for class in [left_class.as_ptr(), right_class.as_ptr()] {
+            for name in [c"__add__", c"__radd__"] {
+                assert_eq!(
+                    object::PyObject_SetAttrString(class, name.as_ptr(), declaration.as_ptr()),
+                    0
+                );
+            }
+        }
+        let left =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(left_class.as_ptr().cast(), 0));
+        let right =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(right_class.as_ptr().cast(), 0));
+        assert!(!left.as_ptr().is_null());
+        assert!(!right.as_ptr().is_null());
+        PERCENT_REFLECTED_LEFT.store(left_class.as_ptr(), Ordering::SeqCst);
+        for missing in [false, true] {
+            PERCENT_REFLECTED_MISSING.store(missing, Ordering::SeqCst);
+            PERCENT_BOUND_RESULT_DROPS.store(0, Ordering::SeqCst);
+            PERCENT_BOUND_RESULT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            PERCENT_DROPS.store(0, Ordering::SeqCst);
+            let result = OwnedPyObject::from_owned(
+                molt_cpython_abi::api::abstract_number::PyNumber_Add(left.as_ptr(), right.as_ptr()),
+            );
+            assert!(result.as_ptr().is_null());
+            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(error.as_ptr(), failure.as_ptr());
+            assert_eq!(
+                PERCENT_BOUND_RESULT_DROPS.load(Ordering::SeqCst),
+                if missing { 1 } else { 2 }
+            );
+            assert_eq!(
+                PERCENT_BOUND_RESULT_ERROR.load(Ordering::SeqCst),
+                if missing {
+                    ptr::null_mut()
+                } else {
+                    error.as_ptr()
+                }
+            );
+            assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), usize::from(missing));
+        }
+        PERCENT_REFLECTED_LEFT.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_REFLECTED_MISSING.store(false, Ordering::SeqCst);
+        PERCENT_BOUND_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
 }

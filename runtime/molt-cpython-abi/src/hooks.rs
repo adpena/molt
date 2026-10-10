@@ -845,6 +845,9 @@ pub struct RuntimeHooks {
     ) -> DescriptorMutationStatus,
     /// Return owned format(obj, spec), or `Error` with a pending exception.
     pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> OwnedHandleResult,
+    /// Explicit str percent formatting, bypassing a receiver's __mod__ override.
+    /// Both arguments are borrowed for this synchronous call; the result is owned.
+    pub unicode_format: unsafe extern "C" fn(format_bits: u64, args_bits: u64) -> OwnedHandleResult,
     /// Return owned str(obj) / repr(obj) through the runtime protocol, including
     /// subclass overrides and exceptions. The ABI does not format value bytes.
     pub object_str: unsafe extern "C" fn(obj_bits: u64) -> OwnedHandleResult,
@@ -1407,7 +1410,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 56 added the NativeProtocolSlots type-metadata domain. Callback
 // domains are ABI even when the pointer-sized table layout is unchanged.
 // Version 61 adds the sole Context owner and cold static-shell admission.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 61;
+// Version 62 moves Unicode percent formatting to the sole runtime engine.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 62;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2664,6 +2668,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     descriptor_get: stub_descriptor_get,
     descriptor_set: stub_descriptor_set,
     object_format: stub_object_format,
+    unicode_format: stub_object_format,
     object_str: stub_object_stringify,
     object_repr: stub_object_stringify,
     object_is_true: stub_object_is_true,

@@ -958,11 +958,150 @@ pub(crate) fn sequence_index_i64(
     index_i64_with_overflow(_py, key_bits, &type_err, None)
 }
 
+/// Foreign storage is inspected only after entering a numeric conversion.
+/// Pure managed carrier probes above must remain allocation-free and must not
+/// admit native arithmetic operands before their operator dispatch.
+fn native_numeric_object(bits: u64) -> Option<*mut molt_cpython_abi::abi_types::PyObject> {
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    (unsafe { object_type_id(ptr) } == crate::TYPE_ID_FOREIGN).then(|| {
+        std::ptr::with_exposed_provenance_mut(unsafe {
+            crate::object::foreign::foreign_ptr_from_obj(ptr)
+        })
+    })
+}
+
+fn native_numeric_failed(py: &PyToken<'_>, operation: &str) -> bool {
+    if molt_cpython_abi::api::errors::raised_error_pending() {
+        crate::cpython_abi_hooks::propagate_native_failure(py, operation);
+    }
+    exception_pending(py)
+}
+
+fn native_numeric_result(
+    py: &PyToken<'_>,
+    result: molt_cpython_abi::hooks::OwnedHandleResult,
+    operation: &str,
+) -> Option<u64> {
+    match result.decode() {
+        molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
+        _ => {
+            crate::cpython_abi_hooks::propagate_native_failure(py, operation);
+            None
+        }
+    }
+}
+
+/// Read integer storage at a fallible conversion boundary. The caller retains
+/// the actual integer owner; a foreign physical payload has its own temporary
+/// owned projection. This is deliberately separate from pure carrier probes.
+pub(crate) fn integer_storage_bigint(py: &PyToken<'_>, bits: u64) -> Option<BigInt> {
+    if let Some(value) = index_bigint_integral_bits(bits) {
+        return Some(value);
+    }
+    let native = native_numeric_object(bits)?;
+    let admitted = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0;
+    if native_numeric_failed(py, "integer storage admission") || !admitted {
+        return None;
+    }
+    let payload = native_numeric_result(
+        py,
+        unsafe { molt_cpython_abi::api::numbers::native_numeric_payload(native) },
+        "integer storage projection",
+    )?;
+    let _owner = obj_from_bits(payload)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    let value = index_bigint_integral_bits(payload);
+    if value.is_none() && !exception_pending(py) {
+        raise_exception::<()>(
+            py,
+            "SystemError",
+            "integer storage projection returned no integer payload",
+        );
+    }
+    value
+}
+
+/// Scalar extraction from admitted integer storage, without __index__ dispatch.
+/// Overflow returns None without an exception; callers own their range policy.
+pub(crate) fn integer_storage_i64(py: &PyToken<'_>, bits: u64) -> Option<i64> {
+    if let Some(value) = index_i64_integral_bits(bits) {
+        return Some(value);
+    }
+    let native = native_numeric_object(bits)?;
+    let admitted = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0;
+    if native_numeric_failed(py, "integer storage admission") || !admitted {
+        return None;
+    }
+    let mut overflow = 0;
+    let value = unsafe {
+        molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(native, &mut overflow)
+    };
+    if native_numeric_failed(py, "integer scalar extraction") || overflow != 0 {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Scalar extraction from admitted float storage, without __float__ dispatch.
+/// Native float subtypes expose their physical value just like managed ones.
+pub(crate) fn float_storage_value(py: &PyToken<'_>, bits: u64) -> Option<f64> {
+    if let Some(value) = as_float_extended(obj_from_bits(bits)) {
+        return Some(value);
+    }
+    let native = native_numeric_object(bits)?;
+    let admitted = unsafe { molt_cpython_abi::api::numbers::PyFloat_Check(native) } != 0;
+    if native_numeric_failed(py, "float storage admission") || !admitted {
+        return None;
+    }
+    let value = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(native) };
+    (!native_numeric_failed(py, "float scalar extraction")).then_some(value)
+}
+
+/// Copy foreign integer storage into the managed carrier required by a scalar
+/// subclass field. Public int() identity is handled separately below.
+pub(crate) fn managed_integer_from_storage(py: &PyToken<'_>, bits: u64) -> Option<u64> {
+    if let Some(native) = native_numeric_object(bits) {
+        let admitted = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0;
+        if native_numeric_failed(py, "integer carrier admission") || !admitted {
+            return None;
+        }
+        return native_numeric_result(
+            py,
+            unsafe { molt_cpython_abi::api::numbers::native_numeric_payload(native) },
+            "integer carrier projection",
+        );
+    }
+    exact_integer_from_storage(py, bits)
+}
+
 /// Return an owned exact integer from validated integer storage. A sealed
 /// subclass payload is borrowed from its owner; retaining that payload avoids
 /// cloning/reboxing arbitrary-width integers. Semantic subtype storage itself
 /// must be copied to an exact owner.
 pub(crate) fn exact_integer_from_storage(py: &PyToken<'_>, bits: u64) -> Option<u64> {
+    if let Some(native) = native_numeric_object(bits) {
+        use molt_cpython_abi::api::{abstract_number, numbers, object};
+        let admitted = unsafe { numbers::PyLong_Check(native) } != 0;
+        if native_numeric_failed(py, "exact integer admission") || !admitted {
+            return None;
+        }
+        let exact = unsafe { numbers::PyLong_CheckExact(native) } != 0;
+        if native_numeric_failed(py, "exact integer class") {
+            return None;
+        }
+        if exact {
+            crate::inc_ref_bits(py, bits);
+            return Some(bits);
+        }
+        let exact = unsafe { abstract_number::exact_integer_result(object::Py_NewRef(native)) };
+        return native_numeric_result(
+            py,
+            unsafe { molt_cpython_abi::bridge::owned_native_result_to_runtime(exact) },
+            "exact integer normalization",
+        );
+    }
     let payload = index_integral_payload_bits(bits)?;
     let obj = obj_from_bits(payload);
     if let Some(value) = obj.as_bool() {
@@ -986,16 +1125,30 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: &'static [u8]) -> Opt
     let callable = unsafe { crate::builtins::attr::lookup_special_method(py, bits, name) }?;
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
+        .map(crate::PtrDropGuard::new);
     let result = unsafe { call_callable0(py, callable) };
     drop(callable_owner);
-    let mut result_owner = obj_from_bits(result)
-        .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
+    let mut result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
     if exception_pending(py) {
         return None;
     }
     let protocol = std::str::from_utf8(name).expect("integer protocol is ASCII");
+    if let Some(native) = native_numeric_object(result) {
+        use molt_cpython_abi::api::{abstract_number, object, refcount};
+        let validated =
+            unsafe { abstract_number::integer_slot_result(object::Py_NewRef(native), protocol) };
+        if validated.is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, protocol);
+            return None;
+        }
+        unsafe { refcount::Py_DECREF(validated) };
+        // Validation retains the same native owner. Transfer the original
+        // callback wrapper rather than projecting a second runtime identity.
+        if let Some(owner) = &mut result_owner {
+            owner.release();
+        }
+        return Some(result);
+    }
     if index_integral_payload_bits(result).is_none() {
         raise_exception::<()>(
             py,
@@ -1030,10 +1183,13 @@ pub(crate) fn exact_integer_from_owned(py: &PyToken<'_>, bits: u64) -> u64 {
     if obj_from_bits(bits).is_int() || builtin_int_bits_for_gil() == Some(type_of_bits(py, bits)) {
         return bits;
     }
-    let _owner = obj_from_bits(bits)
-        .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
-    exact_integer_from_storage(py, bits).expect("validated integer result has a payload")
+    let _owner = obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new);
+    exact_integer_from_storage(py, bits).unwrap_or_else(|| {
+        if !exception_pending(py) {
+            raise_exception::<()>(py, "SystemError", "validated integer result has no payload");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 /// Private _PyNumber_Index semantics. Existing integers ignore __index__ overrides;
@@ -1043,6 +1199,16 @@ pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
     if index_integral_payload_bits(bits).is_some() {
         crate::inc_ref_bits(py, bits);
         return Some(bits);
+    }
+    if let Some(native) = native_numeric_object(bits) {
+        let admitted = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0;
+        if native_numeric_failed(py, "index integer admission") {
+            return None;
+        }
+        if admitted {
+            crate::inc_ref_bits(py, bits);
+            return Some(bits);
+        }
     }
     integer_from_special(py, bits, b"__index__")
 }
@@ -1067,14 +1233,15 @@ pub(crate) fn index_from_object(py: &PyToken<'_>, bits: u64) -> u64 {
 }
 
 pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> Option<BigInt> {
-    if let Some(value) = index_bigint_integral_bits(bits) {
+    if let Some(value) = integer_storage_bigint(py, bits) {
         return Some(value);
     }
+    if exception_pending(py) {
+        return None;
+    }
     if let Some(result) = integer_from_special(py, bits, b"__index__") {
-        let _owner = obj_from_bits(result)
-            .as_ptr()
-            .map(crate::PtrDropGuard::preserving);
-        return index_bigint_integral_bits(result);
+        let _owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+        return integer_storage_bigint(py, result);
     }
     if !exception_pending(py) {
         raise_exception::<()>(py, "TypeError", err);
@@ -1087,6 +1254,16 @@ pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> O
 /// None without an exception permits the caller's string/buffer parser.
 pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u64> {
     let obj = obj_from_bits(bits);
+    if let Some(native) = native_numeric_object(bits) {
+        let exact = unsafe { molt_cpython_abi::api::numbers::PyLong_CheckExact(native) } != 0;
+        if native_numeric_failed(py, "int exact receiver") {
+            return None;
+        }
+        if exact {
+            crate::inc_ref_bits(py, bits);
+            return Some(bits);
+        }
+    }
     if obj.is_int()
         || obj.is_bool()
         || (bigint_ptr_from_bits(bits).is_some()
@@ -1130,7 +1307,7 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     let callable = unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__trunc__") }?;
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
+        .map(crate::PtrDropGuard::new);
     if !crate::builtins::warnings_ext::emit_deprecation_warning(
         py,
         "The delegation of int() to __trunc__ is deprecated.",
@@ -1139,9 +1316,7 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     }
     let result = unsafe { call_callable0(py, callable) };
     drop(callable_owner);
-    let _result_owner = obj_from_bits(result)
-        .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
+    let _result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
     if exception_pending(py) {
         return None;
     }
@@ -1207,70 +1382,148 @@ pub(crate) extern "C" fn int_float_slot(bits: u64) -> u64 {
     })
 }
 
+/// Numeric scalar extraction usually needs no heap owner. An exact __float__
+/// callback result retains its identity until the object-producing consumer
+/// transfers it, or the scalar consumer retires it after reading the value.
+pub(crate) struct FloatConversion {
+    value: f64,
+    owner: Option<(u64, crate::PtrDropGuard)>,
+}
+
+impl FloatConversion {
+    fn value(value: f64) -> Self {
+        Self { value, owner: None }
+    }
+
+    fn owned(bits: u64, value: f64) -> Self {
+        Self {
+            value,
+            owner: obj_from_bits(bits)
+                .as_ptr()
+                .map(|ptr| (bits, crate::PtrDropGuard::new(ptr))),
+        }
+    }
+
+    pub(crate) fn into_value(self) -> f64 {
+        self.value
+    }
+
+    pub(crate) fn into_bits(mut self, py: &PyToken<'_>) -> u64 {
+        if let Some((bits, owner)) = &mut self.owner {
+            owner.release();
+            return *bits;
+        }
+        crate::object::ops::float_result_bits(py, self.value)
+    }
+}
+
 /// Shared numeric protocol used by the float constructor after its exact-float
 /// identity fast path. No text parsing and no instance-attribute lookup occurs.
 /// A missing numeric protocol returns None without an exception, permitting
 /// the constructor's text parser; every protocol failure returns None with its
 /// original pending exception. Int subclasses must reach __float__ before any
 /// integral payload extraction. Float subclasses likewise reach their slot here.
-pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<f64> {
+pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<FloatConversion> {
     let obj = obj_from_bits(bits);
+    if let Some(native) = native_numeric_object(bits) {
+        let exact = unsafe { molt_cpython_abi::api::numbers::PyFloat_CheckExact(native) } != 0;
+        if native_numeric_failed(py, "float exact receiver") {
+            return None;
+        }
+        if exact {
+            let value = float_storage_value(py, bits)?;
+            crate::inc_ref_bits(py, bits);
+            return Some(FloatConversion::owned(bits, value));
+        }
+    }
     if is_exact_float(py, bits) {
-        return as_float_extended(obj);
+        crate::inc_ref_bits(py, bits);
+        return as_float_extended(obj).map(|value| FloatConversion::owned(bits, value));
     }
     if let Some(value) = obj.as_int() {
-        return Some(value as f64);
+        return Some(FloatConversion::value(value as f64));
     }
     if let Some(value) = obj.as_bool() {
-        return Some(if value { 1.0 } else { 0.0 });
+        return Some(FloatConversion::value(if value { 1.0 } else { 0.0 }));
     }
     if let Some(ptr) = bigint_ptr_from_bits(bits)
         && builtin_int_bits_for_gil() == Some(type_of_bits(py, bits))
     {
-        return integer_as_double(py, unsafe { bigint_ref(ptr) });
+        return integer_as_double(py, unsafe { bigint_ref(ptr) }).map(FloatConversion::value);
     }
     if let Some(call_bits) =
         unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__float__") }
     {
+        let callable_owner = obj_from_bits(call_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         let result = unsafe { call_callable0(py, call_bits) };
-        dec_ref_bits(py, call_bits);
+        drop(callable_owner);
+        let mut result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
         if exception_pending(py) {
-            dec_ref_bits(py, result);
             return None;
         }
-        let result_obj = obj_from_bits(result);
-        let owner = class_name_for_error(type_of_bits(py, bits));
-        if let Some(value) = as_float_extended(result_obj) {
-            let accepted = is_exact_float(py, result)
-                || warn_numeric_subclass_result(py, &format!("{owner}.__float__"), "float", result);
-            // Keep the returned subclass owned through warning callbacks.
-            dec_ref_bits(py, result);
-            return accepted.then_some(value);
+        let owner_name = || {
+            let name = class_name_for_error(type_of_bits(py, bits));
+            String::from_utf8_lossy(&name.as_bytes()[..name.len().min(50)]).into_owned()
+        };
+        let (value, exact) = if let Some(native) = native_numeric_object(result) {
+            use molt_cpython_abi::api::{abstract_number, numbers, object, refcount};
+            let validated = unsafe {
+                abstract_number::float_slot_result(object::Py_NewRef(native), owner_name)
+            };
+            let Ok((validated, exact)) = validated else {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "__float__ result");
+                return None;
+            };
+            let value = unsafe { numbers::PyFloat_AsDouble(validated) };
+            unsafe { refcount::Py_DECREF(validated) };
+            if native_numeric_failed(py, "__float__ payload") {
+                return None;
+            }
+            (value, exact)
+        } else if let Some(value) = as_float_extended(obj_from_bits(result)) {
+            let exact = is_exact_float(py, result);
+            if !exact
+                && !warn_numeric_subclass_result(
+                    py,
+                    &format!("{}.__float__", owner_name()),
+                    "float",
+                    result,
+                )
+            {
+                return None;
+            }
+            (value, exact)
+        } else {
+            let actual = class_name_for_error(type_of_bits(py, result));
+            raise_exception::<()>(
+                py,
+                "TypeError",
+                &format!(
+                    "{}.__float__ returned non-float (type {actual})",
+                    owner_name()
+                ),
+            );
+            return None;
+        };
+        if exact {
+            if let Some(owner) = &mut result_owner {
+                owner.release();
+            }
+            return Some(FloatConversion::owned(result, value));
         }
-        let actual = class_name_for_error(type_of_bits(py, result));
-        raise_exception::<()>(
-            py,
-            "TypeError",
-            &format!("{owner}.__float__ returned non-float (type {actual})"),
-        );
-        dec_ref_bits(py, result);
-        return None;
+        return Some(FloatConversion::value(value));
     }
     if exception_pending(py) {
         return None;
     }
-    // Inherited int.__float__ is a real native descriptor above. Only a
-    // genuinely missing float slot reaches the canonical index protocol.
-    let has_index = unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") };
-    if exception_pending(py) || !has_index {
-        return None;
-    }
-    let message = format!(
-        "must be real number, not {}",
-        class_name_for_error(type_of_bits(py, bits))
-    );
-    let value = index_bigint_from_obj(py, bits, &message)?;
-    integer_as_double(py, &value)
+    let index = index_from_number_protocol(py, bits)?;
+    let _index_owner = obj_from_bits(index).as_ptr().map(crate::PtrDropGuard::new);
+    let value = integer_storage_bigint(py, index)?;
+    // Keep the original index result through overflow creation, as
+    // PyNumber_Float does around PyLong_AsDouble.
+    integer_as_double(py, &value).map(FloatConversion::value)
 }
 
 /// PyFloat_AsDouble-style numeric conversion. An existing float or float
@@ -1279,11 +1532,14 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
 /// means a pending exception, including callback/warning errors and integer
 /// overflow. Float infinity and NaN remain valid values.
 pub(crate) fn float_as_double(py: &PyToken<'_>, bits: u64) -> Option<f64> {
-    if let Some(value) = as_float_extended(obj_from_bits(bits)) {
+    if let Some(value) = float_storage_value(py, bits) {
         return Some(value);
     }
+    if exception_pending(py) {
+        return None;
+    }
     if let Some(value) = float_from_number_protocol(py, bits) {
-        return Some(value);
+        return Some(value.into_value());
     }
     if !exception_pending(py) {
         raise_exception::<()>(

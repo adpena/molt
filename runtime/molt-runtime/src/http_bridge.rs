@@ -324,8 +324,20 @@ pub extern "C" fn __molt_http_int_bits_from_bigint(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_float_from_obj(val_bits: u64) -> u64 {
-    crate::molt_float_from_obj(val_bits)
+pub unsafe extern "C" fn __molt_http_float_from_object_value(val_bits: u64, out: *mut f64) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let result = crate::molt_float_from_obj(val_bits);
+        let _owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+        if exception_pending(py) {
+            return 0;
+        }
+        let value = crate::c_api::molt_float_as_f64(result);
+        if exception_pending(py) {
+            return 0;
+        }
+        unsafe { *out = value };
+        1
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -678,4 +690,66 @@ pub extern "C" fn __molt_http_type_id_tuple() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_type_id_dict() -> u32 {
     crate::TYPE_ID_DICT
+}
+
+#[cfg(test)]
+mod scalar_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn http_float_conversion_reads_foreign_storage_and_preserves_text_admission() {
+        use molt_cpython_abi::abi_types::{PyExc_ValueError, PyFloat_Type, PyFloatObject};
+        use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let native = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                    &raw mut PyFloat_Type,
+                    0,
+                ));
+                assert!(!native.as_ptr().is_null());
+                assert!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(native.as_ptr())
+                        .is_none()
+                );
+                (*native.as_ptr().cast::<PyFloatObject>()).ob_fval = 4.25;
+                let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+                let _owner = crate::PtrDropGuard::preserving(ptr_from_bits(bits));
+                assert_eq!(
+                    crate::object::object_type_id(ptr_from_bits(bits)),
+                    crate::TYPE_ID_FOREIGN
+                );
+                let refs = (*native.as_ptr()).ob_refcnt;
+                let mut value = -99.0;
+                assert_eq!(__molt_http_float_from_object_value(bits, &mut value), 1);
+                assert_eq!(value, 4.25);
+                assert!(!exception_pending(py));
+                assert_eq!((*native.as_ptr()).ob_refcnt, refs);
+                for (text, expected) in [(b"2.5".as_slice(), Some(2.5)), (b"bad".as_slice(), None)]
+                {
+                    let ptr = alloc_string(py, text);
+                    let _text_owner = crate::PtrDropGuard::preserving(ptr);
+                    assert!(!ptr.is_null());
+                    value = -99.0;
+                    let ok = __molt_http_float_from_object_value(
+                        MoltObject::from_ptr(ptr).bits(),
+                        &mut value,
+                    );
+                    if let Some(expected) = expected {
+                        assert_eq!(ok, 1);
+                        assert_eq!(value, expected);
+                        assert!(!exception_pending(py));
+                    } else {
+                        let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert_eq!(ok, 0);
+                        assert_eq!(value, -99.0, "failure must not publish an output scalar");
+                        assert!(!error.as_ptr().is_null());
+                        assert_eq!(object::Py_TYPE(error.as_ptr()), &raw mut PyExc_ValueError);
+                    }
+                }
+            }
+        });
+    }
 }

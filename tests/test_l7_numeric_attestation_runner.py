@@ -1340,3 +1340,64 @@ def test_list_timing_rejection_cannot_mask_payload_corruption(defect):
             },
         )
     assert not isinstance(caught.value, candidate.l7.EvidenceRejected)
+
+
+@pytest.mark.parametrize(
+    ("name", "field", "expected"),
+    [
+        ("runtime.convert.int_from_float", "expected", 1),
+        ("runtime.convert.float_from_int", "expected", 7.0),
+        ("runtime.percent.managed.int", "expected_utf8", "00000007"),
+        ("runtime.percent.managed.float", "expected_utf8", "1.25"),
+        ("runtime.percent.c.int", "expected_utf8", "00000007"),
+        ("runtime.percent.c.float", "expected_utf8", "1.25"),
+    ],
+)
+def test_conversion_and_percent_cases_retain_literal_semantic_witnesses(
+    name: str, field: str, expected: object
+) -> None:
+    cases = {case_name: inputs for case_name, _family, inputs in runner.RUNTIME_CASES}
+    assert cases[name][field] == expected
+    if "percent" in name:
+        assert cases[name]["managed_result_c_bridge_included"] == (".managed." in name)
+        assert cases[name]["argument"] == (7 if name.endswith(".int") else 1.25)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "field", "wrong"),
+    [
+        ("runtime.convert.int_from_float", "input", 2.75),
+        ("runtime.percent.c.int", "argument", 1000),
+        ("runtime.percent.managed.float", "expected_utf8", "1.2"),
+        ("runtime.percent.managed.int", "managed_result_c_bridge_included", False),
+    ],
+)
+def test_aggregate_rejects_new_boundary_workload_drift(
+    case_name: str, field: str, wrong: object
+) -> None:
+    bundle = _bundle()
+    for index, attestation in enumerate(bundle["attestations"]["runtime_bigint"]):
+        case = next(case for case in attestation["cases"] if case["name"] == case_name)
+        case["input"][field] = wrong
+        # Keep the capture's integrity join valid: rejection must come from the
+        # independent workload authority, not a stale attestation hash.
+        bundle["process"]["runtime_bigint"]["runs"][index]["attestation_sha256"] = (
+            runner._sha256_bytes(runner._canonical_bytes(attestation))
+        )
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
+    assert any("ordered case manifest drift" in error for error in errors)
+
+
+def test_runtime_allocation_scope_excludes_unobserved_native_libc_traffic() -> None:
+    bundle = _bundle()
+    schema = runner._load_schema()
+    scope = "rust_global_mimalloc_traffic_native_libc_unobserved"
+    assert runner.COMPONENTS["runtime_bigint"]["allocator_scope"] == scope
+    assert (
+        runner.COMPONENTS["abi_boundary"]["allocator_scope"] == "rust_global_allocator"
+    )
+    assert not runner._schema_errors(bundle, schema, root=schema)
+    bundle["attestations"]["runtime_bigint"][0]["allocator_scope"] = (
+        "all_native_allocations"
+    )
+    assert runner._schema_errors(bundle, schema, root=schema)

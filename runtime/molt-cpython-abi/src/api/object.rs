@@ -469,8 +469,14 @@ pub unsafe fn lookup_type_special(
         )
     } {
         None => Ok(Some(lookup.descriptor)),
-        Some(bound) if bound.is_null() => Err(crate::ErrorIndicatorSet),
-        Some(bound) => Ok(Some(unsafe { OwnedPyObject::from_owned(bound) })),
+        Some(bound) => {
+            unsafe { crate::api::refcount::Py_DECREF(lookup.descriptor.into_ptr()) };
+            if bound.is_null() {
+                Err(crate::ErrorIndicatorSet)
+            } else {
+                Ok(Some(unsafe { OwnedPyObject::from_owned(bound) }))
+            }
+        }
     }
 }
 
@@ -531,7 +537,9 @@ pub(crate) unsafe fn call_optional_special_noargs(
     match unsafe { lookup_optional_special(o, name) }? {
         None => Ok(None),
         Some(method) => {
-            let result = unsafe { PyObject_CallNoArgs(method.as_ptr()) };
+            let method = method.into_ptr();
+            let result = unsafe { PyObject_CallNoArgs(method) };
+            unsafe { crate::api::refcount::Py_DECREF(method) };
             if result.is_null() {
                 Err(crate::ErrorIndicatorSet)
             } else {
@@ -1471,7 +1479,12 @@ pub unsafe extern "C" fn PyObject_Format(
         }
         crate::bridge::ResolvedPyObject::Foreign => {
             match unsafe { lookup_optional_special(o, c"__format__".as_ptr()) } {
-                Ok(Some(method)) => unsafe { PyObject_CallOneArg(method.as_ptr(), spec) },
+                Ok(Some(method)) => unsafe {
+                    let method = method.into_ptr();
+                    let result = PyObject_CallOneArg(method, spec);
+                    crate::api::refcount::Py_DECREF(method);
+                    result
+                },
                 Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
                 Ok(None) => {
                     let name =
@@ -1499,7 +1512,7 @@ pub unsafe extern "C" fn PyObject_Format(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
                 message.as_ptr(),
             );
-            crate::api::errors::release_preserving_error(&[result]);
+            crate::api::refcount::Py_DECREF(result);
         }
         return ptr::null_mut();
     }
@@ -1651,8 +1664,9 @@ pub unsafe extern "C" fn PyObject_LengthHint(
         Ok(None) => return defaultvalue,
         Err(crate::ErrorIndicatorSet) => return -1,
     };
-    let result = unsafe { PyObject_CallNoArgs(method.as_ptr()) };
-    drop(method);
+    let method = method.into_ptr();
+    let result = unsafe { PyObject_CallNoArgs(method) };
+    unsafe { crate::api::refcount::Py_DECREF(method) };
     if result.is_null() {
         unsafe { errors::check_native_result(result, "length hint call") };
         if unsafe {
@@ -1664,21 +1678,23 @@ pub unsafe extern "C" fn PyObject_LengthHint(
         }
         return -1;
     }
-    let result = unsafe { OwnedPyObject::from_owned(result) };
-    if result.as_ptr() == &raw mut crate::abi_types::Py_NotImplementedSentinel {
+    if result == &raw mut crate::abi_types::Py_NotImplementedSentinel {
+        unsafe { crate::api::refcount::Py_DECREF(result) };
         return defaultvalue;
     }
-    if unsafe { crate::api::numbers::PyLong_Check(result.as_ptr()) } == 0 {
+    if unsafe { crate::api::numbers::PyLong_Check(result) } == 0 {
         unsafe {
             errors::PyErr_Format(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
                 c"__length_hint__ must be an integer, not %.100s".as_ptr(),
-                (*(*result.as_ptr()).ob_type).tp_name,
+                (*(*result).ob_type).tp_name,
             );
+            crate::api::refcount::Py_DECREF(result);
         }
         return -1;
     }
-    let length = unsafe { crate::api::numbers::PyLong_AsSsize_t(result.as_ptr()) };
+    let length = unsafe { crate::api::numbers::PyLong_AsSsize_t(result) };
+    unsafe { crate::api::refcount::Py_DECREF(result) };
     if length < 0 && !exception_already_pending() {
         unsafe {
             errors::PyErr_SetString(
@@ -3310,7 +3326,7 @@ pub unsafe extern "C" fn PyObject_VectorcallMethod(
             kwnames,
         )
     };
-    unsafe { crate::api::errors::release_preserving_error(&[method]) };
+    unsafe { crate::api::refcount::Py_DECREF(method) };
     result
 }
 
@@ -5368,7 +5384,7 @@ pub unsafe extern "C" fn PyObject_Bytes(o: *mut PyObject) -> *mut PyObject {
                     (&raw mut crate::abi_types::PyExc_TypeError).cast(),
                     message.as_ptr(),
                 );
-                crate::api::errors::release_preserving_error(&[result]);
+                crate::api::refcount::Py_DECREF(result);
             }
             return ptr::null_mut();
         }

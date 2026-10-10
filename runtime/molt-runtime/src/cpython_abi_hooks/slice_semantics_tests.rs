@@ -106,13 +106,16 @@ extern "C" fn index_error(_receiver: u64) -> u64 {
 }
 
 fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)]) -> (u64, u64) {
+    use crate::builtins::exceptions::ExceptionValue;
     let name = crate::attr_name_bits_from_bytes(py, b"SliceCallbackProbe").unwrap();
     let class = crate::molt_class_new(name);
+    let class_owner = ExceptionValue::adopt(py, class);
     crate::dec_ref_bits(py, name);
     let result = crate::molt_class_set_base(class, crate::builtin_classes(py).object);
     crate::dec_ref_bits(py, result);
     for &(name, target, arity) in methods {
         let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let _name_owner = ExceptionValue::adopt(py, name);
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr("slice_callback_probe", target),
@@ -121,25 +124,36 @@ fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         let result = crate::molt_set_attr_name(class, name, function);
-        for value in [name, function, result] {
+        for value in [function, result] {
             crate::dec_ref_bits(py, value);
         }
     }
     let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
     unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
     let instance = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+    let instance_owner = ExceptionValue::adopt(py, instance);
     assert!(!crate::exception_pending(py));
-    (class, instance)
+    (class_owner.into_bits(), instance_owner.into_bits())
 }
 
 #[test]
 fn slice_construction_preserves_callback_key_identity_and_original_index_error() {
+    use crate::builtins::exceptions::ExceptionValue;
+    use refcount::OwnedPyObject;
+    struct IndexErrorBinding;
+    impl Drop for IndexErrorBinding {
+        fn drop(&mut self) {
+            INDEX_ERROR.with(|slot| slot.set(0));
+        }
+    }
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|py| unsafe {
         OBSERVED_KEYS.with(|keys| keys.borrow_mut().clear());
         INDEX_CALLS.with(|calls| calls.set(0));
         let (bound_class, bound) =
             callback_instance(&py, &[(b"__index__", index_error as *const (), 1)]);
+        let _bound_class_owner = ExceptionValue::adopt(&py, bound_class);
+        let _bound_owner = ExceptionValue::adopt(&py, bound);
         let (mapping_class, mapping) = callback_instance(
             &py,
             &[
@@ -148,12 +162,19 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
                 (b"__delitem__", echo_key as *const (), 2),
             ],
         );
+        let _mapping_class_owner = ExceptionValue::adopt(&py, mapping_class);
+        let _mapping_owner = ExceptionValue::adopt(&py, mapping);
         let error =
             crate::builtins::exceptions::alloc_exception(&py, "ValueError", "slice index sentinel");
+        assert!(!error.is_null());
         let error = MoltObject::from_ptr(error).bits();
+        let _error_owner = ExceptionValue::adopt(&py, error);
         INDEX_ERROR.with(|slot| slot.set(error));
+        let _error_binding = IndexErrorBinding;
         let error_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(error);
+        assert!(!error_view.is_null());
         let bound_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bound);
+        let _bound_view_owner = OwnedPyObject::from_owned(bound_view);
         assert_eq!(
             molt_cpython_abi::api::abstract_number::PyIndex_Check(bound_view),
             1
@@ -166,6 +187,7 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
         let before = GLOBAL_BRIDGE.mirrored_c_refcount(bound_view.addr());
         let key = slice::PySlice_New(bound_view, std::ptr::null_mut(), std::ptr::null_mut());
         assert!(!key.is_null());
+        let key_owner = OwnedPyObject::from_owned(key);
         assert_eq!((*key.cast::<PySliceObject>()).start, bound_view);
         assert_eq!(
             GLOBAL_BRIDGE.mirrored_c_refcount(bound_view.addr()),
@@ -174,9 +196,11 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
         assert_eq!(INDEX_CALLS.with(|calls| calls.get()), 0);
         let bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(key).unwrap().bits();
         let mapping_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(mapping);
+        let _mapping_view_owner = OwnedPyObject::from_owned(mapping_view);
         let result = object::PyObject_GetItem(mapping_view, key);
+        let result_owner = OwnedPyObject::from_owned(result);
         assert_eq!(result, key);
-        refcount::Py_DECREF(result);
+        drop(result_owner);
         assert_eq!(
             object::PyObject_SetItem(mapping_view, key, &raw mut Py_None),
             0
@@ -190,19 +214,14 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
             -1
         );
         assert_eq!(INDEX_CALLS.with(|calls| calls.get()), 1);
-        let raised = errors::take_current_error().expect("original index exception");
-        assert_eq!(raised.value, error_view);
-        errors::with_preserved_error(|| drop(raised));
-        crate::clear_exception(&py);
-        refcount::Py_DECREF(key);
+        // The callback raises through the managed channel. The public API
+        // transfers the selected raised instance from either representation.
+        let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(raised.as_ptr(), error_view, "original index exception");
+        assert!(errors::PyErr_Occurred().is_null());
+        drop(raised);
+        drop(key_owner);
         assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(bound_view.addr()), before);
-        for view in [bound_view, mapping_view] {
-            refcount::Py_DECREF(view);
-        }
-        INDEX_ERROR.with(|slot| slot.set(0));
-        for bits in [mapping, mapping_class, bound, bound_class, error] {
-            crate::dec_ref_bits(&py, bits);
-        }
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
