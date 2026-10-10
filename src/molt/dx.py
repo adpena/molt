@@ -1147,6 +1147,18 @@ def require_external_artifact_root(
     return None
 
 
+def configured_artifact_root_text(env: Mapping[str, str] | None = None) -> str | None:
+    """Return the operator's ``MOLT_EXT_ROOT`` text exactly, or None when unset.
+
+    For cache keys on hot paths: it touches no filesystem. The cached consumer
+    anchors and resolves the value once per distinct key.
+    """
+
+    view = os.environ if env is None else env
+    raw = view.get(ARTIFACT_ROOT_ENV, "").strip()
+    return raw or None
+
+
 def configured_artifact_root(
     env: Mapping[str, str] | None = None, *, relative_to: Path
 ) -> Path | None:

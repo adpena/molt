@@ -128,7 +128,7 @@ def _canonical_build_state_root(project_root: Path) -> Path:
         None,
         os.fspath(Path.cwd()),
         None,
-        _configured_artifact_root_text(os.environ, project_root),
+        _configured_artifact_root_text(os.environ),
     )
 
 

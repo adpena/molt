@@ -4,7 +4,11 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from molt.dx import development_artifact_env
+from molt.dx import (
+    ARTIFACT_ROOT_ENV,
+    CANONICAL_RUN_ENV_KEYS,
+    development_artifact_env,
+)
 
 
 def build_molt_conformance_env(
@@ -12,13 +16,20 @@ def build_molt_conformance_env(
 ) -> dict[str, str]:
     """Resolve a conformance run's DX roots from the caller's environment.
 
-    The caller's custody selectors (an explicit artifact root, CI's ephemeral
-    custody root) decide where artifacts go. Resolving from the session ID
-    alone put them in the checkout, which CI custody refuses.
+    The caller's artifact-root and custody selectors (``MOLT_EXT_ROOT``, CI's
+    ephemeral custody root) decide where artifacts go; resolving from the
+    session ID alone put them in the checkout, which CI custody refuses. The
+    roots derived from them are recomputed, so ambient values never leak in.
     """
+    selectors = {
+        key: value
+        for key, value in base.items()
+        if key == ARTIFACT_ROOT_ENV
+        or (key not in CANONICAL_RUN_ENV_KEYS and key != "PYTHONPATH")
+    }
     return development_artifact_env(
         project_root,
-        {**base, "MOLT_SESSION_ID": session_id},
+        {**selectors, "MOLT_SESSION_ID": session_id},
         session_prefix="conformance",
         create_dirs=False,
     )
