@@ -13,7 +13,6 @@ from molt.cli.config_resolution import (
 from molt.cli.entrypoint_dispatch import _dispatch_entrypoint_command
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.cli.project_roots import _find_project_root
-from molt.cli_entry import ensure_hash_seed
 from molt.cli.output import fail
 from molt.environment_registry import (
     EnvironmentRegistryError,
@@ -23,7 +22,6 @@ from molt.process_guard import GuardInfrastructureError, guard_infrastructure_ex
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
-    ensure_hash_seed()
     try:
         check_process_environment()
     except EnvironmentRegistryError as exc:

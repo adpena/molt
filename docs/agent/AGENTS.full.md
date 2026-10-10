@@ -1249,7 +1249,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing (CPython required for baseline only).
 - `molt bench --script examples/hello.py`: run the bench harness on a custom script.
 - `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: request the finite generated `full` capability tier; exact checks remain active.
-- Build cache determinism is now enforced by default in the CLI (`PYTHONHASHSEED=0`) to stabilize cache keys across invocations. Override with `MOLT_HASH_SEED=<value>` (set `MOLT_HASH_SEED=random` to opt out).
+- Compiler IR and backend cache payload identities do not depend on the host hash seed. The CLI keeps normal CPython startup semantics and never restarts to change the seed; installed Python keeps `-I` isolation.
 - Lockfile verification (`uv lock --check`, `cargo metadata --locked`) is cached under `<CARGO_TARGET_DIR>/lock_checks/` when `CARGO_TARGET_DIR` is set (otherwise `target/lock_checks/`); remove those files when you need to force a full lock re-check.
 - Development profile routing: `--profile dev` maps to Cargo profile `dev-fast` by default (override with `MOLT_DEV_CARGO_PROFILE`; release uses `MOLT_RELEASE_CARGO_PROFILE`).
 - Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.

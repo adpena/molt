@@ -206,7 +206,6 @@ def _base_env(
     env["PYTHONPATH"] = "src"
     env["UV_NO_SYNC"] = "1"
     env["PYTHONHASHSEED"] = "0"
-    env["MOLT_HASH_SEED"] = "0"
     env["MOLT_EXT_ROOT"] = str(external_root)
     env["MOLT_CACHE"] = str(cache_root)
     env["CARGO_TARGET_DIR"] = str(target_root)

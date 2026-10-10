@@ -17150,3 +17150,135 @@ def test_rust_proof_projection_preserves_raw_cluster_and_key_spelling(arguments)
     assert command_admission.rustc_crate_types((*arguments, "--crate-type=cdylib")) == (
         "cdylib",
     )
+
+
+@pytest.mark.parametrize(
+    "prefix,options,mode,target,arguments",
+    [
+        (["-Rmmolt.cli", "--help"], ("-R",), "module", "molt.cli", ("--help",)),
+        (["-Ommolt.cli", "-R"], ("-O",), "module", "molt.cli", ("-R",)),
+        (["-BRcprint(1)", "-I"], ("-BR",), "command", "print(1)", ("-I",)),
+        (
+            ["-tBWignore", "-X", "-R", "-m", "pkg"],
+            ("-tB", "-Wignore", "-X", "-R"),
+            "module",
+            "pkg",
+            (),
+        ),
+        (["-BW", "-x", "-c", "pass"], ("-B", "-W", "-x"), "command", "pass", ()),
+        (
+            ["-IXdev", "script.py", "-E"],
+            ("-I", "-Xdev"),
+            "script",
+            "script.py",
+            ("-E",),
+        ),
+        (["--", "-R", "arg"], (), "script", "-R", ("arg",)),
+        (["--", "-", "-R"], (), "stdin", None, ("-R",)),
+        (["-", "-I"], (), "stdin", None, ("-I",)),
+        (
+            ["--check-hash-based-pycs", "never", "-c", "pass"],
+            ("--check-hash-based-pycs", "never"),
+            "command",
+            "pass",
+            (),
+        ),
+    ],
+)
+def test_python_invocation_grouped_consumed_option_boundaries(
+    prefix, options, mode, target, arguments
+):
+    invocation = command_admission.parse_python_invocation(["python", *prefix])
+    assert invocation.interpreter_options == options
+    assert (invocation.mode, invocation.target, invocation.arguments) == (
+        mode,
+        target,
+        arguments,
+    )
+
+
+@pytest.mark.parametrize("flag", ["R", "E", "I", "B", "x"])
+@pytest.mark.parametrize("option", ["-W", "-X", "-BW", "-BX"])
+def test_python_option_values_never_become_interpreter_flags(flag, option):
+    invocation = command_admission.parse_python_invocation(
+        ["python", option, "-" + flag, "-c", "pass"]
+    )
+    assert command_admission._interpreter_flag_present(
+        invocation.interpreter_options, flag
+    ) is (flag == "B" and option.startswith("-B"))
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, ["python", option, "-" + flag, "-c", "pass"]
+    )
+    assert rewritten[-3:] == ["command", "0", "pass"]
+    if not option.startswith("-B"):
+        assert rewritten[1] == "-B"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [["-Rc"], ["-BW"], ["-IX"], ["-Om", ""], ["--check-hash-based-pycs", "-R"]],
+)
+def test_python_grouped_options_require_their_actual_value(prefix):
+    with pytest.raises(ValueError, match="requires"):
+        command_admission.parse_python_invocation(["python", *prefix])
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [["-Oc"], ["-tOc"], ["-BW", "-x", "-c"], ["-X", "-R", "-c"], ["-IXdev", "-c"]],
+)
+def test_grouped_python_command_bootstrap_matches_actual_cpython(tmp_path, prefix):
+    code = "import sys;print((sys.flags.optimize,sys.flags.isolated,sys._xoptions,sys.argv))"
+    command = [sys.executable, *prefix, code, "-E", "-R"]
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, command
+    )
+    direct = run_custody_subject_process(
+        command,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    guarded = run_custody_subject_process(
+        rewritten,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == guarded.returncode == 0, (direct.stderr, guarded.stderr)
+    assert direct.stdout == guarded.stdout
+
+
+@pytest.mark.parametrize(
+    "prefix", ["-Omargument_probe", "-Rmargument_probe", "-tBmargument_probe"]
+)
+def test_grouped_python_module_bootstrap_matches_actual_cpython(tmp_path, prefix):
+    (tmp_path / "argument_probe.py").write_text(
+        "import sys;print((sys.flags.optimize,sys.flags.hash_randomization,sys.argv))\n"
+    )
+    command = [sys.executable, prefix, "-E"]
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, command
+    )
+    direct = run_custody_subject_process(
+        command,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    guarded = run_custody_subject_process(
+        rewritten,
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == guarded.returncode == 0, (direct.stderr, guarded.stderr)
+    assert direct.stdout == guarded.stdout

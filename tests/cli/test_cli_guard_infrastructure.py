@@ -255,7 +255,6 @@ def test_entrypoint_reports_a_guard_failure_with_the_guard_exit_code(
     entry = tmp_path / "app.py"
     entry.write_text("print(1)\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(entrypoint, "ensure_hash_seed", lambda: None)
     monkeypatch.setattr(entrypoint, "check_process_environment", lambda: None)
     monkeypatch.setattr(entrypoint, "_dispatch_entrypoint_command", dispatch)
     argv = ["molt", "build", *(["--json"] if json_output else []), str(entry)]

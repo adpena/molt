@@ -18,7 +18,6 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "tests",
     REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
     REPO_ROOT / "src" / "molt" / "cli",
-    REPO_ROOT / "src" / "molt" / "cli_entry.py",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
     REPO_ROOT / "src" / "molt" / "pytest_memory_guard_bootstrap.py",
     REPO_ROOT / "src" / "molt" / "toolchain_identity.py",
@@ -726,13 +725,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli_entry.py",
-        "_reexec_with_hash_seed",
-        "run",
-        "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
-        "execvpe and the restarted process preserves the same CLI custody path",
     ),
     AllowedRawSubprocessUse(
         "src/molt/backend_daemon_custody.py",

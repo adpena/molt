@@ -235,6 +235,24 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_HASH_SEED",
+      "note": "Remove this variable. The compiler no longer changes the host hash seed or restarts Python; compiler output must be seed-independent. Ordinary Python accepts PYTHONHASHSEED at interpreter launch, while installed isolated Python retains standard -I semantics.",
+      "rejected_by": [
+        "tests/test_environment_registry.py"
+      ],
+      "replacement": "",
+      "retired": "2026-10-10"
+    },
+    {
+      "name": "MOLT_HASH_SEED_APPLIED",
+      "note": "Remove this variable. The compiler no longer changes the host hash seed or restarts Python; compiler output must be seed-independent. Ordinary Python accepts PYTHONHASHSEED at interpreter launch, while installed isolated Python retains standard -I semantics.",
+      "rejected_by": [
+        "tests/test_environment_registry.py"
+      ],
+      "replacement": "",
+      "retired": "2026-10-10"
+    },
+    {
       "name": "MOLT_MAX_CONCURRENT_AGENTS",
       "note": "",
       "rejected_by": [],
@@ -3895,24 +3913,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_GUARD_SCRATCH_ROOT",
       "owner": "src/molt/temporary_artifacts.py",
       "summary": "tools/memory_guard.py sets it to the leased scratch directory of one guarded child; molt.temporary_artifacts.guard_scratch reads it and rejects a value that does not match the parent's owner.json allocation, and persistent daemon custody strips it and refuses dependency paths under it.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "string",
-      "name": "MOLT_HASH_SEED",
-      "owner": "src/molt/cli_entry.py",
-      "summary": "PYTHONHASHSEED value the molt launcher restarts itself with, before the CLI loads, for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_HASH_SEED_APPLIED",
-      "owner": "src/molt/cli_entry.py",
-      "summary": "The molt CLI sets it to 1 in the environment of its own PYTHONHASHSEED re-exec; the child reads it and exits 127 when the seed still does not match instead of re-executing again.",
       "values": []
     },
     {
