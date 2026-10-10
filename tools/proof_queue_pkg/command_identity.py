@@ -1178,7 +1178,7 @@ def _tool_identity_reuse_key(
             if isinstance(python_authority, Mapping)
             else None
         ),
-        "cargo_native_c_units": envelope.get("cargo_native_c_units", []),
+        "cargo_native_units": envelope.get("cargo_native_units", {}),
         "toolchains": (
             [str(value) for value in toolchains]
             if isinstance(toolchains, list)
@@ -1255,7 +1255,7 @@ def _reused_identity_is_current(
     cwd: Path,
     env: Mapping[str, str],
     command_argv: Sequence[str],
-    native_c_units: Sequence[str] = (),
+    native_units: Mapping[str, Sequence[str]] | None = None,
 ) -> bool:
     """Re-prove a stored identity from file bytes before it is reused.
 
@@ -1281,23 +1281,26 @@ def _reused_identity_is_current(
         _validate_wasi_sdk_policy(policy, identity)
         if policy.name == "rustc":
             selection = toolchain_capture.validate_rust_link_selection(
-                identity, required_native_c=native_c_units, command_argv=command_argv
+                identity, required_native_units=native_units, command_argv=command_argv
             )
             toolchain_capture.revalidate_rust_artifact_manifests(selection)
-            if any(row["resources"] is not None for row in selection["native_c"]):
+            if any(row["resources"] is not None for row in selection["native_build"]):
                 return False  # Reuse stores selections; each armed operation captures contents.
-            current = toolchain_capture.select_cargo_native_c_units(
-                required=native_c_units,
+            current = toolchain_capture.select_cargo_native_units(
+                required=native_units,
                 target=selection["target"],
                 host=selection["compiler_host"],
                 cwd=cwd,
                 env=env,
             )
-            if current != [row["selection"] for row in selection["native_c"]]:
+            if current != [row["selection"] for row in selection["native_build"]]:
                 return False
-            for row in selection["native_c"]:
-                if not toolchain_capture.native_compiler_selection_is_current(
-                    row["compiler"], env=env
+            for row in selection["native_build"]:
+                if any(
+                    not toolchain_capture.native_compiler_selection_is_current(
+                        compiler, env=env
+                    )
+                    for compiler in row["compilers"].values()
                 ):
                     return False
         if policy.data.get("wasi_sdk_tool") is not None:
@@ -1460,7 +1463,7 @@ def _tool_identity(
                 cwd=cwd,
                 env=env,
                 command_argv=command_argv,
-                native_c_units=envelope.get("cargo_native_c_units", []),
+                native_units=envelope.get("cargo_native_units", {}),
             ):
                 if reuse_telemetry is not None:
                     reuse_telemetry.append(
@@ -1621,7 +1624,7 @@ def _capture_tool_identity(
             toolchain_capture.capture_rust_link_process_images(
                 rustc=content_path,
                 rustc_version=str(material["version"]),
-                native_c_units=envelope.get("cargo_native_c_units", []),
+                native_units=envelope.get("cargo_native_units", {}),
                 admitted_command=envelope.get("submitted_argv", envelope["argv"]),
                 cargo=cargo_path,
                 cwd=probe_cwd,
