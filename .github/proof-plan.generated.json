@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "12a8be8da45d88f79e25635cfd2fdf48f6602b389ba36deb2d0746df447cc96e",
+  "authority_sha256": "a943b22e34fdf311ac63091d2e6498e569aa06d2621fd52ee31bf264953b4105",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -529,6 +529,7 @@
         "tests/test_bench_tool.py",
         "tests/test_bench_harness.py",
         "tests/test_manifest_pipeline_e2e.py",
+        "tests/cli/test_cli_smoke.py",
         "tests/cli/test_native_link_*.py",
         "tests/cli/test_native_symbol_authority.py",
         "tests/cli/test_link_selection_admission.py",
@@ -550,7 +551,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 43,
+      "timeout_minutes": 53,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3722,13 +3723,13 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
-        "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"
+        "tests/test_wasm_freestanding.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
+        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
@@ -3762,7 +3763,7 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"
+        "tests/test_finally_pending_observer_parity.py"
       ],
       "cache_domain": "pytest",
       "cargo_native_units": {
@@ -5727,7 +5728,7 @@
         "-vv",
         "-s",
         "--durations=0",
-        "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest",
+        "tests/test_manifest_pipeline_e2e.py",
         "tests/tools/test_proof_queue_native_receipts.py",
         "tests/cli/test_backend_daemon_sequential.py"
       ],
@@ -5749,6 +5750,45 @@
       ],
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "--durations=20",
+        "tests/cli/test_cli_smoke.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "native.integration.capability-manifest"
+      ],
+      "family": "native_integration",
+      "id": "native.integration.cli-smoke",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv",
@@ -6920,14 +6960,14 @@
         }
       },
       "native_integration": {
-        "budget_seconds": 2580,
-        "critical_path_seconds": 1200,
+        "budget_seconds": 3180,
+        "critical_path_seconds": 1800,
         "headroom_seconds": 0,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 2400,
-        "required_job_seconds": 2580,
+        "projected_makespan_seconds": 3000,
+        "required_job_seconds": 3180,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 2400,
+          "compiler-build-resource": 3000,
           "python-tests": 150
         }
       },

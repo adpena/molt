@@ -289,7 +289,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.native_integration == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 43
+    timeout-minutes: 53
     env:
       MOLT_GUARD_PROFILE: all
     steps:
