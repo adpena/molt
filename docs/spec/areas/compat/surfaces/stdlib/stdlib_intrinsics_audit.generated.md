@@ -18,10 +18,10 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `37`
-- `intrinsic-partial`: `241`
+- `intrinsic-partial`: `240`
 - `intrinsic-support`: `30`
-- `python-compiled`: `252`
-- `stub`: `389`
+- `python-compiled`: `262`
+- `stub`: `380`
 - `policy-gate`: `0`
 
 ## Priority Lowering Queue (Generated)
@@ -335,7 +335,6 @@
 - `typing`
 - `typing_extensions`
 - `unicodedata`
-- `unittest`
 - `urllib.error`
 - `urllib.parse`
 - `urllib.request`
@@ -619,9 +618,19 @@
 - `tomllib`
 - `trace`
 - `tracemalloc`
+- `unittest`
+- `unittest.__main__`
+- `unittest._log`
 - `unittest.async_case`
+- `unittest.case`
+- `unittest.loader`
+- `unittest.main`
 - `unittest.mock`
+- `unittest.result`
+- `unittest.runner`
 - `unittest.signals`
+- `unittest.suite`
+- `unittest.util`
 - `urllib`
 - `warnings`
 - `wsgiref`
@@ -988,15 +997,6 @@
 - `turtledemo.tree`
 - `turtledemo.two_canvases`
 - `turtledemo.yinyang`
-- `unittest.__main__`
-- `unittest._log`
-- `unittest.case`
-- `unittest.loader`
-- `unittest.main`
-- `unittest.result`
-- `unittest.runner`
-- `unittest.suite`
-- `unittest.util`
 - `uu`
 - `venv`
 - `venv.__main__`
