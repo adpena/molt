@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 import subprocess
 
@@ -29,13 +31,13 @@ def test_fuzz_workspace_for_unknown_target_raises() -> None:
         runtime_safety._fuzz_workspace_for_target("definitely_missing_target")
 
 
-def test_miri_tmp_root_defaults_to_repo_tmp(monkeypatch) -> None:
+def test_miri_tmp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
-    assert runtime_safety._miri_tmp_root({}) == (
-        runtime_safety.ROOT / "tmp" / "runtime_safety" / "miri"
-    )
+    miri = runtime_safety._miri_tmp_root({})
+    assert miri.parts[-2:] == ("runtime_safety", "miri")
+    assert not miri.is_relative_to(runtime_safety.ROOT.resolve())
 
 
 def test_run_miri_preserves_explicit_tmpdir(monkeypatch, tmp_path: Path) -> None:
@@ -72,9 +74,11 @@ def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:
 
     runtime_safety.run_miri(None)
 
-    assert captured["env"]["TMPDIR"] == str(
-        runtime_safety.ROOT / "tmp" / "runtime_safety" / "miri"
-    )
+    miri = Path(captured["env"]["TMPDIR"])
+    # The process environment, as run_miri sees it; under CI it names the
+    # ephemeral custody root, which places scratch.
+    assert miri == runtime_safety._miri_tmp_root(dict(os.environ))
+    assert not miri.is_relative_to(runtime_safety.ROOT.resolve())
 
 
 @pytest.mark.usefixtures("developer_host_context")

@@ -24,7 +24,6 @@ from tests.native_process_guard import run_native_test_process
 from tests import process_guard_common
 
 MOLT_DIR = Path(__file__).resolve().parents[1]
-ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
 
 
 def _network_available() -> bool:
@@ -63,7 +62,7 @@ def _compile_and_run(source: str) -> str:
 
         env = development_artifact_env(
             MOLT_DIR,
-            {**os.environ, "MOLT_EXT_ROOT": str(ARTIFACT_ROOT)},
+            os.environ,
             session_prefix="https-urlopen",
             session_id=os.environ.get("MOLT_SESSION_ID") or "https-urlopen",
             create_dirs=True,

@@ -7,19 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env, scratch_root
 from tests.native_process_guard import run_native_test_process
 from tests import process_guard_common
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TKINTER_TTK_BUILD_DEFAULT_TIMEOUT_SEC = 1200.0
-
-
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return REPO_ROOT
 
 
 def _python_executable() -> str:
@@ -33,18 +27,13 @@ def _python_executable() -> str:
 
 
 def _build_env() -> dict[str, str]:
-    artifact_root = _artifact_root()
-    tmp_root = artifact_root / "tmp"
-    env = os.environ.copy()
+    env = development_artifact_env(
+        REPO_ROOT,
+        {**os.environ, "MOLT_USE_SCCACHE": "0"},
+        session_prefix="tkinter-compile",
+        session_id="tkinter-compile",
+    )
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
-    env["MOLT_EXT_ROOT"] = str(artifact_root)
-    env["CARGO_TARGET_DIR"] = str(artifact_root / "target" / "tkinter-compile")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(artifact_root / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(tmp_root / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(tmp_root)
-    env["UV_CACHE_DIR"] = str(artifact_root / ".uv-cache")
-    env["TMPDIR"] = str(tmp_root)
     env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = "/tmp/molt_backend_sockets"
     env["MOLT_BACKEND_DAEMON"] = "0"
     env["MOLT_USE_SCCACHE"] = "0"
@@ -61,7 +50,7 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
     if not python:
         pytest.skip("python executable unavailable")
 
-    tmp_root = _artifact_root() / "tmp"
+    tmp_root = scratch_root(REPO_ROOT)
     tmp_root.mkdir(parents=True, exist_ok=True)
     with process_guard_common.guarded_temporary_directory(
         prefix="tkinter-ttk-compile-", dir=tmp_root

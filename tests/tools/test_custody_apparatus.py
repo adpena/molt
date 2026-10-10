@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from molt.custody_layout import unconfigured_state_root  # noqa: E402
+from molt import dx  # noqa: E402
+from molt.custody_layout import out_of_tree_scratch_root  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     harness_guard_artifact_dir,
     pytest_guard_summary_dir,
@@ -133,21 +134,32 @@ def test_apparatus_events_are_part_of_the_receipt_identity(tmp_path: Path) -> No
 @pytest.mark.parametrize("state_root", [None, "   "])
 @pytest.mark.parametrize("checkout", ["standalone", "molt-src", "worktrees/worker"])
 def test_guard_artifacts_default_to_shared_out_of_tree_custody(
-    tmp_path: Path, state_root: str | None, checkout: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state_root: str | None,
+    checkout: str,
 ) -> None:
+    # The synthetic checkouts are families or a plain clone, not host scratch.
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     repo = tmp_path / checkout
     environ = {} if state_root is None else {"MOLT_MEMORY_GUARD_STATE_ROOT": state_root}
     pytest_root = pytest_guard_summary_dir(repo, environ=environ)
     harness_root = harness_guard_artifact_dir(repo, environ=environ)
-    expected = unconfigured_state_root(repo) / "tmp"
+    # A family member shares the family root's scratch; a plain clone uses
+    # its out-of-tree scratch.
+    expected = (
+        out_of_tree_scratch_root(repo)
+        if checkout == "standalone"
+        else tmp_path.resolve() / "tmp"
+    )
     assert pytest_root == expected / "pytest-memory-guard"
     assert harness_root == expected / "harness_memory_guard"
     # Independent regression oracle: recording a failed proof must never mutate
     # its watched source, even for an unconfigured checkout or blank selector.
     assert not pytest_root.is_relative_to(repo.resolve())
     assert not harness_root.is_relative_to(repo.resolve())
-    if checkout != "standalone":
-        assert expected == tmp_path.resolve() / "tmp"
 
 
 def test_guard_summary_dir_follows_the_admitted_state_root(tmp_path: Path) -> None:

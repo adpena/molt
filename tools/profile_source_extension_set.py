@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import sys
 from pathlib import Path
@@ -128,7 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         command,
         timeout=args.timeout,
         cwd=str(Path(__file__).resolve().parents[1]),
-        env={"MOLT_EXT_ROOT": os.environ.get("MOLT_EXT_ROOT", "")},
     )
     record: dict[str, object] = {
         "schema_version": 1,

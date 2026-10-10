@@ -20,7 +20,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "bench" / "results"
-TMP = ROOT / "tmp" / "startup_bench"
 NODE_PROBE = ROOT / "tools" / "startup_node_probe.js"
 WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
@@ -34,6 +33,9 @@ from molt.toolchain_identity import (  # noqa: E402
     expand_user_path,
 )
 from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
+
+TMP = scratch_dir(ROOT, "startup_bench")
 
 try:
     from tools.command_execution import CommandExecutor

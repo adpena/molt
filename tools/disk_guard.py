@@ -86,8 +86,12 @@ from molt.disk_capacity import (  # noqa: E402
     minimum_headroom_bytes,
 )
 from molt.custody_layout import custody_root  # noqa: E402
-from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from molt.dx import (  # noqa: E402
+    cargo_target_dir_for_artifact_root,
+    configured_artifact_root,
+)
 from molt.file_deletion import delete_path  # noqa: E402
+from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
 from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
 
 _GB = 1024**3
@@ -105,7 +109,6 @@ ENV_TARGET = "MOLT_DISK_GUARD_TARGET_GB"
 ENV_MIN_IDLE = "MOLT_DISK_GUARD_MIN_IDLE_MIN"
 ENV_TTL = "MOLT_DISK_GUARD_TTL_HOURS"
 ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
-ENV_ROOT = "MOLT_EXT_ROOT"
 
 
 # Hard denylist: even if a classifier ever matched one of these under target/,
@@ -401,10 +404,11 @@ def resolve_root(
     must identify a real, multi-component directory.
     """
     env = os.environ if env is None else env
+    configured = configured_artifact_root(env, relative_to=Path.cwd())
     if raw:
         root = Path(raw)
-    elif env.get(ENV_ROOT):
-        root = Path(env[ENV_ROOT])
+    elif configured is not None:
+        root = configured
     else:
         raise SystemExit(
             "disk_guard: could not resolve the artifact root; pass --root or set "
@@ -807,7 +811,10 @@ def _rewrite_registry(root: Path, keep: Mapping[str, dict]) -> None:
 
 def _has_active_guard(root: Path) -> bool:
     """Project the shared marker authority without observing host processes."""
-    return has_active_guard_marker(root / "tmp" / "memory_guard" / "active")
+    return any(
+        has_active_guard_marker(markers)
+        for markers in active_guard_marker_dirs_of(root)
+    )
 
 
 def discover_candidates(

@@ -2273,9 +2273,11 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
 
-    assert wasm_link._default_input_path() == ext_root / "dist" / "output.wasm"
-    assert wasm_link._default_output_path() == Path(
-        ext_root / "dist" / "output_linked.wasm"
+    assert wasm_link._default_input_path() == (
+        ext_root.resolve() / "dist" / "output.wasm"
+    )
+    assert wasm_link._default_output_path() == (
+        ext_root.resolve() / "dist" / "output_linked.wasm"
     )
 
 

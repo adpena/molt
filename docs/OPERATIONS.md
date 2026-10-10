@@ -596,16 +596,25 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   development and proof-lane bootstrap, not a public compile requirement; real
   users may compile in place, use default Molt/Cargo locations, or pass explicit
   target/output flags. The resolver configures:
-  - `MOLT_EXT_ROOT=<artifact-root>` (repo-local by default, or caller-provided external root)
+  - `MOLT_EXT_ROOT=<artifact-root>` (`molt.dx.artifact_root`: the checkout family root by default, the clone itself for a plain clone, or a caller-provided external root)
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` so differential runs reuse the same shared Cargo artifacts by default
-  - `MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/tmp/diff` and `MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp`
-  - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache` and `TMPDIR=$MOLT_EXT_ROOT/tmp`
+  - `MOLT_DIFF_ROOT=<scratch>/diff`, `MOLT_DIFF_TMPDIR=<scratch>` and `TMPDIR=<scratch>`, where `<scratch>` is `molt.dx.scratch_root`: `$MOLT_EXT_ROOT/tmp`, or a per-checkout folder under the host temp root when that path would fall inside the checkout
+  - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache`
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
+- **Scratch storage and budget**: `MOLT_SCRATCH_STORAGE` selects run scratch
+  storage: `disk` (the default), `memory` (Linux `/dev/shm`), or the absolute
+  path of a memory-backed directory you mounted, such as a macOS RAM disk.
+  Molt never creates or mounts a RAM disk. Locks, guard markers and build
+  control stay on disk in every mode, so processes with different storage
+  still agree. Before a guarded run starts, the memory guard requires
+  `MOLT_SCRATCH_BUDGET_GB` (default 4) free on the scratch volume and refuses
+  the run otherwise, instead of failing mid-run with `ENOSPC`. Set a larger
+  budget for full-suite pytest runs.
 - **Artifact root policy**: throughput bootstrap now prefers `MOLT_EXT_ROOT`
-  when set and otherwise uses canonical repo-local roots. Maintainer/agent
+  when set and otherwise uses the checkout family root. Maintainer/agent
   proof lanes should use an external root when available for shared artifacts,
   larger local capacity, and Windows `C:` self-protection. Do not present that
   as a required public CLI default.

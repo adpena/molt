@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import scratch_root
 from molt.process_guard import timeout_from_env
 from tests.wasm_linked_runner import (
     _run_wasm_test_process,
@@ -40,13 +41,13 @@ def _build_file_wasm(
     )
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    tmp_root = root / "tmp"
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    env["TMPDIR"] = str(tmp_root)
     env["MOLT_HOME"] = str(root)
     env["MOLT_CACHE"] = str(root / ".molt_cache")
     env["MOLT_WASM_RUNTIME_DIR"] = str(root / "wasm")
     env["MOLT_EXT_ROOT"] = str(root)
+    tmp_root = scratch_root(root, env)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = str(tmp_root)
 
     cmd = [
         sys.executable,

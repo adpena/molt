@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from molt.dx import scratch_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
 OP_KINDS_TABLE = ROOT / "runtime/molt-ir/src/tir/op_kinds.toml"
@@ -55,7 +57,7 @@ CPYTHON_ABI_SOURCE_ROOT = ROOT / "runtime/molt-cpython-abi/src"
 CPYTHON_ABI_VARIADIC_SHIM = ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
-WASM_ABI_GEN_CACHE = ROOT / "tmp/wasm_abi_gen_cache"
+WASM_ABI_GEN_CACHE = scratch_dir(ROOT, "wasm_abi_gen_cache")
 REMOVED_GENERATED_FILES = (
     ROOT / "runtime/wasm_poll_callables.inc",
     ROOT / "runtime/wasm_runtime_callables.inc",

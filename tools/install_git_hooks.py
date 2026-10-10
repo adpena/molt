@@ -4,7 +4,8 @@
 Installs each managed hook from ``.githooks/`` into the git *common* hooks dir,
 so it fires in the checkout AND every linked worktree:
 
-  * ``pre-push``   — the drift-harvest enforcement gate.
+  * ``pre-push``   — the drift-harvest enforcement gate, then the generated-
+                     projection check CI runs as ``repository.generators``.
   * ``commit-msg`` — the commit-attribution policy (no Claude attribution);
                      CI enforces the same rule over every pushed range.
 

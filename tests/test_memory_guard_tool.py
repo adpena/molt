@@ -28,7 +28,8 @@ from tools.memory_guard_core import (
 
 import tools.memory_guard as memory_guard
 from molt.backend_daemon_suite_custody import LEASE_ENV
-from molt.custody_layout import unconfigured_state_root
+import molt.dx as molt_dx
+from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     install_module_os_view,
     install_module_view,
@@ -908,22 +909,39 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     assert {path: path.read_bytes() for path in prior} == prior
 
 
-def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -> None:
+def test_active_guard_markers_follow_external_artifact_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo_root = tmp_path / "repo"
     artifact_root = tmp_path / "artifacts"
+    # The synthetic repo is a plain clone, not explicit host scratch.
+    monkeypatch.setattr(
+        molt_dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
 
-    # Unconfigured guard state belongs to the checkout family, never the tree.
+    # A plain clone's guard state goes to its out-of-tree scratch.
     default_markers = active_guard_marker_dir(repo_root, {})
     assert default_markers == (
-        unconfigured_state_root(repo_root) / "tmp" / "memory_guard" / "active"
-    ).resolve(strict=False)
+        out_of_tree_scratch_root(repo_root) / "memory_guard" / "active"
+    )
     assert repo_root.resolve() not in default_markers.parents
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
     ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
-    assert active_guard_marker_dir(
-        repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
+    # Candidate roots count only when the run asks for an external root.
+    assert (
+        active_guard_marker_dir(
+            repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
+        )
+        == default_markers
+    )
+    # Memory scratch never moves the markers every observer reads.
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    assert (
+        active_guard_marker_dir(repo_root, {"MOLT_SCRATCH_STORAGE": str(ram)})
+        == default_markers
+    )
     state_root = tmp_path / "proof-control" / "memory_guard"
     assert active_guard_marker_dir(
         repo_root,

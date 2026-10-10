@@ -61,7 +61,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
-from molt.dx import development_artifact_env  # noqa: E402
+from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
@@ -705,7 +705,7 @@ def main():
 
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
-        artifact_root=REPO_ROOT / "tmp" / "bench" / "harness",
+        artifact_root=scratch_dir(REPO_ROOT, "bench/harness"),
         label="bench_harness",
         limits=limits,
     ):

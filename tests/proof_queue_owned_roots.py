@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import sys
-from molt.dx import checkout_custody
+from molt.dx import scratch_dir
 from tools.proof_queue_pkg import cargo_output_layout, custody_cas
 
 
@@ -78,9 +78,7 @@ def native_build_environment(*, source: Path) -> dict[str, str]:
             "Windows native supervisor tests require owner-selected MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"
         )
     case = native_case_path(
-        checkout_custody(source.resolve().parents[2]).custody_root
-        / "tmp"
-        / "supervisor-fixtures",
+        scratch_dir(source.resolve().parents[2], "supervisor-fixtures"),
         source=source,
         nodeid=source.name + "::supervisor-build",
     )

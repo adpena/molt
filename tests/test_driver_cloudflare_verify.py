@@ -92,12 +92,15 @@ def test_thin_adapter_run_wrangler_dry_run_assembles_command(
         return subprocess.CompletedProcess(cmd, 0, "dry-run ok\n", "")
 
     monkeypatch.setattr(verify, "_run_command", fake_run)
+    # Dry-run output is scratch under the artifact root, never in the project.
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
 
     result = verify.run_wrangler_dry_run(
         wrangler="wrangler",
         bundle_root=bundle_root,
         wrangler_config=wrangler_config,
-        project_root=tmp_path,
+        project_root=tmp_path / "project",
         env={"TMPDIR": str(tmp_path / "tmp")},
         verbose=False,
         run_id="session",
@@ -109,7 +112,14 @@ def test_thin_adapter_run_wrangler_dry_run_assembles_command(
         "deploy",
         "--dry-run",
         "--outdir",
-        str(tmp_path / "tmp" / "drivers" / "cloudflare" / "session" / "dry-run"),
+        str(
+            artifacts.resolve()
+            / "tmp"
+            / "drivers"
+            / "cloudflare"
+            / "session"
+            / "dry-run"
+        ),
         "--config",
         str(wrangler_config),
     ]

@@ -980,3 +980,33 @@ def test_terminal_callback_failure_releases_pin_and_preserves_payload(
     assert lease.lock is None
     assert not handle.operation_owners
     assert not file_locks._file_lock_is_owned(handle)
+
+
+def test_allocation_refuses_a_run_whose_scratch_budget_is_not_free(tmp_path):
+    state = tmp_path / "tmp" / "memory_guard"
+    env = {
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(state),
+        "MOLT_MEMORY_GUARD_TOKEN": f"{7:032x}",
+        "MOLT_MEMORY_GUARD_MARKER": str(state / "active" / "guard-7.json"),
+        # One exbibyte: no host volume has it free.
+        "MOLT_SCRATCH_BUDGET_GB": str(1024**3),
+    }
+
+    with pytest.raises(ValueError, match="scratch capacity admission rejected"):
+        scratch.acquire_guard_scratch(tmp_path, env)
+    # Admission runs before allocation: nothing was created.
+    assert not (tmp_path / "tmp" / "gs").exists()
+
+
+def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    family = tmp_path / "Molt"
+    lane = family / "worktrees" / "lane"
+    lane.mkdir(parents=True)
+    env = {"MOLT_SCRATCH_STORAGE": str(ram)}
+
+    root = scratch.scratch_root(lane, env)
+
+    assert root.parent.parent == ram.resolve()
+    assert root.name == "gs"

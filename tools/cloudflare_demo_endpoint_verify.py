@@ -33,7 +33,9 @@ def _default_artifact_root() -> Path:
 
 
 def _default_tmp_root() -> Path:
-    return Path("tmp") / "cloudflare_demo_verify" / _stamp()
+    from molt.dx import scratch_dir
+
+    return scratch_dir(REPO_ROOT, "cloudflare_demo_verify") / _stamp()
 
 
 def _select_cases(case_set: str):

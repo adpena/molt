@@ -51,9 +51,11 @@ def _wasm_runtime_root() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if artifact_root:
-        return Path(artifact_root).expanduser() / "wasm"
+    from molt.dx import configured_artifact_root
+
+    artifact_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
+    if artifact_root is not None:
+        return artifact_root / "wasm"
     return MOLT_ROOT / "wasm"
 
 

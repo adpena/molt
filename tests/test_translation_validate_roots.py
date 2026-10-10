@@ -22,12 +22,12 @@ def _expected_translation_target_root(root: Path) -> Path:
     )
 
 
-def test_temp_root_defaults_to_repo_tmp(monkeypatch) -> None:
+def test_temp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
-    assert (
-        translation_validate._temp_root({}) == translation_validate._REPO_ROOT / "tmp"
+    assert not translation_validate._temp_root({}).is_relative_to(
+        translation_validate._REPO_ROOT.resolve()
     )
 
 
@@ -47,15 +47,18 @@ def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:
     assert translation_validate._temp_root(env) == ambient_tmp
 
     env.pop("TMPDIR")
-    assert translation_validate._temp_root(env) == ext_root / "tmp"
+    assert translation_validate._temp_root(env) == ext_root.resolve() / "tmp"
 
 
-def test_target_root_defaults_to_repo_target(monkeypatch) -> None:
+def test_target_root_defaults_to_the_canonical_artifact_root(monkeypatch) -> None:
     for key in ("CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
+    # The checkout family root, not the worktree: one target per family.
     assert translation_validate._cargo_target_root({}) == (
-        _expected_translation_target_root(translation_validate._REPO_ROOT)
+        _expected_translation_target_root(
+            translation_validate.artifact_root(translation_validate._REPO_ROOT, {})
+        )
     )
 
 
@@ -71,7 +74,7 @@ def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
 
     env.pop("CARGO_TARGET_DIR")
     assert translation_validate._cargo_target_root(env) == (
-        _expected_translation_target_root(ext_root)
+        _expected_translation_target_root(ext_root.resolve())
     )
 
 
