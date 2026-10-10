@@ -744,14 +744,19 @@ def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> b
     )
 
 
+# A healthy read finishes in milliseconds, so these bounds cost nothing there;
+# they only stop a hung reader. Five seconds for one object failed builds on
+# loaded hosted Linux runners (HF-82).
+_NM_OBJECT_READ_TIMEOUT_S = 60.0
+_NM_ARCHIVE_READ_TIMEOUT_S = 120.0
+
+
 def _nm_read_timeout(default: float) -> float:
     """Resolve the ``nm``/``llvm-nm`` object-symbol read timeout.
 
-    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool, but
-    on slow volumes (network/OneDrive-backed checkouts, antivirus-scanned exFAT
-    build roots) a single spawn + read can exceed a few seconds. Expose the
-    ceiling via ``MOLT_NM_TIMEOUT_SEC`` so an operator on a slow host can raise
-    it without patching; the tight default keeps healthy hosts fast.
+    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool.
+    Spawn and read time grows on loaded hosts and slow volumes, so the bound
+    only stops a hung reader. ``MOLT_NM_TIMEOUT_SEC`` replaces it.
     """
     raw = os.environ.get("MOLT_NM_TIMEOUT_SEC")
     if raw:
@@ -1085,7 +1090,11 @@ def _native_symbol_facts_admission(
             if facts is None or not requirement.accepts(facts):
                 facts = _read_native_global_symbol_facts(
                     opened.path,
-                    timeout=120 if archive else 5,
+                    timeout=(
+                        _NM_ARCHIVE_READ_TIMEOUT_S
+                        if archive
+                        else _NM_OBJECT_READ_TIMEOUT_S
+                    ),
                     target_triple=target_triple,
                     _reader=reader,
                     archive_members=members,
