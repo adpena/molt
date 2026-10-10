@@ -2659,6 +2659,7 @@ dependencies = [
  "molt-wasm-facts",
  "object 0.39.1",
  "rmp-serde",
+ "rustc-demangle",
  "serde",
  "serde_json",
  "sha2 0.11.0",

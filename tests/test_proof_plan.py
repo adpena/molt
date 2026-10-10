@@ -381,7 +381,11 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         complement.argv[index + 1]
         for index, arg in enumerate(complement.argv[:-1])
         if arg == "--test"
-    } == {"generated_artifact_custody", "ir_contract_validation"}
+    } == {
+        "generated_artifact_custody",
+        "ir_contract_validation",
+        "native_artifact_facts",
+    }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv

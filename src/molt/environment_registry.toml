@@ -371,7 +371,7 @@ audience = "user"
 kind = "int"
 default = "536870912"
 owner = "runtime/molt-backend/src/backend_process/io_limits/limits.rs"
-summary = "Maximum request payload bytes a one-shot molt-backend process reads from stdin; values below 1024 or non-numeric use 536870912 (512 MiB)."
+summary = "Maximum one-shot backend stdin request bytes; also bounds native artifact inspection input and complete JSON response separately. Oversized inspection fails without truncation. Values below 1024 or non-numeric use 536870912 (512 MiB)."
 
 [[variable]]
 name = "MOLT_BACKEND_TIMEOUT"

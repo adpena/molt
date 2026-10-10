@@ -341,7 +341,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b96cb6bfe3f0e193c8cf0c3f54cca1501c7da744a80f7c0f6bd7ba4f33a072dd",
+  "authority_sha256": "6818d16958727c1be762625efc54d3c0906e075b04bdb12ff68f91d55ceb82fc",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2536,6 +2536,7 @@
         "tests/tools/test_perf_schema.py",
         "tests/tools/test_check_perf_gate_wiring.py",
         "tests/tools/test_analysis_capsule.py",
+        "tests/tools/test_binary_size_analysis.py",
         "tests/tools/test_runtime_bridge_test_stubs.py",
         "tests/tools/test_runtime_app_bootstrap_authority.py",
         "tests/tools/test_cargo_test_truth.py",
@@ -5861,6 +5862,8 @@
         "generated_artifact_custody",
         "--test",
         "ir_contract_validation",
+        "--test",
+        "native_artifact_facts",
         "-p",
         "molt-artifact-publish",
         "-p",
