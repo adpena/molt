@@ -2043,12 +2043,7 @@ def test_diff_run_lock_is_same_control_as_plain_cli_across_receipts(
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(canonical / "receipt-two"))
     assert module._diff_run_lock_path() == first
     cli = _build_state_root_cached(
-        str(repo),
-        None,
-        str(output / "cargo-target"),
-        str(repo),
-        None,
-        str(canonical),
+        str(repo), None, str(output / "cargo-target"), str(canonical)
     )
     assert first == cli / "diff_run.lock"
 

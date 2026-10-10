@@ -708,9 +708,12 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     git_dir.mkdir(parents=True)
     (worktree / "src" / "molt" / "cli").mkdir(parents=True)
     (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    # The common checkout's durable toolchain custody (molt.dx): a checkout
+    # outside a family keeps it in its own target-root.
     managed = _write_tool_family(
-        canonical / "target" / "toolchains" / "llvm-22.1.8" / "bin"
+        canonical / "target-root" / "toolchains" / "llvm-22.1.8" / "bin"
     )
+    _write_tool_family(canonical / "target" / "toolchains" / "llvm-23.0.0" / "bin")
     monkeypatch.setattr(
         llvm_wasi_tools,
         "__file__",

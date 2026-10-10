@@ -23,6 +23,7 @@ from pathlib import Path
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
 import molt.cli as cli
+import molt.dx as molt_dx
 import pytest
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
@@ -342,7 +343,6 @@ def test_runtime_lib_path_is_stdlib_profile_qualified(
     tmp_path: Path, monkeypatch
 ) -> None:
     cli._runtime_lib_path_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
 
     micro = cli._runtime_lib_path(
@@ -376,19 +376,12 @@ def test_runtime_lib_path_is_stdlib_profile_qualified(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_cargo_target_root_ignores_removed_legacy_target_root_env(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     legacy_key = "MOLT" + "_TARGET_ROOT"
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    for key in (
-        "MOLT_EXT_ROOT",
-        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-    ):
-        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(legacy_key, str(tmp_path / "legacy-target"))
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
@@ -397,6 +390,7 @@ def test_cargo_target_root_ignores_removed_legacy_target_root_env(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_cargo_target_root_uses_dx_external_session_target_when_required(
     tmp_path: Path,
     monkeypatch,
@@ -404,16 +398,27 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     project_root = tmp_path / "repo"
     project_root.mkdir()
     external_root = tmp_path / "external" / "Molt"
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(external_root))
     monkeypatch.setenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", "1")
-    monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "agent-one")
 
     assert cli._cargo_target_root(project_root) == (
         external_root.resolve() / "target" / "sessions" / "agent-one"
     )
+    # Every consumer of the default target reads the same rule: build
+    # control and the backend daemon find the state the build leaves.
+    from molt.backend_daemon_custody import backend_daemon_root_from_env
+
+    assert backend_daemon_root_from_env(os.environ, project_root=project_root) == (
+        cli._build_state_root(project_root) / "backend_daemon"
+    )
+    # A generated session never scopes it, as in `molt dx run`, and the
+    # target stays outside the project.
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    assert cli._cargo_target_root(project_root) == external_root.resolve() / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(project_root / "target"))
+    with pytest.raises(molt_dx.DxConfigError, match="CARGO_TARGET_DIR"):
+        cli._cargo_target_root(project_root)
 
 
 def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
@@ -556,7 +561,6 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     cli._runtime_lib_path_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
 
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(static_archive_bytes())

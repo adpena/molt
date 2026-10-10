@@ -14541,28 +14541,22 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
     )
 
 
-def test_cargo_target_root_is_cached(
+@pytest.mark.usefixtures("developer_host_context")
+def test_cargo_target_root_resolves_a_relative_override_against_the_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._cargo_target_root_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
-    first = cli._cargo_target_root(tmp_path)
-    second = cli._cargo_target_root(tmp_path)
-
-    info = cli._cargo_target_root_cached.cache_info()
-    expected = Path.cwd() / "external-target"
-    assert first == second == expected
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    assert cli._cargo_target_root(tmp_path / "project") == (
+        Path.cwd() / "external-target"
+    )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_cargo_target_root_uses_canonical_session_subdir_when_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
     target_root = cli._cargo_target_root(tmp_path)
@@ -14573,12 +14567,11 @@ def test_cargo_target_root_uses_canonical_session_subdir_when_unset(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_build_state_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cli._build_state_root_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
@@ -14593,14 +14586,11 @@ def test_build_state_root_is_cached(
     assert info.currsize >= 1
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_build_state_root_uses_canonical_session_target_when_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._build_state_root_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
     state_root = cli._build_state_root(tmp_path)
@@ -14614,14 +14604,11 @@ def test_build_state_root_uses_canonical_session_target_when_unset(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_build_state_root_cache_tracks_session_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._build_state_root_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
     alpha = cli._build_state_root(tmp_path)
@@ -14637,7 +14624,7 @@ def test_build_state_root_cache_tracks_session_id(
 def test_backend_daemon_empty_cargo_target_uses_shared_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
+    from molt.backend_daemon_custody import backend_daemon_root_from_env
     from molt.build_state_layout import build_state_root
 
     project = tmp_path / "repo"
@@ -14648,7 +14635,8 @@ def test_backend_daemon_empty_cargo_target_uses_shared_default(
         project_root=project, cargo_target=project / "target", environment=env
     )
     assert (
-        backend_daemon_build_state_root_from_env(env, project_root=project) == expected
+        backend_daemon_root_from_env(env, project_root=project)
+        == expected / "backend_daemon"
     )
 
 
@@ -14666,21 +14654,22 @@ def test_build_state_root_uses_override_relative_to_project_root(
     assert state_root == (tmp_path / "state-dir")
 
 
-def test_lock_check_cache_path_is_cached(
+@pytest.mark.usefixtures("developer_host_context")
+def test_lock_check_cache_path_lives_in_the_project_cargo_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    LOCKFILES._lock_check_cache_path_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
-    first = LOCKFILES._lock_check_cache_path(tmp_path, "cargo")
-    second = LOCKFILES._lock_check_cache_path(tmp_path, "cargo")
+    assert LOCKFILES._lock_check_cache_path(tmp_path, "cargo") == (
+        Path.cwd() / "external-target" / "lock_checks" / "cargo.json"
+    )
 
-    info = LOCKFILES._lock_check_cache_path_cached.cache_info()
-    expected = Path.cwd() / "external-target" / "lock_checks" / "cargo.json"
-    assert first == second == expected
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    monkeypatch.delenv("CARGO_TARGET_DIR")
+    monkeypatch.setenv("MOLT_SESSION_ID", "lock-lane")
+    assert LOCKFILES._lock_check_cache_path(tmp_path, "uv") == (
+        tmp_path / "target" / "sessions" / "lock-lane" / "lock_checks" / "uv.json"
+    )
 
 
 def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
@@ -14929,15 +14918,13 @@ def test_build_lock_is_shared_for_explicit_target_root(
     ).exists()
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_build_lock_directory_is_session_isolated_when_target_root_is_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cli._build_state_root_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
     cli._build_lock_dir_cached.cache_clear()
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
     with cli._build_lock(tmp_path, "runtime.dev-fast.native"):
@@ -15026,11 +15013,11 @@ def test_backend_source_paths_are_feature_aware() -> None:
     assert "runtime/molt-backend-native" not in wasm_paths
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_backend_bin_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cli._backend_bin_path_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
@@ -15207,11 +15194,11 @@ def test_resolve_sysroot_is_cached(
     assert info.currsize >= 1
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_runtime_lib_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cli._runtime_lib_path_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
@@ -15230,11 +15217,10 @@ def test_runtime_lib_path_is_cached(
     assert info.currsize >= 1
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_runtime_lib_path_includes_target_triple(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._runtime_lib_path_cached.cache_clear()
-    cli._cargo_target_root_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
