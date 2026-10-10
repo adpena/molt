@@ -71,6 +71,17 @@ and never substitute for a completed custody receipt. No emitted-binary work is
 added by either tooling change. The cause of the existing Windows fixture
 stall remains unproven pending those retained journals.
 
+Development-side Cargo capability selection now shares configuration, target,
+flag and output confinement authorities with runtime planning, and keeps compiler,
+host dependency and executable-documenter witnesses distinct. Independent review
+identified and repaired forwarded rustc/Clippy emit/query handling, explicit-target
+precedence, a proof-only stability restriction leaking into runtime planning, and
+an unconfined Cargo build directory. The affected successor cohort passes 563
+checks with 13 skips. Actual Cargo/Rust 1.99 linker-wrapper oracles independently
+confirm the operation distinctions; patched capture/replay, two capacity-blocked
+queue controls and actual Windows selection remain unqualified. This change is
+not yet a public release or performance acceptance claim.
+
 Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
 Windows reports changed CPython runtime/import selection in its installed-record

@@ -24,12 +24,11 @@ PYTHON_LANE_IDS = (
     "r6.target-version-parity.py313",
     "r6.target-version-parity.py314",
 )
-LANE_IDS = ("runtime.abi-fixture-authorities", *PYTHON_LANE_IDS)
 
 
 def test_registered_named_lanes_validate_and_are_distinct() -> None:
     assert PLAN.validate() == []
-    assert tuple(lane.id for lane in PLAN.named_lanes) == LANE_IDS
+    assert len({lane.id for lane in PLAN.named_lanes}) == len(PLAN.named_lanes)
     argvs = {lane.argv for lane in PLAN.named_lanes}
     assert len(argvs) == len(PLAN.named_lanes)
     command_argvs = {tuple(map(str, command.argv)) for command in PLAN.commands}
@@ -43,7 +42,7 @@ def test_registered_named_lanes_validate_and_are_distinct() -> None:
         assert not any(value.startswith("tmp/") for value in lane.argv)
 
 
-@pytest.mark.parametrize("lane_id", LANE_IDS)
+@pytest.mark.parametrize("lane_id", [lane.id for lane in PLAN.named_lanes])
 def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> None:
     lane = PLAN.named_lane(lane_id)
     envelope = command_admission.envelope_for_command(list(lane.argv))
@@ -53,6 +52,17 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     assert closure["kind"] == "named-lane"
     assert closure["descendants"] == "declared-toolchains"
     assert set(lane.toolchains) <= set(closure["toolchains"])
+    assert envelope["cargo_native_units"] == lane.data.get("cargo_native_units", {})
+
+
+@pytest.mark.parametrize(
+    "lane_id", ("runtime.abi-fixture-authorities", *PYTHON_LANE_IDS)
+)
+def test_runtime_and_reference_lanes_have_the_required_native_languages(
+    lane_id: str,
+) -> None:
+    lane = PLAN.named_lane(lane_id)
+    envelope = command_admission.envelope_for_command(list(lane.argv))
     # Native differential/Pact lanes cold-build the runtime, including mimalloc.
     # WASM-only and reference-only lanes must not acquire native C custody.
     native_runtime = lane_id in {
@@ -170,13 +180,13 @@ def test_named_lane_cli_subcommand_is_registered() -> None:
     assert args.lane_id == "pact.witness.oracle"
 
 
-def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
+def test_rust_target_is_only_read_from_rust_tool_argv(tmp_path) -> None:
     from tools.proof_queue_pkg import command_identity
 
     payload = ["python", "-c", "pass", "--target", "wasm"]
     assert (
         command_identity._rust_target(
-            command_admission.envelope_for_command(payload), {}
+            command_admission.envelope_for_command(payload), {}, cwd=tmp_path
         )
         is None
     )
@@ -184,6 +194,7 @@ def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
         command_identity._rust_target(
             command_admission.envelope_for_command(payload),
             {"CARGO_BUILD_TARGET": "wasm32-wasip1"},
+            cwd=tmp_path,
         )
         == "wasm32-wasip1"
     )
@@ -193,6 +204,7 @@ def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
                 ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-tir"]
             ),
             {},
+            cwd=tmp_path,
         )
         == "wasm32-wasip1"
     )
@@ -202,6 +214,7 @@ def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
                 ["rustc", "--target=x86_64-pc-windows-msvc", "a.rs"]
             ),
             {},
+            cwd=tmp_path,
         )
         == "x86_64-pc-windows-msvc"
     )

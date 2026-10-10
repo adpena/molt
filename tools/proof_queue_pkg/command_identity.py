@@ -980,12 +980,37 @@ def _tool_configuration_identities(
 _RUST_TOOL_NAMES = frozenset({"cargo", "cargo.exe", "rustc", "rustc.exe"})
 
 
-def _rust_target(envelope: Mapping[str, object], env: Mapping[str, str]) -> str | None:
+def _rust_target(
+    envelope: Mapping[str, object], env: Mapping[str, str], *, cwd: Path
+) -> str | None:
     delegated = envelope.get("delegated")
     owner = delegated if isinstance(delegated, Mapping) else envelope
     selected_command = owner.get("argv")
     if not isinstance(selected_command, list) or not selected_command:
         raise ValueError("Rust target selection requires an admitted command envelope")
+    if admission._basename(str(selected_command[0])) in {"cargo", "cargo.exe"}:
+        from molt.cli.runtime_cargo_plan import (
+            capture_cargo_configuration_inputs,
+            cargo_requested_target,
+        )
+
+        (
+            _root,
+            configured_env,
+            _paths,
+            _inputs,
+            configuration,
+            _profiles,
+            command_target,
+            cli,
+            _forced,
+            _resources,
+        ) = capture_cargo_configuration_inputs(
+            cwd, env=env, cargo_command=selected_command
+        )
+        return cargo_requested_target(
+            configuration, cli, configured_env, command_target
+        )
     selected: list[str] = []
     before_separator = True
     index = 1
@@ -1037,8 +1062,12 @@ COMPILE_ENVIRONMENT_NAMES = frozenset(
         "RUSTC",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC_BOOTSTRAP",
+        "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS",
         "RUSTFLAGS",
+        "RUSTDOCFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_ENCODED_RUSTDOCFLAGS",
         "RUSTUP_TOOLCHAIN",
         "SOURCE_DATE_EPOCH",
         "CC",
@@ -1061,6 +1090,7 @@ COMPILE_ENVIRONMENT_NAMES = frozenset(
 )
 COMPILE_ENVIRONMENT_PREFIXES = (
     "CARGO_PROFILE_",
+    "CARGO_UNSTABLE_",
     "CARGO_TARGET_",
     "CARGO_BUILD_",
     "CC_",
@@ -1283,7 +1313,7 @@ def _reused_identity_is_current(
             selection = toolchain_capture.validate_rust_link_selection(
                 identity, required_native_units=native_units, command_argv=command_argv
             )
-            toolchain_capture.revalidate_rust_artifact_manifests(selection)
+            toolchain_capture.revalidate_rust_selection_sources(selection)
             if any(row["resources"] is not None for row in selection["native_build"]):
                 return False  # Reuse stores selections; each armed operation captures contents.
             current = toolchain_capture.select_cargo_native_units(
@@ -1629,7 +1659,7 @@ def _capture_tool_identity(
                 cargo=cargo_path,
                 cwd=probe_cwd,
                 env=env,
-                target=_rust_target(envelope, env),
+                target=_rust_target(envelope, env, cwd=probe_cwd),
                 command_argv=admission._nested_command(exact) or exact,
                 linker_process_helpers=(
                     policy.data.get("linker_process_helpers")

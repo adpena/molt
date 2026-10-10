@@ -419,6 +419,12 @@ or execution-identity claims.
 
 ## Python runtime identity
 
+Windows runtime architecture comes from CPython `sysconfig.get_platform`, which
+identifies the interpreter build before consulting POSIX cross-build overrides.
+It does not query host-machine WMI or `PROCESSOR_*` environment values. This
+preserves the interpreter architecture under emulation and avoids introducing
+transient WMI DLLs into the capture. The loaded-image census remains strict.
+
 Editable PEP 610 file locations admit only empty or case-insensitive localhost
 authorities. Their percent-decoded filesystem bytes, Windows drive admission,
 absolute-path and real-directory checks are independent of the host Python minor
@@ -785,6 +791,59 @@ verification requests, and closes on EOF. One-shot captures use the same
 capture context and verifier. Source, Cargo/tool configuration and artifact
 publication checks remain fresh at their existing boundaries; only successful
 live runtime verification permits reuse of the immutable semantic projection.
+
+### Rust operation capability in development proofs
+
+The admitted operation and its effective compiler flags determine whether a
+Rust unit needs a linker. Cargo check (including `c`), Clippy, and documentation
+operations select metadata capability; host build scripts and proc macros retain
+independent executable-link custody. Executable doctests retain a separate
+`target-documenter` witness in the same target capability union, so Rust and
+Rustdoc can select different linkers. Default Cargo test and explicit `--doc`
+include it; `--lib`, other explicit target filters and `--no-run` do not.
+Documentation commands include it when effective documenter flags request `--test`.
+Direct rustc metadata/object emission needs no linker. Repeated `--emit` options
+are additive, including configured flags: an effective `--emit=link` can restore
+a target link requirement during check, and forwarded metadata emission does not
+remove Cargo's own link emission. Cargo rustc and Clippy forward compiler
+arguments through the same authority, including check-profile link and query
+overrides; Cargo check itself does not accept compiler forwarding. Pure Cargo queries and compiler metadata
+queries do not run a compilation probe. `link-args` and `native-static-libs`
+print requests preserve compilation.
+
+Runtime planning and proof capture share Cargo configuration capture, target
+selection, configured environment, and target-cfg flag selection. Proof units
+retain source bytes, their file identities, effective flag vectors and cfg-query
+results. The receiver reconstructs selection through that authority; CAS custody,
+armed verification and warm reuse retain and recheck the same sources. Rustdoc
+flags participate when documentation can request executable tests. Configured
+`build.target` uses the same target authority as argv and environment selection.
+
+Synthetic crates prove tool capability. They do not reproduce a selected
+package's optimization profile or dependency plan, and no fabricated custom
+profile inheritance is used. Stable profile fields cannot inject arbitrary Rust
+emission flags. Compiling Cargo operations retain the selected executable's
+verbose version and require a stable release; nightly and enabled bootstrap or
+channel overrides require an explicit capability authority. This also rejects
+unstable profile flags in external workspaces without a second manifest evaluator.
+Enabled unstable compiler/profile selection, including profile
+`rustflags`, requires an explicit capability authority and fails early.
+Unexpanded Rust argument response files likewise require parsed input custody.
+Ordinary inactive target-cfg tables remain supported. This stable capability
+policy belongs to development proofs; runtime metadata queries preserve their
+existing resource-custodied unstable compiler selectors. Synthetic Cargo probes
+pin both their target directory and independent build directory to owned scratch. Before each flag-bearing
+metadata or compilation probe, output destinations are confined to owned scratch
+and user print requests are replaced by the probe's own request; the original
+arguments remain in source custody. Resolved Cargo environment values are pinned
+through the shared force-override projection so configuration cannot restore an
+unowned output destination. Compiling synthetic probes admit build capacity on
+their owned scratch filesystem before launch. These checks are development tooling only.
+
+Registered proof entrypoints require an exact registered argv, regardless of how
+many variants exist. A transport or payload near-match cannot become a Python
+leaf and lose its declared child tools. Parameterized commands require their
+existing typed family authority.
 
 ### Native C/C++ processes in development proofs
 

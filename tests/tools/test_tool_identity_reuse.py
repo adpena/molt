@@ -18,6 +18,8 @@ from tools.proof_queue_pkg import (
     process_image_capture,
 )
 
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 def _git_probe(tmp_path: Path) -> tuple[dict[str, object], list[str], dict[str, str]]:
     if shutil.which("git") is None:
@@ -230,6 +232,23 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "CC_x86_64_unknown_linux_gnu",
         "PATH",
     }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RUSTDOCFLAGS",
+        "CARGO_ENCODED_RUSTDOCFLAGS",
+        "RUSTC_BOOTSTRAP",
+        "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS",
+        "CARGO_UNSTABLE_PROFILE_RUSTFLAGS",
+    ],
+)
+def test_rust_operation_environment_changes_invalidate_probe_reuse(name):
+    assert command_identity._probe_environment_selection(
+        {name: "first"}
+    ) != command_identity._probe_environment_selection({name: "second"})
+    assert name in command_identity.compile_environment_selection({name: "first"})
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -1008,6 +1027,7 @@ def test_rust_reuse_binds_archive_claim_to_actual_producer_command(
     selection["command_semantics_sha256"] = canonical_json_sha256(archive)
     for unit in selection["units"]:
         unit["command_semantics_sha256"] = canonical_json_sha256(archive)
+        unit["flag_context"]["command"] = archive
     target = selection["units"][0]
     target.update(
         artifact_selection={
@@ -1063,6 +1083,7 @@ def test_rust_receiver_binds_modeled_wrapper_to_its_exact_payload(
     selection["command_semantics_sha256"] = canonical_json_sha256(producer)
     for unit in selection["units"]:
         unit["command_semantics_sha256"] = canonical_json_sha256(producer)
+        unit["flag_context"]["command"] = producer
     command_identity.toolchain_capture.validate_rust_link_selection(
         identity, command_argv=producer
     )

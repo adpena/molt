@@ -741,23 +741,28 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
                 "--no-sync",
                 "python",
                 "-m",
-                "pytest",
+                "unregistered_leaf_module",
             ],
             "python",
             "uv",
         ),
         (
-            ["C:\\Python312\\python.exe", "-m", "pytest"],
+            ["C:\\Python312\\python.exe", "-m", "unregistered_leaf_module"],
             "python",
             "direct",
         ),
         (
-            ["/opt/python3.12/bin/python3.12", "-m", "pytest"],
+            ["/opt/python3.12/bin/python3.12", "-m", "unregistered_leaf_module"],
             "python",
             "direct",
         ),
         (
-            ["C:\\Windows\\py.exe", "-V:PythonCore/3.12", "-m", "pytest"],
+            [
+                "C:\\Windows\\py.exe",
+                "-V:PythonCore/3.12",
+                "-m",
+                "unregistered_leaf_module",
+            ],
             "python",
             "py-launcher",
         ),
@@ -782,7 +787,7 @@ def test_proof_command_envelope_is_typed_and_command_derived_cross_platform(
 )
 def test_windows_py_selector_authority_is_complete(selector: str) -> None:
     envelope = command_admission.envelope_for_command(
-        ["py.exe", selector, "-m", "pytest"]
+        ["py.exe", selector, "-m", "unregistered_leaf_module"]
     )
     assert envelope["python"]["selector"] == selector
 
@@ -791,9 +796,9 @@ def test_windows_py_selector_authority_is_complete(selector: str) -> None:
     "command",
     [
         ["bash", "-lc", "python -m pytest"],
-        ["cmd.exe", "/c", "pytest"],
-        ["pytest", "tests"],
-        ["py.exe", "-V:bad/company/tag", "-m", "pytest"],
+        ["cmd.exe", "/c", "unregistered_leaf_module"],
+        ["unregistered_leaf_module", "tests"],
+        ["py.exe", "-V:bad/company/tag", "-m", "unregistered_leaf_module"],
         ["uv", "run", "--unknown-interpreter-option", "python", "-V"],
         ["uv", "run", "ruff", "check", "."],
         [
@@ -975,7 +980,12 @@ def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
 @pytest.mark.parametrize(
     "command",
     [
-        ["python", "-m", "pytest", "tests/tools/test_guarded_exec.py"],
+        [
+            "python",
+            "-m",
+            "unregistered_leaf_module",
+            "tests/tools/test_guarded_exec.py",
+        ],
         ["uv", "run", "pytest", "tests/tools/test_guarded_exec.py"],
         ["python", "-m", "other.guarded_exec", "--", "git", "--version"],
         ["python", "-c", "print('guarded_exec delegation')"],
@@ -1098,9 +1108,10 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
         "toolchains": list(plan.required_toolchains(command)),
     }
 
-    near_match = command_admission.envelope_for_command([*command.argv, "--tb=short"])
-    assert near_match["kind"] == "python"
-    assert near_match["process_closure"]["descendants"] == "forbidden"
+    with pytest.raises(
+        ValueError, match="near-match would discard toolchain authority"
+    ):
+        command_admission.envelope_for_command([*command.argv, "--tb=short"])
 
 
 @pytest.mark.parametrize(
@@ -1173,7 +1184,9 @@ def test_registered_toolchain_capability_queries_remain_true_leaves(
     assert envelope["process_closure"]["descendants"] == "forbidden"
 
 
-def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None:
+def test_delegated_cargo_target_is_the_rust_linker_selection_authority(
+    tmp_path,
+) -> None:
     command = [
         sys.executable,
         "-m",
@@ -1186,15 +1199,42 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None
     ]
     assert (
         command_identity._rust_target(
-            command_admission.envelope_for_command(command), {}
+            command_admission.envelope_for_command(command), {}, cwd=tmp_path
         )
         == "wasm32-wasip1"
     )
-    with pytest.raises(ValueError, match="ambiguous"):
+    assert (
         command_identity._rust_target(
             command_admission.envelope_for_command(command),
             {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"},
+            cwd=tmp_path,
         )
+        == "wasm32-wasip1"
+    )
+
+
+@pytest.mark.parametrize("source", ["config", "cli-config", "environment", "argv"])
+def test_cargo_configured_target_reaches_identity_authority(tmp_path, source):
+    target = "x86_64-pc-windows-msvc"
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo/config.toml").write_text('[build]\ntarget="wasm32-wasip1"\n')
+    command = ["cargo", "check"]
+    env = {}
+    if source == "config":
+        target = "wasm32-wasip1"
+    elif source == "cli-config":
+        command.extend(("--config", f'build.target="{target}"'))
+    elif source == "environment":
+        env["CARGO_BUILD_TARGET"] = target
+    else:
+        env["CARGO_BUILD_TARGET"] = "aarch64-apple-darwin"
+        command.extend(("--target", target))
+    assert (
+        command_identity._rust_target(
+            command_admission.envelope_for_command(command), env, cwd=tmp_path
+        )
+        == target
+    )
 
 
 @pytest.mark.parametrize(
@@ -1499,7 +1539,7 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "3.12",
         "python",
         "-m",
-        "pytest",
+        "unregistered_leaf_module",
     ]
     envelope = command_admission.envelope_for_command(command)
     prefix, effective = command_admission._canonical_uv_prefix(envelope, cwd=tmp_path)
@@ -4579,7 +4619,7 @@ def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_r
         "3.12",
         "python",
         "-m",
-        "pytest",
+        "unregistered_leaf_module",
     ]
     legacy.execute(
         """
@@ -8925,6 +8965,33 @@ def test_proof_queue_named_lane_can_detach_runner(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     launched: dict[str, object] = {}
+
+    # This test owns dispatch only. Prepared-environment custody is exercised
+    # by named-lane tests; provisioning packages here leaks real checkout state.
+    from molt.cli import source_build_environment as environment_authority
+    from molt.cli.source_build_environment_schema import (
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+    )
+
+    environment_root = tmp_path / "environments" / ("a" * 64)
+    prepared_python = environment_root / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    prepared_python.parent.mkdir(parents=True)
+    prepared_python.write_bytes(b"prepared fixture image")
+    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+    monkeypatch.setattr(
+        environment_authority,
+        "_source_build_custody_root",
+        lambda _root: environment_root.parent,
+    )
+    monkeypatch.setattr(
+        pact,
+        "source_build_environment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=environment_root, python_executable=prepared_python
+        ),
+    )
 
     def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
         del args
@@ -17209,3 +17276,163 @@ def test_rust_proof_projection_preserves_raw_cluster_and_key_spelling(arguments)
     assert command_admission.rustc_crate_types((*arguments, "--crate-type=cdylib")) == (
         "cdylib",
     )
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--html-in-header",
+        "--test-args",
+        "--crate-version",
+        "--output-format",
+        "-w",
+        "-e",
+    ],
+)
+def test_documenter_operands_use_shared_lexer_without_becoming_compiler_flags(option):
+    from molt.rust_toolchain import rust_flag_spans
+
+    arguments = (option, "--test", "-Clinker=chosen")
+    spans = list(rust_flag_spans(arguments, documenter=True))
+    assert spans[0].stop == 2
+    assert spans[0].value == "--test"
+    assert list(rust_flag_spans(arguments))[0].stop == 1
+    invocation = command_admission.parse_cargo_invocation(
+        ["cargo", "rustdoc", "--", *arguments]
+    )
+    assert not command_admission.rust_documenter_required(invocation)
+    assert command_admission.rust_link_arguments(arguments, documenter=True) == (
+        "-Clinker=chosen",
+    )
+
+
+@pytest.mark.parametrize(
+    "argv,target_links,host_links",
+    [
+        (["cargo", "check", "--all-targets"], False, True),
+        (["cargo", "c"], False, True),
+        (["cargo", "clippy"], False, True),
+        (["cargo", "clippy", "--", "--emit=link"], True, True),
+        (["cargo", "clippy", "--", "--print=sysroot"], False, True),
+        (["cargo", "rustc", "--profile", "check", "--", "--emit=link"], True, True),
+        (
+            ["cargo", "rustc", "--profile", "check", "--", "--print=sysroot"],
+            False,
+            True,
+        ),
+        (["cargo", "d"], False, True),
+        (["cargo", "doc"], False, True),
+        (["cargo", "rustdoc"], False, True),
+        (["cargo", "rustdoc", "--", "--test"], False, True),
+        (["cargo", "metadata"], False, False),
+        (["cargo", "build", "--help"], False, False),
+        (["cargo", "--version"], False, False),
+        (["cargo", "test", "--no-run"], True, True),
+        (["cargo", "test", "--", "--list"], True, True),
+        (["cargo", "rustc", "--", "--emit=metadata"], True, True),
+        (["cargo", "rustc", "--", "--print", "sysroot"], False, True),
+        (["rustc", "--emit=metadata"], False, None),
+        (["rustc", "--emit", "obj"], False, None),
+        (["rustc", "--emit=metadata=custom.rmeta"], False, None),
+        (["rustc", "--emit=metadata", "--emit=link"], True, None),
+        (["rustc", "--emit=link", "--emit=metadata"], True, None),
+        (["rustc", "--crate-type=rlib", "--test"], True, None),
+        (["rustc", "--crate-type=rlib", "--test", "--emit=metadata"], False, None),
+        (["rustc", "--print=link-args"], True, None),
+        (["rustc", "--print=native-static-libs"], True, None),
+        (["rustc", "--print=link-args,sysroot"], False, None),
+        (["rustc", "-vV"], False, None),
+        (["rustc", "--cfg", "--help"], True, None),
+        (["rustc", "--sysroot", "--emit=metadata"], True, None),
+        (["rustc", "--", "--emit=metadata"], True, None),
+    ],
+)
+def test_rust_operation_and_emit_selection_matches_compiler_contract(
+    argv, target_links, host_links
+):
+    # Rust/Cargo 1.99 actual Linux oracle: cross-Windows check/metadata/object
+    # succeed without a target linker; repeated emits and Cargo's link emit
+    # are additive. --test creates an executable even with --crate-type=rlib.
+    from tools.proof_queue_pkg import command_admission
+
+    cargo = argv[0] == "cargo"
+    invocation = command_admission.parse_cargo_invocation(argv) if cargo else None
+    for unit, expected in (("target", target_links), ("host-proc-macro", host_links)):
+        if expected is None:
+            continue
+        selection = command_admission.rust_link_artifact_selection(
+            argv, cargo=cargo, cargo_invocation=invocation, unit=unit
+        )
+        assert selection["link_required"] is expected
+
+
+def test_rust_emit_probe_cannot_overwrite_admitted_output_destination():
+    from tools.proof_queue_pkg import command_admission
+
+    argv = ("--emit=metadata=/user/output.rmeta,link=/user/program", "--test")
+    assert command_admission.rust_link_arguments(argv) == (
+        "--emit",
+        "metadata,link",
+        "--test",
+    )
+
+
+def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
+    monkeypatch,
+):
+    import copy
+
+    registry = copy.deepcopy(command_admission._proof_command_registry())
+    commands = [
+        (
+            "uv",
+            "run",
+            "--frozen",
+            "python3",
+            "tools/registered_variants_fixture.py",
+            "--full",
+        ),
+        (
+            "uv",
+            "run",
+            "--frozen",
+            "python3",
+            "tools/registered_variants_fixture.py",
+            "--macos",
+        ),
+    ]
+    entrypoint = command_admission._command_entrypoint(commands[0])
+    registry["entrypoints"][entrypoint] = ["fixture.full", "fixture.macos"]
+    for index, command in enumerate(commands):
+        registry["exact"][command] = {
+            "ids": [f"fixture.{index}"],
+            "toolchains": ("python", "uv", "cargo", "rustc"),
+            "cargo_native_units": {},
+        }
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
+    for command in commands:
+        envelope = command_admission.envelope_for_command(command)
+        assert envelope["kind"] == "proof-plan"
+        assert {"cargo", "rustc"} <= set(envelope["toolchains"])
+    for command in (
+        (*commands[0], "--verbose"),
+        (
+            "uv",
+            "run",
+            "--active",
+            "--no-sync",
+            "--no-config",
+            "python3",
+            *commands[0][4:],
+        ),
+        ("python3", *commands[1][4:]),
+    ):
+        with pytest.raises(
+            ValueError, match="near-match would discard toolchain authority"
+        ):
+            command_admission.envelope_for_command(command)
+
+
+def test_cargo_check_rejects_compiler_forwarding():
+    with pytest.raises(ValueError, match="check does not forward compiler"):
+        command_admission.envelope_for_command(["cargo", "check", "--", "--emit=link"])

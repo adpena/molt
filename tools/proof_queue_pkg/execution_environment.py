@@ -427,7 +427,7 @@ def _require_cargo_build_tool_environment_context(
             native_required
             and isinstance(build, Mapping)
             and "target" in build
-            and command_identity._rust_target(envelope, env) is None
+            and command_identity._rust_target(envelope, env, cwd=cwd) is None
         ):
             raise ValueError(
                 "native build selection requires explicit Cargo target before capture; unresolved build.target"
@@ -638,7 +638,7 @@ def _capture_toolchains(
             verified_images, selection = (
                 toolchain_capture.revalidate_rust_link_process_images(
                     located,
-                    target=command_identity._rust_target(envelope, env),
+                    target=command_identity._rust_target(envelope, env, cwd=cwd),
                     command_argv=admission._nested_command(exact) or exact,
                     required_native_units=envelope.get("cargo_native_units", {}),
                 )

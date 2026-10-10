@@ -134,6 +134,7 @@ def _run_rust_link_probe(
     env: Mapping[str, str],
     timeout: float,
     probes: list[dict[str, object]],
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Retain command results, without logging environment values or retrying."""
     require_custody_coordinate(Path(command[0]))
@@ -158,6 +159,7 @@ def _run_rust_link_probe(
             text=True,
             timeout=timeout,
             encoding="utf-8",
+            **({"input": input} if input is not None else {}),
         )
     except Exception as exc:
         for stream in ("stdout", "stderr"):
@@ -993,9 +995,24 @@ def _cargo_artifact_crate_types(
     return _rust_crate_types(",".join(expected["sources"][0]["crate_types"]))
 
 
-def revalidate_rust_artifact_manifests(selection: Mapping[str, object]) -> None:
+def revalidate_rust_selection_sources(selection: Mapping[str, object]) -> None:
     """Reuse checks finite inputs; armed custody checks these frozen files."""
     for unit in selection["units"]:
+        flags = unit.get("flag_context")
+        contexts = (
+            []
+            if flags is None
+            else [flags, *([flags["documenter"]] if "documenter" in flags else [])]
+        )
+        for flag_context in contexts:
+            for source in flag_context["sources"]:
+                actual = stable_regular_file_identity(
+                    Path(source["path"]), label="Cargo flag source " + source["label"]
+                )
+                if actual.sha256 != source["sha256"] or actual.size != source["size"]:
+                    raise ValueError(
+                        f"Cargo flag source changed: {source['label']} ({source['path']})"
+                    )
         context = unit.get("artifact_context")
         if context is None:
             continue
@@ -1437,6 +1454,437 @@ def native_compiler_selection_is_current(
     return True
 
 
+def _proof_rust_probe_arguments(
+    arguments: tuple[str, ...], root: Path, *, documenter: bool = False
+) -> tuple[str, ...]:
+    """Apply development-proof capability policy before shared output confinement."""
+    from molt.rust_toolchain import rust_flag_spans
+    from molt.cli.cargo_target_cfg import rust_probe_arguments
+
+    if any(
+        span.option == "-Z"
+        for span in rust_flag_spans(arguments, documenter=documenter)
+    ):
+        raise ValueError(
+            "unstable Rust probe selectors require an explicit capability authority"
+        )
+    return rust_probe_arguments(arguments, root, documenter=documenter)
+
+
+def _cargo_flag_context(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    env: Mapping[str, str],
+    target: str,
+    host_unit: bool,
+    rustc: Path,
+    probes: list[dict[str, object]],
+    flag_kind: str = "rustflags",
+    compiler_context: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, str]]:
+    from molt.cli.runtime_cargo_plan import (
+        capture_cargo_configuration_inputs,
+        cargo_selected_value,
+        _tool_path,
+        _rust_probe_command,
+    )
+    from molt.cli.cargo_target_cfg import (
+        cargo_target_query_arguments,
+        parse_rustc_target_metadata,
+    )
+
+    (
+        _root,
+        configured_env,
+        paths,
+        inputs,
+        configuration,
+        profiles,
+        command_target,
+        cli,
+        _forced,
+        _resources,
+    ) = capture_cargo_configuration_inputs(cwd, env=env, cargo_command=command)
+    wrappers = {}
+    for variable, key in (
+        ("RUSTC_WRAPPER", "rustc-wrapper"),
+        ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
+    ):
+        value = cargo_selected_value(
+            configuration,
+            cli,
+            configured_env,
+            ("build", key),
+            (variable, "CARGO_BUILD_" + variable),
+            "",
+        )
+        if value:
+            wrappers[variable] = _tool_path(
+                value, root=cwd, env=configured_env, role=variable
+            )
+    sources = []
+    for item in inputs:
+        raw = item.identity.path.read_bytes()
+        verify_stable_regular_file_identity(item.identity, label=item.label)
+        if hashlib.sha256(raw).hexdigest() != item.identity.sha256:
+            raise ValueError("Cargo flag source changed during capture")
+        sources.append(
+            {
+                "label": item.label,
+                "path": str(item.identity.path),
+                "text": raw.decode("utf-8"),
+                "sha256": item.identity.sha256,
+                "size": item.identity.size,
+            }
+        )
+    context = {
+        "schema": "molt.proof-cargo-flag-inputs.v1",
+        "command": list(command),
+        "cwd": str(cwd),
+        "target": target,
+        "rustc": str(rustc),
+        "host_unit": host_unit,
+        "flag_kind": flag_kind,
+        "configuration_paths": [str(path) for path in paths],
+        "sources": sources,
+        "environment": {
+            name: value
+            for name, value in env.items()
+            if name.upper().endswith(("RUSTFLAGS", "RUSTDOCFLAGS"))
+            or name.upper().startswith(("CARGO_PROFILE_", "CARGO_UNSTABLE_"))
+            or name.upper()
+            in {
+                "CARGO_BUILD_TARGET",
+                "RUSTC_BOOTSTRAP",
+                "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS",
+            }
+        },
+        "cfg_probes": [],
+        "forced_environment": list(_forced),
+    }
+
+    reused_probes = iter(
+        () if compiler_context is None else compiler_context["cfg_probes"]
+    )
+    if compiler_context is not None and any(
+        context[key] != compiler_context[key]
+        for key in (
+            "command",
+            "cwd",
+            "target",
+            "rustc",
+            "sources",
+            "environment",
+            "configuration_paths",
+        )
+    ):
+        raise ValueError("documenter cfg source differs from compiler custody")
+
+    def probe(flags: tuple[str, ...]):
+        if compiler_context is not None:
+            row = next(reused_probes, None)
+            if row is None or row["flags"] != list(flags):
+                raise ValueError("documenter cfg differs from compiler witness")
+            context["cfg_probes"].append(dict(row))
+            return parse_rustc_target_metadata(row["stdout"], row["stderr"]).cfg
+        with (
+            tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
+            _rust_probe_command(
+                rustc, wrappers, label="proof Cargo cfg"
+            ) as compiler_command,
+        ):
+            root = Path(scratch)
+            (root / "output").mkdir()
+            safe = _proof_rust_probe_arguments(flags, root)
+            argv = [*compiler_command, *cargo_target_query_arguments(target, safe)]
+            query_env = dict(configured_env)
+            query_env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(safe)
+            result = _run_rust_link_probe(
+                argv,
+                phase="flag-cfg",
+                unit="host-proc-macro" if host_unit else "target",
+                cwd=cwd,
+                compiler_cwd=cwd,
+                env=query_env,
+                timeout=30.0,
+                probes=probes,
+                input="",
+            )
+            if result.returncode:
+                raise ValueError("Cargo flag cfg metadata probe failed")
+            context["cfg_probes"].append(
+                {"flags": list(flags), "stdout": result.stdout, "stderr": result.stderr}
+            )
+            return parse_rustc_target_metadata(result.stdout, result.stderr).cfg
+
+    selected = _resolve_cargo_flag_context(context, probe=probe)
+    with tempfile.TemporaryDirectory(prefix="molt-rust-flag-check-") as scratch:
+        _proof_rust_probe_arguments(
+            selected, Path(scratch), documenter=flag_kind == "rustdocflags"
+        )
+    context["selected_flags"] = list(selected)
+    return context, dict(configured_env)
+
+
+def _resolve_cargo_flag_context(
+    context: Mapping[str, object], *, probe=None
+) -> tuple[str, ...]:
+    """Replay the shared Cargo input authority from source bytes, never live files."""
+    from molt.cli.runtime_cargo_plan import (
+        CargoConfigurationSource,
+        capture_cargo_configuration_inputs,
+        cargo_configuration_document,
+        cargo_flag_inputs,
+        _flags,
+    )
+    from molt.cli.cargo_target_cfg import (
+        parse_rustc_target_metadata,
+        select_cargo_target_flags,
+    )
+
+    if context.get("schema") != "molt.proof-cargo-flag-inputs.v1":
+        raise ValueError("Cargo flag input schema mismatch")
+    required = {
+        "schema",
+        "command",
+        "cwd",
+        "target",
+        "rustc",
+        "host_unit",
+        "flag_kind",
+        "configuration_paths",
+        "sources",
+        "environment",
+        "cfg_probes",
+        "forced_environment",
+    }
+    if probe is None:
+        required.add("selected_flags")
+    if not required <= set(context) or set(context) - required - {
+        "selected_flags",
+        "documenter",
+    }:
+        raise ValueError("Cargo flag input fields differ from their schema")
+    if (
+        type(context["host_unit"]) is not bool
+        or context["flag_kind"] not in {"rustflags", "rustdocflags"}
+        or not isinstance(context["command"], list)
+        or not context["command"]
+        or any(not isinstance(token, str) or not token for token in context["command"])
+        or not isinstance(context["environment"], Mapping)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in context["environment"].items()
+        )
+        or any(
+            not isinstance(context[key], list)
+            for key in (
+                "sources",
+                "configuration_paths",
+                "cfg_probes",
+                "forced_environment",
+            )
+        )
+        or any(
+            not isinstance(context[key], str) or not context[key]
+            for key in ("cwd", "target", "rustc")
+        )
+        or not Path(context["rustc"]).is_absolute()
+    ):
+        raise ValueError("Cargo flag input coordinates are malformed")
+    sources = {}
+    for row in context["sources"]:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"text", "size", "sha256", "path", "label"}
+            or any(
+                not isinstance(row[key], str)
+                for key in ("text", "sha256", "path", "label")
+            )
+            or type(row["size"]) is not int
+        ):
+            raise ValueError("Cargo flag source custody is malformed")
+        raw = row["text"].encode("utf-8")
+        if len(raw) != row["size"] or hashlib.sha256(raw).hexdigest() != row["sha256"]:
+            raise ValueError("Cargo flag source bytes differ from their custody")
+        path = Path(row["path"])
+        if not path.is_absolute() or row["label"] in sources:
+            raise ValueError("Cargo flag source path is not unique and absolute")
+        sources[row["label"]] = CargoConfigurationSource(
+            row["label"], path, cargo_configuration_document(raw, path)
+        )
+    cwd = Path(context["cwd"])
+    if not cwd.is_absolute():
+        raise ValueError("Cargo flag input cwd is not absolute")
+    if any(
+        not isinstance(path, str) or not Path(path).is_absolute()
+        for path in context["configuration_paths"]
+    ):
+        raise ValueError("Cargo flag configuration paths are malformed")
+    for row in context["cfg_probes"]:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"flags", "stdout", "stderr"}
+            or not isinstance(row["flags"], list)
+            or any(not isinstance(flag, str) for flag in row["flags"])
+            or any(not isinstance(row[key], str) for key in ("stdout", "stderr"))
+        ):
+            raise ValueError("Cargo flag cfg witness is malformed")
+    (
+        _root,
+        env,
+        _paths,
+        used,
+        configuration,
+        profiles,
+        command_target,
+        cli,
+        _forced,
+        _resources,
+    ) = capture_cargo_configuration_inputs(
+        cwd,
+        env=context["environment"],
+        cargo_command=context["command"],
+        captured_sources=sources,
+        captured_paths=[Path(path) for path in context["configuration_paths"]],
+    )
+    if {item.label for item in used} != set(sources):
+        raise ValueError("Cargo flag context contains unused source custody")
+    if context.get("forced_environment") != list(_forced):
+        raise ValueError("Cargo forced environment differs from source inputs")
+
+    def unstable_profile(value):
+        return isinstance(value, Mapping) and any(
+            key in {"rustflags", "codegen-backend"} or unstable_profile(child)
+            for key, child in value.items()
+        )
+
+    before = (
+        context["command"][: context["command"].index("--")]
+        if "--" in context["command"]
+        else context["command"]
+    )
+    if (
+        any(token == "-Z" or token.startswith("-Z") for token in before)
+        or unstable_profile(profiles.get("profile", {}))
+        or unstable_profile(cli.get("profile", {}))
+    ):
+        raise ValueError(
+            "unstable Cargo compiler/profile selectors require an explicit capability authority"
+        )
+    for document in (configuration, cli):
+        unstable = document.get("unstable", {})
+        if any(
+            unstable.get(key)
+            for key in (
+                "profile-rustflags",
+                "host-config",
+                "target-applies-to-host",
+                "build-std",
+                "per-package-target",
+            )
+        ):
+            raise ValueError(
+                "unstable Cargo flag selection requires an explicit capability authority"
+            )
+    if any(
+        name.startswith("CARGO_UNSTABLE_") and value not in {"", "0", "false"}
+        for name, value in env.items()
+    ):
+        raise ValueError(
+            "unstable Cargo environment selection requires an explicit capability authority"
+        )
+    _require_stable_cargo_environment(env)
+    explicit_target = (
+        command_target is not None
+        or configuration.get("build", {}).get("target") is not None
+        or cli.get("build", {}).get("target") is not None
+        or "CARGO_BUILD_TARGET" in env
+    )
+    if context["host_unit"] and explicit_target:
+        selected = ()
+        if context["cfg_probes"]:
+            raise ValueError(
+                "cross Cargo host flags must not inherit target cfg probes"
+            )
+    else:
+        tables, target_flags, build_flags, environment_flags = cargo_flag_inputs(
+            configuration, cli, env, context["target"], flag_kind=context["flag_kind"]
+        )
+        records = iter(context["cfg_probes"])
+
+        def replay(flags):
+            _proof_rust_probe_arguments(flags, Path(context["cwd"]))
+            row = next(records, None)
+            if row is None or row["flags"] != list(flags):
+                raise ValueError(
+                    "Cargo cfg probe differs from its selected flag inputs"
+                )
+            return parse_rustc_target_metadata(row["stdout"], row["stderr"]).cfg
+
+        selected_probe = probe if probe is not None else replay
+        cfg_facts = None
+        if context["flag_kind"] == "rustdocflags" and tables:
+            # Cargo TargetInfo selects rustdocflags once from the final rustc
+            # cfg. Rustdoc-only options must never reach the compiler query.
+            rust_tables, rust_target, rust_build, rust_environment = cargo_flag_inputs(
+                configuration, cli, env, context["target"]
+            )
+
+            def compiler_probe(flags):
+                nonlocal cfg_facts
+                cfg_facts = selected_probe(flags)
+                return cfg_facts
+
+            select_cargo_target_flags(
+                rust_tables,
+                target_flags=rust_target,
+                build_flags=rust_build,
+                environment_flags=rust_environment,
+                flags=lambda value: _flags(value, label="cfg rustflags"),
+                probe=compiler_probe,
+            )
+        selected, _matched = select_cargo_target_flags(
+            tables,
+            target_flags=target_flags,
+            build_flags=build_flags,
+            environment_flags=environment_flags,
+            flags=lambda value: _flags(value, label="cfg rustflags"),
+            probe=selected_probe,
+            flag_kind=context["flag_kind"],
+            cfg_facts=cfg_facts,
+        )
+        if probe is None and next(records, None) is not None:
+            raise ValueError("Cargo flag context has unused cfg probes")
+    _proof_rust_probe_arguments(
+        selected,
+        Path(context["cwd"]),
+        documenter=context["flag_kind"] == "rustdocflags",
+    )
+    if "selected_flags" in context and context["selected_flags"] != list(selected):
+        raise ValueError("Cargo selected flags differ from source inputs")
+    return selected
+
+
+def _require_stable_cargo_environment(env: Mapping[str, str]) -> None:
+    for name in ("RUSTC_BOOTSTRAP", "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS"):
+        if env.get(name) not in {None, "", "0"}:
+            raise ValueError(
+                f"{name} requires an explicit unstable Cargo capability authority"
+            )
+
+
+def _require_stable_cargo_version(version: object) -> None:
+    if (
+        not isinstance(version, str)
+        or re.search(r"(?m)^release: [0-9]+\.[0-9]+\.[0-9]+$", version) is None
+    ):
+        raise ValueError(
+            "Rust operation projection requires a captured stable Cargo release; nightly/compiler-profile selectors require an explicit capability authority"
+        )
+
+
 def capture_rust_link_process_images(
     *,
     rustc: Path,
@@ -1494,6 +1942,25 @@ def capture_rust_link_process_images(
         compiler_sysroot = rustc_printed_sysroot(
             metadata(["--print", "sysroot"]), cwd=cwd
         )
+        cargo_version = None
+        if cargo is not None and not (
+            cargo_invocation and cargo_invocation.is_cargo_query
+        ):
+            _require_stable_cargo_environment(env)
+            cargo_metadata = _run_rust_link_probe(
+                [str(cargo), "--version", "--verbose"],
+                phase="cargo-metadata",
+                unit="compiler",
+                cwd=cwd,
+                compiler_cwd=cwd,
+                env=env,
+                timeout=30.0,
+                probes=compiler_probes,
+            )
+            if cargo_metadata.returncode:
+                raise ValueError("selected Cargo version metadata command failed")
+            cargo_version = cargo_metadata.stdout.strip()
+            _require_stable_cargo_version(cargo_version)
     except RustLinkCaptureError:
         raise
     except Exception as exc:
@@ -1507,7 +1974,7 @@ def capture_rust_link_process_images(
         raise ValueError(
             "native C/C++ cross-target proof requires an effective cc-rs compiler command; driver/archiver paths alone do not attest target flags"
         )
-    units = ("target", "host-proc-macro") if cargo is not None else ("target",)
+    units = ["target", "host-proc-macro"] if cargo is not None else ["target"]
     images: list[dict[str, object]] = []
     selections: list[dict[str, object]] = []
     for unit in units:
@@ -1527,6 +1994,11 @@ def capture_rust_link_process_images(
                 host=host,
                 compiler_sysroot=compiler_sysroot,
                 probes=probes,
+                compiler_flag_context=(
+                    selections[0]["flag_context"]
+                    if unit == "target-documenter"
+                    else None
+                ),
             )
         except RustLinkCaptureError:
             raise
@@ -1534,6 +2006,15 @@ def capture_rust_link_process_images(
             raise RustLinkCaptureError(str(exc), unit=unit, probes=probes) from exc
         images.extend(selected_images)
         selections.append(selection)
+        if unit == "target" and cargo_invocation is not None:
+            context = selection.get("flag_context")
+            doc_flags = (
+                ()
+                if context is None or "documenter" not in context
+                else context["documenter"]["selected_flags"]
+            )
+            if command_admission.rust_documenter_required(cargo_invocation, doc_flags):
+                units.append("target-documenter")
     native_build = []
     for selection in native_selections:
         compilers = {}
@@ -1568,7 +2049,10 @@ def capture_rust_link_process_images(
         "native_build": native_build,
         "target": target,
         "compiler_host": host,
-        "selection_probe_count": len(units),
+        "cargo_version": cargo_version,
+        "selection_probe_count": sum(
+            row["selection_probe_count"] for row in selections
+        ),
         "selected_process_count": len(images),
         "units": selections,
         "command_semantics_sha256": canonical_json_sha256(list(command_argv)),
@@ -1590,6 +2074,7 @@ def _capture_rust_link_unit(
     host: str,
     compiler_sysroot: Path,
     probes: list[dict[str, object]],
+    compiler_flag_context: Mapping[str, object] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Ask the selected Rust toolchain to link a zero-dependency synthetic crate.
 
@@ -1609,6 +2094,70 @@ def _capture_rust_link_unit(
 
         probe_env["RUSTC"] = str(rustc)
         probe_env.update(rust_toolchain_library_environment(rustc, probe_env))
+
+    mode = command_admission.rust_compilation_mode(
+        command_argv,
+        cargo=cargo is not None,
+        cargo_invocation=cargo_invocation,
+        unit=unit,
+    )
+    flag_context = None
+    configured_flags: tuple[str, ...] = ()
+    documenter_flags: tuple[str, ...] = ()
+    if cargo is not None and mode != "query":
+        flag_context, probe_env = _cargo_flag_context(
+            command=command_argv,
+            cwd=cwd,
+            env=probe_env,
+            target=target or host,
+            host_unit=unit == "host-proc-macro",
+            rustc=rustc,
+            probes=probes,
+            flag_kind="rustdocflags" if unit == "target-documenter" else "rustflags",
+            compiler_context=compiler_flag_context,
+        )
+        configured_flags = tuple(flag_context["selected_flags"])
+        if (
+            unit == "target"
+            and cargo_invocation is not None
+            and cargo_invocation.requires_documenter
+        ):
+            documenter_context, _documenter_env = _cargo_flag_context(
+                command=command_argv,
+                cwd=cwd,
+                env=env,
+                target=target or host,
+                host_unit=False,
+                rustc=rustc,
+                probes=probes,
+                flag_kind="rustdocflags",
+                compiler_context=flag_context,
+            )
+            flag_context["documenter"] = documenter_context
+            documenter_flags = tuple(documenter_context["selected_flags"])
+        mode = command_admission.rust_compilation_mode(
+            command_argv,
+            cargo=True,
+            cargo_invocation=cargo_invocation,
+            unit=unit,
+            configured_flags=configured_flags,
+        )
+    original_arguments = (
+        cargo_invocation.compiler_arguments(
+            documenter=cargo_invocation.subcommand == "rustdoc"
+        )
+        if cargo_invocation is not None
+        else ()
+        if cargo is not None
+        else command_argv[1:]
+    )
+    with tempfile.TemporaryDirectory(prefix="molt-rust-argument-check-") as scratch:
+        _proof_rust_probe_arguments(
+            tuple(original_arguments),
+            Path(scratch),
+            documenter=cargo_invocation is not None
+            and cargo_invocation.subcommand == "rustdoc",
+        )
     artifact_context = None
     base = None
     if cargo is not None and unit == "target" and cargo_invocation is not None:
@@ -1630,6 +2179,7 @@ def _capture_rust_link_unit(
         cargo_invocation=cargo_invocation,
         unit=unit,
         manifest_crate_types=base,
+        configured_flags=configured_flags,
     )
     cargo_crate_types = artifact_selection["cargo_crate_types"]
     explicit_library = bool(cargo_crate_types or base) and "bin" not in (
@@ -1637,6 +2187,17 @@ def _capture_rust_link_unit(
     )
     with tempfile.TemporaryDirectory(prefix="molt-rust-link-capture-") as raw_root:
         root = Path(raw_root).resolve()
+        (root / "output").mkdir()
+        safe_flags = _proof_rust_probe_arguments(
+            configured_flags, root, documenter=unit == "target-documenter"
+        )
+        if unit == "target-documenter":
+            safe_flags = command_admission.rust_link_arguments(
+                safe_flags, documenter=True
+            )
+        _proof_rust_probe_arguments(documenter_flags, root, documenter=True)
+        if cargo is not None:
+            probe_env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(safe_flags)
         compiler_cwd = root if cargo is not None else cwd
         forwarded_context: dict[str, object] | None = None
         path_projections: list[dict[str, object]] = []
@@ -1652,7 +2213,6 @@ def _capture_rust_link_unit(
         if cargo is not None:
             manifest = root / "Cargo.toml"
             feature_names: set[str] = set()
-            custom_profiles: set[str] = set()
             cargo_profile_args: list[str] = []
             rustc_link_args: list[str] = []
             command = [str(value) for value in command_argv]
@@ -1672,11 +2232,10 @@ def _capture_rust_link_unit(
             except ValueError:
                 separator = len(command)
             cargo_args = command[1:separator]
-            forwarded = command[separator + 1 :] if separator < len(command) else []
             index = 0
             while index < len(cargo_args):
                 value = cargo_args[index]
-                if value in {"--release", "--all-features", "--no-default-features"}:
+                if value in {"--all-features", "--no-default-features"}:
                     cargo_profile_args.append(value)
                     index += 1
                     continue
@@ -1687,14 +2246,7 @@ def _capture_rust_link_unit(
                     if value == "--config":
                         pass  # Invocation-relative files were bound above.
                     elif value == "--profile":
-                        cargo_profile_args.extend((value, argument))
-                        if argument not in {"dev", "release", "test", "bench"}:
-                            if not argument or not all(
-                                character.isalnum() or character in "_-"
-                                for character in argument
-                            ):
-                                raise ValueError("Cargo profile name is not canonical")
-                            custom_profiles.add(argument)
+                        pass  # Capability witnesses do not recreate package profiles.
                     else:
                         selected_features: list[str] = []
                         for feature in argument.replace(",", " ").split():
@@ -1711,15 +2263,7 @@ def _capture_rust_link_unit(
                 if value.startswith("--config="):
                     pass
                 elif value.startswith("--profile="):
-                    cargo_profile_args.append(value)
-                    profile = value.split("=", 1)[1]
-                    if profile not in {"dev", "release", "test", "bench"}:
-                        if not profile or not all(
-                            character.isalnum() or character in "_-"
-                            for character in profile
-                        ):
-                            raise ValueError("Cargo profile name is not canonical")
-                        custom_profiles.add(profile)
+                    pass
                 elif value.startswith("--features="):
                     raw_features = value.split("=", 1)[1]
                     selected_features = []
@@ -1735,9 +2279,24 @@ def _capture_rust_link_unit(
                         "--features=" + ",".join(selected_features)
                     )
                 index += 1
-            rustc_link_args = list(command_admission.rust_link_arguments(forwarded))
+            rustc_link_args = list(
+                command_admission.rust_link_arguments(
+                    _proof_rust_probe_arguments(
+                        cargo_invocation.compiler_arguments(
+                            documenter=unit == "target-documenter"
+                        )
+                        if cargo_invocation is not None
+                        else (),
+                        root,
+                        documenter=unit == "target-documenter",
+                    ),
+                    documenter=unit == "target-documenter",
+                )
+            )
             relative_paths = (
-                relative_rustc_tool_paths(rustc_link_args) if unit == "target" else []
+                relative_rustc_tool_paths(rustc_link_args)
+                if unit != "host-proc-macro"
+                else []
             )
             if relative_paths:
                 forwarded_context = (
@@ -1766,10 +2325,6 @@ def _capture_rust_link_unit(
             feature_table = "".join(
                 f"{json.dumps(name)}=[]\n" for name in sorted(feature_names)
             )
-            profile_table = "".join(
-                f'\n[profile.{name}]\ninherits="release"\n'
-                for name in sorted(custom_profiles)
-            )
             target_table = (
                 '[lib]\nproc-macro=true\npath="host.rs"\n'
                 if unit == "host-proc-macro"
@@ -1792,8 +2347,7 @@ def _capture_rust_link_unit(
                 + "[workspace]\n\n"
                 + target_table
                 + "\n[features]\n"
-                + feature_table
-                + profile_table,
+                + feature_table,
                 encoding="utf-8",
             )
             probe_env["CARGO_TARGET_DIR"] = str(root / "target")
@@ -1809,7 +2363,23 @@ def _capture_rust_link_unit(
             if target:
                 command.extend(("--target", target))
             command.extend(cargo_profile_args)
+            if mode == "metadata" and unit != "host-proc-macro":
+                command.extend(("--profile", "check"))
             command.extend(config_args)
+            # Cargo's build directory is independent of CARGO_TARGET_DIR. Its
+            # final CLI scalar override confines intermediate files as well.
+            command.extend(
+                ("--config", "build.build-dir=" + json.dumps(str(root / "build")))
+            )
+            from molt.cli.runtime_cargo_plan import cargo_environment_force_overrides
+
+            command.extend(
+                token
+                for override in cargo_environment_force_overrides(
+                    () if flag_context is None else flag_context["forced_environment"]
+                )
+                for token in ("--config", override)
+            )
             command.extend(
                 ("--lib",)
                 if unit == "host-proc-macro" or explicit_library
@@ -1820,7 +2390,8 @@ def _capture_rust_link_unit(
             command.extend(
                 (
                     "--",
-                    *(rustc_link_args if unit == "target" else ()),
+                    *(rustc_link_args if unit != "host-proc-macro" else ()),
+                    *(("--test",) if unit == "target-documenter" else ()),
                 )
             )
         else:
@@ -1834,16 +2405,28 @@ def _capture_rust_link_unit(
             ]
             if target:
                 command.extend(("--target", target))
-            command.extend(command_admission.rust_link_arguments(command_argv[1:]))
+            command.extend(
+                command_admission.rust_link_arguments(
+                    _proof_rust_probe_arguments(tuple(command_argv[1:]), root)
+                )
+            )
         # rustc print_crate_info stops before compilation if ANY metadata-only
         # print is requested, even beside link-args. Keep the two command phases
         # disjoint for Cargo and direct rustc. Cargo fingerprints extra_args_for
         # the unit, so the changed print request is not a freshness retry.
-        metadata_command = [*command, "--print", "sysroot"]
+        metadata_command = (
+            [str(rustc), "--print", "sysroot"]
+            if mode == "query"
+            else [*command, "--print", "sysroot"]
+        )
         # The driver dry run below re-reads this command's inputs; save-temps
         # keeps rustc's temporaries (symbols.o, codegen units) inside the
         # synthetic root, since clang rejects missing inputs even under -###.
         command = [*command, "-C", "save-temps", "--print", "link-args"]
+        if mode != "query":
+            from molt.disk_capacity import require_build_capacity
+
+            require_build_capacity((root,), env=probe_env)
         metadata = _run_rust_link_probe(
             metadata_command,
             phase="selected-sysroot",
@@ -1867,15 +2450,19 @@ def _capture_rust_link_unit(
                     "a Cargo compiler-execution context hook before repository build."
                 )
         selected_sysroot = rustc_printed_sysroot(metadata.stdout, cwd=compiler_cwd)
-        completed = _run_rust_link_probe(
-            command,
-            phase="link-selection",
-            unit=unit,
-            cwd=cwd,
-            compiler_cwd=compiler_cwd,
-            env=probe_env,
-            timeout=120.0,
-            probes=probes,
+        completed = (
+            metadata
+            if mode == "query"
+            else _run_rust_link_probe(
+                command,
+                phase="link-selection",
+                unit=unit,
+                cwd=cwd,
+                compiler_cwd=compiler_cwd,
+                env=probe_env,
+                timeout=120.0,
+                probes=probes,
+            )
         )
         if cargo is not None:
             printed = _selected_command_lines(
@@ -1897,13 +2484,14 @@ def _capture_rust_link_unit(
         if not artifact_selection["link_required"]:
             if _selected_command_lines(completed.stdout + "\n" + completed.stderr):
                 raise ValueError(
-                    "archive-only Rust operation unexpectedly selected a linker"
+                    "non-linking Rust operation unexpectedly selected a linker"
                 )
             return [], {
                 "schema": "molt.proof-rust-link-unit.v2",
                 "unit": unit,
                 "artifact_selection": artifact_selection,
                 "artifact_context": artifact_context,
+                "flag_context": flag_context,
                 "process_image_refs": [],
                 "process_resolution": [],
                 "selected_process_count": 0,
@@ -1913,7 +2501,7 @@ def _capture_rust_link_unit(
                 "configuration_files": config_files,
                 "target": target,
                 "probe": "cargo-rustc" if cargo is not None else "rustc",
-                "selection_probe_count": 1,
+                "selection_probe_count": 0 if mode == "query" else 1,
                 "metadata_probe_count": 1,
                 "command_semantics_sha256": canonical_json_sha256(list(command_argv)),
                 "link_argv_sha256": canonical_json_sha256([]),
@@ -2042,6 +2630,7 @@ def _capture_rust_link_unit(
             "unit": unit,
             "artifact_selection": artifact_selection,
             "artifact_context": artifact_context,
+            "flag_context": flag_context,
             "process_image_refs": [
                 {"role": image["role"], "path": image["path"]} for image in images
             ],
@@ -2112,9 +2701,13 @@ def validate_rust_link_selection(
         or not units
         or any(not isinstance(row, Mapping) for row in units)
         or [row.get("unit") for row in units]
-        not in (["target"], ["target", "host-proc-macro"])
-        or telemetry.get("selection_probe_count") != len(units)
-        or any(row.get("selection_probe_count") != 1 for row in units)
+        not in (
+            ["target"],
+            ["target", "host-proc-macro"],
+            ["target", "host-proc-macro", "target-documenter"],
+        )
+        or telemetry.get("selection_probe_count")
+        != sum(row.get("selection_probe_count", -10) for row in units)
     ):
         raise ValueError("Rust linker units must each be selected exactly once pre-arm")
     admitted = telemetry.get("admitted_command")
@@ -2132,7 +2725,11 @@ def validate_rust_link_selection(
     )
     declared = admitted_envelope["cargo_native_units"]
     cargo = "cargo" in admitted_envelope["toolchains"]
-    if [row["unit"] for row in units] != (
+    if cargo and not (invocation and invocation.is_cargo_query):
+        _require_stable_cargo_version(telemetry.get("cargo_version"))
+    elif telemetry.get("cargo_version") is not None:
+        raise ValueError("non-compiling operation has unexpected Cargo version custody")
+    if [row["unit"] for row in units[:2]] != (
         ["target", "host-proc-macro"] if cargo else ["target"]
     ):
         raise ValueError("Rust linker unit family differs from its admitted command")
@@ -2174,7 +2771,82 @@ def validate_rust_link_selection(
     ) == executable_role(compared_producer[0])
     if submitted[1:] != compared_producer[1:] or not same_role:
         raise ValueError("Rust producer command differs from its submitted payload")
+    expected_documenter = None
     for row in units:
+        flags = row.get("flag_context")
+        mode = command_admission.rust_compilation_mode(
+            producer, cargo=cargo, cargo_invocation=invocation, unit=row["unit"]
+        )
+        configured_flags = ()
+        documenter_flags = ()
+        if cargo and mode != "query":
+            if (
+                not isinstance(flags, Mapping)
+                or flags.get("command") != producer
+                or flags.get("host_unit") != (row["unit"] == "host-proc-macro")
+                or flags.get("target")
+                != (telemetry.get("target") or telemetry.get("compiler_host"))
+            ):
+                raise ValueError(
+                    "Cargo flag inputs differ from admitted operation/unit"
+                )
+            if (
+                identity.get("content_path") is not None
+                and flags.get("rustc") != identity["content_path"]
+            ) or (
+                identity.get("probe_cwd") is not None
+                and flags.get("cwd") != identity["probe_cwd"]
+            ):
+                raise ValueError("Cargo flag inputs differ from selected compiler/cwd")
+            if flags.get("flag_kind") != (
+                "rustdocflags" if row["unit"] == "target-documenter" else "rustflags"
+            ):
+                raise ValueError("Cargo compiler flag family differs from operation")
+            configured_flags = _resolve_cargo_flag_context(flags)
+            if row["unit"] == "target-documenter" and flags != expected_documenter:
+                raise ValueError(
+                    "Cargo documenter witness differs from selected documenter inputs"
+                )
+            documenter = flags.get("documenter")
+            if row["unit"] == "target" and invocation.requires_documenter:
+                if (
+                    not isinstance(documenter, Mapping)
+                    or documenter.get("command") != producer
+                    or documenter.get("flag_kind") != "rustdocflags"
+                    or documenter.get("host_unit") is not False
+                    or documenter.get("target") != flags.get("target")
+                    or any(
+                        documenter.get(key) != flags.get(key)
+                        for key in (
+                            "cwd",
+                            "rustc",
+                            "sources",
+                            "environment",
+                            "configuration_paths",
+                        )
+                    )
+                ):
+                    raise ValueError("Cargo documenter flags differ from operation")
+                documenter_flags = _resolve_cargo_flag_context(documenter)
+                if command_admission.rust_documenter_required(
+                    invocation, documenter_flags
+                ):
+                    expected_documenter = documenter
+            elif documenter is not None:
+                raise ValueError("Cargo operation has unexpected documenter flags")
+            mode = command_admission.rust_compilation_mode(
+                producer,
+                cargo=cargo,
+                cargo_invocation=invocation,
+                unit=row["unit"],
+                configured_flags=configured_flags,
+            )
+        elif flags is not None:
+            raise ValueError(
+                "non-Cargo/query operation has unexpected Cargo flag context"
+            )
+        if row.get("selection_probe_count") != (0 if mode == "query" else 1):
+            raise ValueError("Rust operation has an unexpected compilation probe count")
         context = row.get("artifact_context")
         base = (
             None if context is None else _cargo_artifact_crate_types(context, producer)
@@ -2185,6 +2857,7 @@ def validate_rust_link_selection(
             cargo_invocation=invocation,
             unit=row["unit"],
             manifest_crate_types=base,
+            configured_flags=configured_flags,
         )
         if (
             row.get("schema") != "molt.proof-rust-link-unit.v2"
@@ -2207,8 +2880,15 @@ def validate_rust_link_selection(
             or row.get("link_argv_sha256") != canonical_json_sha256([])
         ):
             raise ValueError(
-                "archive-only Rust operation has unexpected linker selection"
+                "non-linking Rust operation has unexpected linker selection"
             )
+    expected_units = ["target", "host-proc-macro"] if cargo else ["target"]
+    if expected_documenter is not None:
+        expected_units.append("target-documenter")
+    if [row["unit"] for row in units] != expected_units:
+        raise ValueError(
+            "Rust documenter unit family differs from its admitted command"
+        )
     if telemetry.get("native_required") != declared or (
         required_native_units is not None and dict(required_native_units) != declared
     ):
@@ -2566,6 +3246,7 @@ def revalidate_rust_link_process_images(
         required_native_units=required_native_units,
         full_capture=True,
     )
+    revalidate_rust_selection_sources(telemetry)
     for unit in telemetry["units"]:
         for config in unit.get("configuration_files", []):
             path = Path(config["path"])
