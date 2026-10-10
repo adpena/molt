@@ -1219,37 +1219,6 @@ def _canonical_uv_prefix(
     return exact_prefix, effective
 
 
-def _names_guarded_exec(value: str) -> bool:
-    """Whether one path or module token names the guarded_exec seam.
-
-    A token names it only by its own name: ``tools/guarded_exec.py`` and
-    ``tools.guarded_exec`` do, pytest's ``tests/tools/test_guarded_exec.py``
-    does not.
-    """
-    name = _basename(value)
-    stem, dot, suffix = name.rpartition(".")
-    if dot and suffix in {"py", "pyc", "pyw"}:
-        name = stem
-    return name.rsplit(".", 1)[-1] == "guarded_exec"
-
-
-def _python_arguments_reach_guarded_exec(values: Sequence[str]) -> bool:
-    """Whether Python arguments name the seam outside the direct target slot.
-
-    ``-c`` code is opaque, so any mention there counts.
-    """
-    previous = ""
-    for value in values:
-        text = str(value)
-        if previous == "-c":
-            if "guarded_exec" in text.casefold():
-                return True
-        elif _names_guarded_exec(text):
-            return True
-        previous = text
-    return False
-
-
 def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
     """Parse every canonical spelling of the queue's guarded delegation seam."""
     if not argv:
@@ -1263,41 +1232,32 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
     if not payload:
         return None
     first = _basename(payload[0])
-    python_index = 1
-    if _PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS:
-        if (
-            first in _PY_LAUNCHERS
-            and len(payload) > 1
-            and _PY_SELECTOR.fullmatch(payload[1])
-        ):
-            python_index = 2
-    else:
-        # Another program's arguments are opaque, so any mention counts.
-        if any("guarded_exec" in str(value).casefold() for value in payload):
-            raise ValueError("guarded_exec delegation must be the direct Python target")
+    selector = (
+        first in _PY_LAUNCHERS
+        and len(payload) > 1
+        and _PY_SELECTOR.fullmatch(payload[1]) is not None
+    )
+    if not (_PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS):
         return None
-    if python_index >= len(payload):
-        return None
-    target = payload[python_index]
-    mode: str | None = None
-    target_indices: list[int] = []
-    after_target = python_index + 1
-    if target == "-m":
-        if after_target >= len(payload):
-            return None
-        module = payload[after_target]
-        if module == "tools.guarded_exec":
-            mode = "module"
-            target_indices = [offset + python_index, offset + after_target]
-            after_target += 1
-        elif _names_guarded_exec(module):
-            raise ValueError(f"ambiguous guarded_exec module authority {module!r}")
-    elif _basename(target) == "guarded_exec.py":
+    invocation = parse_python_invocation(
+        [payload[0], *payload[2:]] if selector else payload
+    )
+    # Only the interpreter's target can be this delegation authority. Payload
+    # arguments, option operands and command strings keep their ordinary meaning.
+    after_target = len(payload) - len(invocation.arguments)
+    if invocation.mode == "module" and invocation.target == "tools.guarded_exec":
+        mode = "module"
+        first_target = after_target - (
+            1 if payload[after_target - 1] == "-mtools.guarded_exec" else 2
+        )
+        target_indices = list(range(offset + first_target, offset + after_target))
+    elif (
+        invocation.mode == "script"
+        and _basename(invocation.target or "") == "guarded_exec.py"
+    ):
         mode = "script"
-        target_indices = [offset + python_index]
-    if mode is None:
-        if _python_arguments_reach_guarded_exec(payload[python_index:]):
-            raise ValueError("guarded_exec delegation must be the direct Python target")
+        target_indices = [offset + after_target - 1]
+    else:
         return None
     try:
         separator = payload.index("--", after_target)

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import perf_scoreboard as scoreboard
 import perf_scoreboard_measure as measure
 from perf_scoreboard_build_profiles import profile_selection
-from perf_scoreboard_model import BACKENDS_BY_NAME, NATIVE_CRANELIFT, NATIVE_LLVM
+from perf_scoreboard_model import NATIVE_CRANELIFT, NATIVE_LLVM, BACKENDS_BY_NAME
 from tests.release_lane_fixtures import EXPECTED_LANES
 
 
@@ -24,6 +24,7 @@ from tests.release_lane_fixtures import EXPECTED_LANES
 )
 @pytest.mark.parametrize("ambient", [False, True])
 def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
+    monkeypatch.setenv("MOLT_BACKEND", "llvm" if ambient else "cranelift")
     keys = profile_selection(spec, profile).environment()
     for key in keys:
         if ambient:
@@ -36,9 +37,9 @@ def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
     assert env["MOLT_DEV_CARGO_PROFILE"] == expected_guest
     assert env["MOLT_WASM_CARGO_PROFILE"] == expected_guest
     assert env["MOLT_BACKEND_PROFILE"] == "release"
-    assert spec.build_args() == (
-        "--backend",
-        "llvm" if spec.backend == "llvm" else "cranelift",
+    assert env["MOLT_BACKEND"] == ("llvm" if ambient else "cranelift")
+    assert profile_selection(spec, profile).codegen_backend == (
+        "llvm" if spec.backend == "llvm" else "cranelift"
     )
     assert env["MOLT_RELEASE_BACKEND_CARGO_PROFILE"] == "release"
     assert env["MOLT_RUNTIME_BUILD_PROFILE"] == ""
@@ -446,34 +447,6 @@ def test_profiling_refuses_an_unbound_or_unsupported_minor(minor):
     assert "explicit supported target Python" in metadata["reason"]
 
 
-@pytest.mark.parametrize("spec", [NATIVE_CRANELIFT, NATIVE_LLVM])
-def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
-    monkeypatch, tmp_path, spec
-):
-    """The lane's codegen backend travels as ``--backend``, never ``MOLT_BACKEND``.
-
-    Since HF-60 neither ``molt build`` nor the batch build server reads the
-    backend from the environment, so a lane that set only the variable built
-    with Cranelift.
-    """
-    import bench
-
-    monkeypatch.delenv("MOLT_BACKEND", raising=False)
-    env = measure._perfscore_build_env(spec, "release-fast")
-    params = bench._molt_build_params(
-        script=str(tmp_path / "program.py"),
-        extra_args=list(spec.build_args()),
-        env=env,
-        build_profile="release",
-        out_dir=tmp_path,
-    )
-
-    expected = "llvm" if spec is NATIVE_LLVM else "cranelift"
-    assert "MOLT_BACKEND" not in env
-    assert params.get("backend") == expected
-    assert spec.build_args() == ("--backend", expected)
-
-
 @pytest.mark.parametrize(
     "backend,profile",
     [("unknown", "release-fast"), ("wasm", "release-fast"), ("llvm", "unknown")],
@@ -484,3 +457,35 @@ def test_profile_binding_reports_unsupported_observed_lane(backend, profile):
     assert profile_binding_problems(
         {"selected_profiles": {}}, backend=backend, profile=profile
     ) == [f"unsupported release lane: backend={backend}, runtime_profile={profile}"]
+
+
+@pytest.mark.parametrize(
+    "spec,expected", [(NATIVE_CRANELIFT, "cranelift"), (NATIVE_LLVM, "llvm")]
+)
+def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
+    monkeypatch, tmp_path, spec, expected
+):
+    """The lane's codegen backend travels as ``--backend``, never ``MOLT_BACKEND``.
+
+    Since HF-60 neither ``molt build`` nor the batch build server reads the
+    backend from the environment, so a lane that set only the variable built
+    with Cranelift.
+    """
+    import bench
+    from perf_scoreboard_build_profiles import profile_selection
+
+    monkeypatch.delenv("MOLT_BACKEND", raising=False)
+    env = measure._perfscore_build_env(spec, "release-fast")
+    params = bench._molt_build_params(
+        script=str(tmp_path / "program.py"),
+        extra_args=[
+            "--backend",
+            profile_selection(spec, "release-fast").codegen_backend,
+        ],
+        env=env,
+        build_profile="release",
+        out_dir=tmp_path,
+    )
+
+    assert "MOLT_BACKEND" not in env
+    assert params.get("backend") == expected

@@ -4,8 +4,8 @@ use molt_proof_supervisor::evidence::{
 };
 use molt_proof_supervisor::{
     ClosureMode, EXPORT_EVENT_MAX_BYTES, EXPORT_FOOTER_MAGIC, EXPORT_LENGTH_HEX_DIGITS,
-    EXPORT_RECEIPT_MAX_BYTES, EventJournal, MAX_POLICY_BYTES, Policy, RECEIPT_SCHEMA, Receipt,
-    platform, sha256_bytes, sha256_reader,
+    EXPORT_RECEIPT_MAX_BYTES, EventJournal, MAX_POLICY_BYTES, RECEIPT_SCHEMA, Receipt, platform,
+    sha256_bytes, sha256_reader,
 };
 use std::fs;
 use std::io::Write;
@@ -70,6 +70,101 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
                 .parse()
                 .map_err(|_| "fixture exit code must be 0..255".to_owned())?;
             Ok(code)
+        }
+        [command, fixture, marker] if command == "fixture-child" && fixture == "write-marker" => {
+            fs::write(marker, b"subject-entered\n").map_err(|error| error.to_string())?;
+            Ok(0)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, kind, marker, report]
+            if command == "fixture-child" && fixture == "linux-creation-attempt" =>
+        {
+            linux_creation_attempt(kind, Path::new(marker), Path::new(report))
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, kind, marker, report]
+            if command == "fixture-child" && fixture == "linux-creation-descendant" =>
+        {
+            let status = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args(["fixture-child", "linux-creation-attempt", kind, marker, report])
+                .status().map_err(|error| error.to_string())?;
+            Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, operation, policy, receipt]
+            if command == "fixture-child" && fixture == "linux-host-denial" =>
+        {
+            linux_host_denial(operation, policy, receipt)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, report]
+            if command == "fixture-child" && fixture == "linux-libc-thread-and-spawn" =>
+        {
+            linux_libc_thread_and_spawn(Path::new(report))
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, report]
+            if command == "fixture-child" && fixture == "linux-clone-thread-sigchld" =>
+        {
+            linux_clone_thread_sigchld(Path::new(report))
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, marker]
+            if command == "fixture-child" && fixture == "linux-nonleader-exec" =>
+        {
+            use std::os::unix::process::CommandExt;
+            let marker = marker.clone();
+            std::thread::spawn(move || {
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["fixture-child", "write-marker", &marker]).exec()
+            }).join().map_err(|_| "nonleader exec thread panicked".to_owned())?;
+            Err("nonleader exec returned without replacing the process".to_owned())
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, root_marker, ready, owned_marker, owned_finished]
+            if command == "fixture-child" && fixture == "linux-root-group-barrier" =>
+        {
+            Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args(["fixture-child", "linux-finite-owned-child", owned_marker, owned_finished])
+                .spawn().map_err(|error| error.to_string())?;
+            fixture_wait_file(Path::new(owned_marker))?;
+            fs::write(root_marker, std::process::id().to_string()).map_err(|error| error.to_string())?;
+            fixture_wait_file(Path::new(ready))?;
+            Ok(0)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, marker, finished]
+            if command == "fixture-child" && fixture == "linux-finite-owned-child" =>
+        {
+            fs::write(marker, b"owned-entered\n").map_err(|error| error.to_string())?;
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            fs::write(finished, b"owned-finished\n").map_err(|error| error.to_string())?;
+            Ok(0)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, root_marker, ready, release, finished]
+            if command == "fixture-child" && fixture == "linux-join-root-group" =>
+        {
+            fixture_wait_file(Path::new(root_marker))?;
+            let group: libc::pid_t = fs::read_to_string(root_marker).map_err(|error| error.to_string())?
+                .parse().map_err(|_| "invalid fixture process group".to_owned())?;
+            if group <= 1 || unsafe { libc::setpgid(0, group) } != 0 {
+                return Err(format!("cannot join fixture root group: {}", std::io::Error::last_os_error()));
+            }
+            fs::write(ready, b"decoy-joined\n").map_err(|error| error.to_string())?;
+            fixture_wait_file(Path::new(release))?;
+            fs::write(finished, b"decoy-survived\n").map_err(|error| error.to_string())?;
+            Ok(0)
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture] if command == "fixture-child" && fixture == "application-trap-unhandled" => {
+            unsafe { libc::raise(libc::SIGTRAP); }
+            Ok(97) // Reaching this branch means the ordinary fatal signal was lost.
+        }
+        #[cfg(target_os = "linux")]
+        [command, fixture, marker] if command == "fixture-child" && fixture == "application-trap-handled" => {
+            application_trap_handled_fixture(Path::new(marker))?;
+            Ok(0)
         }
         [command, fixture] if command == "fixture-child" && fixture == "spawn-self" => {
             let status = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
@@ -191,6 +286,390 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn fixture_wait_file(path: &Path) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !path.is_file() {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "finite fixture barrier expired: {}",
+                path.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_wait_child(pid: libc::pid_t) -> Result<(), String> {
+    let mut status = 0;
+    loop {
+        let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if waited == pid {
+            break;
+        }
+        if waited < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return Err(format!(
+            "fixture child wait failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        return Err(format!("fixture child terminal status {status:#x}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_creation_attempt(kind: &str, marker: &Path, report: &Path) -> Result<u8, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let marker = CString::new(marker.as_os_str().as_bytes()).map_err(|error| error.to_string())?;
+    // Deliberately independent of the supervisor's clone_args structure/filter.
+    // The raw UAPI record uses only flags and SIGCHLD. A bypassed child performs
+    // bounded async-safe marker I/O and exits; it cannot become an escaped daemon.
+    let args = [
+        AtomicU64::new(libc::CLONE_UNTRACED as u64),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(libc::SIGCHLD as u64),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    let attempt = || -> Result<i32, String> {
+        let mut flags = (libc::CLONE_UNTRACED | libc::SIGCHLD) as libc::c_ulong;
+        if kind == "untraced-high-word" {
+            flags |= (1_u64 << 32) as libc::c_ulong;
+        }
+        let result = match kind {
+            "untraced" | "untraced-high-word" => unsafe {
+                libc::syscall(libc::SYS_clone, flags, 0_usize, 0_usize, 0_usize, 0_usize)
+            },
+            "clone3" | "clone3-mutating" => unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    args.as_ptr(),
+                    std::mem::size_of_val(&args),
+                )
+            },
+            #[cfg(target_arch = "x86_64")]
+            "x32-untraced" => unsafe {
+                libc::syscall(
+                    0x4000_0038 as libc::c_long,
+                    flags,
+                    0_usize,
+                    0_usize,
+                    0_usize,
+                    0_usize,
+                )
+            },
+            #[cfg(target_arch = "x86_64")]
+            "x32-clone3" => unsafe {
+                // Null is sufficient: the declared restriction precedes any
+                // pointer validation; without it this is EFAULT, not ENOSYS.
+                libc::syscall(0x4000_01b3 as libc::c_long, 0_usize, 64_usize)
+            },
+            #[cfg(target_arch = "x86_64")]
+            "i386-untraced" => unsafe { fixture_int80(120, flags as u32, 0) },
+            #[cfg(target_arch = "x86_64")]
+            "i386-clone3" => unsafe { fixture_int80(435, 0, 64) },
+            _ => return Err(format!("unsupported creation fixture {kind}")),
+        };
+        if result == 0 {
+            unsafe {
+                let fd = libc::open(
+                    marker.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                    0o600,
+                );
+                if fd < 0 {
+                    libc::_exit(91);
+                }
+                let text = b"unexpected-child-entered\n";
+                let written = libc::write(fd, text.as_ptr().cast(), text.len());
+                libc::close(fd);
+                libc::_exit(if written == text.len() as isize {
+                    0
+                } else {
+                    92
+                });
+            }
+        }
+        if result < 0 {
+            return Ok(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
+        }
+        fixture_wait_child(result as libc::pid_t)?;
+        Ok(0)
+    };
+    let mut errors = Vec::new();
+    if kind == "clone3-mutating" {
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| -> Result<(), String> {
+            let writer = scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    args[0].store(0, Ordering::Relaxed);
+                    args[0].store(libc::CLONE_UNTRACED as u64, Ordering::Relaxed);
+                }
+            });
+            let result = (|| {
+                for _ in 0..32 {
+                    errors.push(attempt()?);
+                }
+                Ok(())
+            })();
+            stop.store(true, Ordering::Relaxed);
+            writer
+                .join()
+                .map_err(|_| "clone_args writer panicked".to_owned())?;
+            result
+        })?;
+    } else {
+        errors.push(attempt()?);
+    }
+    fs::write(
+        report,
+        serde_json::to_vec(&errors).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(0)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe fn fixture_int80(number: u32, first: u32, second: u32) -> libc::c_long {
+    let result: i32;
+    unsafe {
+        // Save RBX because LLVM reserves it in some targets. The actual int80
+        // entry is used from a 64-bit image; no userspace ABI model substitutes
+        // for the kernel. Older kernels may clear R8..R11 on this entry.
+        std::arch::asm!(
+            "xchg rbx, {saved}", "int 0x80", "xchg rbx, {saved}",
+            saved = inout(reg) first as u64 => _,
+            inlateout("eax") number => result,
+            in("ecx") second, in("edx") 0_u32, in("esi") 0_u32, in("edi") 0_u32,
+            lateout("r8") _, lateout("r9") _, lateout("r10") _, lateout("r11") _,
+        );
+        if result < 0 {
+            *libc::__errno_location() = -result;
+            -1
+        } else {
+            result as libc::c_long
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_libc_thread_and_spawn(report: &Path) -> Result<u8, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    extern "C" fn worker(value: *mut libc::c_void) -> *mut libc::c_void {
+        unsafe { &*(value.cast::<AtomicU32>()) }.store(7, Ordering::SeqCst);
+        std::ptr::null_mut()
+    }
+    let observed = AtomicU32::new(0);
+    let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+    let error = unsafe {
+        libc::pthread_create(
+            thread.as_mut_ptr(),
+            std::ptr::null(),
+            worker,
+            (&observed as *const AtomicU32).cast_mut().cast(),
+        )
+    };
+    if error != 0 {
+        return Err(format!("pthread_create errno {error}"));
+    }
+    let error = unsafe { libc::pthread_join(thread.assume_init(), std::ptr::null_mut()) };
+    if error != 0 || observed.load(Ordering::SeqCst) != 7 {
+        return Err(format!("pthread did not complete: errno {error}"));
+    }
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable =
+        CString::new(executable.as_os_str().as_bytes()).map_err(|error| error.to_string())?;
+    let args = [
+        executable,
+        CString::new("fixture-child").unwrap(),
+        CString::new("exit").unwrap(),
+        CString::new("0").unwrap(),
+    ];
+    let argv: Vec<_> = args
+        .iter()
+        .map(|value| value.as_ptr().cast_mut())
+        .chain([std::ptr::null_mut()])
+        .collect();
+    let env = [std::ptr::null_mut::<libc::c_char>()];
+    let mut pid = 0;
+    let error = unsafe {
+        libc::posix_spawn(
+            &mut pid,
+            args[0].as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            argv.as_ptr(),
+            env.as_ptr(),
+        )
+    };
+    if error != 0 {
+        return Err(format!("posix_spawn errno {error}"));
+    }
+    fixture_wait_child(pid)?;
+    fs::write(report, b"pthread=7;posix_spawn=0\n").map_err(|error| error.to_string())?;
+    Ok(0)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clone_thread_sigchld(report: &Path) -> Result<u8, String> {
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+    extern "C" fn worker(value: *mut libc::c_void) -> libc::c_int {
+        // The raw clone callback uses no libc TLS or Rust thread apparatus.
+        unsafe { &*(value.cast::<AtomicU32>()) }.store(7, Ordering::SeqCst);
+        0
+    }
+    let observed = AtomicU32::new(0);
+    let child_tid = AtomicI32::new(1);
+    let mut stack = vec![0_u128; 4096];
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()) }.cast::<libc::c_void>();
+    let flags = libc::CLONE_THREAD
+        | libc::CLONE_VM
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_CHILD_SETTID
+        | libc::CLONE_CHILD_CLEARTID
+        | libc::SIGCHLD;
+    let tid = unsafe {
+        libc::clone(
+            worker,
+            top,
+            flags,
+            (&observed as *const AtomicU32).cast_mut().cast(),
+            std::ptr::null_mut::<libc::pid_t>(),
+            std::ptr::null_mut::<libc::c_void>(),
+            child_tid.as_ptr(),
+        )
+    };
+    if tid < 0 {
+        return Err(format!(
+            "clone thread with SIGCHLD failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // A callback completion flag alone does not retire its stack. Kernel
+    // clear_child_tid provides the independent lifetime boundary.
+    while child_tid.load(Ordering::SeqCst) != 0 {
+        if std::time::Instant::now() >= deadline {
+            // Do not unwind/free a live raw thread stack on failure.
+            unsafe {
+                libc::_exit(93);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if observed.load(Ordering::SeqCst) != 7 {
+        return Err("raw clone callback did not execute".to_owned());
+    }
+    fs::write(report, b"clone-thread-sigchld=7\n").map_err(|error| error.to_string())?;
+    Ok(0)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_host_denial(operation: &str, policy: &str, receipt: &str) -> Result<u8, String> {
+    use std::os::unix::process::CommandExt;
+    let (number, argument) = match operation {
+        "clone3" => (libc::SYS_clone3, None),
+        "pidfd-open" => (libc::SYS_pidfd_open, None),
+        "parent-death" => (libc::SYS_prctl, Some(libc::PR_SET_PDEATHSIG)),
+        "no-new-privs" => (libc::SYS_prctl, Some(libc::PR_SET_NO_NEW_PRIVS)),
+        "filter" => (libc::SYS_prctl, Some(libc::PR_SET_SECCOMP)),
+        "traceme" => (libc::SYS_ptrace, Some(libc::PTRACE_TRACEME as i32)),
+        _ => return Err(format!("unknown host denial fixture {operation}")),
+    };
+    let instruction = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+    // A separate, deliberately narrow kernel restriction on the *supervisor*.
+    // It is not derived from, nor an evaluator of, its creation filter.
+    let mut filter = vec![
+        instruction(0x20, 0, 0, 0),
+        instruction(
+            0x15,
+            0,
+            if argument.is_some() { 3 } else { 1 },
+            number as u32,
+        ),
+    ];
+    if let Some(argument) = argument {
+        filter.push(instruction(0x20, 0, 0, 16));
+        filter.push(instruction(0x15, 0, 1, argument as u32));
+    }
+    filter.push(instruction(0x06, 0, 0, 0x0005_0000 | libc::EACCES as u32));
+    filter.push(instruction(0x06, 0, 0, 0x7fff_0000));
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_NO_NEW_PRIVS,
+            1_usize,
+            0_usize,
+            0_usize,
+            0_usize,
+        )
+    } != 0
+        || unsafe {
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                2_usize,
+                &program as *const libc::sock_fprog,
+                0_usize,
+                0_usize,
+            )
+        } != 0
+    {
+        return Err(format!(
+            "cannot install independent host restriction: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Err(format!(
+        "cannot exec restricted supervisor: {}",
+        Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+            .args(["run", "--policy", policy, "--receipt", receipt])
+            .exec()
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn application_trap_handled_fixture(marker: &Path) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static OBSERVED: AtomicU32 = AtomicU32::new(0);
+    extern "C" fn handler(signal: libc::c_int) {
+        OBSERVED.store(signal as u32, Ordering::Relaxed);
+    }
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = handler as *const () as usize;
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+    }
+    if unsafe { libc::sigaction(libc::SIGTRAP, &action, std::ptr::null_mut()) } != 0
+        || unsafe { libc::raise(libc::SIGTRAP) } != 0
+    {
+        return Err(format!(
+            "application SIGTRAP fixture failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if OBSERVED.load(Ordering::Relaxed) != libc::SIGTRAP as u32 {
+        return Err("application SIGTRAP handler was not invoked".to_owned());
+    }
+    fs::write(marker, b"trap-handled\n").map_err(|error| error.to_string())
+}
+
 #[cfg(windows)]
 fn normal_heap_fixture() -> Result<(), String> {
     use windows_sys::Win32::Foundation::HANDLE;
@@ -269,15 +748,7 @@ fn application_breakpoint_fixture() -> Result<u8, String> {
 }
 
 fn read_policy(path: &Path) -> Result<Vec<u8>, String> {
-    let opened = OpenedRegularFile::open(path)
-        .map_err(|error| format!("cannot open policy {}: {error}", path.display()))?;
-    if opened.size_bytes() > MAX_POLICY_BYTES as u64 {
-        return Err(format!(
-            "policy must be a regular file within {MAX_POLICY_BYTES} bytes"
-        ));
-    }
-    opened
-        .read_all(MAX_POLICY_BYTES)
+    molt_proof_supervisor::evidence::read_bounded_file(path, MAX_POLICY_BYTES)
         .map_err(|error| format!("cannot read policy {}: {error}", path.display()))
 }
 
@@ -287,8 +758,7 @@ fn verify_receipt(
     rootfs: Option<&Path>,
 ) -> Result<u8, String> {
     let policy_bytes = read_policy(policy_path)?;
-    let raw_policy: Policy = serde_json::from_slice(&policy_bytes)
-        .map_err(|error| format!("invalid policy: {error}"))?;
+    let raw_policy = molt_proof_supervisor::budget::decode_policy(&policy_bytes)?;
     let policy = match rootfs {
         Some(root) => raw_policy.validate_rooted_linux(root)?,
         None => raw_policy.validate()?,
@@ -348,7 +818,12 @@ fn verify_receipt(
         verified.violation_count == receipt.violation_count
             && verified.violations == receipt.violations
     });
-    let kernel_accounting_valid = receipt.kernel_accounting_is_valid();
+    let admission_replay_valid = event_verification
+        .as_ref()
+        .is_ok_and(|verified| verified.admission == receipt.capability.admission);
+    let native_custody_valid = receipt.native_custody_is_valid();
+    let custody_closed = receipt.native_custody.is_closed();
+    let journal_coverage_valid = receipt.coverage_is_valid();
     println!(
         "{}",
         serde_json::json!({
@@ -362,6 +837,7 @@ fn verify_receipt(
             "complete": receipt.complete,
             "schema_valid": schema_valid,
             "capability_valid": capability_valid,
+            "admission_replay_valid": admission_replay_valid,
             "identity_valid": identity_valid,
             "terminal_consistent": terminal_consistent,
             "lifecycle_valid": lifecycle_valid,
@@ -373,13 +849,16 @@ fn verify_receipt(
             "accounting_valid": accounting_valid,
             "root_exit_valid": root_exit_valid,
             "violation_replay_valid": violation_replay_valid,
-            "kernel_accounting_valid": kernel_accounting_valid,
+            "native_custody_valid": native_custody_valid,
+            "custody_closed": custody_closed,
+            "journal_coverage_valid": journal_coverage_valid,
             "event_log_error": event_verification.err(),
         })
     );
     Ok(
         if schema_valid
             && capability_valid
+            && admission_replay_valid
             && identity_valid
             && terminal_consistent
             && lifecycle_valid
@@ -391,7 +870,8 @@ fn verify_receipt(
             && accounting_valid
             && root_exit_valid
             && violation_replay_valid
-            && kernel_accounting_valid
+            && native_custody_valid
+            && journal_coverage_valid
         {
             0
         } else {
@@ -411,8 +891,7 @@ fn parse_mode(value: &str) -> Result<ClosureMode, String> {
 
 fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Result<u8, String> {
     let bytes = read_policy(policy_path)?;
-    let raw: Policy =
-        serde_json::from_slice(&bytes).map_err(|error| format!("invalid policy: {error}"))?;
+    let raw = molt_proof_supervisor::budget::decode_policy(&bytes)?;
     let policy = raw.validate()?;
     if (policy.policy.mode == ClosureMode::InventoryTree) != inventory {
         return Err(if inventory {
@@ -424,9 +903,20 @@ fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Resul
     let capability = platform::capability(policy.policy.mode);
     let mut events = EventJournal::create(receipt_path, &policy, &capability)?;
     let mut receipt = platform::run(&policy, &mut events, capability);
-    let evidence = events.publish()?;
-    receipt.attach_evidence(evidence)?;
-    write_receipt_atomic(receipt_path, &receipt)?;
+    let publication = (|| {
+        let evidence = events.publish()?;
+        let event_path = receipt_path.with_file_name(&evidence.event_log.file);
+        receipt.attach_evidence(evidence).map_err(|error| {
+            format!("{error}; published event artifact {}", event_path.display())
+        })?;
+        write_receipt_atomic(receipt_path, &receipt)
+    })();
+    if let Err(error) = publication {
+        // Preserve the backend's terminal and cleanup diagnostics even when
+        // storage publication fails. The existing stderr transcript carries
+        // this snapshot and the independent publication cause; exit remains 2.
+        return Err(receipt.publication_failure_diagnostic(&error));
+    }
     Ok(if receipt.complete { 0 } else { 78 })
 }
 
@@ -500,21 +990,20 @@ fn export_evidence_to(receipt_path: &Path, stream: &mut impl Write) -> Result<()
 }
 
 fn write_receipt_atomic(path: &Path, receipt: &Receipt) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec_pretty(receipt).map_err(|error| error.to_string())?;
+    let mut bytes = molt_proof_supervisor::budget::encode(receipt, MAX_RECEIPT_BYTES - 1)?;
+    bytes
+        .try_reserve_exact(1)
+        .map_err(|_| "receipt LF reservation refused")?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_RECEIPT_BYTES {
-        return Err(format!(
-            "compact receipt is {} bytes; maximum is {MAX_RECEIPT_BYTES}",
-            bytes.len()
-        ));
-    }
     durable_atomic_write(path, &bytes)
 }
 
 #[cfg(test)]
 mod export_tests {
     use super::*;
-    use molt_proof_supervisor::{ArtifactSummary, Capability, FixedImage, RootExitDisposition};
+    use molt_proof_supervisor::{
+        ArtifactSummary, Capability, FixedImage, Policy, RootExitDisposition,
+    };
 
     #[test]
     fn export_refuses_oversized_retained_evidence_before_emitting_a_footer() {
@@ -565,12 +1054,13 @@ mod export_tests {
             platform: "test".to_owned(),
             mode: ClosureMode::Leaf,
             backend: "test".to_owned(),
-            available: false,
+            admission: molt_proof_supervisor::Admission::Ineligible {
+                reason: "fixture".to_owned(),
+            },
             pre_entry_exec_authority: false,
             pre_entry_process_create_authority: false,
             recursive_descendant_authority: false,
             required_environment: platform::required_environment(),
-            reason: Some("fixture".to_owned()),
         };
         let mut receipt = Receipt::rejected(&policy, &capability, "fixture");
         receipt.event_log = Some(ArtifactSummary {

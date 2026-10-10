@@ -9,9 +9,9 @@ from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.runtime_paths import (
     _build_state_root,
     _build_state_root_cached,
-    _cargo_target_root_cached,
 )
 from molt.default_paths import configured_artifact_root_text
+from molt.dx import cargo_target_dir_for_artifact_root
 
 
 @functools.lru_cache(maxsize=512)
@@ -114,20 +114,15 @@ def _artifact_state_path_for_build_state_root(
 
 
 def _canonical_target_root(project_root: Path) -> Path:
-    return _cargo_target_root_cached(
-        os.fspath(project_root),
-        None,
-        os.fspath(Path.cwd()),
-    )
+    """The project's shared, unscoped default target: the hydration source."""
+    return cargo_target_dir_for_artifact_root(project_root, None)
 
 
 def _canonical_build_state_root(project_root: Path) -> Path:
     return _build_state_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_BUILD_STATE_DIR"),
-        None,
-        os.fspath(Path.cwd()),
-        None,
+        os.fspath(_canonical_target_root(project_root)),
         configured_artifact_root_text(os.environ),
     )
 

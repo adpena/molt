@@ -49,7 +49,6 @@ from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     required_llvm_backend_pin,
 )
-from molt.release_lanes import lane_codegen_backend  # noqa: E402
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 
@@ -136,21 +135,11 @@ RUN_BLOCKED_BACKENDS = {"wasm"}
 
 @dataclass(frozen=True)
 class BackendSpec:
-    """A (target, backend) build lane.
-
-    ``build_args`` carries the lane's ``--backend`` flag, which selects the
-    codegen (native Cranelift vs the inkwell/LLVM feature), to both the CLI and
-    the batch build server. ``build_target`` is the CLI ``--target`` (native vs
-    wasm).
-    """
+    """A logical scoreboard coordinate resolved through the release lanes."""
 
     target: str  # logical target name in the scoreboard ("native", "wasm")
     backend: str  # codegen backend ("native", "llvm", "wasm")
     build_target: str  # molt CLI --target
-
-    def build_args(self) -> tuple[str, ...]:
-        """The molt build flags that select this lane's codegen backend."""
-        return ("--backend", lane_codegen_backend(self.backend))
 
 
 NATIVE_CRANELIFT = BackendSpec("native", "native", "native")

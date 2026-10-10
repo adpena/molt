@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import functools
 import json
 import os
 import shutil
@@ -14,7 +13,7 @@ from molt.file_hashing import _sha256_file_with_size
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.output import fail as _fail
-from molt.cli.runtime_paths import _cargo_target_root_cached, _molt_session_id
+from molt.cli.runtime_paths import _cargo_target_root
 
 
 _LOCK_CHECK_CACHE_VERSION = 3
@@ -89,33 +88,10 @@ def _check_lockfiles(
     return None
 
 
-@functools.lru_cache(maxsize=256)
-def _lock_check_cache_path_cached(
-    project_root_str: str,
-    name: str,
-    cargo_target_override: str | None,
-    cwd_str: str,
-    session_id: str | None = None,
-) -> Path:
-    # The lock-check cache can grow, especially for Cargo metadata inputs.
-    # Keep it colocated with Cargo build outputs when CARGO_TARGET_DIR is set.
-    target_dir = _cargo_target_root_cached(
-        project_root_str,
-        cargo_target_override,
-        cwd_str,
-        session_id,
-    )
-    return target_dir / "lock_checks" / f"{name}.json"
-
-
 def _lock_check_cache_path(project_root: Path, name: str) -> Path:
-    return _lock_check_cache_path_cached(
-        os.fspath(project_root),
-        name,
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
-        _molt_session_id(),
-    )
+    # The lock-check cache can grow, especially for Cargo metadata inputs, so
+    # it lives beside the project's Cargo build outputs.
+    return _cargo_target_root(project_root) / "lock_checks" / f"{name}.json"
 
 
 def _lock_check_inputs(

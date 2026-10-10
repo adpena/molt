@@ -612,8 +612,7 @@ def _validated_execution_context(
         or not _is_receipt_object(supervisor_receipt)
         or supervisor_receipt.get("schema")
         != supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA
-        or supervisor_receipt.get("complete") is not True
-        or supervisor_receipt.get("state") != "COMPLETE"
+        or not supervisor_custody.supervisor_receipt_is_complete(supervisor_receipt)
         or not _is_receipt_object(supervisor_binary)
         or not _is_receipt_object(supervisor_binary_artifact)
         or not _is_receipt_object(supervisor_policy)
@@ -660,12 +659,12 @@ def _validated_execution_context(
     try:
         policy_identity, policy_payload = capture_exact(
             policy_path,
-            max_bytes=supervisor_custody.SUPERVISOR_POLICY_MAX_BYTES,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["policy_input_bytes"],
             label="native proof supervisor policy",
         )
         receipt_identity, receipt_payload = capture_exact(
             receipt_path,
-            max_bytes=supervisor_custody.SUPERVISOR_RECEIPT_MAX_BYTES,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
             label="native proof supervisor receipt",
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ExactJsonError) as exc:
@@ -750,7 +749,7 @@ def _validated_execution_context(
     if (
         receipt_payload != supervisor_receipt
         or not _is_receipt_object(policy_payload)
-        or policy_payload.get("schema") != "molt.proof-process-closure.v2"
+        or policy_payload.get("schema") != supervisor_custody.SUPERVISOR_POLICY_SCHEMA
         or policy_payload.get("nonce") != execution_nonce
         or policy_payload.get("mode") != expected_mode
         or not _is_receipt_object(source_custody)
@@ -905,23 +904,24 @@ def _validated_execution_context(
     execution_custody.require_derived_child_image_bindings(
         child_receipt, Path(str(durable_event["path"]))
     )
-    try:
-        verification_payload = loads_exact(verified_supervisor.stdout)
-    except (ExactJsonError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            "native process supervisor verification response is not exact JSON"
-        ) from exc
+    verification_payload = supervisor_custody.validate_supervisor_receipt_verification(
+        verified_supervisor.stdout,
+        receipt_identity=receipt_identity,
+        policy_identity=policy_identity,
+    )
     verification_capability = (
         verification_payload.get("capability")
         if _is_receipt_object(verification_payload)
         else None
     )
-    supervisor_custody.require_verified_input_bindings(
-        verification_payload, receipt=receipt_identity, policy=policy_identity
-    )
     try:
         verified_required_environment = supervisor_custody.decode_supervisor_capability(
-            verification_capability, mode=expected_mode
+            verification_capability,
+            mode=expected_mode,
+            context="verified_terminal",
+            expected_platform={"win32": "windows", "darwin": "macos"}.get(
+                sys.platform, sys.platform
+            ),
         )
     except ValueError as exc:
         raise ValueError(

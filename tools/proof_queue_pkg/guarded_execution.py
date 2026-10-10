@@ -910,7 +910,7 @@ def execute_guarded_request(request_path: Path) -> int:
             environment_executables=environment_executables_pre,
             platform_process_images=platform_process_images_pre,
         )
-        supervisor._atomic_json(supervisor_policy_path, supervisor_policy)
+        supervisor.publish_supervisor_policy(supervisor_policy_path, supervisor_policy)
         supervisor_policy_identity = command_identity._file_identity(
             supervisor_policy_path
         )
@@ -1280,7 +1280,7 @@ def execute_guarded_request(request_path: Path) -> int:
             ineligible_reasons.append("child-custody-broker-incomplete")
         elif not execution_custody.child_receipt_is_admitted(child_custody_receipt):
             ineligible_reasons.append("child-custody-violation")
-        if supervisor_receipt.get("complete") is not True:
+        if not supervisor.supervisor_receipt_is_complete(supervisor_receipt):
             ineligible_reasons.append("native-process-supervision-incomplete")
         else:
             event_artifact = supervisor_event_artifact["artifact"]
@@ -1453,7 +1453,7 @@ def execute_guarded_request(request_path: Path) -> int:
                     + str(result["rust_link_capture_failure"]["publication_error"]),
                     file=sys.stderr,
                 )
-        if isinstance(exc, supervisor.SupervisorCapabilityUnavailable):
+        if isinstance(exc, supervisor.SupervisorPrelaunchRefused):
             result["supervisor_capability"] = exc.capability
         if isinstance(exc, disk_capacity.DiskCapacityError):
             result["disk_capacity_admission"] = dict(exc.diagnostic)

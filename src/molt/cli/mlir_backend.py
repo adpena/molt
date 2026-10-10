@@ -16,7 +16,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.output import success as _success
-from molt.cli.runtime_paths import _molt_session_id
+from molt.cli.runtime_paths import _cargo_target_root
 from molt.llvm_toolchain import LlvmToolchainConfigError, mlir_toolchain_environment
 
 
@@ -27,23 +27,18 @@ def _mlir_backend_executable_name(*, os_name: str | None = None) -> str:
 
 
 def _find_mlir_backend_binary(project_root: Path) -> Path | None:
-    """Locate the ``molt-backend-mlir`` binary."""
-    mlir_crate_dir = project_root / "runtime" / "molt-backend-mlir"
+    """Locate the ``molt-backend-mlir`` binary.
+
+    Molt builds the standalone backend into the project's Cargo target
+    (`_cargo_target_root`), and only that target is searched; an installed
+    binary on ``PATH`` is the alternative.
+    """
     executable_name = _mlir_backend_executable_name()
-    for profile in ("release", "debug"):
-        candidate = mlir_crate_dir / "target" / profile / executable_name
+    target = _cargo_target_root(project_root)
+    for profile in ("release", "release-fast", "debug"):
+        candidate = target / profile / executable_name
         if candidate.is_file():
             return candidate
-    session_id = _molt_session_id()
-    target_dirs = []
-    if session_id:
-        target_dirs.append(project_root / f"target-{session_id}")
-    target_dirs.append(project_root / "target")
-    for tdir in target_dirs:
-        for profile in ("release", "release-fast", "debug"):
-            candidate = tdir / profile / executable_name
-            if candidate.is_file():
-                return candidate
     from_path = shutil.which("molt-backend-mlir")
     if from_path is not None:
         return Path(from_path)
@@ -73,6 +68,9 @@ def _ensure_mlir_backend_binary(project_root: Path) -> tuple[Path | None, str | 
         )
     except LlvmToolchainConfigError as exc:
         return None, str(exc)
+    # The standalone workspace would default to its own target; build where
+    # `_find_mlir_backend_binary` looks.
+    env["CARGO_TARGET_DIR"] = os.fspath(_cargo_target_root(project_root))
 
     command = [
         cargo,

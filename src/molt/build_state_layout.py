@@ -6,7 +6,11 @@ from collections.abc import Mapping
 import os
 from pathlib import Path
 
-from molt.dx import configured_artifact_root, control_state_dir
+from molt.dx import (
+    configured_artifact_root,
+    control_state_dir,
+    project_cargo_target_dir,
+)
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import resolve_owned_path
 
@@ -36,4 +40,20 @@ def build_state_root(
     )
     return resolve_owned_path(
         control_state_dir(project_root, f"build-control/{address}", environment)
+    )
+
+
+def project_build_state_root(
+    project_root: Path, environment: Mapping[str, str]
+) -> Path:
+    """Build control for the project's Cargo target.
+
+    The target is `molt.dx.project_cargo_target_dir`, the one the CLI builds
+    into, so the backend daemon, its suite lease and CI consumers find the
+    state a build leaves.
+    """
+    return build_state_root(
+        project_root=project_root,
+        cargo_target=project_cargo_target_dir(project_root, environment),
+        environment=environment,
     )
