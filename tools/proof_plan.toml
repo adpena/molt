@@ -568,9 +568,9 @@ setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl
 name = "ninja"
 executable = "ninja"
 version_args = ["--version"]
-version_pattern = '^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
-setup_value = "1.13.0"
-setup_evidence = ['pyproject.toml::"ninja==1.13.0"', 'uv.lock::version = "1.13.0"']
+version_pattern = '^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
+setup_value = "1.13.2"
+setup_evidence = ['pyproject.toml::"ninja==1.13.2"', 'uv.lock::version = "1.13.2"']
 
 [[toolchain_policy]]
 name = "wasi-clang"
@@ -2031,6 +2031,8 @@ family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "repository-policy"
+# Measured 552 s and more than 600 s on a shared 4-CPU runner before the guard
+# census followed the guarded tree (HF-F133 cut this list's time by 44%).
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage"]
@@ -4033,6 +4035,37 @@ argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-syn
 toolchains = ["python", "uv"]
 resource_family = "wasm-browser"
 contention_key = "wasm:pact-witness"
+timeout_seconds = 900
+
+# R6 target-version parity: the stdlib fixtures whose behavior depends on the
+# target CPython minor, through the differential harness, serial and fail-fast.
+# One lane per version in src/molt/target_python.py; a test gates the set.
+
+[[named_lane]]
+id = "r6.target-version-parity.py312"
+description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+resource_family = "python"
+contention_key = "python:r6-target-version-py312"
+timeout_seconds = 900
+
+[[named_lane]]
+id = "r6.target-version-parity.py313"
+description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+resource_family = "python"
+contention_key = "python:r6-target-version-py313"
+timeout_seconds = 900
+
+[[named_lane]]
+id = "r6.target-version-parity.py314"
+description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
+resource_family = "python"
+contention_key = "python:r6-target-version-py314"
 timeout_seconds = 900
 
 # =========================================================================
