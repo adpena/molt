@@ -138,22 +138,14 @@ def _detached_daemonize(
         creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
         start_new_session=os.name != "nt",
     )
-    if os.name == "nt":
-        _atomic_write_text(state / "sid", f"windows-process-group:{proc.pid}")
-        _atomic_write_text(state / "pid", str(proc.pid))
-        return proc.pid
-
-    pid_f = state / "pid"
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        if pid_f.exists():
-            raw_pid = pid_f.read_text(encoding="utf-8").strip()
-            if raw_pid:
-                return int(raw_pid)
-        if proc.poll() is not None:
-            break
-        time.sleep(0.05)
-    raise DriverError(f"detached-run: supervisor never wrote {pid_f} within 5s")
+    # The launcher alone publishes the supervisor's identity. It knows the pid
+    # at spawn; a worker that wrote these files would race readers and, on a
+    # loaded host, publish after any fixed deadline. On POSIX the new session
+    # makes the worker its own session leader, so its sid is its pid.
+    sid = f"windows-process-group:{proc.pid}" if os.name == "nt" else str(proc.pid)
+    _atomic_write_text(state / "sid", sid)
+    _atomic_write_text(state / "pid", str(proc.pid))
+    return proc.pid
 
 
 def _detached_worker_main(payload_path: Path) -> int:
@@ -163,12 +155,6 @@ def _detached_worker_main(payload_path: Path) -> int:
     cwd = Path(payload["cwd"])
     try:
         with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
-            if os.name != "nt":
-                _atomic_write_text(state / "sid", str(os.getsid(0)))
-                _atomic_write_text(state / "pid", str(os.getpid()))
-            # The launcher owns pid/sid publication on Windows. Rewriting
-            # those identity files from the worker races readers and can turn
-            # a child exit into a false daemon-crash rc.
             os.chdir(cwd)
             rc = _exec_wait_rc(command, os.environ.copy(), log)
             _atomic_write_text(state / "rc", str(rc))
