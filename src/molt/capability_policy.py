@@ -591,6 +591,24 @@ def allowed_capabilities_for_package(
     return allowed
 
 
+def missing_package_capabilities(
+    required: Iterable[str],
+    global_allow: Iterable[str],
+    policy: CapabilityPolicy | None,
+    package_name: str | None,
+) -> list[str]:
+    """Return each required capability, profiles expanded, the package may not use.
+
+    Grants are resolved to expanded capability tokens, so a manifest that
+    requires a profile such as ``net`` must expand it the same way before the
+    comparison.
+    """
+
+    required_expanded, _profiles = expand_capabilities(required)
+    allowed = allowed_capabilities_for_package(global_allow, policy, package_name)
+    return [cap for cap in required_expanded if cap not in allowed]
+
+
 def allowed_effects_for_package(
     policy: CapabilityPolicy | None,
     package_name: str | None,
