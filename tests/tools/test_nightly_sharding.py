@@ -4,6 +4,7 @@ import copy
 from functools import lru_cache
 import hashlib
 import json
+import sys
 from pathlib import Path
 import shutil
 import subprocess
@@ -575,3 +576,37 @@ def test_shard_loads_a_plan_whose_cpython_tree_has_no_git_metadata(
     path.write_text(json.dumps(plan), encoding="utf-8")
 
     assert nightly_sharding._load_plan(path, root)["cpython_commit"] == CPYTHON_COMMIT
+
+
+def test_run_shard_drives_the_real_guarded_executor(tmp_path: Path) -> None:
+    # The fake executors above accept any keyword; this one runs the real guard,
+    # which requires capture files whenever only an output tail is retained.
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    evidence = tmp_path / "evidence"
+    script = (
+        "import json, sys\n"
+        "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
+        "rows = [{'path': p, 'status': 'passed', 'duration_s': 0.01} for p in entries]\n"
+        "summary = {'total': len(entries), 'passed': len(entries), 'failed': 0,\n"
+        "           'compile_error': 0, 'timeout': 0, 'skipped': 0, 'item_results': rows}\n"
+        "json.dump(summary, open(sys.argv[2], 'w', encoding='utf-8'))\n"
+        "print('x' * 40000)\n"
+    )
+
+    nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="conformance",
+        shard_id=0,
+        raw_out=evidence / "raw.json",
+        checkpoint_out=evidence / "checkpoint.json",
+        command=[sys.executable, "-c", script, "{selection}", "{summary}"],
+    )
+
+    raw = json.loads((evidence / "raw.json").read_text(encoding="utf-8"))
+    entries = nightly_sharding.shard_entries(plan, "conformance", 0)
+    assert raw["returncode"] == 0
+    assert raw["summary_error"] is None
+    assert (raw["selected"], raw["passed"]) == (len(entries), len(entries))
+    assert 0 < len(raw["stdout_tail"]) <= 16_000
