@@ -6,7 +6,10 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from molt.custody_layout import unconfigured_state_root
+from molt.dx import control_state_dir
+
+# The proof queue issues one external guard state root per run.
+STATE_ROOT_ENV = "MOLT_MEMORY_GUARD_STATE_ROOT"
 
 
 def memory_guard_state_root(
@@ -22,32 +25,15 @@ def memory_guard_state_root(
     """
 
     source = os.environ if environ is None else environ
-    state_root = source.get("MOLT_MEMORY_GUARD_STATE_ROOT", "").strip()
+    state_root = source.get(STATE_ROOT_ENV, "").strip()
     if state_root:
         root = Path(state_root).expanduser()
         if not root.is_absolute():
             root = repo_root / root
         return root.resolve(strict=False)
-    raw_root = source.get("MOLT_EXT_ROOT", "").strip()
-    if not raw_root:
-        raw_root = next(
-            (
-                candidate.strip()
-                for candidate in source.get("MOLT_EXTERNAL_ARTIFACT_ROOTS", "").split(
-                    os.pathsep
-                )
-                if candidate.strip()
-            ),
-            "",
-        )
-    if raw_root:
-        root = Path(raw_root).expanduser()
-        if not root.is_absolute():
-            root = repo_root / root
-    else:
-        # Unconfigured state belongs to the checkout family, never the tree.
-        root = unconfigured_state_root(repo_root)
-    return root.resolve(strict=False) / "tmp" / "memory_guard"
+    # Every observer (guards, disk_guard, preflights) must see the same
+    # markers, so guard state is disk control state, never in the checkout.
+    return control_state_dir(repo_root, "memory_guard", source)
 
 
 def active_guard_marker_dir(
