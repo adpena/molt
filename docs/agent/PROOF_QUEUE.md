@@ -579,7 +579,16 @@ child and child group gone, or an operator attests it. The payload then takes
 the failure path below through `resolve_guard_scratch`. It records no finish
 time, so retention keeps it only behind real failures. A payload that is
 already gone resolves with a receipt that says so; a target that is now another
-directory stays blocked. A busy lock means a live owner and defers the work.
+directory stays blocked. File identity alone cannot tell: Linux reuses a freed
+inode number. So each lease target holds an allocation receipt
+(`.molt-scratch-target.json`) whose nonce its owner records, and adoption needs
+both the recorded identity and that receipt. A busy lock means a live owner and
+defers the work. A consumer (`guard_scratch`, `new_guarded_directory`, the pytest
+temp root) finds its generation from the allocation it inherited, its lease
+target and guard token, never from `MOLT_MEMORY_GUARD_STATE_ROOT`: a process may
+point the guards it starts at another root without moving its own lease. A lock
+on a generation never creates it, so a generation that a remover moved away
+stays gone.
 After proven closure the parent exclusively retires the payload into its own
 `gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
 receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.

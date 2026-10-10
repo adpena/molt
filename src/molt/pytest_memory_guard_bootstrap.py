@@ -375,7 +375,7 @@ def _ensure_windows_readable_dir(path: Path) -> None:
 
 def guarded_pytest_temp_root() -> Path:
     """Use the parent guard's short, terminal-owned scratch on every platform."""
-    return guard_scratch(ROOT, os.environ)
+    return guard_scratch(os.environ)
 
 
 def _pytest_user_temp_root(temproot: Path) -> Path:

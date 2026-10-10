@@ -73,7 +73,7 @@ def test_allocation_identity_is_independent_of_path_spelling(
             for key, value in env.items()
         }
     try:
-        assert scratch.guard_scratch(tmp_path, env) == lease.target
+        assert scratch.guard_scratch(env) == lease.target
     finally:
         result = _finish(lease)
     assert result["state"] == "reclaimed"
@@ -89,7 +89,7 @@ def test_owner_path_identity_accepts_equivalent_receipt_spelling(tmp_path, field
     owner[field] = _alternate_path(Path(owner[field]))
     write_exact(owner_path, owner)
     try:
-        assert scratch.guard_scratch(tmp_path, env) == lease.target
+        assert scratch.guard_scratch(env) == lease.target
         assert _read(owner_path) == owner
     finally:
         write_exact(owner_path, lease.owner)
@@ -128,7 +128,7 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     legacy.mkdir()
     (legacy / "keep").write_text("legacy", encoding="utf-8")
     (lease.target / "output").write_bytes(b"scratch")
-    assert scratch.guard_scratch(tmp_path, env) == lease.target
+    assert scratch.guard_scratch(env) == lease.target
     result = _finish(lease)
     assert result["state"] == "reclaimed"
     assert result["receipt"] is None
@@ -138,7 +138,7 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     assert not lease.generation.exists()
     assert (legacy / "keep").read_text(encoding="utf-8") == "legacy"
     with pytest.raises(ValueError, match="scratch owner"):
-        scratch.guard_scratch(tmp_path, env)
+        scratch.guard_scratch(env)
 
 
 def test_guard_reclaims_readonly_hardlink_without_changing_external_source(
@@ -149,7 +149,7 @@ def test_guard_reclaims_readonly_hardlink_without_changing_external_source(
     lease, env = _lease(tmp_path)
     link = lease.target / "other-base_executable.exe"
     link.hardlink_to(source)
-    assert scratch.guard_scratch(tmp_path, env) == lease.target
+    assert scratch.guard_scratch(env) == lease.target
 
     def forbidden_chmod(*_args, **_kwargs):
         pytest.fail("guard cleanup must not mutate the borrowed source")
@@ -205,7 +205,7 @@ def test_owner_rejection_identifies_field_without_granting_custody(
     write_exact(owner_path, forged)
     try:
         with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
-            scratch.guard_scratch(tmp_path, env)
+            scratch.guard_scratch(env)
         message = str(caught.value)
         assert f"field={field}" in message
         assert f"observed_type={type(invalid).__name__}" in message
@@ -229,7 +229,7 @@ def test_non_object_owner_rejection_reports_type_and_preserves_allocation(
     write_exact(owner_path, invalid)
     try:
         with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
-            scratch.guard_scratch(tmp_path, env)
+            scratch.guard_scratch(env)
         message = str(caught.value)
         assert "field=owner" in message
         assert f"observed_type={type(invalid).__name__}" in message
@@ -248,7 +248,7 @@ def test_owner_mismatch_diagnostic_bounds_and_escapes_untrusted_strings(tmp_path
     write_exact(owner_path, dict(lease.owner, schema=invalid))
     try:
         with pytest.raises(ValueError, match="scratch owner mismatch") as caught:
-            scratch.guard_scratch(tmp_path, env)
+            scratch.guard_scratch(env)
         message = str(caught.value)
         assert "field=schema" in message
         assert "wrong\\n" in message
@@ -269,7 +269,7 @@ def test_owner_token_diagnostic_accepts_escaped_invalid_unicode(tmp_path):
     owner_path.write_text(json.dumps(forged, ensure_ascii=True), encoding="ascii")
     try:
         with pytest.raises(ValueError, match="field=token") as caught:
-            scratch.guard_scratch(tmp_path, env)
+            scratch.guard_scratch(env)
         assert "observed_type=str" in str(caught.value)
         assert "observed=<redacted,length=1>" in str(caught.value)
         assert _read(owner_path) == forged
@@ -633,7 +633,7 @@ def test_uncommitted_retirement_with_foreign_terminal_stays_fail_closed(tmp_path
 def test_missing_retained_payload_is_reported_not_counted_as_retained(tmp_path):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)
-    (lease.generation / "payload").rmdir()
+    shutil.rmtree((lease.generation / "payload"))
     result = scratch.reclaim_terminal_scratch(lease.generation.parent)
     assert result["errors"] and result["retained_count"] == 0
 
@@ -644,7 +644,7 @@ def test_interrupted_retirement_requires_nested_payload_identity(tmp_path, prese
     _finish(lease, success=False)
     payload = lease.generation / "payload"
     if not present:
-        payload.rmdir()
+        shutil.rmtree(payload)
     owner = _read(lease.generation / "owner.json")
     write_exact(lease.generation / "owner.json", dict(owner, state="retiring"))
     scratch.reclaim_terminal_scratch(lease.generation.parent)
@@ -705,7 +705,7 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
     _finish(lease, success=False)
     target = lease.generation / "payload"
     if not present:
-        target.rmdir()
+        shutil.rmtree(target)
     owner = _read(lease.generation / "owner.json")
     write_exact(lease.generation / "owner.json", dict(owner, state="reclaiming"))
     delete_path = scratch.delete_path
@@ -790,7 +790,7 @@ def test_guarded_helper_rejects_non_basename_prefixes(tmp_path, prefix):
     lease, env = _lease(tmp_path)
     try:
         with pytest.raises(ValueError, match="basename"):
-            scratch.new_guarded_directory(tmp_path, env, prefix=prefix)
+            scratch.new_guarded_directory(env, prefix=prefix)
     finally:
         _finish(lease)
 
@@ -857,8 +857,8 @@ def test_owned_temporary_directory_does_not_delete_a_replaced_allocation(tmp_pat
 
 def test_helper_subdirectories_are_owned_by_terminal_guard_not_context_age(tmp_path):
     lease, env = _lease(tmp_path)
-    first = scratch.new_guarded_directory(tmp_path, env, prefix="compile-")
-    second = scratch.new_guarded_directory(tmp_path, env, prefix="compile-")
+    first = scratch.new_guarded_directory(env, prefix="compile-")
+    second = scratch.new_guarded_directory(env, prefix="compile-")
     assert first.parent == second.parent == lease.target
     assert first != second
     _finish(lease)
@@ -1111,7 +1111,7 @@ def test_dead_lease_without_its_payload_resolves_and_is_removed(tmp_path):
     lease, env = _lease(tmp_path)
     finished = _finish(lease, closed=False)
     assert finished["state"] == "indeterminate"
-    lease.target.rmdir()
+    shutil.rmtree(lease.target)
     outcome = scratch.resolve_guard_scratch(
         lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
     )
@@ -1128,18 +1128,99 @@ def test_dead_lease_without_its_payload_resolves_and_is_removed(tmp_path):
     assert (again["state"], again["resolved"]) == ("absent", True)
 
 
-def test_dead_lease_whose_target_is_another_directory_stays_blocked(tmp_path):
+@pytest.mark.parametrize("inode_reused", [False, True])
+def test_dead_lease_whose_target_is_another_directory_stays_blocked(
+    tmp_path, monkeypatch, inode_reused
+):
     lease, env = _lease(tmp_path)
     lease.release()
-    lease.target.rmdir()
+    original = scratch._identity(lease.target)
+    shutil.rmtree(lease.target)
     lease.target.mkdir()
     (lease.target / "other").write_text("keep", encoding="utf-8")
+    if inode_reused:
+        # Linux hands a freed inode number to the next directory.
+        identity = scratch._identity
+        monkeypatch.setattr(
+            scratch,
+            "_identity",
+            lambda path: original if path == lease.target else identity(path),
+        )
     outcome = scratch.resolve_guard_scratch(
         lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
     )
     assert (outcome["state"], outcome["resolved"]) == ("blocked", True)
     assert (lease.target / "other").read_text(encoding="utf-8") == "keep"
     assert "another directory" in _read(lease.generation / "owner.json")["error"]
+
+
+def test_target_receipt_is_custody_not_payload(tmp_path):
+    lease, env = _lease(tmp_path)
+    receipt = _read(lease.target / ".molt-scratch-target.json")
+    assert receipt == {"schema": scratch.SCHEMA, "nonce": lease.owner["target_receipt"]}
+    (lease.target / "output").write_bytes(b"1234")
+    lease.release()
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert outcome["state"] == "retained"
+    assert _read(lease.generation / "terminal.json")["retained_bytes"] == 4
+
+
+@pytest.mark.parametrize("owner_names_receipt", [True, False])
+def test_a_target_without_its_receipt_is_adopted_only_by_an_older_owner(
+    tmp_path, owner_names_receipt
+):
+    lease, env = _lease(tmp_path)
+    lease.release()
+    (lease.target / ".molt-scratch-target.json").unlink()
+    if not owner_names_receipt:
+        # Owners written before receipts existed record only file identity.
+        owner = {k: v for k, v in lease.owner.items() if k != "target_receipt"}
+        write_exact(lease.generation / "owner.json", owner)
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert outcome["state"] == ("blocked" if owner_names_receipt else "retained")
+
+
+def test_consumer_finds_its_lease_whatever_state_root_it_sees(tmp_path):
+    """The HF-163 CI split: a process redirects the guards it starts."""
+    lease, env = _lease(tmp_path)
+    try:
+        moved = dict(env, MOLT_MEMORY_GUARD_STATE_ROOT=str(tmp_path / "elsewhere"))
+        assert scratch.guard_scratch(moved) == lease.target
+        helper = scratch.new_guarded_directory(moved, prefix="helper-")
+        assert helper.parent == lease.target
+        missing = {k: v for k, v in env.items() if k != scratch.SCRATCH_ENV}
+        with pytest.raises(ValueError, match="active parent's allocation"):
+            scratch.guard_scratch(missing)
+    finally:
+        _finish(lease)
+
+
+def test_sweep_never_revives_a_generation_moved_away_under_it(tmp_path, monkeypatch):
+    """A remover moves a reclaimed generation between the walker's check and lock."""
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    removing = lease.generation.parent / "removing"
+    removing.mkdir()
+    identity = scratch._identity
+    moved = []
+
+    def concurrent_remover(path):
+        result = identity(path)
+        if path == lease.generation and not moved:
+            moved.append(path)
+            os.rename(lease.generation, removing / lease.generation.name)
+        return result
+
+    monkeypatch.setattr(scratch, "_identity", concurrent_remover)
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert moved and result["errors"] == []
+    # The walker created neither the generation nor its lock again.
+    assert not lease.generation.exists()
+    assert not scratch._index_path(lease.generation).exists()
 
 
 def test_index_of_a_removed_generation_is_resolved_not_an_error(tmp_path):

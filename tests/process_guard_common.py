@@ -324,9 +324,7 @@ def guarded_temporary_directory(
 
     if dir is None:
         # Child-tree closure, not the Python context exit, owns reclamation.
-        yield new_guarded_directory(
-            Path(__file__).resolve().parents[1], os.environ, prefix=prefix
-        )
+        yield new_guarded_directory(os.environ, prefix=prefix)
         return
     path = Path(tempfile.mkdtemp(prefix=prefix, dir=dir))
     with preserve_primary_during_cleanup(
