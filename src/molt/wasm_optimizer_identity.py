@@ -101,17 +101,24 @@ def _is_sha256(value: object) -> TypeGuard[str]:
 def _managed_binaryen_asset(path: Path) -> BinaryenHostAsset | None:
     """Return the exact receipted host asset when *path* is managed Binaryen."""
 
-    target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
-    if not target_root:
-        return None
+    from molt.dx import (
+        DxConfigError,
+        canonical_toolchain_root,
+        selected_toolchain_contains,
+    )
+
     try:
-        asset = binaryen_host_asset(compiler_source_root())
-        installation = (
-            Path(target_root).expanduser() / "toolchains" / asset.archive_root
-        )
+        source = compiler_source_root()
+        if not selected_toolchain_contains(source, path):
+            return None
+        target_root = canonical_toolchain_root(source, require_exists=False)
+        asset = binaryen_host_asset(source)
+        installation = target_root / "toolchains" / asset.archive_root
         expected = installation.joinpath(
             *PurePosixPath(asset.executable).parts
         ).resolve(strict=False)
+    except DxConfigError as exc:
+        raise WasmOptimizerIdentityError(str(exc)) from exc
     except (BinaryenConfigError, OSError):
         return None
     if path != expected:
@@ -156,6 +163,10 @@ def wasm_optimizer_executable_identity(
     except ValueError as exc:
         raise WasmOptimizerIdentityError(str(exc)) from exc
     managed = _managed_binaryen_asset(path)
+    if managed is not None and executable.sha256 != managed.executable_sha256:
+        raise WasmOptimizerIdentityError(
+            f"managed wasm-opt executable differs from its manifest identity: {path}"
+        )
     if managed is not None and verify_managed_installation:
         try:
             installation = binaryen_installation_identity(
@@ -227,22 +238,25 @@ def find_wasm_opt() -> str | None:
     on_path = shutil.which("wasm-opt")
     if on_path is not None:
         return on_path
-    target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
-    if target_root:
-        toolchains = Path(target_root).expanduser() / "toolchains"
+    from molt.dx import DxConfigError, canonical_toolchain_root
+
+    try:
+        source = compiler_source_root()
+        toolchains = (
+            canonical_toolchain_root(source, require_exists=False) / "toolchains"
+        )
+        asset = binaryen_host_asset(source)
+    except (BinaryenConfigError, DxConfigError, OSError):
+        return None
+    candidate = toolchains / asset.archive_root
+    executable = candidate.joinpath(*PurePosixPath(asset.executable).parts)
+    if executable.is_file():
         try:
-            asset = binaryen_host_asset(compiler_source_root())
-        except (BinaryenConfigError, OSError):
+            resolved = executable.resolve(strict=True)
+            if _managed_binaryen_asset(resolved) == asset:
+                return str(executable)
+        except (OSError, WasmOptimizerIdentityError):
             return None
-        candidate = toolchains / asset.archive_root
-        executable = candidate.joinpath(*PurePosixPath(asset.executable).parts)
-        if executable.is_file():
-            try:
-                resolved = executable.resolve(strict=True)
-                if _managed_binaryen_asset(resolved) == asset:
-                    return str(executable)
-            except (OSError, WasmOptimizerIdentityError):
-                return None
     return None
 
 

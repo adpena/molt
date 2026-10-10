@@ -526,6 +526,17 @@ def _validated_execution_context(
         )
     ):
         raise ValueError("guarded receipt live-custody event binding is invalid")
+    execution_custody.validate_apparatus_events(
+        live_apparatus_events,
+        [execution_custody.validated_uv_environment_lock_capture(full_toolchains)]
+        if any(
+            isinstance(event, Mapping)
+            and event.get("apparatus")
+            == execution_custody.APPARATUS_UV_ENVIRONMENT_LOCK
+            for event in live_apparatus_events
+        )
+        else [],
+    )
     child_custody = context.get("child_process_custody")
     closure = envelope.get("process_closure")
     child_policy = (

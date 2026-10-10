@@ -398,10 +398,15 @@ def _verify_reviewed_module(
     artifact = cast(Mapping[str, object], policy["module_artifact"])
     _require_artifact(source, artifact, label=capability)
     module = sys.modules.get(str(policy["module"]))
+    origin = getattr(getattr(module, "__spec__", None), "origin", None)
+    # Compare paths, not spellings: the import system names the origin from
+    # the launch coordinate (on Windows a custody-spelled `d:`), while file
+    # custody names it from the directory entry (`D:`).
     if (
         module is None
         or Path(str(getattr(module, "__file__", ""))).absolute() != path
-        or getattr(getattr(module, "__spec__", None), "origin", None) != str(path)
+        or not isinstance(origin, str)
+        or Path(origin).absolute() != path
         or type(finder) is not getattr(module, str(policy["finder"]), None)
     ):
         raise PythonEnvironmentIdentityError(

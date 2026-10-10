@@ -47,12 +47,11 @@ class PythonInvocation:
     arguments: tuple[str, ...]
 
 
-_PYTHON_FLAG_CHARACTERS = frozenset("bBdEhiIOPqRsSuvVx?")
+_PYTHON_FLAG_CHARACTERS = frozenset("bBdEhiIOPqRsStuvVx?")
 _PYTHON_TERMINAL_OPTIONS = frozenset(
     {
         "-h",
         "-?",
-        "-V",
         "--help",
         "--help-all",
         "--help-env",
@@ -63,11 +62,24 @@ _PYTHON_TERMINAL_OPTIONS = frozenset(
 
 
 def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
-    """Parse CPython's interpreter options once for admission and execution."""
+    """Split the CPython prefix, including grouped argument-taking options.
+
+    c/m stop parsing; W/X consume their token remainder or the next argument.
+    This follows CPython 3.12's getopt and initialization boundary.
+    """
     if not argv:
         raise ValueError("Python invocation has no interpreter")
     values = [str(value) for value in argv]
     options: list[str] = []
+    version = False
+
+    def payload(
+        mode: str, target: str | None, arguments: Sequence[str]
+    ) -> PythonInvocation:
+        if version:
+            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
+        return PythonInvocation(tuple(options), mode, target, tuple(arguments))
+
     index = 1
     while index < len(values):
         value = values[index]
@@ -75,41 +87,16 @@ def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
             index += 1
             break
         if value == "-":
-            return PythonInvocation(
-                tuple(options), "stdin", None, tuple(values[index + 1 :])
-            )
-        if value == "-c" or value.startswith("-c"):
-            if value == "-c":
-                if index + 1 >= len(values):
-                    raise ValueError("Python -c requires a command")
-                target = values[index + 1]
-                arguments = values[index + 2 :]
-            else:
-                target = value[2:]
-                arguments = values[index + 1 :]
-            return PythonInvocation(tuple(options), "command", target, tuple(arguments))
-        if value == "-m" or value.startswith("-m"):
-            if value == "-m":
-                if index + 1 >= len(values):
-                    raise ValueError("Python -m requires a module")
-                target = values[index + 1]
-                arguments = values[index + 2 :]
-            else:
-                target = value[2:]
-                arguments = values[index + 1 :]
-            if not target:
-                raise ValueError("Python -m requires a non-empty module")
-            return PythonInvocation(tuple(options), "module", target, tuple(arguments))
-        if not value.startswith("-") or value == "-":
+            return payload("stdin", None, values[index + 1 :])
+        if not value.startswith("-"):
             break
-        if value in _PYTHON_TERMINAL_OPTIONS or (
-            value.startswith("-")
-            and not value.startswith("--")
-            and value[1:]
-            and set(value[1:]) <= _PYTHON_FLAG_CHARACTERS
-            and any(character in "hV?" for character in value[1:])
-        ):
-            return PythonInvocation(tuple((*options, value)), "terminal", None, ())
+        if value in _PYTHON_TERMINAL_OPTIONS:
+            if value == "--version":
+                version = True
+                options.append(value)
+                index += 1
+                continue
+            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
         if value == "--check-hash-based-pycs":
             if index + 1 >= len(values):
                 raise ValueError("Python --check-hash-based-pycs requires a value")
@@ -121,31 +108,54 @@ def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
             options.extend((value, option_value))
             index += 2
             continue
-        if value in {"-W", "-X"}:
-            if index + 1 >= len(values):
-                raise ValueError(f"Python {value} requires a value")
-            options.extend((value, values[index + 1]))
-            index += 2
-            continue
-        if value.startswith(("-W", "-X")) and len(value) > 2:
+        if value.startswith("--"):
+            raise ValueError(f"unsupported Python interpreter option {value!r}")
+        for offset, character in enumerate(value[1:], 1):
+            if character in "cmWX":
+                if offset > 1:
+                    options.append(value[:offset])
+                attached = value[offset + 1 :]
+                if attached:
+                    option_value = attached
+                else:
+                    index += 1
+                    if index >= len(values):
+                        label = {
+                            "c": "a command",
+                            "m": "a module",
+                            "W": "a value",
+                            "X": "a value",
+                        }[character]
+                        raise ValueError(f"Python -{character} requires {label}")
+                    option_value = values[index]
+                if character in "cm":
+                    if character == "m" and not option_value:
+                        raise ValueError("Python -m requires a non-empty module")
+                    return payload(
+                        "command" if character == "c" else "module",
+                        option_value,
+                        values[index + 1 :],
+                    )
+                options.extend(
+                    ("-" + character + attached,)
+                    if attached
+                    else ("-" + character, option_value)
+                )
+                break
+            if character not in _PYTHON_FLAG_CHARACTERS:
+                raise ValueError(f"unsupported Python interpreter option {value!r}")
+            if character in "h?":
+                return PythonInvocation(tuple(values[1:]), "terminal", None, ())
+            if character == "V":
+                version = True
+        else:
             options.append(value)
-            index += 1
-            continue
-        if (
-            value.startswith("-")
-            and not value.startswith("--")
-            and value[1:]
-            and set(value[1:]) <= _PYTHON_FLAG_CHARACTERS
-        ):
-            options.append(value)
-            index += 1
-            continue
-        raise ValueError(f"unsupported Python interpreter option {value!r}")
+        index += 1
     if index < len(values):
-        return PythonInvocation(
-            tuple(options), "script", values[index], tuple(values[index + 1 :])
-        )
-    return PythonInvocation(tuple(options), "stdin", None, ())
+        if values[index] == "-":
+            return payload("stdin", None, values[index + 1 :])
+        return payload("script", values[index], values[index + 1 :])
+    return payload("stdin", None, ())
 
 
 _SHELL_LAUNCHERS = frozenset(
@@ -1542,12 +1552,19 @@ def _interpreter_flag_present(options: Sequence[str], flag: str) -> bool:
     Only short-option groups carry flags; -W and -X take free-text values and
     long options are named, so none of those can match a letter.
     """
-    return any(
-        option.startswith("-")
-        and not option.startswith(("--", "-W", "-X"))
-        and flag in option[1:]
-        for option in options
-    )
+    values = iter(options)
+    for option in values:
+        if option == "--check-hash-based-pycs":
+            next(values, None)
+        elif option.startswith("-") and not option.startswith("--"):
+            for index, character in enumerate(option[1:], 1):
+                if character in "WX":
+                    if index == len(option) - 1:
+                        next(values, None)
+                    break
+                if character == flag:
+                    return True
+    return False
 
 
 def _supervised_execution_command(

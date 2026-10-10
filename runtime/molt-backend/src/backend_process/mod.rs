@@ -19,8 +19,15 @@ pub(crate) use emit::*;
 pub(crate) use input::*;
 #[cfg(test)]
 pub(crate) use io_limits::*;
+pub(crate) use io_limits::{
+    open_regular_artifact, read_bounded_request_bytes, stdin_request_limit_bytes,
+};
 pub(crate) use memory_guard::*;
 pub(crate) use native_artifact::NativeArtifactKind;
+#[cfg(any(
+    feature = "native-backend",
+    all(any(unix, test), feature = "wasm-backend")
+))]
 pub(crate) use native_artifact::shared_stdlib_archive_path_from_env;
 #[cfg(feature = "native-backend")]
 pub(crate) use native_batch::*;

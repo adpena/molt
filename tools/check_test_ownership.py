@@ -3,10 +3,11 @@
 
 CI runs only what the proof plan's commands name, so a test file that no
 command names never runs in CI and can rot unseen. A file is owned when a plan
-command's argv names it, one of its test nodes (``path::node``), or a
-directory that contains it. The baseline records the files that had no owner
-when this check landed; it may only shrink. A new test file must join a plan
-command, and a file that gains an owner (or is deleted) must leave the baseline.
+command's argv names it or a directory that contains it. A node selection
+(``path::node``) runs only that node, so it does not own the rest of its file.
+The baseline records the files without an owner; it may only shrink. A new
+test file must join a plan command, and a file that gains an owner (or is
+deleted) must leave the baseline.
 """
 
 from __future__ import annotations
@@ -35,13 +36,17 @@ def test_files(root: Path) -> set[str]:
 
 
 def plan_targets(root: Path) -> set[str]:
-    """Every argv element of a plan command that names a path under tests/."""
+    """Every whole file or directory under tests/ that a plan command names."""
     plan = tomllib.loads((root / "tools" / "proof_plan.toml").read_text("utf-8"))
     targets = set()
     for command in plan.get("command", []):
         for argument in command.get("argv", []):
-            if isinstance(argument, str) and argument.startswith("tests"):
-                targets.add(argument.split("::", 1)[0].rstrip("/"))
+            if (
+                isinstance(argument, str)
+                and argument.startswith("tests")
+                and "::" not in argument
+            ):
+                targets.add(argument.rstrip("/"))
     return targets
 
 

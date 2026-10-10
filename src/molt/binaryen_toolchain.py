@@ -10,7 +10,11 @@ import platform
 import re
 import tomllib
 
-from molt.binaryen_identity import MAX_TREE_BYTES, MAX_TREE_ENTRIES
+from molt.binaryen_identity import (
+    MAX_TREE_BYTES,
+    MAX_TREE_ENTRIES,
+    is_binaryen_version,
+)
 from molt.exact_json import canonical_json_bytes
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
@@ -114,8 +118,7 @@ def _load_binaryen_manifest_cached(
     provenance_url = payload["provenance_url"]
     targets = payload["targets"]
     if (
-        not isinstance(version, str)
-        or re.fullmatch(r"[1-9]\d*", version) is None
+        not is_binaryen_version(version)
         or archive_root != f"binaryen-version_{version}"
         or provenance_url
         != (

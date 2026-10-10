@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -16,8 +18,6 @@ except ModuleNotFoundError:  # pragma: no cover - direct script import from tool
 
 DEFAULT_PATHS: tuple[str, ...] = (
     ".hypothesis/",
-    ".molt_cache/",
-    ".molt_cache-*/",
     ".pytest_cache/",
     ".ruff_cache/",
     ".uv-cache/",
@@ -48,7 +48,6 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "output_optimized.wasm",
     "output_treeshaken.wasm",
     "runtime/molt-backend-mlir/target/",
-    "runtime/molt-backend/.molt_cache/",
     "runtime/molt-backend/fuzz/target/",
     "runtime/molt-backend/tmp/",
     "runtime/molt-runtime/fuzz/target/",
@@ -68,6 +67,15 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "node_modules/",
 )
 
+# These roots hold evictable cache entries beside live locks and, in a plain
+# clone, the default Molt home. Recursive git clean would delete all three, so
+# the canonical cache pruner (tools/molt_cache_prune.py) owns their eviction.
+CACHE_PATHS: tuple[str, ...] = (
+    ".molt_cache/",
+    ".molt_cache-*/",
+    "runtime/molt-backend/.molt_cache/",
+)
+
 STATEFUL_PATHS: tuple[str, ...] = (
     ".omx/",
     ".venv/",
@@ -85,6 +93,25 @@ def default_pathspecs() -> tuple[str, ...]:
 
 def stateful_pathspecs() -> tuple[str, ...]:
     return STATEFUL_PATHS
+
+
+def cache_pathspecs() -> tuple[str, ...]:
+    return CACHE_PATHS
+
+
+def cache_roots(repo_root: Path) -> tuple[Path, ...]:
+    """Return the checkout's cache directories that the pruner evicts.
+
+    A symlinked root names a cache outside this checkout; cleaning the
+    checkout never evicts it.
+    """
+    roots = {
+        path
+        for pattern in cache_pathspecs()
+        for path in repo_root.glob(pattern.rstrip("/"))
+        if path.is_dir() and not path.is_symlink()
+    }
+    return tuple(sorted(roots, key=os.fspath))
 
 
 def validate_repo_root(repo_root: Path) -> None:
@@ -113,15 +140,30 @@ def _literal_pathspec_key(pathspec: str) -> str:
     return "/".join(parts)
 
 
-def validate_extra_pathspecs(pathspecs: Sequence[str]) -> None:
-    stateful = tuple(
-        _literal_pathspec_key(pathspec) for pathspec in stateful_pathspecs()
+def _overlaps(key: str, pattern: str) -> bool:
+    """Return whether a literal path equals, contains or lies inside a pattern."""
+    path_parts = key.split("/")
+    pattern_parts = pattern.strip("/").split("/")
+    return all(
+        fnmatch.fnmatchcase(part, pattern_part)
+        for part, pattern_part in zip(path_parts, pattern_parts)
     )
+
+
+def validate_extra_pathspecs(pathspecs: Sequence[str]) -> None:
     for pathspec in pathspecs:
         key = _literal_pathspec_key(pathspec)
-        if any(key == blocked or key.startswith(f"{blocked}/") for blocked in stateful):
+        # git clean removes everything under the path, so an ancestor of
+        # protected data is refused as well as the data itself.
+        if any(_overlaps(key, blocked) for blocked in stateful_pathspecs()):
             raise ValueError(
                 f"extra cleanup pathspec targets stateful data: {pathspec!r}"
+            )
+        if any(_overlaps(key, cache) for cache in cache_pathspecs()):
+            raise ValueError(
+                f"extra cleanup pathspec targets cache state: {pathspec!r}; "
+                "the cache pruner evicts cache entries and keeps locks and the "
+                "Molt home"
             )
 
 
@@ -182,6 +224,36 @@ def run_git_clean(
     )
 
 
+def build_cache_prune_command(*, apply: bool, cache_root: Path) -> list[str]:
+    # A zero budget evicts every entry the pruner may remove; it keeps held
+    # locks, the selected Molt home and its bin directory.
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "tools" / "molt_cache_prune.py"),
+        "--cache-dir",
+        str(cache_root),
+        "--max-gb",
+        "0",
+        "--max-age-days",
+        "0",
+    ]
+    return command if apply else [*command, "--dry-run"]
+
+
+def run_cache_prune(
+    repo_root: Path,
+    *,
+    apply: bool,
+    cache_root: Path,
+    capture_output: bool = False,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    return _guarded_dev_cleanup_process(
+        repo_root,
+        build_cache_prune_command(apply=apply, cache_root=cache_root),
+        capture_output=capture_output,
+    )
+
+
 def _git_clean_entries(stdout: str) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     for line in stdout.splitlines():
@@ -219,7 +291,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Clean ignored Molt build/test artifacts through a canonical "
-            "git-clean pathspec allowlist."
+            "git-clean pathspec allowlist, and evict checkout cache roots "
+            "through the cache pruner."
         )
     )
     parser.add_argument(
@@ -284,6 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "status": "ok",
                     "data": {
                         "default_pathspecs": list(default_pathspecs()),
+                        "cache_pathspecs": list(cache_pathspecs()),
                         "stateful_pathspecs": list(stateful_pathspecs()),
                     },
                 }
@@ -291,6 +365,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print("# default artifact cleanup pathspecs")
             for pathspec in default_pathspecs():
+                print(pathspec)
+            print("# cache roots evicted by tools/molt_cache_prune.py")
+            for pathspec in cache_pathspecs():
                 print(pathspec)
             print("# stateful pathspecs intentionally excluded")
             for pathspec in stateful_pathspecs():
@@ -362,6 +439,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         pathspecs=pathspecs,
         capture_output=args.json,
     )
+    cache_results = [
+        (
+            root,
+            run_cache_prune(
+                repo_root,
+                apply=args.apply,
+                cache_root=root,
+                capture_output=args.json,
+            ),
+        )
+        for root in (cache_roots(repo_root) if result.returncode == 0 else ())
+    ]
+    returncode = next(
+        (prune.returncode for _root, prune in cache_results if prune.returncode != 0),
+        result.returncode,
+    )
     if args.json:
         stdout = result.stdout or ""
         stderr = result.stderr or ""
@@ -371,6 +464,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "pathspecs": pathspecs,
             "entries": _git_clean_entries(stdout),
             "returncode": result.returncode,
+            "cache_prunes": [
+                {
+                    "cache_root": str(root),
+                    "returncode": prune.returncode,
+                    "report": (prune.stdout or "").splitlines(),
+                }
+                for root, prune in cache_results
+            ],
         }
         if sentinel_result is not None:
             data["sentinel_returncode"] = sentinel_result.returncode
@@ -383,15 +484,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 apply=args.apply,
                 pathspecs=pathspecs,
             )
+        errors = stderr.splitlines() if result.returncode else []
+        errors.extend(
+            f"cache prune failed for {root}: {line}"
+            for root, prune in cache_results
+            if prune.returncode != 0
+            for line in ((prune.stderr or "").splitlines() or ["no diagnostic"])
+        )
         _emit_json(
             {
                 "command": "artifact_cleanup",
-                "status": "ok" if result.returncode == 0 else "error",
+                "status": "ok" if returncode == 0 else "error",
                 "data": data,
-                "errors": stderr.splitlines() if result.returncode else [],
+                "errors": errors,
             }
         )
-    return result.returncode
+    return returncode
 
 
 if __name__ == "__main__":

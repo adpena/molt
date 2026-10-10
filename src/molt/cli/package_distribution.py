@@ -20,8 +20,8 @@ from molt.cli.atomic_io import (
 from molt.capability_policy import (
     CapabilityInput,
     CapabilityPolicy,
-    allowed_capabilities_for_package,
     allowed_effects_for_package,
+    missing_package_capabilities,
     parse_capability_input,
 )
 from molt.cli.extension_manifest import (
@@ -180,10 +180,9 @@ def package(
     if capabilities_list is not None:
         required = manifest.get("capabilities", [])
         pkg_name = manifest.get("name")
-        allowlist = allowed_capabilities_for_package(
-            capabilities_list, capability_policy, pkg_name
+        missing = missing_package_capabilities(
+            required, capabilities_list, capability_policy, pkg_name
         )
-        missing = [cap for cap in required if cap not in allowlist]
         if missing:
             return _fail(
                 "Capabilities missing from allowlist: " + ", ".join(missing),
@@ -793,10 +792,9 @@ def verify(
                     )
                 if capabilities_list is not None:
                     pkg_name = manifest.get("name")
-                    allowlist = allowed_capabilities_for_package(
-                        capabilities_list, capability_policy, pkg_name
+                    missing = missing_package_capabilities(
+                        required_caps, capabilities_list, capability_policy, pkg_name
                     )
-                    missing = [cap for cap in required_caps if cap not in allowlist]
                     if missing:
                         errors.append(
                             "capabilities missing from allowlist: " + ", ".join(missing)
@@ -825,10 +823,9 @@ def verify(
                 )
             if capabilities_list is not None:
                 pkg_name = manifest.get("name")
-                allowlist = allowed_capabilities_for_package(
-                    capabilities_list, capability_policy, pkg_name
+                missing = missing_package_capabilities(
+                    required_caps, capabilities_list, capability_policy, pkg_name
                 )
-                missing = [cap for cap in required_caps if cap not in allowlist]
                 if missing:
                     errors.append(
                         "capabilities missing from allowlist: " + ", ".join(missing)

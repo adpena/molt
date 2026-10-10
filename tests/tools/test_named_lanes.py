@@ -226,7 +226,7 @@ def test_llvm_family_lanes_prefer_the_canonical_sdk_prefix(
     monkeypatch.setattr(
         llvm_toolchain,
         "discover_llvm_toolchain",
-        lambda root, environ=None: Discovery(),
+        lambda root, environ=None, cwd=None: Discovery(),
     )
     ambient = os.pathsep.join(
         [str(tmp_path / "system-llvm" / "bin"), str(tmp_path / "other")]
@@ -244,7 +244,9 @@ def test_llvm_family_lanes_prefer_the_canonical_sdk_prefix(
     assert found is None and untouched["PATH"] == ambient
 
     monkeypatch.setattr(
-        llvm_toolchain, "discover_llvm_toolchain", lambda root, environ=None: None
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda root, environ=None, cwd=None: None,
     )
     untouched, found = ge.prefer_canonical_llvm_prefix(
         {"PATH": ambient}, ["python", "ld.lld"], cwd=tmp_path
@@ -266,16 +268,18 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
     selected = {"PATH": ambient, "WASI_SDK_PATH": str(sdk_linker.parent.parent)}
     seen = []
 
-    def sdk_role(root, role, *, environ):
+    def sdk_role(root, role, *, environ, cwd):
+        assert cwd == tmp_path
         assert root == ge.state.ROOT
         assert role == "wasm-ld"
         assert environ == selected
         seen.append("sdk")
         return sdk_linker
 
-    def native_sdk(root, *, environ):
+    def native_sdk(root, *, environ, cwd):
+        assert cwd == tmp_path
         assert with_native, "a WASM-only declaration must not discover native LLVM"
-        assert root == tmp_path
+        assert root == ge.state.ROOT
         assert environ["MOLT_WASM_LD"] == str(sdk_linker)
         seen.append("native")
         return SimpleNamespace(prefix=native)
@@ -340,7 +344,8 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
     selected.chmod(0o755)
     environment = {"MOLT_WASM_LD": str(selected), "PATH": "wrong-native-llvm"}
 
-    def sdk_role(root, role, *, environ):
+    def sdk_role(root, role, *, environ, cwd):
+        assert cwd == tmp_path
         assert root == proof_plan.ROOT and role == "wasm-ld"
         assert environ == environment
         return selected
@@ -708,3 +713,57 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     captured.write_bytes(b"changed-image")
     changed = server._decide_child({"requested": str(captured)}, "node")
     assert changed["admitted"] is False
+
+
+def test_sdk_role_and_generation_use_request_cwd_separately_from_probe_cwd(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+    from tools.proof_queue_pkg import command_identity
+
+    request = tmp_path / "request"
+    (request / "relative-tools").mkdir(parents=True)
+    installation = provisioned_wasi_sdk_fixture(
+        RuntimeFixtureRoot(request / "relative-tools")
+    )
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+    policy = next(item for item in PLAN.toolchain_policies if item.name == "wasi-clang")
+    selected_policy = replace(policy, data={**policy.data, "probe_cwd": "tools"})
+    plan = SimpleNamespace(toolchain_policies=(selected_policy,))
+    env = {"MOLT_TARGET_ROOT": "relative-tools/toolchains"}
+    probes = []
+
+    def version(command, *, cwd, env):
+        assert cwd == proof_plan.ROOT / "tools"
+        assert command[0] == str(
+            (installation.sdk / installation.tool_fact("clang")["path"])
+        )
+        probes.append(tuple(command))
+        return subprocess.CompletedProcess(
+            command, 0, "clang version " + installation.asset.llvm_version, ""
+        )
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    identity = command_identity._tool_identity(
+        plan,
+        "wasi-clang",
+        {"python": None},
+        ["clang", "--version"],
+        cwd=request,
+        env=env,
+    )
+    assert identity["path"] == str(
+        (installation.sdk / installation.tool_fact("clang")["path"])
+    )
+    assert identity["wasi_sdk"]["sdk"] == str(installation.sdk)
+    assert identity["probe_cwd"] == str(proof_plan.ROOT / "tools")
+    assert probes == [
+        (str((installation.sdk / installation.tool_fact("clang")["path"])), "--version")
+    ]
+    assert not (ambient / "relative-tools").exists()

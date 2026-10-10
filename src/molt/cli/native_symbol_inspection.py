@@ -22,7 +22,7 @@ from typing import Literal, Sequence
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.cli.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,

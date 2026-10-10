@@ -1,7 +1,8 @@
 {
  "schema": 1,
  "unowned": [
-  "tests/cli/test_cli_memory_guard_launches.py",
+  "tests/cli/test_cli_extension_commands.py",
+  "tests/cli/test_cli_import_collection.py",
   "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
   "tests/cli/test_compiler_source_root.py",
   "tests/cli/test_llvm_wasi_tools.py",
@@ -109,6 +110,7 @@
   "tests/test_wasm_performance.py",
   "tests/test_wasm_pipeline_e2e.py",
   "tests/test_wasm_socket_sendmsg_recvmsg.py",
+  "tests/test_wasm_split_runtime.py",
   "tests/test_wasm_split_runtime_imported_module.py",
   "tests/test_wasm_threading_gate.py",
   "tests/tools/test_artifact_cleanup.py",

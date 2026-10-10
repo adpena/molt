@@ -347,7 +347,9 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
 
         try:
             token = str(
-                resolve_wasi_sdk_tool(proof_plan.ROOT, "wasm-ld", environ=dict(env))
+                resolve_wasi_sdk_tool(
+                    proof_plan.ROOT, "wasm-ld", environ=dict(env), cwd=cwd
+                )
             )
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
@@ -584,33 +586,34 @@ def _python_auxiliary_command(
 
 
 def _python_probe_command(
-    envelope: Mapping[str, object],
-    exact: Sequence[str],
+    executable: Path,
     *,
     source_root: Path,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
-) -> list[str] | None:
+) -> list[str]:
+    """Capture the located interpreter without repeating launcher selection."""
     admitted_roots = sorted(
         {Path(root).resolve(strict=True) for root in (source_root, *external_roots)},
         key=lambda path: (os.path.normcase(str(path)), str(path)),
     )
-    return _python_auxiliary_command(
-        envelope,
-        exact,
-        arguments=(
-            "--capture-active-environment",
-            "--with-custody",
-            "--hash-workers",
-            str(hash_workers),
-            "--admit-virtualenv-bootstrap",
-            *(
-                value
-                for root in admitted_roots
-                for value in ("--admit-external-root", str(root))
-            ),
+    return [
+        str(executable),
+        *python_identity_probe_arguments(
+            (
+                "--capture-active-environment",
+                "--with-custody",
+                "--hash-workers",
+                str(hash_workers),
+                "--admit-virtualenv-bootstrap",
+                *(
+                    value
+                    for root in admitted_roots
+                    for value in ("--admit-external-root", str(root))
+                ),
+            )
         ),
-    )
+    ]
 
 
 def _parse_json_output(
@@ -630,9 +633,43 @@ def _parse_json_output(
     return payload
 
 
+def python_selection(location: Mapping[str, object]) -> dict[str, object]:
+    """Project a validated Python location receipt into its pre-arm selection.
+
+    The locator keeps the reported launcher coordinate in its hashed receipt.
+    Selection names the launcher by its custody coordinate (on Windows the
+    actual directory entry with a lower-case drive) without resolving role
+    aliases, and resolves the base image and prefix. The producer and the
+    pre-launch check share this rule, so their spellings cannot drift.
+    """
+    executable_raw = location.get("selected_executable")
+    base_executable_raw = location.get("base_executable")
+    prefix_raw = location.get("prefix")
+    if not all(
+        isinstance(value, str) and value
+        for value in (executable_raw, base_executable_raw, prefix_raw)
+    ):
+        raise ValueError("proof Python location has no executable chain")
+    executable = process_image_capture.custody_file(Path(str(executable_raw)))
+    if executable is None:
+        raise ValueError("proof Python location has no selected executable")
+    base_executable = process_image_capture.custody_path(
+        Path(str(base_executable_raw))
+    ).resolve(strict=True)
+    prefix = Path(str(prefix_raw)).resolve(strict=True)
+    if not prefix.is_dir():
+        raise ValueError("proof Python location has no environment prefix")
+    return {
+        "executable": str(executable),
+        "executable_sha256": _hash_file(executable),
+        "base_executable": str(base_executable),
+        "base_executable_sha256": _hash_file(base_executable),
+        "prefix": str(prefix),
+    }
+
+
 def _python_identity(
     envelope: Mapping[str, object],
-    exact: Sequence[str],
     *,
     cwd: Path,
     env: Mapping[str, str],
@@ -664,19 +701,32 @@ def _python_identity(
         raise ValueError("proof Python selection has no external-root authority")
     if selected_external_roots != location.get("external_roots"):
         raise ValueError("proof Python selection external roots differ from location")
+    # Reproject the hashed location receipt through the one selection rule and
+    # rehash the current images: a changed spelling, alias or byte refuses the
+    # launch before the capture probe runs.
+    expected = python_selection(location)
+    if any(selection.get(key) != value for key, value in expected.items()):
+        raise ValueError("proof Python selection differs from its location receipt")
+    executable_raw = str(expected["executable"])
+    # Selection ran the exact uv/py launcher before arming. Repeating uv run
+    # here can sync or close its writable environment lock before full capture
+    # has admitted that lock. Preserve the lexical venv launcher (not its base
+    # image), isolated no-write suffix, admitted environment and effective cwd.
     command = _python_probe_command(
-        envelope,
-        exact,
+        Path(executable_raw),
         source_root=source_root,
         external_roots=[
             Path(value) for value in cast(list[str], selected_external_roots)
         ],
         hash_workers=hash_workers,
     )
-    if command is None:
-        return None
     payload = _parse_json_output(
-        _run_captured(command, cwd=cwd, env=env, timeout=120.0),
+        _run_captured(
+            command,
+            cwd=admission._execution_source_paths(envelope, cwd=cwd),
+            env=env,
+            timeout=120.0,
+        ),
         purpose="proof Python identity probe",
     )
     try:
@@ -684,39 +734,6 @@ def _python_identity(
         environment = cast(Mapping[str, object], capture["identity"])
     except PythonEnvironmentIdentityError as exc:
         raise ValueError(f"proof Python identity is invalid: {exc}") from exc
-    prefix_raw = selection.get("prefix")
-    executable_raw = selection.get("executable")
-    base_executable_raw = selection.get("base_executable")
-    if not all(
-        isinstance(value, str) and value
-        for value in (prefix_raw, executable_raw, base_executable_raw)
-    ):
-        raise ValueError("proof Python selection identity is incomplete")
-    assert isinstance(prefix_raw, str)
-    assert isinstance(executable_raw, str)
-    assert isinstance(base_executable_raw, str)
-    if (
-        prefix_raw != location.get("prefix")
-        # The locator preserves the reported launcher coordinate in its hashed
-        # receipt. Selection uses the proof image owner's lexical coordinate;
-        # compare that same projection without resolving selected role aliases.
-        or executable_raw
-        != str(
-            process_image_capture.custody_path(
-                Path(str(location["selected_executable"]))
-            )
-        )
-        or base_executable_raw
-        != str(
-            process_image_capture.custody_path(
-                Path(str(location["base_executable"]))
-            ).resolve(strict=True)
-        )
-        or selection.get("executable_sha256") != _hash_file(Path(executable_raw))
-        or selection.get("base_executable_sha256")
-        != _hash_file(Path(base_executable_raw))
-    ):
-        raise ValueError("proof Python selection differs from its location receipt")
     source_root = source_root.resolve(strict=True)
     try:
         process_images = _python_process_images(
@@ -724,6 +741,16 @@ def _python_identity(
         )
     except PythonEnvironmentIdentityError as exc:
         raise ValueError(f"proof Python launcher closure is invalid: {exc}") from exc
+    expected_images = {
+        "selected-interpreter": selection["executable_sha256"],
+        "base-interpreter": selection["base_executable_sha256"],
+    }
+    if any(
+        image["sha256"] != expected_images[image["role"]]
+        for image in process_images
+        if image["role"] in expected_images
+    ):
+        raise ValueError("proof Python captured images differ from pre-arm selection")
     material: dict[str, object] = {
         "schema": "molt.proof-python-toolchain.v3",
         "identity_kind": "executable",
@@ -1370,7 +1397,9 @@ def _tool_identity(
     if sdk_role is not None:
         from molt.llvm_toolchain import resolve_wasi_sdk_tool
 
-        path = resolve_wasi_sdk_tool(proof_plan.ROOT, sdk_role, environ=dict(env))
+        path = resolve_wasi_sdk_tool(
+            proof_plan.ROOT, sdk_role, environ=dict(env), cwd=cwd
+        )
     elif name == "cargo":
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
     elif payload := _bound_tool_payload(envelope, exact, requested):
@@ -1577,7 +1606,7 @@ def _capture_tool_identity(
         content_resolver_identity = _executable_identity(resolver)
     sdk_closure = None
     if policy.data.get("wasi_sdk_tool") is not None:
-        sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env)
+        sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env, cwd=cwd)
         process_images = toolchain_capture.capture_wasi_sdk_images(sdk_closure)
         launcher_image = next(
             (image for image in process_images if image["path"] == str(path)), None
@@ -1979,6 +2008,7 @@ _NONDETERMINISTIC_ENV_NAMES = frozenset(
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
         "UV_CONFIG_FILE",
         "UV_DEFAULT_INDEX",
+        "UV_ENV_FILE",
         "UV_EXTRA_INDEX_URL",
         "UV_FIND_LINKS",
         "UV_INDEX",

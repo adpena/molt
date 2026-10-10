@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -31,23 +30,13 @@ if str(ROOT) not in sys.path:
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
-from tools.check_reproducible_build import resolve_corpus  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+from tools.check_reproducible_build import (  # noqa: E402
+    _launch_evidence,
+    extract_artifact_path,
+    resolve_corpus,
+)
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
-
-
-def _extract_binary(build_json: dict) -> str | None:
-    """Extract the binary path from build JSON, unwrapping data envelope."""
-    data = build_json
-    if "data" in build_json and isinstance(build_json["data"], dict):
-        data = build_json["data"]
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in data:
-            return data[key]
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                return data["build"][key]
-    return None
 
 
 def _sha256_file(path: Path) -> str:
@@ -67,18 +56,18 @@ def build_program(
     cwd: str | Path | None = None,
     hash_seed: int = 0,
     build_timeout: float | None = None,
-) -> tuple[str | None, str, dict[str, object] | None]:
-    """Build a Molt program. Returns (binary_path, error_msg).
+) -> tuple[str | None, str, dict[str, object] | None, dict[str, object]]:
+    """Return binary, error, build JSON and evidence from the actual launch.
 
     Every observation shares the compiler build (the Cargo target and
     toolchain roots in the environment). It gets its own working directory,
     program cache and output path, and no backend daemon, so no compile state
     passes between observations. ``build_timeout`` defaults to the plan's
-    nested build budget. Returns (None, error) on failure instead of
-    sys.exit().
+    nested build budget.
     """
     if build_timeout is None:
         build_timeout = default_nested_process_timeout_seconds("build")
+    launch_cwd = Path.cwd() if cwd is None else Path(cwd).absolute()
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONHASHSEED"] = str(hash_seed)
@@ -113,18 +102,31 @@ def build_program(
             capture_output=True,
             text=True,
             env=env,
-            cwd=cwd,
+            cwd=launch_cwd,
             timeout=build_timeout,
             limits=limits,
         )
-    except subprocess.TimeoutExpired:
-        return None, f"build timed out after {build_timeout:g} s", None
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        launch = _launch_evidence(cmd, env, cwd=launch_cwd, outcome=exc)
+        return (
+            None,
+            f"build timed out after {build_timeout:g} s"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else str(exc),
+            None,
+            launch,
+        )
+
+    launch = _launch_evidence(cmd, env, cwd=launch_cwd, outcome=result)
+    if launch["status"] != "completed":
+        return None, f"build {launch['status']}", None, launch
 
     if result.returncode != 0:
         return (
             None,
             f"build failed (exit {result.returncode}): {result.stderr[:1000]}",
             None,
+            launch,
         )
 
     stdout = result.stdout.strip()
@@ -139,27 +141,29 @@ def build_program(
         try:
             build_info = json.loads(stdout)
         except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}", None
+            return None, f"invalid build JSON: {e}", None, launch
     else:
         try:
             build_info = json.loads(json_str)
         except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}", None
+            return None, f"invalid build JSON: {e}", None, launch
 
-    binary = _extract_binary(build_info)
-    if binary is None:
+    try:
+        binary = extract_artifact_path(build_info)
+        binary_path = Path(binary)
+        if not binary_path.is_absolute():
+            binary_path = launch_cwd / binary_path
+        if not binary_path.exists():
+            return None, f"binary not found: {binary}", build_info, launch
+    except (KeyError, ValueError, OSError) as exc:
         return (
             None,
-            f"no binary in build output (keys: {list(build_info.keys())})",
-            build_info,
+            f"build artifact error: {str(exc) or type(exc).__name__}",
+            build_info if isinstance(build_info, dict) else None,
+            launch,
         )
-    binary_path = Path(binary)
-    if not binary_path.is_absolute() and cwd is not None:
-        binary_path = Path(cwd) / binary_path
-    if not binary_path.exists():
-        return None, f"binary not found: {binary}", build_info
 
-    return str(binary_path), "", build_info
+    return str(binary_path), "", build_info, launch
 
 
 def run_binary(
@@ -169,8 +173,9 @@ def run_binary(
     *,
     deterministic: bool = True,
     cwd: str | Path | None = None,
-) -> tuple[bytes, bytes, int | None]:
-    """Run a binary. Returns (stdout, stderr, returncode). returncode=None on timeout."""
+) -> tuple[bytes, bytes, int | None, dict[str, object]]:
+    """Return stdout, stderr, returncode and actual launch evidence."""
+    launch_cwd = Path.cwd() if cwd is None else Path(cwd).absolute()
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = str(run_index)
     if deterministic:
@@ -179,21 +184,29 @@ def run_binary(
         env.pop("MOLT_DETERMINISTIC", None)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
+    command = [binary]
     try:
         result = harness_memory_guard.guarded_completed_process(
-            [binary],
+            command,
             prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=False,
             env=env,
-            cwd=cwd,
+            cwd=launch_cwd,
             timeout=timeout,
             limits=limits,
         )
-    except subprocess.TimeoutExpired:
-        return b"", b"", None
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return (
+            b"",
+            b"",
+            None,
+            _launch_evidence(command, env, cwd=launch_cwd, outcome=exc),
+        )
 
-    return result.stdout, result.stderr, result.returncode
+    launch = _launch_evidence(command, env, cwd=launch_cwd, outcome=result)
+    rc = result.returncode if launch["status"] == "completed" else None
+    return result.stdout, result.stderr, rc, launch
 
 
 def check_determinism(
@@ -213,17 +226,6 @@ def check_determinism(
         "status": "unknown",
         "mode": "deterministic" if deterministic_mode else "default",
         "profile": profile,
-        "command": [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--profile",
-            profile,
-            *(["--deterministic"] if deterministic_mode else []),
-            "--json",
-            "<relocated-source>",
-        ],
         "toolchain": {"python": sys.version},
     }
 
@@ -232,82 +234,111 @@ def check_determinism(
         result["error"] = "runs must be at least 2"
         return result
 
-    if not Path(source).exists():
-        result["status"] = "error"
-        result["error"] = "source file not found"
+    try:
+        if not Path(source).exists():
+            result["status"] = "error"
+            result["error"] = "source file not found"
+            return result
+        source_path = Path(source).resolve()
+    except OSError as exc:
+        result.update(status="error", error=str(exc) or type(exc).__name__)
         return result
-
-    source_path = Path(source).resolve()
     outputs: list[tuple[bytes, bytes, int | None]] = []
     observations: list[dict[str, object]] = []
-    for i in range(runs):
-        with tempfile.TemporaryDirectory(prefix=f"runtime_repeat_{i}_") as run_root:
-            relocated_source = Path(run_root) / source_path.name
-            shutil.copyfile(source_path, relocated_source)
-            cache = Path(run_root) / "cache"
-            binary, error, build_receipt = build_program(
-                str(relocated_source),
-                profile,
-                deterministic=deterministic_mode,
-                cache_dir=str(cache),
-                cwd=run_root,
-                hash_seed=0,
-                build_timeout=build_timeout,
-            )
-            if binary is None:
-                result["status"] = "build_error"
-                result["error"] = f"observation {i + 1}: {error}"
-                return result
-            binary_path = Path(binary)
-            if not binary_path.is_absolute():
-                binary_path = Path(run_root) / binary_path
-            binary_hash = _sha256_file(binary_path)
-            stdout, stderr, rc = run_binary(
-                str(binary_path),
-                i + 1,
-                timeout,
-                deterministic=deterministic_mode,
-                cwd=run_root,
-            )
-            outputs.append((stdout, stderr, rc))
-            digest = hashlib.sha256()
-            digest.update(len(stdout).to_bytes(8, "big"))
-            digest.update(stdout)
-            digest.update(len(stderr).to_bytes(8, "big"))
-            digest.update(stderr)
-            digest.update((-1 if rc is None else rc).to_bytes(8, "big", signed=True))
-            observations.append(
-                {
-                    "index": i + 1,
-                    "logical_cwd": f"isolated-{i + 1}",
-                    "source": source_path.name,
-                    "binary_sha256": binary_hash,
-                    "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
-                    "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
-                    "returncode": rc,
-                    "observable_sha256": digest.hexdigest(),
-                    "environment": {
-                        "PYTHONHASHSEED": "0",
-                        "MOLT_DETERMINISTIC": "1" if deterministic_mode else None,
-                        "isolated_cache": True,
-                        "isolated_cwd": True,
-                        "isolated_output": True,
-                        "shared_compiler_build": True,
-                        "backend_daemon": "disabled",
-                    },
-                    "build_receipt": build_receipt,
-                }
-            )
-            if verbose:
-                print(
-                    f"  Observation {i + 1}: {digest.hexdigest()[:16]} "
-                    f"(stdout={len(stdout)}, stderr={len(stderr)}) rc={rc}"
-                )
-
     result["observations"] = observations
+    result["completed_runs"] = 0
+    for i in range(runs):
+        observation = {
+            "index": i + 1,
+            "logical_cwd": f"isolated-{i + 1}",
+            "source": source_path.name,
+            "build": None,
+            "build_receipt": None,
+            "runtime": None,
+        }
+        observations.append(observation)
+        phase = "prepare"
+        try:
+            with OwnedTemporaryDirectory(prefix=f"runtime_repeat_{i}_") as run_root:
+                relocated_source = Path(run_root) / source_path.name
+                shutil.copyfile(source_path, relocated_source)
+                cache = Path(run_root) / "cache"
+                phase = "build"
+                binary, error, build_receipt, build_launch = build_program(
+                    str(relocated_source),
+                    profile,
+                    deterministic=deterministic_mode,
+                    cache_dir=str(cache),
+                    cwd=run_root,
+                    hash_seed=0,
+                    build_timeout=build_timeout,
+                )
+                observation.update(build=build_launch, build_receipt=build_receipt)
+                if binary is None:
+                    result["status"] = "build_error"
+                    result["error"] = f"observation {i + 1}: {error}"
+                    phase = "cleanup"
+                    return result
+                phase = "artifact"
+                binary_path = Path(binary)
+                if not binary_path.is_absolute():
+                    binary_path = Path(run_root) / binary_path
+                binary_hash = _sha256_file(binary_path)
+                observation["binary_sha256"] = binary_hash
+                phase = "runtime"
+                stdout, stderr, rc, runtime_launch = run_binary(
+                    str(binary_path),
+                    i + 1,
+                    timeout,
+                    deterministic=deterministic_mode,
+                    cwd=run_root,
+                )
+                observation["runtime"] = runtime_launch
+                outputs.append((stdout, stderr, rc))
+                digest = hashlib.sha256()
+                digest.update(len(stdout).to_bytes(8, "big"))
+                digest.update(stdout)
+                digest.update(len(stderr).to_bytes(8, "big"))
+                digest.update(stderr)
+                digest.update(
+                    (-1 if rc is None else rc).to_bytes(8, "big", signed=True)
+                )
+                observation.update(
+                    stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+                    stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+                    returncode=rc,
+                    observable_sha256=digest.hexdigest(),
+                )
+                if verbose:
+                    print(
+                        f"  Observation {i + 1}: {digest.hexdigest()[:16]} "
+                        f"(stdout={len(stdout)}, stderr={len(stderr)}) rc={rc}"
+                    )
+                phase = "cleanup"
+            if rc is not None:
+                result["completed_runs"] += 1
+        except (OSError, ValueError) as exc:
+            # A completed child remains completed. Artifact/cleanup failures
+            # invalidate this cell without discarding already captured launches.
+            diagnostic = str(exc) or type(exc).__name__
+            observation.update(error_phase=phase, error=diagnostic)
+            result.update(
+                status="error", error=f"observation {i + 1} {phase}: {diagnostic}"
+            )
+            return result
+
     if any(rc is None for _, _, rc in outputs):
-        result["status"] = "timeout"
-        result["error"] = "one or more runtime observations timed out"
+        statuses = {
+            row["runtime"]["status"]
+            for row in observations
+            if row["runtime"] is not None
+        }
+        result["status"] = (
+            "timeout" if statuses <= {"completed", "timeout"} else "run_error"
+        )
+        result["error"] = (
+            "one or more runtime observations did not complete successfully"
+        )
         return result
     if any(rc != 0 for _, _, rc in outputs):
         result["status"] = "run_error"
@@ -461,7 +492,7 @@ def main() -> int:
         else:
             print(f"  ERROR {label}: {result.get('error', 'unknown')}")
     payload = {
-        "schema": "molt.deterministic-runtime-proof.v2",
+        "schema": "molt.deterministic-runtime-proof.v3",
         "status": (
             "success" if passed > 0 and failed == 0 and errors == 0 else "failure"
         ),

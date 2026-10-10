@@ -414,6 +414,7 @@ LEDGER_ROW_ID_RE = re.compile(
     r"^\| ((?:HF-F?|V1-)\d+(?: \([^)|]*\))?) \|", re.MULTILINE
 )
 LEDGER_RENUMBERING_RE = re.compile(r" \(was [^)]*\)$")
+LEDGER_FIXED_FROM_RE = re.compile(r"^\| HF-F\d+ \(was (HF-\d+)\) \|", re.MULTILINE)
 
 
 def _check_handoff_ledger_ids(errors: list[str]) -> None:
@@ -437,6 +438,16 @@ def _check_handoff_ledger_ids(errors: list[str]) -> None:
                 f"docs/agent/V1_HANDOFF_FINDINGS.md: finding {finding_id} names "
                 f"{len(lines)} rows (lines {', '.join(map(str, lines))}); give each "
                 "finding one ID"
+            )
+    # A merge from an older ledger brings back open rows that were fixed. A
+    # fixed row that closes only part of a finding says "(was part of HF-N)".
+    for match in LEDGER_FIXED_FROM_RE.finditer(text):
+        reopened = match.group(1)
+        if reopened in rows:
+            errors.append(
+                f"docs/agent/V1_HANDOFF_FINDINGS.md: {reopened} is open, but a "
+                f"fixed row says it was {reopened}; remove the resurrected row, or "
+                f'write "(was part of {reopened})" when the fix was partial'
             )
 
 
