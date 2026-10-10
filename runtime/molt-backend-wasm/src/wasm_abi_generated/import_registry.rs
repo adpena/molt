@@ -10625,24 +10625,9 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ConcurrentAllCompleted,
-        name: "concurrent_all_completed",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentAsCompleted,
         name: "concurrent_as_completed",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ConcurrentFirstCompleted,
-        name: "concurrent_first_completed",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ConcurrentFirstException,
-        name: "concurrent_first_exception",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ConcurrentFutureAddDoneCallback,
@@ -19628,14 +19613,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_codecs_stream_writer_new" => Some(WasmRuntimeImport::CodecsStreamWriterNew),
         "codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
         "molt_codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
-        "concurrent_all_completed" => Some(WasmRuntimeImport::ConcurrentAllCompleted),
-        "molt_concurrent_all_completed" => Some(WasmRuntimeImport::ConcurrentAllCompleted),
         "concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
         "molt_concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
-        "concurrent_first_completed" => Some(WasmRuntimeImport::ConcurrentFirstCompleted),
-        "molt_concurrent_first_completed" => Some(WasmRuntimeImport::ConcurrentFirstCompleted),
-        "concurrent_first_exception" => Some(WasmRuntimeImport::ConcurrentFirstException),
-        "molt_concurrent_first_exception" => Some(WasmRuntimeImport::ConcurrentFirstException),
         "concurrent_future_add_done_callback" => {
             Some(WasmRuntimeImport::ConcurrentFutureAddDoneCallback)
         }
