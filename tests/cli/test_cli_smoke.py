@@ -1,10 +1,8 @@
 import base64
-import hashlib
 import importlib
 import json
 import os
 import platform
-import re
 import shutil
 import shlex
 import socketserver
@@ -32,29 +30,12 @@ SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _smoke_session_id() -> str:
-    raw = os.environ.get("PYTEST_CURRENT_TEST", "").strip()
-    if not raw:
-        return "tests-cli-smoke"
-    nodeid = raw.split(" ", 1)[0]
-    test_name = nodeid.rsplit("::", 1)[-1]
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", test_name).strip("-").lower()
-    if not slug:
-        slug = "case"
-    slug = slug[:32]
-    digest = hashlib.sha1(nodeid.encode("utf-8")).hexdigest()[:12]
-    return f"tests-cli-smoke-{slug}-{digest}"
-
-
 def _base_env() -> dict[str, str]:
+    # The pytest session already entered its Molt roots and shared Cargo
+    # target (RunContext.root_env, HF-114); nested CLI builds keep them, so
+    # they reuse the warm runtime and stay inside CI custody.
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
-    # Route nested CLI calls through a deterministic per-test session so
-    # one long-running smoke case cannot block unrelated cases on the same
-    # Cargo artifact directory lock.
-    env["MOLT_SESSION_ID"] = _smoke_session_id()
-    env.pop("CARGO_TARGET_DIR", None)
-    env.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     return env
 
 
@@ -620,17 +601,18 @@ def test_cli_run_json(tmp_path: Path) -> None:
     assert "ok" in payload["data"].get("stdout", "")
 
 
-def test_base_env_uses_deterministic_per_test_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(
-        "PYTEST_CURRENT_TEST",
-        "tests/cli/test_cli_smoke.py::test_cli_run_json (call)",
-    )
+def test_base_env_keeps_the_session_roots(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "shared-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("MOLT_SESSION_ID", "pytest-session")
 
     env = _base_env()
 
-    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-test-cli-run-json-")
+    # Nested builds reuse the session's warm target instead of a cold
+    # per-test one that CI custody would refuse (HF-114).
+    assert env["CARGO_TARGET_DIR"] == str(target)
+    assert env["MOLT_SESSION_ID"] == "pytest-session"
+    assert env["PYTHONPATH"] == str(ROOT / "src")
 
 
 @pytest.mark.parametrize("profile", ["dev", "release"])
@@ -1642,7 +1624,7 @@ def test_cli_dx_env_json_has_cross_platform_defaults() -> None:
     assert payload["kind"] == "molt_dx_env"
     assert "os" in payload["host"]
     assert "arch" in payload["host"]
-    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-")
+    assert env["MOLT_SESSION_ID"] == os.environ["MOLT_SESSION_ID"]
     assert env["SCCACHE_DIR"].endswith(".sccache")
     assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" in env
 
