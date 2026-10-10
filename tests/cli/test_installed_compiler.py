@@ -280,8 +280,8 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         "sys.exit(23)\n",
         encoding="utf-8",
     )
-    default_paths = package / "cli/default_paths.py"
-    shutil.copyfile(repository / "src/molt/cli/default_paths.py", default_paths)
+    default_paths = package / "default_paths.py"
+    shutil.copyfile(repository / "src/molt/default_paths.py", default_paths)
 
     def identity(path):
         return {
@@ -303,7 +303,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
                     for name in (
                         "pyproject.toml",
                         "uv.lock",
-                        "src/molt/cli/default_paths.py",
+                        "src/molt/default_paths.py",
                     )
                 ],
             }

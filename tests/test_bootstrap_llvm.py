@@ -1316,3 +1316,27 @@ def test_cached_archive_uses_bytes_not_directory_brand(tmp_path, monkeypatch, na
         expected_size=len(b"owned LLVM archive"),
     )
     assert archive.read_bytes() == b"owned LLVM archive"
+
+
+def test_bootstrap_check_uses_selected_tool_state_for_default_prefix(
+    tmp_path, monkeypatch
+):
+    selected = tmp_path / "selected tools"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(selected))
+    pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    expected = selected / "toolchains" / f"llvm-{pin.default_release}"
+    observed = []
+
+    def verify(root, prefix, **kwargs):
+        observed.append(prefix)
+        return SimpleNamespace(
+            prefix=prefix,
+            llvm_config=prefix / "bin/llvm-config",
+            version=pin.default_release,
+        )
+
+    monkeypatch.setattr(bootstrap_llvm, "verify_llvm_toolchain_prefix", verify)
+    assert bootstrap_llvm.main(["--check"]) == 0
+    assert observed == [expected]
+    assert not selected.exists()

@@ -285,7 +285,14 @@ def _installation_identity(
 
 
 def _read_wasm_opt_version(executable: Path, *, expected_sha256: str) -> str:
-    return read_binaryen_version(executable, expected_sha256=expected_sha256)[0]
+    version, record = read_binaryen_version(executable, expected_sha256=expected_sha256)
+    # Pinned release assets retain their tagged identity even though external
+    # source archive builds can legitimately report the numeric version alone.
+    if record != f"wasm-opt version {version} (version_{version})":
+        raise ValueError(
+            f"provisioned wasm-opt reported an invalid version: {record!r}"
+        )
+    return version
 
 
 def _wasm_opt_path(root: Path, asset: BinaryenHostAsset) -> Path:

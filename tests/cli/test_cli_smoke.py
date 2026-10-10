@@ -22,9 +22,10 @@ import molt.cli as cli
 from molt.cli import build_output_layout as cli_build_output_layout
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.process_guard_common import install_module_view
 from tests.runtime_profile_fixtures import process_profile_payload
 
-DEFAULT_PATHS = importlib.import_module("molt.cli.default_paths")
+DEFAULT_PATHS = importlib.import_module("molt.default_paths")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 
 
@@ -2363,3 +2364,107 @@ def test_cli_extension_requires_subcommand() -> None:
     res = _run_cli(["extension"])
     assert res.returncode != 0
     assert "extension_command" in res.stderr
+
+
+def test_shared_default_home_uses_explicit_windows_environment_not_ambient(
+    tmp_path, monkeypatch
+):
+    from molt import default_paths
+
+    install_module_view(monkeypatch, "sys", sys, default_paths, platform="win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "ambient"))
+    selected = {"LOCALAPPDATA": str(tmp_path / "selected")}
+    other = {"LOCALAPPDATA": str(tmp_path / "other")}
+    assert (
+        default_paths._default_molt_home(environ=selected)
+        == tmp_path / "selected/Molt/home"
+    )
+    assert (
+        default_paths._default_molt_home(environ=other) == tmp_path / "other/Molt/home"
+    )
+    assert (
+        default_paths._default_molt_home(environ=selected)
+        == tmp_path / "selected/Molt/home"
+    )
+    assert not (tmp_path / "selected").exists()
+
+
+def test_shared_home_cache_and_bin_expand_only_selected_environment(
+    tmp_path, monkeypatch
+):
+    from molt import default_paths
+
+    key = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(key, str(tmp_path / "ambient"))
+    selected = tmp_path / "child"
+    env = {
+        key: str(selected),
+        "MOLT_CACHE": "~/cache",
+        "MOLT_HOME": "~/home",
+        "MOLT_BIN": "~/bin",
+    }
+    assert default_paths._default_molt_cache(environ=env) == selected / "cache"
+    assert default_paths._default_molt_home(environ=env) == selected / "home"
+    assert default_paths._default_molt_bin(environ=env) == selected / "bin"
+    assert not selected.exists()
+
+
+@pytest.mark.parametrize(
+    "owner,key", [("cache", "MOLT_CACHE"), ("home", "MOLT_HOME"), ("bin", "MOLT_BIN")]
+)
+def test_default_paths_do_not_expand_unselected_lower_priority_roots(
+    tmp_path, owner, key
+):
+    env = {
+        name: "~"
+        for name in (
+            "HOME",
+            "USERPROFILE",
+            "MOLT_CACHE",
+            "MOLT_HOME",
+            "MOLT_BIN",
+            "MOLT_EXT_ROOT",
+            "XDG_CACHE_HOME",
+            "LOCALAPPDATA",
+        )
+    }
+    selected = tmp_path / owner
+    env[key] = str(selected)
+    assert getattr(DEFAULT_PATHS, "_default_molt_" + owner)(environ=env) == selected
+    assert not selected.exists()
+
+
+def test_explicit_build_cache_does_not_consult_default_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli_build_output_layout,
+        "_default_molt_cache",
+        lambda: pytest.fail("explicit cache has priority"),
+    )
+    assert (
+        cli_build_output_layout._resolve_cache_root(tmp_path, "selected")
+        == tmp_path / "selected"
+    )
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_default_cache_does_not_expand_unused_platform_root(
+    tmp_path, monkeypatch, windows
+):
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        DEFAULT_PATHS,
+        platform="win32" if windows else "linux",
+    )
+    selected_key = "LOCALAPPDATA" if windows else "XDG_CACHE_HOME"
+    unused_key = "XDG_CACHE_HOME" if windows else "LOCALAPPDATA"
+    env = {
+        selected_key: str(tmp_path / "cache"),
+        unused_key: "~",
+        "HOME": "~",
+        "USERPROFILE": "~",
+    }
+    assert DEFAULT_PATHS._default_molt_cache(environ=env) == tmp_path / "cache" / (
+        "Molt" if windows else "molt"
+    )

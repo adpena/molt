@@ -3812,3 +3812,96 @@ def test_absent_raw_capture_is_not_reconstructed_from_diagnostics(
     observed = run([sys.executable, "-c", "pass"], prefix="MOLT_TEST")
     assert observed.child_stderr is None
     assert "guard-only" in (observed.stderr.decode() if tempfiles else observed.stderr)
+
+
+@pytest.mark.parametrize("kind", ["file", "relative"])
+def test_artifact_guard_preserves_unused_tool_state_until_managed_selection(
+    tmp_path, monkeypatch, kind
+):
+    root = tmp_path / "source"
+    root.mkdir()
+    state = {
+        "file": str(tmp_path / "state-file"),
+        "relative": "relative-tools",
+    }[kind]
+    if kind == "file":
+        Path(state).write_text("not a directory")
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    from molt import tool_releases
+
+    monkeypatch.setattr(
+        tool_releases,
+        "discover_pinned_tool",
+        lambda *_a, **_k: pytest.fail("artifact guard cannot select a tool"),
+    )
+    env = {"MOLT_TARGET_ROOT": state, "MOLT_EXT_ROOT": str(tmp_path / "artifacts")}
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_PLATFORM_TOOLCHAIN", env, repo_root=root
+    )
+    assert context.env["MOLT_TARGET_ROOT"] == state
+    assert (
+        harness_memory_guard.canonical_harness_env(context.env, repo_root=root)
+        == context.env
+    )
+    assert (
+        sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+        == before
+    )
+    if kind != "relative":
+        with pytest.raises(molt_dx.DxConfigError):
+            molt_dx.canonical_toolchain_root(root, context.env, require_exists=False)
+    else:
+        assert (
+            molt_dx.canonical_toolchain_root(
+                root, context.env, require_exists=False, cwd=root
+            )
+            == root / state
+        )
+
+
+def test_artifact_guard_binds_installed_default_before_cache_defaults(tmp_path):
+    from molt.default_paths import _default_molt_home
+
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    (source / "release-compiler-source.json").write_text("layout only")
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    env = {home_key: str(tmp_path / "user")}
+    expected = _default_molt_home(environ=env) / "target-root"
+    resolved = harness_memory_guard.canonical_harness_env(env, repo_root=source)
+    assert Path(resolved["MOLT_TARGET_ROOT"]) == expected
+    assert (
+        molt_dx.canonical_toolchain_root(source, resolved, require_exists=False)
+        == expected
+    )
+    assert not expected.exists()
+
+
+def test_platform_query_guard_does_not_select_unused_managed_tools(
+    tmp_path, monkeypatch
+):
+    from molt import platform_toolchain
+
+    invalid = tmp_path / "invalid-state"
+    invalid.write_text("file")
+    observed = []
+
+    def completed(command, **kwargs):
+        observed.append((tuple(command), kwargs["env"]))
+        assert kwargs["env"]["MOLT_TARGET_ROOT"] == str(invalid)
+        return harness_memory_guard.GuardedCompletedProcess(
+            command, 0, "selected platform\n", "", elapsed_s=0.0, child_stderr=""
+        )
+
+    monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", completed)
+    env = {
+        "MOLT_TARGET_ROOT": str(invalid),
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+    }
+    assert (
+        platform_toolchain._query(["selected-external-tool", "--version"], env)
+        == "selected platform"
+    )
+    assert observed[0][0] == ("selected-external-tool", "--version")
+    assert len(observed) == 1
+    assert invalid.read_text() == "file"

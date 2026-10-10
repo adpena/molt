@@ -35,7 +35,7 @@ from molt.cli.config_resolution import (
     _select_codegen_backend,
     resolve_stdlib_profile,
 )
-from molt.cli.default_paths import _default_molt_bin
+from molt.default_paths import _default_molt_bin
 from molt.cli.env_overrides import temporary_env_overrides
 from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,

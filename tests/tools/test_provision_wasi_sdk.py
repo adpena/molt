@@ -644,3 +644,32 @@ def test_sdk_identity_reads_only_its_initial_extent(tmp_path, monkeypatch, mode)
     assert attempts == [path]
     assert sum(consumed) <= len(raw) + 1
     assert "changed" in str(failure.value)
+
+
+@pytest.mark.parametrize("explicit_cli", [False, True])
+def test_cli_provisioner_and_reader_share_selected_tool_state(
+    tmp_path, monkeypatch, explicit_cli
+):
+    archive = tmp_path / "fixture.tar.gz"
+    _write_archive(archive, _required_members())
+    downloads = []
+    asset = _install_asset(monkeypatch, archive, downloads)
+    environment_root = tmp_path / "environment tools"
+    selected = tmp_path / "explicit tools" if explicit_cli else environment_root
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(environment_root))
+    output = tmp_path / "outputs.txt"
+    args = ["--github-output", str(output)]
+    if explicit_cli:
+        args += ["--toolchain-root", str(selected)]
+    assert provisioner.main(args) == 0
+    prefix = llvm_toolchain.wasi_sdk_install_prefix(selected, asset)
+    assert f"install={prefix}\n" in output.read_text()
+    assert (
+        llvm_toolchain.provisioned_wasi_sdk_prefix(
+            provisioner.ROOT, environ={"MOLT_TARGET_ROOT": str(selected)}
+        )
+        == prefix
+    )
+    assert len(downloads) == 1
+    if explicit_cli:
+        assert not environment_root.exists()

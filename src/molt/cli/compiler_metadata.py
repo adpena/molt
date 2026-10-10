@@ -11,7 +11,7 @@ import tomllib
 from typing import Any
 
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.compiler_distribution import installed_compiler
 from molt.source_root import compiler_source_root

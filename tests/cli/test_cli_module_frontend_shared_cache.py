@@ -39,7 +39,8 @@ from molt.cli.module_source import PythonSourceSnapshot
 
 
 def _clear_path_caches() -> None:
-    from molt.cli import default_paths, module_graph_cache, runtime_paths
+    from molt import default_paths
+    from molt.cli import module_graph_cache, runtime_paths
     from molt.cli import module_source
 
     default_paths._default_molt_cache_cached.cache_clear()

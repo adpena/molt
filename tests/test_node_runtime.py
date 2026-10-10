@@ -36,7 +36,9 @@ def test_explicit_node_precedes_pinned_and_path(
     monkeypatch.setattr(
         node_runtime,
         "pinned_executable",
-        lambda *args: pytest.fail("explicit Node must not consult pinned custody"),
+        lambda *args, **kwargs: pytest.fail(
+            "explicit Node must not consult pinned custody"
+        ),
     )
     commands = _probe(monkeypatch)
 
@@ -59,7 +61,7 @@ def test_invalid_explicit_node_never_falls_back(
     monkeypatch.setattr(
         node_runtime,
         "pinned_executable",
-        lambda *args: pytest.fail("invalid explicit Node must not fall back"),
+        lambda *args, **kwargs: pytest.fail("invalid explicit Node must not fall back"),
     )
     with pytest.raises(node_runtime.NodeRuntimeError, match="MOLT_NODE_BIN is invalid"):
         node_runtime.resolve_node_runtime(
@@ -71,7 +73,9 @@ def test_pinned_node_precedes_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     pinned = tmp_path / "pinned-node"
-    monkeypatch.setattr(node_runtime, "pinned_executable", lambda *args: pinned)
+    monkeypatch.setattr(
+        node_runtime, "pinned_executable", lambda *args, **kwargs: pinned
+    )
     monkeypatch.setattr(
         node_runtime,
         "resolve_executable",
@@ -88,7 +92,7 @@ def test_pinned_node_precedes_path(
 def test_invalid_pinned_custody_is_typed_and_does_not_fall_back(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def invalid(*args: object) -> Path:
+    def invalid(*args: object, **kwargs: object) -> Path:
         raise RuntimeError("release attestation drift")
 
     monkeypatch.setattr(node_runtime, "pinned_executable", invalid)
@@ -106,7 +110,7 @@ def test_invalid_pinned_custody_is_typed_and_does_not_fall_back(
 def test_path_selection_uses_current_environment_without_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(node_runtime, "pinned_executable", lambda *args: None)
+    monkeypatch.setattr(node_runtime, "pinned_executable", lambda *args, **kwargs: None)
     selections: list[str] = []
 
     def resolve(command: str, *, environment: dict[str, str], label: str) -> Path:
@@ -132,7 +136,9 @@ def test_node_probe_timeout_is_a_useful_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     pinned = tmp_path / "pinned-node"
-    monkeypatch.setattr(node_runtime, "pinned_executable", lambda *args: pinned)
+    monkeypatch.setattr(
+        node_runtime, "pinned_executable", lambda *args, **kwargs: pinned
+    )
 
     def timeout(
         command: list[str], **kwargs: object
@@ -148,8 +154,26 @@ def test_node_probe_enforces_minimum_major(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        node_runtime, "pinned_executable", lambda *args: tmp_path / "node"
+        node_runtime, "pinned_executable", lambda *args, **kwargs: tmp_path / "node"
     )
     _probe(monkeypatch, "16.20.0")
     with pytest.raises(node_runtime.NodeRuntimeError, match="Node >= 18 is required"):
         node_runtime.resolve_node_runtime(source_root=tmp_path, environment={})
+
+
+def test_pinned_node_reads_child_tool_state_not_ambient(tmp_path, monkeypatch):
+    from tests.test_tool_releases import _installed_demo
+    from molt import tool_releases
+
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        tool_releases, "load_tool_releases", lambda _root: {"node": discovery.release}
+    )
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "ambient"))
+    _probe(monkeypatch)
+    selected = {"MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    actual = node_runtime.resolve_node_runtime(
+        source_root=tmp_path, environment=selected
+    )
+    assert actual.path == discovery.executable
+    assert not (tmp_path / "ambient").exists()

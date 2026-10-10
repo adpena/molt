@@ -371,6 +371,7 @@ def canonical_harness_env(
         merged,
         create_dirs=False,
         force_default_keys=force_default_keys,
+        admit_toolchain_root=False,
     )
     # Admit before defaults cross a process boundary and become indistinguishable
     # from explicit caller selections in the differential child.

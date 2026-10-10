@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from molt import dx, tool_releases
+from molt import tool_releases
 from molt.dx import TOOLCHAINS_DIRNAME
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -322,13 +322,7 @@ def test_pinned_executable_prefers_a_provisioned_release(
     release = tool_releases.tool_release("node", ROOT)
     toolchain_root = tmp_path / "toolchains"
 
-    custody = dx.CheckoutCustody(
-        source_root=ROOT,
-        custody_root=tmp_path,
-        toolchain_root=toolchain_root,
-        kind="durable",
-    )
-    monkeypatch.setattr("molt.dx.checkout_custody", lambda root, *a, **k: custody)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
     assert tool_releases.pinned_executable("node", ROOT) is None
 
     prefix = tool_releases.tool_prefix(toolchain_root, release)
@@ -356,13 +350,7 @@ def _installed_demo(tmp_path, monkeypatch):
     discovery = tool_releases.provision_tool(
         release, toolchain_root, downloads=downloads
     )
-    custody = dx.CheckoutCustody(
-        source_root=ROOT,
-        custody_root=tmp_path,
-        toolchain_root=toolchain_root,
-        kind="durable",
-    )
-    monkeypatch.setattr("molt.dx.checkout_custody", lambda *_a, **_k: custody)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
     return discovery
 
 
@@ -827,3 +815,94 @@ def test_dx_discovery_leaves_indirect_download_cache_untouched(tmp_path, monkeyp
     assert (cache / archive.name).is_symlink()
     assert archive.read_bytes() == original_archive
     assert not tool_releases.tool_prefix(root, release).exists()
+
+
+@pytest.mark.parametrize("source_kind", ["checkout", "bundle", "unrelated-source"])
+def test_pinned_discovery_keeps_explicit_tool_state_across_source_and_cwd(
+    tmp_path, monkeypatch, source_kind
+):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    source = tmp_path / source_kind / "source"
+    (source / "config").mkdir(parents=True)
+    (source / "config/tool_releases.toml").write_bytes(
+        (tmp_path / "config/tool_releases.toml").read_bytes()
+    )
+    if source_kind == "bundle":
+        (source / "release-compiler-source.json").write_text("layout marker only")
+    guest = tmp_path / "unrelated guest"
+    guest.mkdir()
+    monkeypatch.chdir(guest)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
+    monkeypatch.setattr(
+        tool_releases, "provision_tool", lambda *a, **k: pytest.fail("read provisioned")
+    )
+    before = {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+    assert tool_releases.require_pinned_tool("demo") == discovery
+    assert tool_releases.require_pinned_tool("demo", source) == discovery
+    assert before == {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+    assert not (source / "target-root").exists()
+
+
+def test_explicit_tool_root_miss_never_uses_default_or_ambient_tool(
+    tmp_path, monkeypatch
+):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "absent selected root"))
+    monkeypatch.setenv("PATH", str(discovery.executable.parent))
+    assert tool_releases.discover_pinned_tool("demo", tmp_path) is None
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="attested toolchain custody"
+    ):
+        tool_releases.require_pinned_tool("demo", tmp_path)
+    assert not (tmp_path / "absent selected root").exists()
+
+
+def test_tool_runner_selects_child_environment_not_ambient_state(tmp_path, monkeypatch):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    child = {"MOLT_TARGET_ROOT": str(discovery.prefix.parent.parent)}
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "ambient wrong root"))
+    calls = []
+    assert (
+        tool_releases.run_pinned_tool(
+            "demo",
+            ["validate"],
+            repo_root=tmp_path,
+            env=child,
+            run=lambda argv, **kwargs: calls.append((argv, kwargs)) or "ok",
+        )
+        == "ok"
+    )
+    assert calls == [([str(discovery.executable), "validate"], {"env": child})]
+
+
+def test_installed_tool_discovery_uses_home_default_without_creating_state(
+    tmp_path, monkeypatch
+):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    monkeypatch.delenv("MOLT_TARGET_ROOT")
+    monkeypatch.setenv("MOLT_HOME", str(tmp_path))
+    source = tmp_path / "bundle/source"
+    (source / "config").mkdir(parents=True)
+    (source / "config/tool_releases.toml").write_bytes(
+        (tmp_path / "config/tool_releases.toml").read_bytes()
+    )
+    (source / "release-compiler-source.json").write_text("layout marker only")
+    assert tool_releases.require_pinned_tool("demo", source) == discovery
+    assert not (tmp_path / "source/target-root").exists()
+
+
+def test_tool_cli_provision_and_discover_share_selected_state(tmp_path, monkeypatch):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    monkeypatch.setattr(tool_releases, "compiler_source_root", lambda: tmp_path)
+    assert tool_releases.main(["discover", "demo"]) == 0
+    # This is a warm actual provisioner call, using the already-attested fixture.
+    assert tool_releases.main(["provision", "demo"]) == 0
+    assert tool_releases.require_pinned_tool("demo", tmp_path) == discovery

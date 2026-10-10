@@ -17479,3 +17479,68 @@ def test_grouped_python_module_bootstrap_matches_actual_cpython(tmp_path, prefix
     )
     assert direct.returncode == guarded.returncode == 0, (direct.stderr, guarded.stderr)
     assert direct.stdout == guarded.stdout
+
+
+def test_tool_release_provision_and_read_share_frozen_child_state(
+    tmp_path, monkeypatch
+):
+    from tests.test_tool_releases import _installed_demo
+
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    selected = tmp_path / "target-root"
+    # The actual child mapping, not the ambient controller mapping, owns selection.
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "wrong-controller-root"))
+    monkeypatch.setattr(state, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        guarded_execution, "tool_release_toolchains", lambda _plan: frozenset({"demo"})
+    )
+    observed = []
+    provision = tool_releases.provision_tool
+
+    def warm_provision(release, root):
+        observed.append(root)
+        return provision(release, root)
+
+    monkeypatch.setattr(tool_releases, "provision_tool", warm_provision)
+    cwd = tmp_path / "guest"
+    cwd.mkdir()
+    child = {"MOLT_TARGET_ROOT": str(selected), "PATH": ""}
+    resolved, prefixes = guarded_execution.prefer_tool_release_prefixes(
+        child, ["demo"], cwd=cwd
+    )
+    assert observed == [selected]
+    assert prefixes == {"demo": str(discovery.prefix)}
+    assert resolved["PATH"].split(os.pathsep)[0] == str(discovery.executable.parent)
+    assert (
+        tool_releases.require_pinned_tool("demo", tmp_path, environ=resolved, cwd=cwd)
+        == discovery
+    )
+    assert not (cwd / "target-root").exists()
+
+
+def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain
+
+    source = tmp_path / "compiler-source"
+    guest = tmp_path / "guest"
+    selected = guest / "tools/llvm"
+    monkeypatch.setattr(state, "ROOT", source)
+    monkeypatch.setattr(
+        guarded_execution, "llvm_family_toolchains", lambda _plan: frozenset({"clang"})
+    )
+    seen = []
+
+    def discover(root, *, environ, cwd):
+        seen.append((root, environ, cwd))
+        return SimpleNamespace(prefix=selected)
+
+    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
+    env = {"MOLT_TARGET_ROOT": "tools", "PATH": ""}
+    resolved, prefix = guarded_execution.prefer_canonical_llvm_prefix(
+        env, ["clang"], cwd=guest
+    )
+    assert seen == [(source, env, guest)]
+    assert prefix == str(selected)
+    assert resolved["PATH"].split(os.pathsep)[0] == str(selected / "bin")

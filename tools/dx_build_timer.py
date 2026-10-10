@@ -808,11 +808,7 @@ def main() -> int:
         )
 
     def measure_molt_build(label: str, target: str) -> None:
-        from molt.cli.default_paths import (
-            _configured_artifact_root_text,
-            _default_home_str,
-            _default_molt_home_cached,
-        )
+        from molt.default_paths import _default_molt_home
 
         source_name = molt_source.name
         phases = []
@@ -820,17 +816,7 @@ def main() -> int:
         scenario_root = _molt_build_output_root(args) / label
         scenario_root.mkdir(parents=True, exist_ok=True)
         # Changing MOLT_CACHE must not implicitly redirect compiler provisioning.
-        compiler_home = str(
-            _default_molt_home_cached(
-                env.get("MOLT_HOME"),
-                env.get("MOLT_CACHE"),
-                env.get("XDG_CACHE_HOME"),
-                str(REPO_ROOT),
-                _default_home_str(),
-                sys.platform,
-                _configured_artifact_root_text(env),
-            ).resolve()
-        )
+        compiler_home = str(_default_molt_home(environ=env, cwd=REPO_ROOT).resolve())
         reuse_outer_guard = _outer_memory_guard_reuse_enabled(env)
         daemon_policy = (
             "outer-guard-reuse; daemons may survive between phases; session cleanup at scenario exit"
