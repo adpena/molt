@@ -7,12 +7,10 @@ import logging as _logging
 import subprocess
 import warnings
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from . import protocols
 from . import transports
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 logger = _logging.getLogger("asyncio")
 
@@ -40,5 +38,3 @@ __all__ = [
     "transports",
     "warnings",
 ]
-
-globals().pop("_require_intrinsic", None)

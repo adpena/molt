@@ -10,14 +10,21 @@ Canonical intrinsic-backing status now comes from:
 - gate script: `tools/check_stdlib_intrinsics.py`
 - generated audit: `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
-The gate computes `intrinsic-backed`, `intrinsic-partial`, `policy-gate`,
-`probe-only`, and `python-only` directly from `src/molt/stdlib/**` source and
-intrinsic usage. `policy-gate` is reserved for pure fail-closed namespace
-reservations whose only executable statement is an unconditional
-`ImportError`.
+The gate computes `intrinsic-backed`, `intrinsic-partial`, `intrinsic-support`,
+`python-compiled`, `stub` and `policy-gate` directly from `src/molt/stdlib/**`
+source. A module's intrinsic status rests on the intrinsics it reads: a
+module-level binding it loads or exports, a requirement inside a function or
+class body, a requirement an expression consumes, or a private binding another
+stdlib module imports by name. A requirement nothing reads is a gate failure,
+not backing (spec 0016). `python-compiled` is an admitted implementation: Molt
+compiles the module's Python source like application code. `stub` is the
+generated stand-in for an unlowered module. `policy-gate` is reserved for pure
+fail-closed namespace reservations whose only executable statement is an
+unconditional `ImportError`.
 
 `src/molt/stdlib_intrinsic_policy.py` owns source relationship classification
-for both the CLI and the audit. A wrapper can inherit intrinsic backing through
+for the audit and the core-lane gate. Builds do not classify: a compiled program
+may import any implemented stdlib module. A wrapper can inherit intrinsic backing through
 a proved import of an already backed module in the same package, or through
 its exact top-level private provider (`io` importing `_io`). Private names,
 prefix matches, provider children, missing providers, unresolved imports and
@@ -61,8 +68,8 @@ Top-level + submodule name coverage is enforced against the CPython
 
 ## Ratchet Policy
 - Ratchet source: `tools/stdlib_intrinsics_ratchet.json`
-- Field: `max_intrinsic_partial`
-- Rule: `intrinsic-partial` count must never exceed the ratchet.
+- Fields: `max_intrinsic_partial` and `max_stub`
+- Rule: neither the `intrinsic-partial` nor the `stub` count may exceed its budget.
 - Expected workflow: lower modules first, then reduce the ratchet in the same change.
 
 ## Full-Coverage Contract
@@ -72,10 +79,10 @@ Top-level + submodule name coverage is enforced against the CPython
 - `STDLIB_REQUIRED_INTRINSICS_BY_MODULE`: required intrinsic contract for each
   attested module.
 - Gate rules enforced by `tools/check_stdlib_intrinsics.py`:
-  - every attested module must be `intrinsic-backed`
-  - every attested module must have a contract entry
-  - every contract intrinsic must exist in runtime manifest and be wired in-module
-  - non-attested modules are classified as `intrinsic-partial` by default
+  - every attested module must be `intrinsic-backed`, `intrinsic-support` or `python-compiled`, without a progress marker
+  - every attested module must have a contract entry (empty for a pure facade or `python-compiled`)
+  - every contract intrinsic must exist in the runtime manifest, and the module must read it
+  - a non-attested module that reads intrinsics is `intrinsic-partial`
 
 ## Too-Dynamic Differential Policy
 - Intentional unsupported dynamism cases declare their policy at the test source:

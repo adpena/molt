@@ -594,10 +594,3 @@ class AddressList(AddrlistClass):
     def __getitem__(self, index):
         # Make indexing, slices, and 'in' work
         return self.addresslist[index]
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

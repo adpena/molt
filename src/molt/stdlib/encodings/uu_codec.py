@@ -11,7 +11,6 @@ import codecs
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _uu_encode = _require_intrinsic("molt_uu_codec_encode")
 _uu_decode = _require_intrinsic("molt_uu_codec_decode")
 

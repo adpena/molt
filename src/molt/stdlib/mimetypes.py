@@ -23,12 +23,6 @@ init([files]) -- parse a list of files, default knownfiles (on Windows, the
 read_mime_types(file) -- parse one file, return a dictionary or None
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import os
 import sys
@@ -677,6 +671,3 @@ More than one type argument may be given.
 
 if __name__ == "__main__":
     _main()
-
-
-globals().pop("_require_intrinsic", None)

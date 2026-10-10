@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import reprlib
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from . import format_helpers
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def isfuture(obj) -> bool:
@@ -19,5 +16,3 @@ def isfuture(obj) -> bool:
 
 
 __all__ = ["format_helpers", "isfuture", "reprlib"]
-
-globals().pop("_require_intrinsic", None)

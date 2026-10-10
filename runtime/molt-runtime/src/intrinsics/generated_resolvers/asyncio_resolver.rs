@@ -41,10 +41,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_promise_set_result",
             crate::molt_promise_set_result as *const (),
         )),
-        "molt_promise_set_exception" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_promise_set_exception",
-            crate::molt_promise_set_exception as *const (),
-        )),
         "molt_event_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_event_new",
             crate::molt_event_new as *const (),
@@ -179,11 +175,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_task_registry_values as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_task_registry_live" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_task_registry_live",
-            crate::molt_asyncio_task_registry_live as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_task_registry_live_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_task_registry_live_set",
             crate::molt_asyncio_task_registry_live_set as *const (),
@@ -227,13 +218,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_asyncio_child_watcher_pop",
             crate::molt_asyncio_child_watcher_pop as *const (),
         )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_require_ssl_transport_support" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_asyncio_require_ssl_transport_support",
-                crate::molt_asyncio_require_ssl_transport_support as *const (),
-            ))
-        }
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_ssl_transport_orchestrate" => {
             Some(crate::builtins::functions::runtime_fn_addr(
@@ -601,16 +585,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_event_loop_notify_writer_ready" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_event_loop_notify_writer_ready",
             crate::molt_event_loop_notify_writer_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_event_loop_connect_read_pipe" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_event_loop_connect_read_pipe",
-            crate::molt_event_loop_connect_read_pipe as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_event_loop_connect_write_pipe" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_event_loop_connect_write_pipe",
-            crate::molt_event_loop_connect_write_pipe as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_pipe_transport_new" => Some(crate::builtins::functions::runtime_fn_addr(

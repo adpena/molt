@@ -4,12 +4,6 @@ Direct port of CPython 3.12's unittest/signals.py — pure Python; depends
 on `signal`, `weakref`, and `functools.wraps`.
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import signal
 import weakref
@@ -88,6 +82,3 @@ def removeHandler(method=None):
     global _interrupt_handler
     if _interrupt_handler is not None:
         signal.signal(signal.SIGINT, _interrupt_handler.original_handler)
-
-
-globals().pop("_require_intrinsic", None)

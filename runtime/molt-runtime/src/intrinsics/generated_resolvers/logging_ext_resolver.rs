@@ -14,11 +14,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_logging_record_get_message as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_record_get_attr" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_record_get_attr",
-            crate::molt_logging_record_get_attr as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_record_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_record_drop",
             crate::molt_logging_record_drop as *const (),
@@ -109,11 +104,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_logging_logger_remove_handler as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_logger_log" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_logger_log",
-            crate::molt_logging_logger_log as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_logger_is_enabled_for" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_logger_is_enabled_for",
             crate::molt_logging_logger_is_enabled_for as *const (),
@@ -129,16 +119,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_logging_logger_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_logger_drop",
             crate::molt_logging_logger_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_manager_get_logger" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_manager_get_logger",
-            crate::molt_logging_manager_get_logger as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_root_logger" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_root_logger",
-            crate::molt_logging_root_logger as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_basic_config" => Some(crate::builtins::functions::runtime_fn_addr(

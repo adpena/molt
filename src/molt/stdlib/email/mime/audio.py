@@ -104,10 +104,3 @@ def _wav(h, f):
         return None
     else:
         return "x-wav"
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

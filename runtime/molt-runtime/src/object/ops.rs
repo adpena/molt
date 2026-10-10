@@ -62,8 +62,8 @@ pub use super::ops_sys::{
     molt_time_mktime, molt_time_monotonic, molt_time_monotonic_ns, molt_time_perf_counter,
     molt_time_perf_counter_ns, molt_time_process_time, molt_time_process_time_ns, molt_time_sleep,
     molt_time_strftime, molt_time_time, molt_time_time_ns, molt_time_timegm, molt_time_timezone,
-    molt_time_tzname, molt_traceback_exception_chain_payload, molt_traceback_exception_components,
-    molt_traceback_extract_tb, molt_traceback_format_exc, molt_traceback_format_exception,
+    molt_time_tzname, molt_traceback_exception_chain_payload, molt_traceback_extract_tb,
+    molt_traceback_format_exc, molt_traceback_format_exception,
     molt_traceback_format_exception_only, molt_traceback_format_stack, molt_traceback_format_tb,
     molt_traceback_payload,
 };

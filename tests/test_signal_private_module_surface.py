@@ -56,7 +56,6 @@ def _const(name):
 
 
 install_registry({{
-    "molt_stdlib_probe": lambda: None,
     **{{name: _const(name) for name in _consts}},
     "molt_signal_signal": lambda sig, handler: _handlers.setdefault(sig, _consts["molt_signal_sig_dfl"]),
     "molt_signal_getsignal": lambda sig: _handlers.get(sig, _consts["molt_signal_sig_dfl"]),

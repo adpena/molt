@@ -694,9 +694,3 @@ encoding_map = {
     0x2593: 0x00B2,  #  DARK SHADE
     0x25A0: 0x00FE,  #  BLACK SQUARE
 }
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

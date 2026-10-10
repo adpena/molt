@@ -680,16 +680,6 @@ pub extern "C" fn molt_importlib_runtime_state_payload() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_runtime_modules() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match importlib_runtime_modules_bits(_py) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_runtime_state_view() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         match importlib_runtime_state_payload_bits(_py) {

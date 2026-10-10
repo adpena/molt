@@ -129,10 +129,3 @@ class BytesHeaderParser(BytesParser):
 
     def parsebytes(self, text, headersonly=True):
         return BytesParser.parsebytes(self, text, headersonly=True)
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

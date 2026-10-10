@@ -6,8 +6,6 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_DATETIME_RUNTIME_READY = _require_intrinsic("molt_datetime_runtime_ready")
-_MOLT_DATETIME_RUNTIME_READY()
 
 _MOLT_DT_VALIDATE_DATE = _require_intrinsic("molt_datetime_validate_date")
 _MOLT_DT_VALIDATE_TIME = _require_intrinsic("molt_datetime_validate_time")
@@ -38,7 +36,6 @@ _MOLT_DT_WEEKDAY = _require_intrinsic("molt_datetime_weekday")
 _MOLT_DT_ISOWEEKDAY = _require_intrinsic("molt_datetime_isoweekday")
 _MOLT_DT_ISOCALENDAR = _require_intrinsic("molt_datetime_isocalendar")
 _MOLT_DT_CTIME = _require_intrinsic("molt_datetime_ctime")
-_MOLT_DT_LOCAL_UTCOFFSET = _require_intrinsic("molt_datetime_local_utcoffset")
 _MOLT_TIMEDELTA_ABS = _require_intrinsic("molt_timedelta_abs")
 _MOLT_TIMEDELTA_TRUEDIV_TD = _require_intrinsic("molt_timedelta_truediv_td")
 _MOLT_TIMEDELTA_TRUEDIV_SCALAR = _require_intrinsic("molt_timedelta_truediv_scalar")
@@ -55,7 +52,6 @@ _MOLT_TIMEZONE_VALIDATE = _require_intrinsic("molt_timezone_validate")
 _MOLT_TIMEZONE_TZNAME = _require_intrinsic("molt_timezone_tzname")
 _MOLT_DT_DATE_REPR = _require_intrinsic("molt_datetime_date_repr")
 _MOLT_DT_TIME_REPR = _require_intrinsic("molt_datetime_time_repr")
-_MOLT_DT_DATETIME_REPR = _require_intrinsic("molt_datetime_datetime_repr")
 _MOLT_DT_TIMETUPLE = _require_intrinsic("molt_datetime_timetuple")
 
 __all__ = [

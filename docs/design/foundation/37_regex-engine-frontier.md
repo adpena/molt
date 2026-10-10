@@ -76,7 +76,7 @@ load-bearing claims are **false now** and the design must not inherit them:
 - **STALE-1 — "engine is entirely in Python" / "pure Python with Rust-backed literal
   and lookaround fast paths" (29:197-199).** FALSE. `re/__init__.py:10-24` imports
   `molt_re_compile`, `molt_re_execute`, `molt_re_finditer_collect`, `molt_re_split`,
-  `molt_re_sub`, `molt_re_sub_callable`, `molt_re_pattern_info` and routes ALL match
+  `molt_re_sub`, `molt_re_pattern_info` and routes ALL match
   execution into Rust. The Python file is a 478-line object wrapper (`Match`,
   `Pattern`, module functions, cache) with **zero match logic**. The engine —
   parser, IR, matcher — is `regex.rs:957-3666` (Rust).
@@ -90,7 +90,8 @@ load-bearing claims are **false now** and the design must not inherit them:
   `re/__init__.py`. The "host fallback disabled / SENTINEL_FALLBACK=-2" mechanism
   (29:201) refers to the **vestigial lookaround helpers** `molt_re_positive_lookahead`
   et al. (`regex.rs:223-462`) — a *dead* descriptor protocol from the pre-Rust-engine
-  era that the live `molt_re_execute` path never calls. **The real gaps are different**
+  era that the live `molt_re_execute` path never calls (deleted under HF-110,
+  2026-10-09). **The real gaps are different**
   (see §2): silent ReDoS truncation, capture fragility, casefold divergence, and the
   missing 3.11 atomic-group/possessive surface.
 
@@ -703,11 +704,12 @@ differential gate. LoC estimates are Rust unless noted. The **riskiest phase is 
   the homegrown matcher** (`regex.rs` §2 matcher body, the `try_match*` family
   `:2194-2896`, `execute_match` `:2913-2972`) and the **entire duplicate**
   `builtins/regex.rs` + its `mod.rs:116` wiring (STALE-4 debt retired).
-- Delete the dead lookaround-descriptor helpers (`molt_re_positive_lookahead` etc.,
-  `regex.rs:223-462`) and the vestigial `functions_re.rs` literal-advance intrinsics
-  (`molt_re_literal_advance`/`_any_advance`/`_matches`) once the shims (`_compiler.py`/
-  `_parser.py`/`_casefix.py`) are repointed at the new `molt_re_parse` introspection
-  intrinsic.
+- Done early (HF-110, 2026-10-09): no module read the lookaround-descriptor helpers
+  (`molt_re_positive_lookahead` etc.), the `functions_re.rs` byte-matching intrinsics
+  (`molt_re_literal_advance`/`_any_advance`/`_matches`, ...), `molt_re_fullmatch_check`,
+  `molt_re_named_backref_advance` or `molt_re_sub_callable`, so they are deleted. The
+  shims (`_compiler.py`/`_parser.py`/`_casefix.py`) still need the `molt_re_parse`
+  introspection intrinsic.
 - Add `re.error` `lineno`/`colno` + `PatternError` alias (§2-e); add `re.Scanner` (§4.3)
   on the multi-pattern API; complete `sre_constants`/`sre_parse`/`sre_compile` (§2-f).
 - **Gate (the big one)**: the **entire** `test_re.py` green on the default tier across

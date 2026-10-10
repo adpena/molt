@@ -162,27 +162,3 @@ fn normalize_option_str(name: &str) -> String {
         format!("-{name}")
     }
 }
-
-/// Normalize a tkinter option name: ensure leading "-", convert underscores.
-///
-/// Input is a Molt string. Returns a new Molt string with:
-///   - Leading "-" prepended if missing
-///   - (Underscores preserved — tkinter convention)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_normalize_option(name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(name) = bits_to_string(name_bits) else {
-            // Not a string — return as-is
-            return name_bits;
-        };
-        let normalized = normalize_option_str(&name);
-        // If already normalized, return the original to avoid allocation
-        if normalized == name {
-            return name_bits;
-        }
-        match alloc_str_bits(&normalized) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}

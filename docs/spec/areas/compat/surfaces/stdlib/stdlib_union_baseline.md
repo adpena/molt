@@ -119,11 +119,14 @@ Failure of any invariant is a hard CI failure.
 ## 6. Stub Policy (Non-Negotiable)
 `tools/gen_stdlib_stubs.py` owns every stub. It writes one for each union
 module Molt lacks and holds every existing stub to one template, so a hand
-edit fails `--check`. The template fixes this contract:
+edit fails `--check`. A stub is any module whose `__getattr__` raises the gap
+error below, the structural test the audit shares
+(`molt.stdlib_intrinsic_policy.is_stdlib_stub_source`). The audit gives a stub
+its own `stub` status (spec 0016). The template fixes this contract:
 
-1. Stubs are intrinsic-first:
-   - importing a stub requires the `molt_capabilities_has` intrinsic; there is
-     no host-stdlib import fallback.
+1. Stubs require nothing:
+   - importing a stub requires no intrinsic (no anchor), and there is no
+     host-stdlib import fallback.
 2. Stubs bind nothing:
    - a stub has no public name and leaves no import helper in its namespace.
 3. Stubs fail fast:
@@ -137,14 +140,16 @@ edit fails `--check`. The template fixes this contract:
    - a module CPython ships on one platform raises `ModuleNotFoundError` on
      every other platform (`PLATFORM_ONLY` in the generator).
 5. Stubs are counted debt:
-   - each stub carries a grepable `TODO(stdlib-parity, ...)` marker, and the
-     structural audit counts every stub.
+   - each stub carries a grepable `TODO(stdlib-parity, ...)` marker, the
+     structural audit counts every stub, and the intrinsics gate ratchets the
+     `stub` count (`max_stub`).
 6. The union decides kind:
    - the generator refuses a stub for a name outside the union or of the wrong
      kind (module versus package) and names the fix.
 7. Promotion path:
-   - lowering a module replaces its stub file with the real
-     Rust-intrinsic-backed implementation; the generator then stops owning it.
+   - lowering a module replaces its stub file with a real implementation,
+     intrinsic-backed or compiled Python (`python-compiled`); the generator
+     then stops owning it.
 
 ## 7. Gate Failure Triage
 ### 7.1 Missing Top-Level Coverage

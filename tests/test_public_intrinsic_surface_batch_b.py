@@ -62,14 +62,6 @@ def _heappushpop(heap, item):
     return heap.pop(0)
 
 
-def _heapify_max(heap):
-    heap.sort(reverse=True)
-
-
-def _heappop_max(heap):
-    return heap.pop(0)
-
-
 def _nsmallest(n, iterable, key=None):
     return sorted(iterable, key=key)[: int(n)]
 
@@ -105,7 +97,6 @@ install_registry({{
     "molt_base64_encodebytes": lambda b: _host_base64.encodebytes(bytes(b)),
     "molt_base64_decodebytes": lambda b: _host_base64.decodebytes(b),
     "molt_bisect_left": lambda *args, **kwargs: 0,
-    "molt_stdlib_probe": lambda: None,
     "molt_contextvars_types": lambda module: (_context_oracle.Context, _context_oracle.ContextVar, _context_oracle.Token, _context_oracle.copy_context),
     "molt_statistics_mean": lambda data: sum(data) / len(data),
     "molt_statistics_fmean": lambda data: float(sum(data) / len(data)),
@@ -137,8 +128,6 @@ install_registry({{
     "molt_heapq_heappop": _heappop,
     "molt_heapq_heapreplace": _heapreplace,
     "molt_heapq_heappushpop": _heappushpop,
-    "molt_heapq_heapify_max": _heapify_max,
-    "molt_heapq_heappop_max": _heappop_max,
     "molt_heapq_nsmallest": _nsmallest,
     "molt_heapq_nlargest": _nlargest,
     "molt_heapq_merge": _merge,

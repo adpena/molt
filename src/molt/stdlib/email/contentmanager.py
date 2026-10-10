@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-
 class ContentManager:
     def get_content(self, msg, *args, **kw):
         del args, kw
@@ -67,5 +62,3 @@ def set_message_content(msg, message, *args, **kw):
 
 
 raw_data_manager = ContentManager()
-
-globals().pop("_require_intrinsic", None)

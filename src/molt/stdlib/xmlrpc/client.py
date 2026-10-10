@@ -7,10 +7,6 @@ from typing import Any
 
 import urllib.request
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_XMLRPC_RUNTIME_READY = _require_intrinsic("molt_xmlrpc_runtime_ready")
-
 
 def _encode_value(value: Any) -> str:
     if isinstance(value, bool):
@@ -70,5 +66,3 @@ class ServerProxy:
 
 
 __all__ = ["ServerProxy"]
-
-globals().pop("_require_intrinsic", None)

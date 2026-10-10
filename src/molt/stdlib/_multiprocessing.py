@@ -2,7 +2,6 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has")
 
 sem_unlink = _require_intrinsic("molt_process_drop")
 _molt_semlock_new = _require_intrinsic("molt_semaphore_new")

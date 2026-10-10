@@ -55,10 +55,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_socket_settimeout",
             crate::molt_socket_settimeout as *const (),
         )),
-        "molt_socket_setblocking" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_socket_setblocking",
-            crate::molt_socket_setblocking as *const (),
-        )),
         "molt_socket_getblocking" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socket_getblocking",
             crate::molt_socket_getblocking as *const (),

@@ -40,9 +40,17 @@ def _encode_intrinsic_source_facts(
     facts: _intrinsic_policy.StdlibModuleIntrinsicFacts,
 ) -> dict[str, Any]:
     evidence = facts.import_evidence
+    use = facts.intrinsic_use
     return {
         "status": facts.status,
         "modules": sorted(evidence.proven_modules),
+        "private_imports": [list(item) for item in sorted(evidence.private_imports)],
+        "used": sorted(use.used),
+        "unread": [
+            {"name": binding.name, "intrinsic": binding.intrinsic, "line": binding.line}
+            for binding in use.unread_bindings
+        ],
+        "discarded": [list(item) for item in use.discarded],
         "unresolved": [
             {
                 "line": line,
@@ -87,15 +95,63 @@ def _decode_intrinsic_source_facts(
             raise ValueError("invalid intrinsic source fact record")
         return value
 
-    value = record(payload, {"status", "modules", "unresolved", "facade"})
+    def line(value: Any) -> int:
+        if type(value) is not int or value < 1:
+            raise ValueError("invalid intrinsic source line")
+        return value
+
+    def pair(value: Any) -> tuple[str, str]:
+        items = strings(value)
+        if len(items) != 2:
+            raise ValueError("invalid intrinsic source pair")
+        return items[0], items[1]
+
+    value = record(
+        payload,
+        {
+            "status",
+            "modules",
+            "private_imports",
+            "used",
+            "unread",
+            "discarded",
+            "unresolved",
+            "facade",
+        },
+    )
     if value["status"] not in (
         _intrinsic_policy.STATUS_INTRINSIC,
         _intrinsic_policy.STATUS_POLICY_GATE,
-        _intrinsic_policy.STATUS_PROBE_ONLY,
-        _intrinsic_policy.STATUS_PYTHON_ONLY,
+        _intrinsic_policy.STATUS_PYTHON_COMPILED,
+        _intrinsic_policy.STATUS_STUB,
     ):
         raise ValueError("invalid intrinsic source status")
     modules = strings(value["modules"])
+    if not isinstance(value["private_imports"], list):
+        raise ValueError("invalid intrinsic private imports")
+    private_imports = frozenset(pair(item) for item in value["private_imports"])
+    if not isinstance(value["unread"], list) or not isinstance(
+        value["discarded"], list
+    ):
+        raise ValueError("invalid intrinsic use record")
+    unread = []
+    for raw in value["unread"]:
+        item = record(raw, {"name", "intrinsic", "line"})
+        if type(item["name"]) is not str or type(item["intrinsic"]) is not str:
+            raise ValueError("invalid intrinsic binding")
+        unread.append(
+            _intrinsic_policy.StdlibIntrinsicBinding(
+                item["name"], item["intrinsic"], line(item["line"])
+            )
+        )
+    discarded = []
+    for raw in value["discarded"]:
+        if not isinstance(raw, list) or len(raw) != 2 or type(raw[0]) is not str:
+            raise ValueError("invalid discarded intrinsic requirement")
+        discarded.append((raw[0], line(raw[1])))
+    use = _intrinsic_policy.StdlibModuleIntrinsicUse(
+        frozenset(strings(value["used"])), tuple(unread), tuple(discarded)
+    )
     if not isinstance(value["unresolved"], list):
         raise ValueError("invalid intrinsic unresolved sites")
     unresolved = []
@@ -169,8 +225,9 @@ def _decode_intrinsic_source_facts(
     return _intrinsic_policy.StdlibModuleIntrinsicFacts(
         value["status"],
         _intrinsic_policy.StdlibModuleImportEvidence(
-            path, frozenset(modules), tuple(unresolved), facade
+            path, frozenset(modules), tuple(unresolved), facade, private_imports
         ),
+        use,
     )
 
 
@@ -207,7 +264,7 @@ def _stdlib_intrinsic_source_facts(
         target_python=target_python,
     ).with_suffix(".intrinsic.json")
     identity = {
-        "schema": "molt.stdlib-intrinsic-source.v3",
+        "schema": "molt.stdlib-intrinsic-source.v4",
         "source_sha256": snapshot.sha256,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,

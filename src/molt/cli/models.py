@@ -1903,7 +1903,6 @@ class _PreparedEntryModuleGraph:
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
     project_root: Path | None = None
     capability_config_digest: str = ""
-    intrinsic_source_operation_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

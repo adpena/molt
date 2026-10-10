@@ -4,10 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic("molt_wsgiref_runtime_ready")
-
 
 class Headers:
     def __init__(self, headers: Iterable[tuple[str, str]] | None = None) -> None:
@@ -66,5 +62,3 @@ class Headers:
 
 
 __all__ = ["Headers"]
-
-globals().pop("_require_intrinsic", None)

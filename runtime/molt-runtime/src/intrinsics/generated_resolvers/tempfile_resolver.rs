@@ -38,11 +38,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_tempfile_cleanup",
             crate::molt_tempfile_cleanup as *const (),
         )),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_tempfile_tempdir_path" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_tempfile_tempdir_path",
-            crate::molt_tempfile_tempdir_path as *const (),
-        )),
         _ => None,
     }
 }

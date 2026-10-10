@@ -52,13 +52,9 @@ if mode == "source":
     intrinsics = types.ModuleType("_intrinsics")
 
     def require_intrinsic(name, namespace=None):
+        # unittest.mock is compiled Python: it requires no intrinsic at all.
         requests.append(name)
-        if name != "molt_import_smoke_runtime_ready":
-            raise AssertionError("unexpected source-test intrinsic: " + name)
-        value = lambda: None
-        if namespace is not None:
-            namespace[name] = value
-        return value
+        raise AssertionError("unexpected source-test intrinsic: " + name)
 
     intrinsics.require_intrinsic = require_intrinsic
     sys.modules["_intrinsics"] = intrinsics
@@ -80,7 +76,7 @@ if mode == "source":
     for retired in ("unittest._mock_autospec", "unittest._mock_patch"):
         assert retired not in sys.modules
         assert importlib.util.find_spec(retired) is None
-    assert requests and set(requests) == {"molt_import_smoke_runtime_ready"}
+    assert requests == []
 elif mode == "reference":
     assert Path(unittest.mock.__file__).resolve().parent != source
 else:
@@ -97,7 +93,7 @@ if mode == "source":
     for name, module in tuple(sys.modules.items()):
         if name == "unittest.mock" or name.startswith("unittest._mock"):
             assert "_MOLT_CONTEXT_MODULE" not in vars(module), name
-    assert set(requests) == {"molt_import_smoke_runtime_ready"}
+    assert requests == []
 """
 
 

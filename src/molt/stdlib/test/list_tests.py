@@ -2,13 +2,11 @@
 Tests common to list and UserList.UserList
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Any, cast
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 if TYPE_CHECKING:
     from . import seq_tests
@@ -589,6 +587,3 @@ class CommonTest(seq_tests.CommonTest):
         self.assertEqual(list(exhit), [])
         self.assertEqual(list(empit), [9])
         self.assertEqual(a, self.type2test([1, 2, 3, 9]))
-
-
-globals().pop("_require_intrinsic", None)

@@ -83,10 +83,6 @@ pub extern "C" fn molt_socket_settimeout(_: u64, _: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_setblocking(_: u64, _: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getblocking(_: u64) -> u64 {
     net_error!()
 }

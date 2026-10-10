@@ -15,7 +15,6 @@ from . import abc
 from . import readers  # noqa: F401
 from .abc import ResourceReader
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD = _require_intrinsic(
     "molt_importlib_resources_path_payload"
 )

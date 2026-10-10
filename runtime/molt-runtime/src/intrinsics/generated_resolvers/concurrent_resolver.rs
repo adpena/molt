@@ -4,24 +4,9 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_concurrent")]
-        "molt_concurrent_all_completed" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_concurrent_all_completed",
-            crate::molt_concurrent_all_completed as *const (),
-        )),
-        #[cfg(feature = "stdlib_concurrent")]
         "molt_concurrent_as_completed" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_concurrent_as_completed",
             crate::molt_concurrent_as_completed as *const (),
-        )),
-        #[cfg(feature = "stdlib_concurrent")]
-        "molt_concurrent_first_completed" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_concurrent_first_completed",
-            crate::molt_concurrent_first_completed as *const (),
-        )),
-        #[cfg(feature = "stdlib_concurrent")]
-        "molt_concurrent_first_exception" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_concurrent_first_exception",
-            crate::molt_concurrent_first_exception as *const (),
         )),
         #[cfg(feature = "stdlib_concurrent")]
         "molt_concurrent_future_add_done_callback" => {
