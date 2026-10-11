@@ -2472,6 +2472,13 @@ pub unsafe fn retire_builtin_static_type_runtime_state() {
     unsafe { crate::api::typeobj::retire_static_type_runtime_roots(&types) };
 }
 
+/// Whether `tp` is one of the process-owned shells retired with each runtime.
+pub(crate) fn is_runtime_cohort_shell(tp: *mut PyTypeObject) -> bool {
+    builtin_static_type_runtime_cohort()
+        .iter()
+        .any(|&(shell, _)| std::ptr::eq(shell, tp))
+}
+
 fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
     type_static_ptrs()
         .into_iter()

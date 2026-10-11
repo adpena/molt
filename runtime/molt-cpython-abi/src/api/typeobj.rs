@@ -463,6 +463,7 @@ pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObjec
                     crate::api::memory::PyMem_Free(name.cast());
                 }
             }
+            restore_process_shell_slots(tp);
             let readiness = if bootstrap_ready && detached.len() == first_root {
                 0
             } else {
@@ -480,6 +481,110 @@ pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObjec
     }
     for root in detached {
         unsafe { crate::api::refcount::Py_DECREF(root) };
+    }
+}
+
+/// A process-owned shell's physical slot state before its first readiness.
+/// Readiness inherits slots into the shell in place. Without this record the
+/// next runtime would read an inherited slot as the shell's own declaration
+/// and publish a wrapper for it (a runtime restart gave `str` an `__init__`).
+struct ProcessShellSlots {
+    shell: PyTypeObject,
+    as_async: Option<crate::abi_types::PyAsyncMethods>,
+    as_number: Option<crate::abi_types::PyNumberMethods>,
+    as_sequence: Option<crate::abi_types::PySequenceMethods>,
+    as_mapping: Option<crate::abi_types::PyMappingMethods>,
+    as_buffer: Option<crate::abi_types::PyBufferProcs>,
+}
+
+// SAFETY: the record holds plain C slot words of process-lifetime shells.
+// It is read and written only under its mutex, at readiness and retirement.
+unsafe impl Send for ProcessShellSlots {}
+
+static PROCESS_SHELL_SLOTS: Lazy<Mutex<HashMap<usize, Box<ProcessShellSlots>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Record a retirement-cohort shell's slots before its first readiness.
+unsafe fn record_process_shell_slots(tp: *mut PyTypeObject) {
+    if !crate::abi_types::is_runtime_cohort_shell(tp) {
+        return;
+    }
+    let mut records = PROCESS_SHELL_SLOTS.lock();
+    if records.contains_key(&tp.addr()) {
+        return;
+    }
+    unsafe {
+        fn table<T>(pointer: *mut c_void) -> Option<T> {
+            (!pointer.is_null()).then(|| unsafe { ptr::read(pointer.cast::<T>()) })
+        }
+        records.insert(
+            tp.addr(),
+            Box::new(ProcessShellSlots {
+                shell: ptr::read(tp),
+                as_async: table((*tp).tp_as_async),
+                as_number: table((*tp).tp_as_number),
+                as_sequence: table((*tp).tp_as_sequence),
+                as_mapping: table((*tp).tp_as_mapping),
+                as_buffer: table((*tp).tp_as_buffer),
+            }),
+        );
+    }
+}
+
+/// Return a retired shell's slots and protocol tables to their state before
+/// its first readiness. Identity, runtime roots, version and watch state stay
+/// as retirement left them; flags return to the recorded bootstrap value.
+unsafe fn restore_process_shell_slots(tp: *mut PyTypeObject) {
+    let records = PROCESS_SHELL_SLOTS.lock();
+    let Some(record) = records.get(&tp.addr()) else {
+        return;
+    };
+    unsafe {
+        fn restore_table<T>(field: *mut *mut c_void, recorded: *mut c_void, content: &Option<T>) {
+            unsafe {
+                *field = recorded;
+                if let Some(content) = content {
+                    ptr::copy_nonoverlapping(content, recorded.cast::<T>(), 1);
+                }
+            }
+        }
+        let live = ptr::read(tp);
+        ptr::copy_nonoverlapping(&record.shell, tp, 1);
+        (*tp).ob_base = live.ob_base;
+        (*tp).tp_name = live.tp_name;
+        (*tp).tp_dict = live.tp_dict;
+        (*tp).tp_bases = live.tp_bases;
+        (*tp).tp_mro = live.tp_mro;
+        (*tp).tp_cache = live.tp_cache;
+        (*tp).tp_subclasses = live.tp_subclasses;
+        (*tp).tp_weaklist = live.tp_weaklist;
+        (*tp).tp_version_tag = live.tp_version_tag;
+        (*tp).tp_watched = live.tp_watched;
+        restore_table(
+            &raw mut (*tp).tp_as_async,
+            record.shell.tp_as_async,
+            &record.as_async,
+        );
+        restore_table(
+            &raw mut (*tp).tp_as_number,
+            record.shell.tp_as_number,
+            &record.as_number,
+        );
+        restore_table(
+            &raw mut (*tp).tp_as_sequence,
+            record.shell.tp_as_sequence,
+            &record.as_sequence,
+        );
+        restore_table(
+            &raw mut (*tp).tp_as_mapping,
+            record.shell.tp_as_mapping,
+            &record.as_mapping,
+        );
+        restore_table(
+            &raw mut (*tp).tp_as_buffer,
+            record.shell.tp_as_buffer,
+            &record.as_buffer,
+        );
     }
 }
 
@@ -748,6 +853,7 @@ pub(crate) unsafe fn ready_type(
         return 0;
     }
 
+    unsafe { record_process_shell_slots(tp) };
     // READYING is the canonical recursion state, including allocation/error
     // callbacks during startup. Every success and failure path clears it.
     // Static shells initialize their C slots before a runtime dictionary exists.
