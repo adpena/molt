@@ -37,7 +37,9 @@ from tools.libtest_results import accounting_problem  # noqa: E402
 COMMANDS = CommandExecutor.for_file(__file__)
 ISOLATED = (
     "builtins::exceptions::tests::tls_exception_destructor_excludes_concurrent_shutdown",
+    "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "cpython_abi_hooks::tests::gil_custody_recursive_ensure_and_allow_threads_make_progress",
+    "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
     "state::lifecycle::shutdown_tests::embedding_shutdown_covers_first_pending_callback_atexit_and_live_stdio",
     "state::lifecycle::shutdown_tests::process_exit_covers_collection_before_pending_callbacks_with_or_without_lease",
     "state::runtime_state::tests::concurrent_init_waits_for_ready_publication",
@@ -45,6 +47,8 @@ ISOLATED = (
     "state::runtime_state::tests::shutdown_refuses_attached_and_detached_foreign_thread_state_owners",
 )
 PROBES = (
+    "c_api::tests::dictionary_snapshot_materialization_components",
+    "cpython_abi_hooks::generic_attributes_tests::mutation_consumers::managed_mutation_projection_profile",
     "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench",
     "object::gc::tests::generational_scan_reduction_bench",
     "object::gc::tests::repeated_reachable_collection_workspace_bench",

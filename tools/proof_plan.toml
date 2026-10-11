@@ -2900,13 +2900,13 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 # Windows x86_64 MSVC cold release-output compilation measured 2097 seconds
 # on source eb625e8d0; 6300 seconds preserves threefold compile headroom.
-# Metadata, discovery and all eight mandatory child guards fit this separate
+# Metadata, discovery and all ten mandatory child guards fit this separate
 # 9000-second command envelope. Linux cold timing remains unmeasured.
 timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
-# Full default-feature shipping runtime: parallel remainder plus seven separate
-# fresh-process lifecycle/GIL witnesses. Four performance probes remain explicit
+# Full default-feature shipping runtime: parallel remainder plus nine separate
+# fresh-process lifecycle/GIL witnesses. Six performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
