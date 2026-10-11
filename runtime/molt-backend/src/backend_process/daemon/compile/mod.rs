@@ -1,55 +1,26 @@
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod document;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod ir;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod output;
 mod response;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod target;
 
-use super::cache::DaemonCache;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
-use super::cache::{daemon_memory_cache_allowed_for_job, try_write_cached_daemon_job_output};
+use super::cache::{DaemonCache, try_write_cached_daemon_job_output};
 use super::protocol::{DaemonJobRequest, DaemonJobResponse};
+use target::ResolvedJobTarget;
 
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
-use target::compile_daemon_job_output;
-
-#[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
-pub(crate) fn compile_single_job(
-    job: DaemonJobRequest,
-    _cache: &mut DaemonCache,
-) -> DaemonJobResponse {
-    response::unsupported_backend_response(job)
-}
-
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 pub(crate) fn compile_single_job(
     mut job: DaemonJobRequest,
     cache: &mut DaemonCache,
 ) -> DaemonJobResponse {
     let cache_key = job.artifact_cache_key(&job.cache_key);
-    let stdlib_archive_path = if job.is_wasm {
-        None
-    } else {
-        match crate::backend_process::shared_stdlib_archive_path_from_env() {
-            Ok(path) => path,
-            Err(error) => return response::daemon_job_error_response(job.id, error.to_string()),
-        }
-    };
-    if !job.is_wasm
-        && let Err(error) = job
-            .native_output_kind
-            .validate_shared_stdlib(stdlib_archive_path.is_some())
-    {
-        return response::daemon_job_error_response(job.id, error);
-    }
     let function_cache_key =
         job.artifact_cache_key(job.function_cache_key.as_deref().unwrap_or(""));
-    let daemon_memory_cache_allowed =
-        daemon_memory_cache_allowed_for_job(&job, stdlib_archive_path.as_deref());
-    if daemon_memory_cache_allowed
+    let target = match ResolvedJobTarget::resolve(&job) {
+        Ok(target) => target,
+        Err(error) => return response::daemon_job_error_response(job.id, error),
+    };
+    let memory_cache_allowed = target.memory_cache_allowed();
+    if memory_cache_allowed
         && let Some(response) =
             try_write_cached_daemon_job_output(cache, &job, &cache_key, &function_cache_key)
     {
@@ -65,26 +36,20 @@ pub(crate) fn compile_single_job(
         Err(err) => return response::daemon_job_error_response(job.id, err),
     };
 
-    let mut warnings = Vec::new();
-    let compiled_output =
-        match compile_daemon_job_output(&job, document, stdlib_archive_path.as_deref()) {
-            Ok(output) => output,
-            Err(err) => {
-                return response::daemon_job_error_response(job.id, err);
-            }
-        };
+    let compiled_output = match target.compile(document) {
+        Ok(output) => output,
+        Err(err) => return response::daemon_job_error_response(job.id, err),
+    };
 
-    if let Err(err) = output::write_daemon_compiled_output(
+    match output::write_daemon_compiled_output(
         cache,
-        &job,
+        &job.output,
         &cache_key,
         &function_cache_key,
-        daemon_memory_cache_allowed,
+        memory_cache_allowed,
         compiled_output,
-        &mut warnings,
     ) {
-        return response::daemon_job_error_response(job.id, err);
+        Ok(warnings) => response::daemon_job_success_response(job.id, warnings),
+        Err(err) => response::daemon_job_error_response(job.id, err),
     }
-
-    response::daemon_job_success_response(job.id, warnings)
 }

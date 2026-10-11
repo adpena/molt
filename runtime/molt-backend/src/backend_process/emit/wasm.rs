@@ -1,9 +1,9 @@
+use molt_backend::WasmBackend;
 use molt_backend::{ModuleRegistryIR, SimpleIR};
-use molt_backend::{WasmBackend, WasmCompileOptions};
 use std::io;
 use std::path::Path;
 
-use super::super::cli_args::WasmCliOptions;
+use super::super::cli_args::WasmTargetOptions;
 use molt_artifact_publish::write_bytes_atomically;
 
 pub(crate) fn validate_wasm_module_catalog(
@@ -43,25 +43,13 @@ pub(super) fn emit_wasm_target(
     ir: SimpleIR,
     module_registry: Option<ModuleRegistryIR>,
     output_file: &str,
-    wasm_options: WasmCliOptions,
+    options: WasmTargetOptions,
 ) -> io::Result<()> {
     if let Some(registry) = module_registry.as_ref() {
         validate_wasm_module_catalog(&ir, registry)?;
     }
-    let mut options = WasmCompileOptions::default();
-    if wasm_options.link_relocs {
-        options.reloc_enabled = true;
-    }
-    if let Some(value) = wasm_options.data_base {
-        options.data_base = value;
-    }
-    if let Some(value) = wasm_options.table_base {
-        options.table_base = value;
-    }
-    if let Some(value) = wasm_options.split_runtime_app_table_base {
-        options.split_runtime_app_table_base = Some(value);
-    }
-    let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
+    let backend =
+        WasmBackend::with_options(options.compile_options()).with_module_registry(module_registry);
     let wasm_bytes = backend.compile(ir);
     write_bytes_atomically(Path::new(output_file), &wasm_bytes).map_err(|error| {
         io::Error::new(

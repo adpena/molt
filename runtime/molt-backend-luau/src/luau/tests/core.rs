@@ -92,20 +92,6 @@ fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
             "extern rejection must happen before any Luau source is assembled"
         );
         assert!(backend.unsupported_ops.is_empty());
-
-        let mut pipeline_backend = LuauBackend::new();
-        let pipeline_error = pipeline_backend
-            .compile_via_ir(&SimpleIR {
-                functions: vec![declaration],
-                profile: None,
-            })
-            .expect_err("the Luau IR pipeline must use the checked compile boundary");
-        assert_eq!(pipeline_error, expected);
-        assert!(
-            pipeline_backend.output.is_empty(),
-            "the Luau IR pipeline must reject externs before source assembly"
-        );
-        assert!(pipeline_backend.unsupported_ops.is_empty());
     }
 }
 
@@ -1740,7 +1726,7 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         profile: None,
     };
     let source = LuauBackend::new()
-        .compile_via_ir(&ir)
+        .compile_checked(&ir)
         .expect("frontend-shaped callable metadata must pass checked Luau admission");
     assert!(source.contains("function molt_function_init_metadata_packed"));
     assert!(
@@ -1870,7 +1856,7 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
         profile: None,
     };
     let source = LuauBackend::new()
-        .compile_via_ir(&ir)
+        .compile_checked(&ir)
         .expect("tagged bytes keys must pass checked Luau admission");
     assert!(source.contains("local text_key: string = \"a\""));
     assert!(source.contains("local bytes_key = molt_binary_new(\"bytes\", \"\\x61\")"));

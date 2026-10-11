@@ -1,24 +1,5 @@
 use super::*;
 
-#[test]
-fn fact_graph_cli_contract_requires_output_and_function_pair() {
-    let err = validate_fact_graph_cli_contract(Some("graph.json"), None, false)
-        .expect_err("unpaired fact graph flags must fail closed");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert!(
-        err.to_string()
-            .contains("--fact-graph-output and --fact-graph-function")
-    );
-}
-
-#[test]
-fn fact_graph_cli_contract_rejects_rust_target() {
-    let err = validate_fact_graph_cli_contract(Some("graph.json"), Some("molt_main"), true)
-        .expect_err("rust target fact graph request must fail closed");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert!(err.to_string().contains("rust target"));
-}
-
 fn luau_local_call_ir(kind: &str) -> SimpleIR {
     let callee = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,

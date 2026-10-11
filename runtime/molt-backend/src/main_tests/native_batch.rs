@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg(molt_backend_daemon)]
 fn daemon_native_path_written_output_skips_oversized_memory_cache() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     unsafe {
@@ -26,13 +27,10 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
     let output = tmp_dir.join("out.a");
     let job = DaemonJobRequest {
         id: "job0".to_string(),
-        is_wasm: false,
-        target_triple: None,
-        native_output_kind: NativeArtifactKind::Archive,
-        wasm_link: false,
-        wasm_data_base: None,
-        wasm_table_base: None,
-        wasm_split_runtime_app_table_base: None,
+        target: DaemonJobTarget::Native(NativeTargetOptions {
+            target_triple: None,
+            output_kind: NativeArtifactKind::Archive,
+        }),
         output: output.to_string_lossy().to_string(),
         cache_key: "module-cache".to_string(),
         function_cache_key: Some("function-cache".to_string()),
@@ -194,6 +192,7 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
 }
 
 #[test]
+#[cfg(molt_backend_daemon)]
 fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     use object::{BinaryFormat, Object, ObjectSymbol, SymbolKind};
 

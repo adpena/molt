@@ -1040,7 +1040,7 @@ fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
 }
 
 #[test]
-fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
+fn source_emission_tree_shake_rewrites_main_and_drops_runtime_bootstrap_helpers() {
     let mut main_runtime_init = op("call");
     main_runtime_init.s_value = Some("molt_runtime_init".to_string());
     main_runtime_init.out = Some("v0".to_string());
@@ -1076,7 +1076,7 @@ fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
         profile: None,
     };
 
-    ir.tree_shake_luau();
+    ir.tree_shake_source_emission();
 
     let names = ir
         .functions
