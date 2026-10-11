@@ -774,6 +774,88 @@ fn native_python_buffer_slots_preserve_view_identity_and_restrict_release_aliase
     });
 }
 
+/// A Python `__buffer__` exporter readies the ABI's private `_buffer_wrapper`
+/// shell, and a C caller can ready the private sequence-iterator shell. Both
+/// shells then own runtime slot-wrapper descriptors. Production shutdown must
+/// retire those owners with the runtime; the next runtime readies the shells
+/// again from nothing.
+#[test]
+fn private_abi_type_shells_retire_with_their_runtime() {
+    use crate::state::runtime_state::{
+        molt_runtime_init, molt_runtime_reset_for_testing, molt_runtime_shutdown,
+    };
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        for cycle in 0..2 {
+            let shells = crate::with_gil_entry_nopanic!(py, {
+                unsafe {
+                    let class =
+                        native_class(c"mutation.RetiringPythonBuffer", ptr::null_mut(), vec![]);
+                    let get = python_method(py, python_buffer as *const (), 2);
+                    let release = python_method(py, python_release as *const (), 2);
+                    set(class.as_ptr(), c"__buffer__", get.as_ptr());
+                    set(class.as_ptr(), c"__release_buffer__", release.as_ptr());
+                    let instance =
+                        OwnedPyObject::from_owned(object::PyObject_CallNoArgs(class.as_ptr()));
+                    let bytes = MoltObject::from_ptr(crate::alloc_bytes(py, b"abc")).bits();
+                    let view_bits = crate::molt_memoryview_new(bytes);
+                    dec_ref_bits(py, bytes);
+                    BUFFER_VIEW.with(|value| value.set(view_bits));
+                    BUFFER_RELEASES.with(|value| value.set((0, false)));
+                    let mut view: Py_buffer = std::mem::zeroed();
+                    assert_eq!(
+                        buffer::PyObject_GetBuffer(instance.as_ptr(), &raw mut view, PyBUF_FULL_RO),
+                        0
+                    );
+                    let export = (*view.obj).ob_type;
+                    assert_eq!(
+                        std::ffi::CStr::from_ptr((*export).tp_name).to_bytes(),
+                        b"_buffer_wrapper"
+                    );
+                    assert_ne!((*export).tp_flags & Py_TPFLAGS_READY, 0);
+                    assert!(!(*export).tp_dict.is_null());
+                    buffer::PyBuffer_Release(&raw mut view);
+                    assert_eq!(BUFFER_RELEASES.with(Cell::get), (1, true));
+                    BUFFER_VIEW.with(|value| value.set(0));
+                    dec_ref_bits(py, view_bits);
+
+                    let sequence = OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+                    let iterator =
+                        OwnedPyObject::from_owned(object::PySeqIter_New(sequence.as_ptr()));
+                    assert!(!iterator.as_ptr().is_null());
+                    let iterator_type = (*iterator.as_ptr()).ob_type;
+                    assert_eq!(typeobj::PyType_Ready(iterator_type), 0);
+                    assert!(!(*iterator_type).tp_dict.is_null());
+                    assert!(errors::PyErr_Occurred().is_null());
+                    [export, iterator_type]
+                }
+            });
+            assert_eq!(
+                molt_runtime_shutdown(),
+                1,
+                "cycle {cycle}: a private ABI type shell kept runtime owners past the last drain"
+            );
+            for shell in shells {
+                // Read only the process-owned shell fields; the retired
+                // runtime's objects are not dereferenced.
+                unsafe {
+                    assert!(
+                        (*shell).tp_dict.is_null()
+                            && (*shell).tp_bases.is_null()
+                            && (*shell).tp_mro.is_null()
+                            && (*shell).tp_cache.is_null(),
+                        "cycle {cycle}: a private ABI type shell kept runtime roots"
+                    );
+                    assert_eq!((*shell).tp_flags & Py_TPFLAGS_READY, 0);
+                }
+            }
+            if cycle == 0 {
+                molt_runtime_reset_for_testing();
+                assert_eq!(molt_runtime_init(), 1);
+            }
+        }
+    });
+}
+
 #[test]
 fn managed_base_mutation_publishes_native_descendants_before_retirement() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();

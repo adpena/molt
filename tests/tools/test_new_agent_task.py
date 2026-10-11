@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -60,11 +61,7 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
     try:
         result = run_native_test_process(
             [
-                "uv",
-                "run",
-                "--python",
-                "3.12",
-                "python",
+                sys.executable,
                 "tools/agent_coordination.py",
                 "init",
                 task,
@@ -128,3 +125,11 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
         assert "initialized task=" in progress_log.read_text(encoding="utf-8")
     finally:
         shutil.rmtree(base, ignore_errors=True)
+        # The scaffold lives in the checkout by design; leave the checkout as
+        # the session found it (HF-135). rmdir refuses a parent that a
+        # parallel test or a real task still uses.
+        for directory in (base.parent, base.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                break

@@ -377,6 +377,46 @@ def _runtime_import_candidates(
     return directories, archives
 
 
+def startup_selection_difference(
+    before: Mapping[str, object], after: Mapping[str, object]
+) -> list[str]:
+    """Name what changed between two startup selections, bounded for messages.
+
+    A native census change lists the images gained and lost, so a refused
+    selection says which loader event moved it.
+    """
+
+    def names(paths: object) -> set[str]:
+        return {str(path) for path in paths} if isinstance(paths, list) else set()
+
+    def shown(items: set[str]) -> str:
+        listed = sorted(items)
+        return ", ".join(listed[:4]) + (
+            f" (+{len(listed) - 4} more)" if len(listed) > 4 else ""
+        )
+
+    changes: list[str] = []
+    for key in sorted(set(before) | set(after)):
+        old, new = before.get(key), after.get(key)
+        if old == new:
+            continue
+        if key == "native" and isinstance(old, Mapping) and isinstance(new, Mapping):
+            gained = names(new.get("paths")) - names(old.get("paths"))
+            lost = names(old.get("paths")) - names(new.get("paths"))
+            fields = sorted(
+                field
+                for field in set(old) | set(new)
+                if field != "paths" and old.get(field) != new.get(field)
+            )
+            parts = [f"gained {shown(gained)}"] if gained else []
+            parts += [f"lost {shown(lost)}"] if lost else []
+            parts += [f"changed {', '.join(fields)}"] if fields else []
+            changes.append("native images " + "; ".join(parts))
+        else:
+            changes.append(key)
+    return changes
+
+
 def current_python_runtime_selection() -> dict[str, object]:
     """Observe startup selection without inventorying or hashing runtime trees.
 
@@ -514,12 +554,15 @@ def _capture_runtime_with_context(
     )
 
     def verify_runtime_selection() -> None:
-        if (
-            startup_membership() != startup_files
-            or current_python_runtime_selection() != selection
-        ):
+        present = startup_membership()
+        current = current_python_runtime_selection()
+        if present != startup_files or current != selection:
+            changes = startup_selection_difference(selection, current)
+            if present != startup_files:
+                changes.insert(0, "startup configuration files")
             raise PythonEnvironmentIdentityError(
-                "CPython runtime/import selection changed after capture"
+                "CPython runtime/import selection changed after capture: "
+                + "; ".join(changes)
             )
 
     pool.capture_context.register_verification_fence(verify_runtime_selection)

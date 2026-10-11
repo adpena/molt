@@ -8447,13 +8447,25 @@ mod tests {
         })
     }
 
+    /// Name the pending exception's real class. A C-raised error stays a
+    /// native exception instance (a foreign object with no managed class
+    /// slot), so read the class through the one exception-class authority
+    /// that covers managed and native storage.
     pub(super) fn pending_exception_type_for_assertion() -> String {
-        // C failures retain genuine native exception identity. Observe the
-        // canonical pending diagnostic instead of assuming managed storage.
-        with_gil(|py| {
-            crate::builtins::exceptions::pending_exception_diagnostic(&py)
-                .map(|(kind, _)| kind)
-                .unwrap_or_else(|| "<unknown>".to_string())
+        with_gil(|_py| {
+            let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+            let type_name = crate::builtins::exceptions::exception_class(&_py, exc_bits)
+                .and_then(|class| {
+                    MoltObject::from_bits(class.bits())
+                        .as_ptr()
+                        .and_then(|class_ptr| {
+                            let name_bits = unsafe { crate::class_name_bits(class_ptr) };
+                            crate::string_obj_to_owned(MoltObject::from_bits(name_bits))
+                        })
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            dec_ref_bits(&_py, exc_bits);
+            type_name
         })
     }
 
@@ -9214,64 +9226,59 @@ mod tests {
 
     #[test]
     fn raw_c_type_getattr_resolves_own_type_dict() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        register_cpython_hooks();
-        with_gil(|_py| crate::clear_exception(&_py));
+        use super::native_test_fixture::NativeType;
+        use molt_cpython_abi::api::refcount::OwnedPyObject;
 
-        let mut raw_type: PyTypeObject = unsafe { std::mem::zeroed() };
-        raw_type.ob_base.ob_base.ob_refcnt = 1;
-        raw_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
-        raw_type.tp_name = c"numpy.ndarray".as_ptr();
-        raw_type.tp_dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-        assert!(!raw_type.tp_dict.is_null());
-        let finalize = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(17) };
-        assert!(!finalize.is_null());
-        assert_eq!(
-            unsafe {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        assert!(register_cpython_hooks());
+        with_gil(|py| unsafe {
+            crate::clear_exception(&py);
+            // Lookup readies this declaration and publishes MRO, namespace and
+            // subclass edges. Keep its address stable until the existing fixture
+            // owner has retired all those edges, including on assertion unwind.
+            let mut raw_type = NativeType::<PyTypeObject>::new();
+            raw_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+            raw_type.tp_name = c"numpy.ndarray".as_ptr();
+            raw_type.tp_dict = molt_cpython_abi::api::mapping::PyDict_New();
+            assert!(!raw_type.tp_dict.is_null());
+            let finalize =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyLong_FromLong(17));
+            assert!(!finalize.as_ptr().is_null());
+            assert_eq!(
                 molt_cpython_abi::api::mapping::PyDict_SetItemString(
                     raw_type.tp_dict,
                     c"__array_finalize__".as_ptr(),
-                    finalize,
-                )
-            },
-            0
-        );
-        let raw_type_ptr = (&raw mut raw_type).cast::<PyObject>();
-        assert!(
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .molt_handle_for_pyobj(raw_type_ptr)
-                .is_none(),
-            "a raw C type must remain on its native metatype slot path"
-        );
-
-        let result = unsafe {
-            molt_cpython_abi::api::object::PyObject_GetAttrString(
-                raw_type_ptr,
-                c"__array_finalize__".as_ptr(),
-            )
-        };
-
-        assert!(
-            !result.is_null(),
-            "raw type lookup failed: c_error={:p} runtime_pending={} type_getattro={} dict={:p}",
-            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
-            with_gil(|_py| crate::exception_pending(&_py)),
-            unsafe { (*raw_type.ob_base.ob_base.ob_type).tp_getattro.is_some() },
-            raw_type.tp_dict,
-        );
-        assert_eq!(
-            unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(result) },
-            17
-        );
-        assert!(
-            !with_gil(|_py| crate::exception_pending(&_py)),
-            "type_getattro must resolve the class MRO dictionary without a stale AttributeError"
-        );
-        unsafe {
-            molt_cpython_abi::api::refcount::Py_DECREF(result);
-            molt_cpython_abi::api::refcount::Py_DECREF(finalize);
-            molt_cpython_abi::api::refcount::Py_DECREF(raw_type.tp_dict);
-        }
+                    finalize.as_ptr(),
+                ),
+                0
+            );
+            let raw_type_ptr = (&raw mut *raw_type).cast::<PyObject>();
+            assert!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(raw_type_ptr)
+                    .is_none(),
+                "a raw C type must remain on its native metatype slot path"
+            );
+            let result =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::object::PyObject_GetAttrString(
+                    raw_type_ptr,
+                    c"__array_finalize__".as_ptr(),
+                ));
+            assert!(
+                !result.as_ptr().is_null(),
+                "raw type lookup failed: c_error={:p} runtime_pending={} type_getattro={} dict={:p}",
+                molt_cpython_abi::api::errors::PyErr_Occurred(),
+                crate::exception_pending(&py),
+                (*raw_type.ob_base.ob_base.ob_type).tp_getattro.is_some(),
+                raw_type.tp_dict,
+            );
+            assert_eq!(
+                molt_cpython_abi::api::numbers::PyLong_AsLong(result.as_ptr()),
+                17
+            );
+            assert!(!crate::exception_pending(&py));
+            assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        });
     }
 
     #[test]
@@ -10968,12 +10975,13 @@ mod tests {
 
         assert_eq!(out_bits, 0);
         assert_eq!(pending_exception_type_for_assertion(), "SystemError");
+        // The callback operand authority validates every native result, so
+        // its message names the operation, not the trampoline's flags.
         let message = pending_exception_message_for_assertion();
         assert!(
-            message.contains("returned NULL without setting an exception"),
+            message.contains("C extension function returned NULL without an exception"),
             "{message}"
         );
-        assert!(message.contains("C extension function"), "{message}");
         unsafe { hook_dec_ref(method_bits) };
     }
 

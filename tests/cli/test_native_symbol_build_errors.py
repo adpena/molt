@@ -31,7 +31,10 @@ from molt.cli.models import (
 )
 from molt.cli.output import JSON_SCHEMA_VERSION
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
-from tests.cli.native_link_test_support import static_archive_bytes
+from tests.cli.native_link_test_support import (
+    LLVM_BITCODE_STAND_IN,
+    static_archive_bytes,
+)
 from tests.native_artifact_fixtures import native_relocatable_object
 
 
@@ -46,12 +49,14 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
 ) -> None:
     target = "x86_64-pc-windows-msvc"
     artifact = tmp_path / "uninspectable.a"
+    # A bitcode member needs llvm-nm. With no candidate, the real reader fails
+    # with its typed operational error, without launching nm or any build.
     artifact.write_bytes(
         static_archive_bytes(
             native_relocatable_object(target_triple=target, symbols=("molt_main",))
         )
+        + static_archive_bytes(LLVM_BITCODE_STAND_IN)[8:]
     )
-    # Reach the real reader's typed failure without launching nm or any build.
     monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"backend readiness fixture; never executed")
@@ -248,7 +253,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     assert result == 2
     expected_message = (
         f"Cannot inspect native symbols for {artifact}: "
-        "no nm/llvm-nm candidate is available"
+        "LLVM bitcode needs llvm-nm, and no llvm-nm candidate is available"
     )
     if json_output:
         assert captured.err == ""

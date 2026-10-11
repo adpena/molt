@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
@@ -312,6 +313,52 @@ def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[
         )
 
 
+@dataclass(frozen=True)
+class GuardCustodyRoots:
+    """Where guards keep custody in this session, and where they must not."""
+
+    # The state root of every guard a test starts.
+    state_root: Path
+    # The roots this session's own outer guard uses (the host's by default).
+    host_state_root: Path
+    host_scratch_root: Path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_guard_custody_roots(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[GuardCustodyRoots]:
+    """Guards that tests start keep their custody inside this session.
+
+    This pytest run's own outer guard is a real guard of the run: its marker
+    and scratch stay in the host's guard state root, where disk reclamation
+    sees them, and they protect the checkout while the run lasts. Every guard
+    a test starts, in process or as a child, inherits the state root set
+    here. Its marker, scratch generation and lease target then live under
+    this session's basetemp, which the outer guard reclaims with the run, so
+    no test writes the host's guard records. A test that needs another root
+    sets its own.
+    """
+    from molt import pytest_memory_guard_bootstrap, temporary_artifacts
+    from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
+
+    # Admit this process's current-test record under the outer guard's root
+    # first: the bootstrap keeps a path it admitted.
+    pytest_memory_guard_bootstrap.install_pytest_current_test_file_env()
+    roots = GuardCustodyRoots(
+        state_root=tmp_path_factory.mktemp("gc", numbered=False) / "memory_guard",
+        host_state_root=memory_guard_state_root(ROOT, os.environ),
+        host_scratch_root=temporary_artifacts.scratch_root(ROOT, os.environ),
+    )
+    previous = os.environ.get(STATE_ROOT_ENV)
+    os.environ[STATE_ROOT_ENV] = str(roots.state_root)
+    yield roots
+    if previous is None:
+        os.environ.pop(STATE_ROOT_ENV, None)
+    else:
+        os.environ[STATE_ROOT_ENV] = previous
+
+
 def _ensure_src_on_path() -> None:
     for subdir in ("src", "tools"):
         p = str(ROOT / subdir)
@@ -358,10 +405,28 @@ def _assert_pytest_memory_guard_active() -> None:
     )
 
 
+def _keep_hypothesis_storage_in_scratch() -> None:
+    """Keep Hypothesis's home directory in scratch, never the checkout.
+
+    Hypothesis defaults to ``.hypothesis/`` under the working directory, the
+    checkout, and keeps its example database and its constants and Unicode
+    caches there (HF-135). The home is per checkout, so examples stay
+    reproducible across this checkout's sessions.
+    """
+    try:
+        from hypothesis.configuration import set_hypothesis_home_dir
+    except ImportError:
+        return
+    from molt.dx import checkout_component, scratch_dir
+
+    set_hypothesis_home_dir(scratch_dir(ROOT, f"hypothesis/{checkout_component(ROOT)}"))
+
+
 def pytest_configure() -> None:
     _ensure_src_on_path()
     _assert_pytest_memory_guard_active()
     _ensure_pytest_process_scope()
+    _keep_hypothesis_storage_in_scratch()
     _SESSION_ENVIRONMENT.clear()
     _SESSION_ENVIRONMENT.update(os.environ)
 
@@ -381,15 +446,18 @@ def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
 
 
 def checkout_target_entries(target: Path = CHECKOUT_TARGET) -> frozenset[str]:
-    """Paths a session could create in the checkout's own Cargo target.
+    """Paths a session could create in the checkout.
 
-    The target itself, its children, and its session-scoped targets
-    (``sessions/*``), relative to the checkout. Reads two directory listings,
-    so it costs nothing on a large target.
+    Every top-level entry of the checkout, plus the children of its own Cargo
+    target and of that target's session-scoped targets (``sessions/*``),
+    relative to the checkout. Reads three directory listings, so it costs
+    nothing on a large checkout or target.
     """
     entries: set[str] = set()
-    if target.is_dir():
-        entries.add(target.name)
+    try:
+        entries.update(os.listdir(target.parent))
+    except OSError:
+        pass
     for directory in (target, target / "sessions"):
         try:
             names = os.listdir(directory)
@@ -406,16 +474,20 @@ def checkout_target_leaks(
     *,
     cargo_target_in_checkout: bool,
 ) -> tuple[str, ...]:
-    """Entries a session added to the checkout's own Cargo target.
+    """Entries a session added to the checkout.
 
     A checkout outside its artifact root must gain none. A checkout that is
     its own artifact root (a plain clone) builds in its own target, but a
-    pytest session id never scopes a target there.
+    pytest session id never scopes a target there, and nothing else may
+    appear beside the target.
     """
     added = sorted(after - before)
     if cargo_target_in_checkout:
         return tuple(
-            entry for entry in added if entry.startswith("target/sessions/pytest-")
+            entry
+            for entry in added
+            if entry.startswith("target/sessions/pytest-")
+            or not (entry == "target" or entry.startswith("target/"))
         )
     return tuple(added)
 
@@ -441,10 +513,11 @@ def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-d
         return
     session.exitstatus = pytest.ExitCode.TESTS_FAILED
     lines = [
-        f"Cargo or build state appeared in the checkout during this session: {ROOT}",
+        f"Build or test state appeared in the checkout during this session: {ROOT}",
         *(f"  {entry}" for entry in leaks),
-        "Tests build where a developer run does (molt.dx.RunContext.root_env); "
-        "find the test that cleared or bypassed the run context (HF-114).",
+        "Tests build and keep state where a developer run does "
+        "(molt.dx.RunContext.root_env, molt.dx.scratch_dir); find the test that "
+        "cleared or bypassed the run context (HF-114, HF-135).",
         "Every session that shares the checkout reports the same entries: a "
         "proof-plan family runs its commands in parallel.",
     ]

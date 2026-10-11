@@ -17,6 +17,12 @@ static mut EXPORT_BUFFER: PyBufferProcs = PyBufferProcs {
     bf_releasebuffer: release_export as *const () as *mut c_void,
 };
 
+/// The process-owned `_buffer_wrapper` shell, without initializing it.
+/// Lazy readiness gives it runtime roots, so it retires with each runtime.
+pub(crate) fn export_type_shell() -> *mut PyTypeObject {
+    &raw mut EXPORT_TYPE
+}
+
 unsafe fn export_type() -> *mut PyTypeObject {
     INITIALIZE.call_once(|| unsafe {
         EXPORT_TYPE.ob_base.ob_base.ob_refcnt = 1;

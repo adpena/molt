@@ -23,6 +23,7 @@ from molt.cli import (
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 from molt.toolchain_identity import resolve_explicit_tool_command
 from tests.cli.native_link_test_support import (
+    LLVM_BITCODE_STAND_IN,
     single_member_archive_symbol_facts,
     static_archive_bytes,
 )
@@ -1343,7 +1344,7 @@ def test_wasm_symbol_reader_consumes_only_verified_llvm_nm(
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
     artifact = tmp_path / "libc.a"
-    artifact.write_bytes(static_archive_bytes())
+    artifact.write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
     calls: list[list[str]] = []
     verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
     verified_nm.parent.mkdir(parents=True)
@@ -1375,7 +1376,7 @@ def test_wasm_symbol_reader_consumes_only_verified_llvm_nm(
     )
 
     facts = native_symbol_inspection._read_native_global_symbol_facts(
-        artifact, timeout=1, target_triple="wasm32-wasip1"
+        artifact, target_triple="wasm32-wasip1"
     )
     assert facts.defined == {"provider"}
     assert [call[0] for call in calls] == [str(verified_nm)]
@@ -1464,7 +1465,7 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
     native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
     artifact = tmp_path / "libc.a"
-    artifact.write_bytes(static_archive_bytes())
+    artifact.write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
     verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
     verified_nm.parent.mkdir(parents=True)
     verified_nm.write_bytes(b"tool")
@@ -1528,7 +1529,7 @@ def test_wasm_symbol_reader_rejects_tool_replacement_during_inspection(
 ) -> None:
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
-    (tmp_path / "libc.a").write_bytes(static_archive_bytes())
+    (tmp_path / "libc.a").write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
     verified_nm = tmp_path / "llvm-nm"
     verified_nm.write_bytes(b"generation-a")
     monkeypatch.setenv("MOLT_LLVM_NM", str(verified_nm))
@@ -1562,7 +1563,6 @@ def test_wasm_symbol_reader_rejects_tool_replacement_during_inspection(
     ):
         native_symbol_inspection._read_native_global_symbol_facts(
             tmp_path / "libc.a",
-            timeout=1,
             target_triple="wasm32-wasip1",
         )
 
@@ -1571,7 +1571,7 @@ def test_native_symbol_reader_rejects_tool_replacement_during_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     native_symbol_inspection._cached_symbol_reader_entrypoint_identity.cache_clear()
-    (tmp_path / "native.a").write_bytes(static_archive_bytes())
+    (tmp_path / "native.a").write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
     native_nm = tmp_path / "nm"
     native_nm.write_bytes(b"generation-a")
     monkeypatch.setattr(
@@ -1601,7 +1601,6 @@ def test_native_symbol_reader_rejects_tool_replacement_during_inspection(
     ):
         native_symbol_inspection._read_native_global_symbol_facts(
             tmp_path / "native.a",
-            timeout=1,
         )
 
 
@@ -1712,7 +1711,7 @@ def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
             ),
         )
         artifact = tmp_path / "input.a"
-        artifact.write_bytes(static_archive_bytes())
+        artifact.write_bytes(static_archive_bytes(LLVM_BITCODE_STAND_IN))
         commands = []
 
         def inspect(argv, **kwargs):
@@ -1729,7 +1728,6 @@ def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
         assert "managed-sdk:" + installation.tree_sha256 in reader.cache_identity
         facts = native_symbol_inspection._read_native_global_symbol_facts(
             artifact,
-            timeout=1,
             target_triple="wasm32-wasip1",
             _reader=reader,
         )
@@ -1746,7 +1744,6 @@ def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
         with pytest.raises(native_symbol_inspection.NativeSymbolArtifactError):
             native_symbol_inspection._read_native_global_symbol_facts(
                 artifact,
-                timeout=1,
                 target_triple="wasm32-wasip1",
                 _reader=reader,
             )

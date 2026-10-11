@@ -2512,60 +2512,49 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
     assert warnings == []
 
 
+def _no_symbol_subprocess(*args, **kwargs):
+    pytest.fail("native objects are read in-process, never by a subprocess")
+
+
+def _counted_symbol_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    reads: list[int] = []
+    original = native_symbol_inspection.read_symbol_rows
+
+    def read(reader, **kwargs):
+        reads.append(reader.size)
+        return original(reader, **kwargs)
+
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", read)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_run_completed_command", _no_symbol_subprocess
+    )
+    return reads
+
+
 @pytest.mark.parametrize(
-    ("target_triple", "decoration"),
-    [
-        # Mach-O prefixes every C symbol with "_"; ELF and x64 COFF do not.
-        ("x86_64-unknown-linux-gnu", ""),
-        ("x86_64-pc-windows-msvc", ""),
-        ("aarch64-apple-darwin", "_"),
-    ],
+    "target_triple",
+    ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"],
 )
-def test_native_object_symbol_sets_use_nm_candidate_ladder(
+def test_native_object_symbol_sets_read_target_objects_in_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target_triple: str,
-    decoration: str,
 ) -> None:
-    # The target, not the host running the test, owns symbol decoration.
-    defined_name = decoration + "__future_____Feature___init__"
-    undefined_name = decoration + "molt_runtime_symbol"
+    # The target, not the host running the test, owns symbol decoration: the
+    # Mach-O object stores "_" before every C symbol and the facts drop it.
     obj = tmp_path / "stdlib_shared_test.o"
     obj.write_bytes(
         native_relocatable_object(
             target_triple=target_triple,
-            symbols=(defined_name,),
-            undefined_symbols=(undefined_name,),
+            symbols=("__future_____Feature___init__",),
+            undefined_symbols=("molt_runtime_symbol",),
         )
     )
-    calls: list[str] = []
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        calls.append(cmd[0])
-        if cmd[0] == "broken-nm":
-            return subprocess.CompletedProcess(cmd, 1, "", "unreadable object")
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            f"0000000000000000 T {defined_name}\n                 U {undefined_name}\n",
-            "",
-        )
-
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_nm_candidate_binaries",
-        lambda: ["broken-nm", "llvm-nm"],
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
-    )
+    reads = _counted_symbol_reads(monkeypatch)
 
     symbols = cli._native_object_global_symbol_sets(obj, target_triple=target_triple)
 
-    assert calls == ["broken-nm", "llvm-nm"]
+    assert reads == [obj.stat().st_size]
     assert symbols is not None
     defined, undefined = symbols
     assert defined == {"__future_____Feature___init__"}
@@ -2576,20 +2565,8 @@ def test_native_object_symbol_sets_accept_empty_objects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     obj = tmp_path / "target_gated_empty.o"
-    obj.write_bytes(b"wasm")
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        return subprocess.CompletedProcess(cmd, 1, "", f"{obj}: no symbols\n")
-
-    monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
-    )
+    obj.write_bytes(native_relocatable_object())
+    _counted_symbol_reads(monkeypatch)
 
     assert cli._native_object_global_symbol_sets(obj) == (set(), set())
 
@@ -2606,29 +2583,7 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
         )
     )
     contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
-    calls = 0
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal calls
-        del kwargs
-        calls += 1
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            "00000000 T hello__molt_module_chunk_1\n         U molt_runtime_symbol\n",
-            "",
-        )
-
-    monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_run_completed_command",
-        fake_run_completed_command,
-    )
+    reads = _counted_symbol_reads(monkeypatch)
 
     assert cli._is_valid_cached_backend_artifact(
         obj,
@@ -2637,7 +2592,7 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
     assert not cli._native_object_has_unresolved_module_chunks(
         obj, None, target_triple=contract.target_triple
     )
-    assert calls == 1
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize("suffix", [".a", ".lib"])
@@ -2678,35 +2633,17 @@ def test_native_archive_chunk_closure_resolves_all_included_members(
             )
         )[8:]
     )
-    member_tables = {
-        application: ((application_defined, set()), (set(), application_undefined))
-    }
     if stdlib is not None:
         assert stdlib_providers is not None
-        stdlib_defined = chunk_symbols(stdlib_providers)
         stdlib.write_bytes(
             static_archive_bytes(
-                native_relocatable_object(symbols=tuple(sorted(stdlib_defined)))
+                native_relocatable_object(
+                    symbols=tuple(sorted(chunk_symbols(stdlib_providers)))
+                )
             )
         )
-        member_tables[stdlib] = ((stdlib_defined, set()),)
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        rows: list[str] = []
-        for defined, undefined in member_tables[Path(cmd[-1])]:
-            rows.append("object.o:")
-            rows.extend(f"00000000 T {name}" for name in sorted(defined))
-            rows.extend(f"         U {name}" for name in sorted(undefined))
-        return subprocess.CompletedProcess(cmd, 0, "\n".join(rows) + "\n", "")
-
     monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
+        native_symbol_inspection, "_run_completed_command", _no_symbol_subprocess
     )
     assert (
         BACKEND_CACHE._native_object_has_unresolved_module_chunks(application, stdlib)
@@ -2729,48 +2666,26 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
 ) -> None:
     obj = tmp_path / "module.o"
     obj.write_bytes(native_relocatable_object(symbols=("original",)))
-    calls = 0
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal calls
-        del kwargs
-        calls += 1
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            "00000000 T hello__molt_module_chunk_1\n         U molt_runtime_symbol\n",
-            "",
-        )
-
-    monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_run_completed_command",
-        fake_run_completed_command,
-    )
+    reads = _counted_symbol_reads(monkeypatch)
 
     assert (
         native_symbol_inspection._native_object_global_symbol_facts(obj, publish=True)
         is not None
     )
     assert cli._native_object_global_symbol_sets(obj) is not None
-    assert calls == 1
+    assert len(reads) == 1
     assert native_symbol_inspection._native_object_symbol_facts_sidecar_path(
         obj
     ).exists()
 
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) is not None
-    assert calls == 1
+    assert len(reads) == 1
 
     obj.write_bytes(native_relocatable_object(symbols=("changed",)))
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    assert cli._native_object_global_symbol_sets(obj) is not None
-    assert calls == 2
+    assert cli._native_object_global_symbol_sets(obj) == ({"changed"}, set())
+    assert len(reads) == 2
 
 
 @pytest.mark.parametrize("archive", [False, True])
@@ -2818,7 +2733,7 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
         pytest.fail("staged outputs must reuse persistent content-bound symbol facts")
 
     monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", unexpected_extraction
+        native_symbol_inspection, "read_symbol_rows", unexpected_extraction
     )
     for path in (cache_path, function_cache_path):
         facts = native_symbol_inspection._native_object_global_symbol_facts(
@@ -2847,30 +2762,12 @@ def test_native_symbol_normalization_is_platform_explicit(
     )
 
 
-def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
+def test_cached_native_artifact_validation_reads_symbols_in_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     obj = tmp_path / "module_cache.o"
-    obj.write_bytes(native_relocatable_object())
-    calls: list[str] = []
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        calls.append(cmd[0])
-        if cmd[0] == "broken-nm":
-            return subprocess.CompletedProcess(cmd, 1, "", "unreadable COFF")
-        return subprocess.CompletedProcess(cmd, 0, "00000000 T molt_main\n", "")
-
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_nm_candidate_binaries",
-        lambda: ["broken-nm", "llvm-nm"],
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", fake_run_completed_command
-    )
+    obj.write_bytes(native_relocatable_object(symbols=("molt_main",)))
+    reads = _counted_symbol_reads(monkeypatch)
 
     assert cli._is_valid_cached_backend_artifact(
         obj,
@@ -2878,7 +2775,7 @@ def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
             target="native", emit_mode="obj", target_triple=None
         ),
     )
-    assert calls == ["broken-nm", "llvm-nm"]
+    assert reads == [obj.stat().st_size]
 
 
 # --- Finding #4 confound: bind the shared-stdlib cache key to the backend binary
