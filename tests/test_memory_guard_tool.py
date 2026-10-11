@@ -7770,7 +7770,7 @@ def test_guarded_interpreter_preserves_virtual_environment(
         )
     packages.mkdir(parents=True, exist_ok=True)
     (packages / "selected_environment_witness.py").write_text(
-        "VALUE = 'selected environment'\n"
+        "VALUE = 'selected environment'\n", encoding="utf-8"
     )
     child_cwd = tmp_path / "child"
     child_cwd.mkdir()
