@@ -14,6 +14,7 @@
     "src/molt/platform_toolchain.py",
     "src/molt/wasi_sysroot.py",
     "tools/compat/diff_output_layout.py",
+    "tools/compat/test_policy.py",
     "tools/disk_guard.py",
     "tools/guarded_entrypoints.py",
     "tools/proof_queue_pkg/__init__.py",
@@ -344,7 +345,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "2f128462636d7716fe0ee5206622c2877e4b1a9a6449f1e0d33563ed4fde5c00",
+  "authority_sha256": "d6d8bc5c690b7228d1c0a6bf5785cd7994a21984123b862595ff164e72fdf1bd",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",

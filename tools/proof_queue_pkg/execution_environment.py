@@ -1045,6 +1045,7 @@ def capture_source_content(
     overlays: Sequence[Path],
     cas_root: Path,
     hash_workers: int,
+    expected_files: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], Callable[[], None]]:
     """Capture Git-admitted source and explicit overlays, never local caches."""
     from molt.python_file_node_custody import PythonFileCaptureContext
@@ -1077,8 +1078,15 @@ def capture_source_content(
     if any(count != links for count, links in hardlinks.values()):
         raise ValueError("source input has aliases outside admitted source content")
     files: list[dict[str, object]] = []
+    remaining_expected = dict(expected_files or {})
     identities = capture.bind_many(regular, label="proof source input")
     for (path, metadata), identity in zip(regular, identities, strict=True):
+        relative = path.relative_to(root).as_posix()
+        expected = remaining_expected.pop(relative, None)
+        if expected is not None and identity.sha256 != expected:
+            raise ValueError(
+                f"selected source changed since command admission: {relative}"
+            )
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),
@@ -1087,6 +1095,9 @@ def capture_source_content(
                 "mode": stat.S_IMODE(metadata.st_mode),
             }
         )
+
+    if remaining_expected:
+        raise ValueError("selected source is missing from the captured file inventory")
 
     def verify_selection() -> None:
         if selected != _git_source_paths(root, env, include_untracked=True):

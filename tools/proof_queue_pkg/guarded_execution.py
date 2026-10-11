@@ -631,7 +631,12 @@ def execute_guarded_request(request_path: Path) -> int:
                     "node_child_custody_worker.cjs",
                 )
             )
-        if envelope.get("typed_command") is not None:
+        typed_command = envelope.get("typed_command")
+        source_extension_producer = (
+            isinstance(typed_command, Mapping)
+            and typed_command.get("family") == "source-extension-producer"
+        )
+        if source_extension_producer:
             custody_authority_paths.extend(
                 (
                     admission._REPO_ROOT
@@ -756,13 +761,17 @@ def execute_guarded_request(request_path: Path) -> int:
             cargo_outputs = (
                 cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
             )
+            selected_sources = admission.differential_source_bindings(envelope)
             source_content, source_content_telemetry, verify_source_content = (
                 environment.capture_source_content(
                     source_root=Path(source_root_raw),
                     env=execution_env,
-                    overlays=(),
+                    overlays=tuple(
+                        Path(source_root_raw) / path for path in selected_sources
+                    ),
                     cas_root=result_path.parent / "custody-cas",
                     hash_workers=plan.inventory_hash_workers,
+                    expected_files=selected_sources,
                 )
             )
             cargo_cache = cargo_cache_custody.acquire(
@@ -851,6 +860,7 @@ def execute_guarded_request(request_path: Path) -> int:
         if envelope.get("typed_command") is not None:
             execution_env["MOLT_PROOF_SOURCE_ROOT"] = str(source_root_path)
             published_custody_names.append("MOLT_PROOF_SOURCE_ROOT")
+        if source_extension_producer:
             captured_extension = toolchains_full.get("source-extension")
             if (
                 not isinstance(captured_extension, Mapping)

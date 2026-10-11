@@ -463,6 +463,16 @@ def should_skip(
     return reason is not None, reason
 
 
+def read_test_list(path: Path) -> tuple[str, ...]:
+    """Read the shared newline/comment test-list format without importing a harness."""
+    with path.open(encoding="utf-8") as source:
+        return tuple(
+            entry
+            for line in source
+            if (entry := line.strip()) and not entry.startswith("#")
+        )
+
+
 def collect_test_files(
     targets: Sequence[str | Path],
     *,
@@ -510,10 +520,7 @@ def collect_test_files(
         if candidate.is_dir():
             manifest = candidate / "TESTS.txt"
             if manifest.is_file():
-                for raw in manifest.read_text(encoding="utf-8").splitlines():
-                    entry = raw.strip()
-                    if not entry or entry.startswith("#"):
-                        continue
+                for entry in read_test_list(manifest):
                     manifest_target = Path(entry)
                     if not manifest_target.is_absolute():
                         manifest_target = root / manifest_target

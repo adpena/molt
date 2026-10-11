@@ -5204,15 +5204,11 @@ if __name__ == "__main__":
     target_paths: list[str] = list(args.file)
     for list_path in args.files_from:
         try:
-            entries = Path(list_path).read_text(encoding="utf-8").splitlines()
+            entries = test_policy.read_test_list(Path(list_path))
         except OSError as exc:
             print(f"Failed to read --files-from {list_path}: {exc}", file=sys.stderr)
             sys.exit(2)
-        for entry in entries:
-            raw = entry.strip()
-            if not raw or raw.startswith("#"):
-                continue
-            target_paths.append(raw)
+        target_paths.extend(entries)
 
     _configure_diff_artifact_environment(
         repo_root=_repo_root(),

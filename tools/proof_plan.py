@@ -196,10 +196,9 @@ class ProofCommand:
 class NamedLane:
     """A queue-owned proof lane that runs under host custody, not in a CI family.
 
-    Its exact argv is the registered command authority for child-process
-    admission: a submission whose argv equals a named lane receives the lane's
-    declared toolchain closure (descendants admitted by image identity) instead
-    of being classified as a leaf that may spawn nothing.
+    Its command prefix and default cases own child-process admission. Typed
+    differential selection may replace only the declared case tail; interpreter,
+    build options and toolchain permissions remain part of the fixed prefix.
     """
 
     id: str
@@ -207,7 +206,18 @@ class NamedLane:
 
     @property
     def argv(self) -> tuple[str, ...]:
+        return self.command_prefix + self.differential_cases
+
+    @property
+    def command_prefix(self) -> tuple[str, ...]:
         return tuple(str(value) for value in self.data.get("argv", ()))
+
+    @property
+    def differential_cases(self) -> tuple[str, ...]:
+        raw = self.data.get("differential_cases", ())
+        return (
+            tuple(str(value) for value in raw) if isinstance(raw, (list, tuple)) else ()
+        )
 
     @property
     def toolchains(self) -> tuple[str, ...]:
@@ -520,7 +530,12 @@ class ProofPlan:
             extra = (
                 set(lane.data)
                 - set(REQUIRED_NAMED_LANE_FIELDS)
-                - {"id", "cargo_output_lifetime", "cargo_native_units"}
+                - {
+                    "id",
+                    "cargo_output_lifetime",
+                    "cargo_native_units",
+                    "differential_cases",
+                }
             )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
@@ -528,6 +543,25 @@ class ProofPlan:
                 cargo_native_units(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
+            cases = lane.data.get("differential_cases")
+            if cases is not None and (
+                not isinstance(cases, list)
+                or not cases
+                or any(
+                    not isinstance(case, str)
+                    or not case
+                    or case.startswith("-")
+                    or Path(case).is_absolute()
+                    or not case.endswith(".py")
+                    for case in cases
+                )
+                or len(set(cases)) != len(cases)
+                or lane.command_prefix.count("tests/molt_diff.py") != 1
+            ):
+                errors.append(
+                    f"{lane.id}: differential_cases requires unique relative Python "
+                    "files and the tests/molt_diff.py command"
+                )
             argv = lane.argv
             # Named recipes currently own Python payloads, whose downstream
             # Cargo consumers are not statically closed by this declaration.

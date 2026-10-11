@@ -22,6 +22,7 @@ authority_inputs = [
   "src/molt/platform_toolchain.py",
   "src/molt/wasi_sysroot.py",
   "tools/compat/diff_output_layout.py",
+  "tools/compat/test_policy.py",
   "tools/disk_guard.py",
   "tools/guarded_entrypoints.py",
   "tools/proof_queue_pkg/__init__.py",
@@ -4117,7 +4118,8 @@ timeout_seconds = 9000
 [[named_lane]]
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime ownership, mapping, numeric, path, encoding, stream and shared-call consumers against CPython 3.12 on native targets."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json"]
+differential_cases = ["tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
@@ -4127,7 +4129,8 @@ timeout_seconds = 9000
 [[named_lane]]
 id = "runtime.public-consumers.wasm"
 description = "Compile and execute the shared mapping, numeric, serialization and error consumers against CPython 3.12 on WASM; native process and thread cells remain separate."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json"]
+differential_cases = ["tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "wasm-browser"
@@ -4180,7 +4183,8 @@ timeout_seconds = 900
 id = "r6.target-version-parity.py312"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 resource_family = "python"
 contention_key = "python:r6-target-version-py312"
@@ -4190,7 +4194,8 @@ timeout_seconds = 900
 id = "r6.target-version-parity.py313"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 resource_family = "python"
 contention_key = "python:r6-target-version-py313"
@@ -4200,7 +4205,8 @@ timeout_seconds = 900
 id = "r6.target-version-parity.py314"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast"]
+differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 resource_family = "python"
 contention_key = "python:r6-target-version-py314"

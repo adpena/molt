@@ -360,11 +360,21 @@ def named_lane_argv(lane_id: str) -> list[str]:
 
 
 def _named_lane_spec(
-    lane_id: str, timeout: float | None = None, repo_root: Path = state.ROOT
+    lane_id: str,
+    timeout: float | None = None,
+    repo_root: Path = state.ROOT,
+    *,
+    cases: Sequence[str] = (),
+    case_lists: Sequence[str] = (),
 ) -> dict[str, object]:
-    del repo_root
     lane = proof_plan.ProofPlan.load().named_lane(lane_id)
     command = list(lane.argv)
+    selected_scopes: list[str] = []
+    if cases or case_lists:
+        command = command_admission.selected_differential_lane_command(
+            lane_id, cases=cases, case_lists=case_lists, repo_root=repo_root
+        )
+        selected_scopes = command[len(lane.command_prefix) + 1 :]
     if command[0] == "cargo":
         command = policy._canonical_cargo_proof_command(command[1:])
     return {
@@ -376,7 +386,7 @@ def _named_lane_spec(
         ),
         "resource_family": str(lane.data["resource_family"]),
         "contention_key": str(lane.data["contention_key"]),
-        "scopes": ["tools/proof_plan.toml"],
+        "scopes": ["tools/proof_plan.toml", *selected_scopes],
         "env_overrides": {},
         "notes": [
             f"named lane {lane_id}: argv and toolchain closure come from "
@@ -394,10 +404,21 @@ def _cmd_named_lane(args: argparse.Namespace) -> int:
     # names it: one lane id, one spec, so a generic submission can never strip
     # the custody the lane's tool fails closed without.
     dedicated = _DEDICATED_NAMED_LANE_HANDLERS.get(args.lane_id)
+    cases = getattr(args, "case", ())
+    case_lists = getattr(args, "cases_from", ())
     if dedicated is not None:
+        if cases or case_lists:
+            raise ValueError("case selection requires a differential named lane")
         return dedicated(args)
     return _run_named_spec(
-        args, _named_lane_spec(args.lane_id, args.timeout, state._repo_root(args))
+        args,
+        _named_lane_spec(
+            args.lane_id,
+            args.timeout,
+            state._repo_root(args),
+            cases=cases,
+            case_lists=case_lists,
+        ),
     )
 
 
@@ -583,7 +604,7 @@ def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
         spec = {
             **spec,
             "command": command_admission.prepared_named_lane_command(
-                prepared_lane, environment.python_executable
+                prepared_lane, environment.python_executable, command=spec["command"]
             ),
             "scopes": [*spec["scopes"], str(environment.root.resolve())],
             "locked_env": locked,
