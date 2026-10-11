@@ -48,6 +48,19 @@ unsafe extern "C" fn list_item_hook(
     molt_cpython_abi::hooks::BorrowedHandleResult::ok(MoltObject::from_int(i as i64).bits())
 }
 
+// This binary's original storage is process-lifetime. FOREIGN class edges
+// use the shared fixture owner and must retain/release through that registry.
+unsafe extern "C" fn fixture_inc_ref(bits: u64) {
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::inc_ref(bits) };
+    }
+}
+unsafe extern "C" fn fixture_dec_ref(bits: u64) {
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::dec_ref(bits) };
+    }
+}
+
 fn init_hooks() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
@@ -56,6 +69,9 @@ fn init_hooks() -> support::AbiTestThreadStateTransaction {
     hooks.list_item = list_item_hook;
     hooks.object_length = object_length_hook;
     hooks.object_is_true = object_truth_hook;
+    hooks.foreign_new = support::fake_runtime::foreign_new;
+    hooks.inc_ref = fixture_inc_ref;
+    hooks.dec_ref = fixture_dec_ref;
     support::enter_runtime_class_abi_test(hooks)
 }
 

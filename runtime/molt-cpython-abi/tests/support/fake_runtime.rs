@@ -20,7 +20,7 @@ enum Value {
     Float(f64),
     Complex(f64, f64),
     Opaque { supports_subscript: bool },
-    NativeClassAnchor,
+    ManagedType,
     CFunction { method: bool },
     Method { function: u64, receiver: u64 },
     String(Vec<u8>),
@@ -282,6 +282,10 @@ pub fn subscriptable_handle() -> u64 {
         supports_subscript: true,
     })
 }
+/// A real managed Type identity for the bounded subtype-provider fixture.
+pub fn managed_type_handle() -> u64 {
+    allocate(Value::ManagedType)
+}
 pub fn contains(bits: u64) -> bool {
     VALUES.lock().unwrap().contains_key(&bits)
 }
@@ -417,7 +421,7 @@ pub unsafe extern "C" fn dec_ref(bits: u64) {
         | Value::Bytes(_)
         | Value::String(_)
         | Value::Opaque { .. }
-        | Value::NativeClassAnchor
+        | Value::ManagedType
         | Value::CFunction { .. } => {}
     }
     if let Some(observer) = on_retire {
@@ -763,7 +767,7 @@ pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
         Some(Value::Integer(_) | Value::PatternInteger { .. }) => MoltTypeTag::Int as u8,
         Some(Value::Float(_)) => MoltTypeTag::Float as u8,
         Some(Value::Complex(_, _)) => MoltTypeTag::Complex as u8,
-        Some(Value::NativeClassAnchor) => MoltTypeTag::Other as u8,
+        Some(Value::ManagedType) => MoltTypeTag::Type as u8,
         Some(Value::CFunction { .. }) => MoltTypeTag::RuntimeCallable as u8,
         Some(Value::Method { .. }) => MoltTypeTag::BoundMethod as u8,
         Some(Value::String(_)) => MoltTypeTag::Str as u8,
@@ -777,8 +781,9 @@ pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
 }
 // Storage classification does not supply Python class identity. Public type
 // predicates and diagnostic text admission use the runtime class hook, exactly
-// as the production provider does. Each immortal fixture class anchor resolves
-// through the existing static-binding authority, never a second PyType shell.
+// as the production provider does. Native declarations retain a FOREIGN owner
+// in this process-lifetime class table and project to their original physical
+// type. They are not managed Type identities or a second PyType shell.
 struct Classes {
     type_class: u64,
     string: u64,
@@ -799,14 +804,10 @@ struct Classes {
 static CLASSES: OnceLock<Classes> = OnceLock::new();
 
 fn initialize_class_bindings() -> Classes {
-    let bind = |class: *mut PyTypeObject| {
-        let bits = allocate(Value::NativeClassAnchor);
-        unsafe {
-            GLOBAL_BRIDGE
-                .bind_static_pyobj_to_runtime_handle(class.cast(), bits, true)
-                .expect("bind fixture class to its canonical static type");
-        }
-        bits
+    let bind = |class: *mut PyTypeObject| unsafe {
+        GLOBAL_BRIDGE
+            .molt_value_for_pyobj(class.cast())
+            .expect("acquire fixture native class through the installed foreign owner")
     };
     Classes {
         type_class: bind(&raw mut abi_types::PyType_Type),
@@ -843,7 +844,7 @@ pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResu
     let callable_class = {
         let values = VALUES.lock().unwrap();
         match values.get(&bits).map(|entry| &entry.value) {
-            Some(Value::NativeClassAnchor) => Some(classes.type_class),
+            Some(Value::ManagedType) => Some(classes.type_class),
             Some(Value::CFunction { method: true }) => Some(classes.method),
             Some(Value::CFunction { method: false }) => Some(classes.function),
             Some(Value::Method { .. }) => Some(classes.python_method),
@@ -1010,6 +1011,7 @@ pub unsafe extern "C" fn numeric_hash(bits: u64) -> i64 {
 }
 
 pub fn wire_numeric(hooks: &mut RuntimeHooks) {
+    hooks.foreign_new = foreign_new;
     hooks.try_mark_abi_view = try_mark_abi_view;
     hooks.object_hash = numeric_hash;
     hooks.numeric_identity_new = Some(numeric_identity_new);
@@ -1049,7 +1051,6 @@ pub fn wire(hooks: &mut RuntimeHooks) {
     hooks.inc_ref = inc_ref;
     hooks.dec_ref = dec_ref;
     hooks.ref_count = Some(ref_count);
-    hooks.foreign_new = foreign_new;
     hooks.object_str = object_str;
     hooks.object_repr = object_repr;
 }

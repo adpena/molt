@@ -33,7 +33,6 @@ thread_local! {
     static NUMERIC_UNARY_OPERATION: Cell<Option<u32>> = const { Cell::new(None) };
     static SUBTYPE_CALLBACK_ERROR: Cell<usize> = const { Cell::new(0) };
     static SUBTYPE_RUNTIME_FAILURE: Cell<bool> = const { Cell::new(false) };
-    static PROBE_MANAGED_SUBTYPING: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
     static NUMERIC_CLASS_CALLS: Cell<usize> = const { Cell::new(0) };
     static NUMERIC_SUBTYPE_CALLS: Cell<usize> = const { Cell::new(0) };
     static CLASS_CALLBACK_ERROR: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
@@ -192,19 +191,6 @@ unsafe extern "C" fn numeric_save_pending(
         NUMERIC_RUNTIME_PENDING.with(|value| value.set(incoming));
     }
 }
-// The ordinary fixture class anchors intentionally expose native C class
-// semantics. This bounded probe selects the managed subtype callback for the
-// two already-bound builtin classes, without inventing class handles or a
-// namespace/MRO provider. No class readiness occurs within this probe.
-unsafe extern "C" fn numeric_classify_heap(bits: u64) -> u8 {
-    if let Some((subclass, class)) = PROBE_MANAGED_SUBTYPING.with(Cell::get)
-        && (bits == subclass || bits == class)
-    {
-        return molt_cpython_abi::abi_types::MoltTypeTag::Type as u8;
-    }
-    unsafe { support::fake_runtime::classify_heap(bits) }
-}
-
 unsafe extern "C" fn numeric_type_is_subtype(subclass: u64, class: u64) -> i32 {
     NUMERIC_SUBTYPE_CALLS.with(|value| value.set(value.get() + 1));
     let error = SUBTYPE_CALLBACK_ERROR.with(Cell::get) as *mut PyObject;
@@ -333,6 +319,66 @@ unsafe extern "C" fn forbidden_index_override(_object: *mut PyObject) -> *mut Py
     unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) }
 }
 
+// The physical class shell outlives this owner. Dependent projected objects
+// are declared later and retire first, including assertion unwinds.
+struct ProtocolClassOwner(u64);
+impl ProtocolClassOwner {
+    unsafe fn new(class: *mut PyTypeObject) -> Self {
+        Self(
+            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(class.cast()) }
+                .expect("own native protocol class"),
+        )
+    }
+}
+impl Drop for ProtocolClassOwner {
+    fn drop(&mut self) {
+        PROTOCOL_CLASS.with(|value| value.set(None));
+        unsafe { support::fake_runtime::dec_ref(self.0) };
+    }
+}
+
+// Unlike native declaration owners, these handles explicitly implement Type
+// identity and the subtype-provider contract. No native builtin is rebound.
+struct ManagedSubtypeClass {
+    class: support::StaticType,
+    bits: u64,
+    bound: bool,
+}
+impl ManagedSubtypeClass {
+    unsafe fn new() -> Self {
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        class.tp_name = c"ManagedSubtypeProbe".as_ptr();
+        class.tp_flags = molt_cpython_abi::abi_types::Py_TPFLAGS_READY;
+        let mut result = Self {
+            class,
+            bits: support::fake_runtime::managed_type_handle(),
+            bound: false,
+        };
+        unsafe {
+            GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                result.class.as_ptr().cast(),
+                result.bits,
+                true,
+            )
+        }
+        .expect("bind genuine fixture Type identity");
+        result.bound = true;
+        result
+    }
+}
+impl Drop for ManagedSubtypeClass {
+    fn drop(&mut self) {
+        if self.bound {
+            assert!(unsafe {
+                GLOBAL_BRIDGE
+                    .unbind_static_pyobj_from_runtime_handle(self.class.as_ptr().cast(), self.bits)
+            });
+        }
+        unsafe { support::fake_runtime::dec_ref(self.bits) };
+    }
+}
+
 fn init() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
@@ -349,7 +395,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     hooks.int_from_bytes = counted_int_from_bytes;
     hooks.runtime_class_borrowed = Some(protocol_runtime_class);
     hooks.type_is_subtype = numeric_type_is_subtype;
-    hooks.classify_heap = Some(numeric_classify_heap);
+    hooks.classify_heap = Some(support::fake_runtime::classify_heap);
     hooks.exception_pending = numeric_exception_pending;
     hooks.pending_exception_class = numeric_pending_class;
     hooks.clear_pending_exception = numeric_clear_pending;
@@ -1487,13 +1533,14 @@ fn test_managed_numeric_predicates_use_inherited_type_protocol_presence() {
             class.tp_base = base.as_ptr();
             class.tp_dict = molt_cpython_abi::api::mapping::PyDict_New();
             assert!(!class.tp_dict.is_null());
-            let class_bits = support::fake_runtime::fresh_handle();
-            GLOBAL_BRIDGE
-                .bind_static_pyobj_to_runtime_handle(class.as_ptr().cast(), class_bits, true)
-                .unwrap();
+            let class_owner = ProtocolClassOwner::new(class.as_ptr());
+            let class_bits = class_owner.0;
             let object_bits = support::fake_runtime::fresh_handle();
             PROTOCOL_CLASS.with(|value| value.set(Some((object_bits, class_bits))));
-            let object = GLOBAL_BRIDGE.owned_handle_to_pyobj(object_bits);
+            let object_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.owned_handle_to_pyobj(object_bits),
+            );
+            let object = object_owner.as_ptr();
             assert!(!object.is_null());
             assert_eq!(
                 (*object).ob_type,
@@ -1538,13 +1585,8 @@ fn test_managed_numeric_predicates_use_inherited_type_protocol_presence() {
             );
             assert_eq!((*object).ob_refcnt, object_refs);
             assert_eq!(class.ob_base.ob_base.ob_refcnt, class_refs);
-            molt_cpython_abi::api::refcount::Py_DECREF(object);
-            PROTOCOL_CLASS.with(|value| value.set(None));
-            assert!(
-                GLOBAL_BRIDGE
-                    .unbind_static_pyobj_from_runtime_handle(class.as_ptr().cast(), class_bits)
-            );
-            support::fake_runtime::dec_ref(class_bits);
+            drop(object_owner);
+            drop(class_owner);
         }
     }
 }
@@ -1667,17 +1709,18 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
                 ),
                 0
             );
-            let class_bits = support::fake_runtime::fresh_handle();
-            GLOBAL_BRIDGE
-                .bind_static_pyobj_to_runtime_handle(class.as_ptr().cast(), class_bits, true)
-                .unwrap();
+            let class_owner = ProtocolClassOwner::new(class.as_ptr());
+            let class_bits = class_owner.0;
             let bits = if is_float {
                 support::fake_runtime::heap_float(19.25)
             } else {
                 support::fake_runtime::heap_integer(319)
             };
             PROTOCOL_CLASS.with(|value| value.set(Some((bits, class_bits))));
-            let object = GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
+            let object_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.owned_handle_to_pyobj(bits),
+            );
+            let object = object_owner.as_ptr();
             assert!(!object.is_null());
             assert_eq!((*object).ob_type, class.tp_base);
             assert_eq!(
@@ -1688,27 +1731,36 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
             FLOAT_OVERRIDE_CALLS.with(|calls| calls.set(0));
             COMPLEX_OVERRIDE_CALLS.with(|calls| calls.set(0));
             if !is_float {
-                let index = molt_cpython_abi::api::abstract_number::PyNumber_Index(object);
+                let index_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                    molt_cpython_abi::api::abstract_number::PyNumber_Index(object),
+                );
+                let index = index_owner.as_ptr();
                 assert!(!index.is_null());
                 assert_ne!(index, object);
                 assert_eq!(molt_cpython_abi::api::numbers::PyLong_CheckExact(index), 1);
                 assert_eq!(molt_cpython_abi::api::numbers::PyLong_AsLong(index), 319);
-                molt_cpython_abi::api::refcount::Py_DECREF(index);
+                drop(index_owner);
             }
             assert_eq!(
                 molt_cpython_abi::api::numbers::PyFloat_AsDouble(object),
                 if is_float { 19.25 } else { 42.5 }
             );
             assert_eq!(FLOAT_OVERRIDE_CALLS.with(Cell::get), usize::from(!is_float));
-            let integer = molt_cpython_abi::api::abstract_number::PyNumber_Long(object);
+            let integer_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::abstract_number::PyNumber_Long(object),
+            );
+            let integer = integer_owner.as_ptr();
             assert!(!integer.is_null());
             assert_eq!(
                 molt_cpython_abi::api::numbers::PyLong_CheckExact(integer),
                 1
             );
             assert_eq!(molt_cpython_abi::api::numbers::PyLong_AsLong(integer), 777);
-            molt_cpython_abi::api::refcount::Py_DECREF(integer);
-            let floated = molt_cpython_abi::api::abstract_number::PyNumber_Float(object);
+            drop(integer_owner);
+            let floated_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::abstract_number::PyNumber_Float(object),
+            );
+            let floated = floated_owner.as_ptr();
             assert!(!floated.is_null());
             assert_ne!(floated, object);
             assert_eq!(
@@ -1719,7 +1771,7 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
                 molt_cpython_abi::api::numbers::PyFloat_AsDouble(floated),
                 42.5
             );
-            molt_cpython_abi::api::refcount::Py_DECREF(floated);
+            drop(floated_owner);
             let complex = molt_cpython_abi::api::numbers::PyComplex_AsCComplex(object);
             assert_eq!((complex.real, complex.imag), (12.5, -3.0));
             assert_eq!(COMPLEX_OVERRIDE_CALLS.with(Cell::get), 1);
@@ -1746,13 +1798,8 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
             }
             assert_eq!((*object).ob_refcnt, refs);
             assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
-            molt_cpython_abi::api::refcount::Py_DECREF(object);
-            PROTOCOL_CLASS.with(|value| value.set(None));
-            assert!(
-                GLOBAL_BRIDGE
-                    .unbind_static_pyobj_from_runtime_handle(class.as_ptr().cast(), class_bits)
-            );
-            support::fake_runtime::dec_ref(class_bits);
+            drop(object_owner);
+            drop(class_owner);
             // The dict owns the foreign callable; retire it before stack data.
             molt_cpython_abi::api::refcount::Py_CLEAR(&raw mut class.tp_dict);
             assert_eq!(callable.ob_refcnt, 1);
@@ -2407,7 +2454,6 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
                 NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
                 SUBTYPE_CALLBACK_ERROR.with(|value| value.set(0));
                 SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(false));
-                PROBE_MANAGED_SUBTYPING.with(|value| value.set(None));
             }
         }
         let _reset = ResetFailure;
@@ -2435,19 +2481,10 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
             ));
             assert_eq!(recovered.as_ptr(), object.as_ptr());
         }
-        // The default native-anchor path deliberately cannot invoke a runtime
-        // subtype hook. Opt into that boundary only for these exact calls.
-        let bound_class = |class: *mut PyTypeObject| {
-            GLOBAL_BRIDGE
-                .molt_handle_for_pyobj(class.cast())
-                .expect("builtin class was already bound by fixture setup")
-                .bits()
-        };
-        let targets = (
-            bound_class(&raw mut molt_cpython_abi::abi_types::PyBool_Type),
-            bound_class(&raw mut molt_cpython_abi::abi_types::PyLong_Type),
-        );
-        PROBE_MANAGED_SUBTYPING.with(|value| value.set(Some(targets)));
+        // Public subtype dispatch on genuine managed Type identities is a
+        // separate provider oracle from native numeric declaration lookup.
+        let subclass = ManagedSubtypeClass::new();
+        let class = ManagedSubtypeClass::new();
         for runtime_only in [false, true] {
             if runtime_only {
                 SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(true));
@@ -2455,8 +2492,12 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
                 SUBTYPE_CALLBACK_ERROR.with(|value| value.set(failure.as_ptr() as usize));
             }
             let before = NUMERIC_SUBTYPE_CALLS.with(Cell::get);
-            assert!(
-                abstract_number::PyNumber_Index((&raw mut Py_True).cast::<PyObject>()).is_null()
+            assert_eq!(
+                molt_cpython_abi::api::typeobj::PyType_IsSubtype(
+                    subclass.class.as_ptr(),
+                    class.class.as_ptr()
+                ),
+                0
             );
             assert_eq!(NUMERIC_SUBTYPE_CALLS.with(Cell::get), before + 1);
             if runtime_only {
@@ -2473,14 +2514,17 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
             SUBTYPE_CALLBACK_ERROR.with(|value| value.set(0));
             SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(false));
             NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
-            let recovered = refcount::OwnedPyObject::from_owned(abstract_number::PyNumber_Index(
-                (&raw mut Py_True).cast::<PyObject>(),
-            ));
-            assert!(!recovered.as_ptr().is_null());
             assert_eq!(
-                molt_cpython_abi::api::numbers::PyLong_AsLong(recovered.as_ptr()),
+                molt_cpython_abi::api::typeobj::PyType_IsSubtype(
+                    subclass.class.as_ptr(),
+                    subclass.class.as_ptr()
+                ),
                 1
             );
+            assert!(errors::PyErr_Occurred().is_null());
+            assert_eq!(NUMERIC_SUBTYPE_CALLS.with(Cell::get), before + 2);
+            assert_eq!(support::fake_runtime::ref_count(subclass.bits), 1);
+            assert_eq!(support::fake_runtime::ref_count(class.bits), 1);
         }
     }
 }

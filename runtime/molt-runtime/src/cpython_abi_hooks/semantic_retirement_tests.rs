@@ -547,7 +547,7 @@ unsafe extern "C" fn protocol_call(
             2 => protocol_long(state.integer, true, false),
             3 => protocol_long(state.integer, true, true),
             4 => typeobj::PyType_GenericAlloc(state.index_source, 0),
-            5 => object::Py_NewRef(&raw mut Py_True),
+            5 => object::Py_NewRef((&raw mut Py_True).cast()),
             7 => object::Py_NewRef(&raw mut Py_NotImplementedSentinel),
             _ => {
                 errors::PyErr_SetRaisedException(object::Py_NewRef(state.failure));

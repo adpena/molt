@@ -521,7 +521,7 @@ unsafe extern "C" fn failing_type_allocate(
 ) -> *mut PyObject {
     NULL_ALLOCATOR_CALLS.fetch_add(1, Ordering::SeqCst);
     unsafe {
-        errors::PyErr_SetRaisedException(refcount::Py_NewRef(
+        errors::PyErr_SetRaisedException(object::Py_NewRef(
             ALLOCATOR_FAILURE.load(Ordering::SeqCst),
         ));
     }
