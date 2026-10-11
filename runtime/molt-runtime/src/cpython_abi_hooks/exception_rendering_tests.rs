@@ -227,9 +227,8 @@ unsafe fn exception(ty: *mut PyTypeObject, values: &[*mut PyObject]) -> OwnedPyO
         0,
         "{:?} could not be readied: {:?}",
         unsafe { std::ffi::CStr::from_ptr((*ty).tp_name) },
-        errors::take_current_error().map(|error| unsafe {
-            std::ffi::CStr::from_ptr((*(*error.value).ob_type).tp_name)
-        }),
+        errors::take_current_error()
+            .map(|error| unsafe { std::ffi::CStr::from_ptr((*(*error.value).ob_type).tp_name) }),
     );
     let args = unsafe { OwnedPyObject::from_owned(sequences::PyTuple_New(values.len() as isize)) };
     assert!(!args.as_ptr().is_null());
