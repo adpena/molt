@@ -653,7 +653,7 @@ fn module_gc_callback_failures_keep_namespace_and_release_snapshot_pins() {
             c"outer automatic GC error".as_ptr(),
         );
         let outer = errors::PyErr_Occurred();
-        let automatic = crate::object::gc::collect_pending(&py);
+        let automatic = crate::object::gc::collect_pending(&py, gc);
         assert!(matches!(
             automatic.status,
             crate::object::gc::GcCollectStatus::CallbackError(_)

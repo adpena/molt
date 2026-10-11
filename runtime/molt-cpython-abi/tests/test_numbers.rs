@@ -1474,11 +1474,11 @@ fn exact_integer_normalization_preserves_prior_error_and_physical_owner() {
                 physical_long_fixture(subtype.as_ptr(), value < 0, value.unsigned_abs());
             let original_digits = input.digits;
             let object = (&raw mut input).cast::<PyObject>();
-            errors::PyErr_SetRaisedException(refcount::Py_NewRef(prior.as_ptr()));
+            errors::PyErr_SetRaisedException(molt_cpython_abi::api::object::Py_NewRef(prior.as_ptr()));
             // Exercise owned-result normalization itself: PyNumber_Index's
             // physical-subtype shortcut does not enter this authority.
             let exact = refcount::OwnedPyObject::from_owned(abstract_number::exact_integer_result(
-                refcount::Py_NewRef(object),
+                molt_cpython_abi::api::object::Py_NewRef(object),
             ));
             assert!(!exact.as_ptr().is_null());
             assert_ne!(exact.as_ptr(), object);

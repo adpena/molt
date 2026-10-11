@@ -411,10 +411,13 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
     // the safe execution boundary, matching CPython's eval-breaker model.
     // Automatic resource failure is retained as pending GC pressure and
     // telemetry rather than being confused with a user exception.
-    let _ = unsafe { crate::object::gc::collect_pending(_py) };
+    // Entry custody retains this exact origin across GC/finalizer callbacks.
+    // Resolve it once for both scheduled resource owners.
+    let state = crate::runtime_state(_py);
+    let _ = unsafe { crate::object::gc::collect_pending(_py, &state.gc) };
     // Bounded retirement uses its own cheap empty check and preserves pending
     // errors only when it actually releases callback-bearing queued owners.
-    crate::builtins::concurrent::concurrent_reap_stopped_pools(_py);
+    crate::builtins::concurrent::concurrent_reap_stopped_pools(_py, &state.concurrent, 8);
     let drain_failed =
         molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
     drain_failed || exception_pending(_py)

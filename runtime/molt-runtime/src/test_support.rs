@@ -47,6 +47,24 @@ pub(crate) fn restore_runtime_raised(py: &crate::PyToken<'_>, bits: u64) {
     assert!(saved.is_none());
 }
 
+/// Restore independently saved owners through the test transaction authority.
+/// Both live channels must be empty; the runtime argument remains borrowed.
+pub(crate) fn restore_pending_channels(
+    py: &crate::PyToken<'_>,
+    c_error: molt_cpython_abi::api::errors::OwnedCError,
+    runtime_bits: u64,
+) {
+    assert!(
+        !molt_cpython_abi::api::errors::raised_error_pending(),
+        "both channels must be detached before setup"
+    );
+    restore_runtime_raised(py, runtime_bits);
+    let mut saved = PendingExceptionSnapshot::detach();
+    assert!(saved.c_error.is_none(), "C channel must be detached before setup");
+    saved.c_error = Some(c_error);
+    saved.restore();
+}
+
 /// Observe the allocation-free raised channel through the real C API. Callers
 /// install the hooks before denying allocation and keep the denial active here.
 pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {

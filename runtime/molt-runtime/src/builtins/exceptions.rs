@@ -2591,7 +2591,19 @@ pub(crate) fn task_exception_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 pub(crate) fn task_raised_slot_admit(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let admitted = {
         let mut slots = task_last_exceptions(py).lock().unwrap();
-        if slots.try_reserve(1).is_err() {
+        let reservation = {
+            #[cfg(all(
+                test,
+                feature = "l7-attestation-probe",
+                not(target_arch = "wasm32"),
+                not(miri)
+            ))]
+            let _scope = crate::attestation_probe::AllocationScopeGuard::enter(
+                crate::attestation_probe::AllocationScope::TaskRaisedSlotReserve,
+            );
+            slots.try_reserve(1)
+        };
+        if reservation.is_err() {
             false
         } else {
             assert!(

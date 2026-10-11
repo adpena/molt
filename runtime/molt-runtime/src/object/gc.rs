@@ -3376,11 +3376,21 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
 /// A recursive finalizer poll re-arms the request for the next outer safepoint;
 /// resource failure likewise preserves pressure rather than silently disabling
 /// automatic GC.
-pub(crate) unsafe fn collect_pending(py: &PyToken<'_>) -> CollectStats {
-    let state = &crate::runtime_state(py).gc;
+#[inline]
+pub(crate) unsafe fn collect_pending(py: &PyToken<'_>, state: &GcRuntimeState) -> CollectStats {
     let Some(generation) = state.take_scheduled_generation() else {
         return CollectStats::completed(0, 0, 0);
     };
+    unsafe { collect_scheduled_generation(py, state, generation) }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn collect_scheduled_generation(
+    py: &PyToken<'_>,
+    state: &GcRuntimeState,
+    generation: u8,
+) -> CollectStats {
     let outcome = molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
         let outcome = collect_generation(py, generation);
         if matches!(outcome.status, GcCollectStatus::CallbackError(_)) {
@@ -3975,7 +3985,7 @@ mod tests {
             assert_eq!(state.counts()[0], 3);
             assert_eq!(state.generation_stats()[0].collections, collections_before);
 
-            let outcome = unsafe { collect_pending(_py) };
+            let outcome = unsafe { collect_pending(_py, state) };
             assert_eq!(outcome.status, GcCollectStatus::Completed);
             assert_eq!(outcome.scanned, 3);
             assert_eq!(outcome.survivors, 3);

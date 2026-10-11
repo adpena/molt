@@ -129,6 +129,7 @@ fn zero_target_unpack_validates_arity_without_output_memory() {
 
 #[test]
 fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
+    use molt_cpython_abi::abi_types;
     use molt_cpython_abi::api::{errors, refcount, sequences};
 
     let _lock = crate::test_support::RuntimeTestTransaction::new();
@@ -140,16 +141,37 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
         let result = unsafe { molt_unpack_sequence(source_bits, 1, 0) };
         assert_eq!(result, MoltObject::none().bits());
         assert_eq!(FAILING_ITER_CALLS.load(Ordering::Relaxed), 0);
+        assert!(exception_pending(_py));
+        let runtime_error = crate::exception_last_bits_noinc(_py).expect("reserved MemoryError");
         unsafe {
+            assert_eq!(
+                errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_MemoryError).cast()),
+                1
+            );
+            assert_eq!(crate::exception_last_bits_noinc(_py), Some(runtime_error));
             let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             assert!(!raised.as_ptr().is_null());
+            assert_eq!((*raised.as_ptr()).ob_type, &raw mut abi_types::PyExc_MemoryError);
+            assert!(!exception_pending(_py));
             let args =
                 refcount::OwnedPyObject::from_owned(errors::PyException_GetArgs(raised.as_ptr()));
             assert!(!args.as_ptr().is_null());
             assert_eq!(sequences::PyTuple_Size(args.as_ptr()), 0);
+            let identity = raised.as_ptr();
             errors::PyErr_SetRaisedException(raised.into_ptr());
+            assert!(!exception_pending(_py), "SetRaisedException selects the C channel");
+            let mut class = std::ptr::null_mut();
+            let mut value = std::ptr::null_mut();
+            let mut traceback = std::ptr::null_mut();
+            errors::PyErr_Fetch(&raw mut class, &raw mut value, &raw mut traceback);
+            let _class = refcount::OwnedPyObject::from_owned(class);
+            let _value = refcount::OwnedPyObject::from_owned(value);
+            let _traceback = refcount::OwnedPyObject::from_owned(traceback);
+            assert_eq!(class, (&raw mut abi_types::PyExc_MemoryError).cast());
+            assert_eq!(value, identity);
+            assert!(traceback.is_null());
+            assert!(errors::PyErr_Occurred().is_null());
         }
-        crate::test_support::assert_and_clear_emergency_memory_error(_py);
         // The same real iterator succeeds once output storage exists. This
         // proves that the zero-call failure witness observes actual iteration.
         let mut output = [MoltObject::none().bits()];
