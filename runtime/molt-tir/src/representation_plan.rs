@@ -551,7 +551,7 @@ impl ScalarRepresentationPlan {
     }
 
     #[cfg(any(feature = "native-backend", test))]
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
+    #[cfg(feature = "native-backend")]
     pub fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
         self.scalar_slot_exclusion_unsafe.iter().cloned().collect()
     }
@@ -928,14 +928,14 @@ impl ScalarRepresentationPlan {
             || self.name_scalar_kind(name) == Some(ScalarKind::Bool)
     }
 
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
+    #[cfg(any(test, feature = "wasm-backend"))]
     pub fn op_args_are_integer_family(&self, op: &OpIR) -> bool {
         op.args.as_ref().is_some_and(|args| {
             !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
         })
     }
 
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
+    #[cfg(any(test, feature = "wasm-backend"))]
     pub fn op_direct_numeric_repr(&self, op_index: usize, op: &OpIR) -> Option<Repr> {
         Self::simple_op_supports_direct_numeric_result(op.kind.as_str())
             .then(|| self.direct_numeric_op_reprs.get(&op_index).copied())

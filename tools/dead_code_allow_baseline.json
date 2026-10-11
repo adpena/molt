@@ -1,5 +1,5 @@
 {
-  "baseline_total": 64,
+  "baseline_total": 67,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -90,6 +90,11 @@
       "id": "runtime/molt-cpython-abi/src/hooks.rs::allow_dead_code::struct:RuntimeHooks",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/src/lib.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "crate-wide wasm32 allow(unused) hides native-only C-API code on wasm32; HF-178 owns gating that code per target and deleting this mask"
     },
     {
       "id": "runtime/molt-cpython-abi/tests/support/fake_strings.rs::allow_dead_code::inner",
@@ -222,6 +227,11 @@
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs; resolver admission tests use the artifact directory subset"
     },
     {
+      "id": "runtime/molt-runtime/src/builtins/select.rs::allow_dead_code::field:events",
+      "owner": "runtime-authority-closure",
+      "waiver": "Windows has no poller yet: poll_masks_batch raises RuntimeError there and never reads the watch events; HF-177 owns the Windows net I/O and poller implementation"
+    },
+    {
       "id": "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -230,6 +240,11 @@
       "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:generated",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/lib.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "crate-wide wasm32 allow(unused) hides 245 warnings in code compiled for native targets only; HF-178 owns gating that code per target and deleting this mask"
     },
     {
       "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:heap_kinds_generated",
