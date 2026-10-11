@@ -169,7 +169,7 @@ fn publish_manifest(
     0
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, target_arch = "wasm32"))]
 fn manifest_snapshot() -> Option<(*mut u8, usize)> {
     if MANIFEST_STATE.load(Ordering::Acquire) != PUBLICATION_READY {
         return None;
@@ -179,7 +179,7 @@ fn manifest_snapshot() -> Option<(*mut u8, usize)> {
     Some((ptr, len))
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, target_arch = "wasm32"))]
 fn manifest_bytes() -> Option<&'static [u8]> {
     let (ptr, len) = manifest_snapshot()?;
     if len == 0 {
