@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "26d5bab0a0ca2f145d50ebe47ea1fdf1f0d0d5bca47bdc5f991c33e6b5c77830",
+  "authority_sha256": "ee2d91f7847b3550aef63c6a1203069b7a61578a4e2c7c368a4bfdf822829469",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -441,7 +441,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 263,
+      "timeout_minutes": 293,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -2916,6 +2916,45 @@
         "tools/venv_exec.py",
         "python3",
         "-m",
+        "molt.cli",
+        "internal-backend-build",
+        "--target",
+        "native",
+        "--json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
+      "env": {
+        "MOLT_BACKEND_DAEMON": "0"
+      },
+      "family": "wasm",
+      "id": "wasm.build.native-backend",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "-n",
@@ -3808,7 +3847,9 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_finally_pending_observer_parity.py"
+        "tests/test_finally_pending_observer_parity.py",
+        "-k",
+        "native"
       ],
       "cache_domain": "pytest",
       "cargo_native_units": {
@@ -3819,12 +3860,53 @@
       },
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.native-backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.finally-pending-observer-parity.native",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang",
+        "llvm-config",
+        "ld.lld",
+        "lld-link"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_finally_pending_observer_parity.py",
+        "-k",
+        "wasm"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
         "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
-      "id": "wasm.test.finally-pending-observer-parity",
+      "id": "wasm.test.finally-pending-observer-parity.wasm",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",
@@ -3886,6 +3968,7 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
+        "wasm.build.native-backend",
         "wasm.build.shared-runtime"
       ],
       "env": {
@@ -7104,14 +7187,14 @@
         }
       },
       "wasm": {
-        "budget_seconds": 15780,
+        "budget_seconds": 17580,
         "critical_path_seconds": 2400,
         "headroom_seconds": 0,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 15600,
-        "required_job_seconds": 15780,
+        "projected_makespan_seconds": 17400,
+        "required_job_seconds": 17580,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 15600,
+          "compiler-build-resource": 17400,
           "python-tests": 420,
           "wasm-runtime": 450
         }

@@ -1239,7 +1239,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.integration.host-exports.tinygrad-tensor",
         "wasm.integration.host-exports.tensor-row-ops",
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.finally-pending-observer-parity.wasm",
     }
     assert {
         name for name, row in rows.items() if "pytest" in row.argv
@@ -1254,6 +1255,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         )
     for name in (
         "wasm.build.backend",
+        "wasm.build.native-backend",
         "wasm.build.shared-runtime",
         "wasm.build.split-runtime-release",
     ):
@@ -1398,6 +1400,93 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     }
 
 
+def test_native_backend_prewarm_precedes_every_native_consumer() -> None:
+    by_id = {command.id: command for command in PLAN.commands}
+    prewarm = by_id["wasm.build.native-backend"]
+    wasm_prewarm = by_id["wasm.build.backend"]
+    # The CLI admission entry point builds and admits the exact compiler a
+    # native `molt build` selects, as the WASM prewarm does for WASM output.
+    assert prewarm.argv[:5] == wasm_prewarm.argv[:5]
+    assert prewarm.argv[5:] == (
+        "internal-backend-build",
+        "--target",
+        "native",
+        "--json",
+    )
+    assert prewarm.data["env"] == {"MOLT_BACKEND_DAEMON": "0"}
+    assert (prewarm.data["timeout_budget"], prewarm.data["timeout_seconds"]) == (
+        "cold",
+        1200,
+    )
+    assert not prewarm.dependencies
+    for consumer_id in (
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.import-from-codec-parity",
+    ):
+        order = [
+            command.id
+            for command in proof_plan._topological_commands(
+                PLAN, command_id=consumer_id
+            )
+        ]
+        assert order.index(prewarm.id) < order.index(consumer_id)
+    # The WASM leg compiles no native program, so it waits on no native build.
+    assert prewarm.id not in {
+        command.id
+        for command in proof_plan._topological_commands(
+            PLAN, command_id="wasm.test.finally-pending-observer-parity.wasm"
+        )
+    }
+
+
+def test_finally_pending_parity_runs_each_target_in_its_own_budget() -> None:
+    from tests import test_finally_pending_observer_parity as parity
+
+    by_id = {command.id: command for command in PLAN.commands}
+    (mark,) = [
+        mark
+        for mark in parity.test_finally_pending_observer_parity.pytestmark
+        if mark.name == "parametrize"
+    ]
+    assert mark.args[0] == "target"
+    expected_closure = {
+        "native": {"wasm.build.native-backend"},
+        "wasm": {"wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"},
+    }
+    assert set(mark.args[1]) == set(expected_closure)
+    assert [name for name in vars(parity) if name.startswith("test_")] == [
+        "test_finally_pending_observer_parity"
+    ]
+    # `-k` matches substrings of the module, function and parameter names, so
+    # each row's keyword must name its own case and no other.
+    for keyword in expected_closure:
+        assert [
+            case
+            for case in expected_closure
+            if keyword in f"{parity.__name__}::test_finally_pending_observer_parity"
+            or keyword in case
+        ] == [keyword]
+    for target, prebuilds in expected_closure.items():
+        row = by_id[f"wasm.test.finally-pending-observer-parity.{target}"]
+        # One parametrized case per row: a sibling target's cold build can
+        # never spend this row's budget. The file has no other test, so the
+        # two `-k` selections partition it exactly.
+        assert row.argv[6:] == (
+            "tests/test_finally_pending_observer_parity.py",
+            "-k",
+            target,
+        )
+        assert (row.data["timeout_budget"], row.data["timeout_seconds"]) == (
+            "integration",
+            600,
+        )
+        assert {
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=row.id)
+        } == {row.id, *prebuilds}
+    assert "wasm.test.finally-pending-observer-parity" not in by_id
+
+
 def test_import_from_codec_receivers_execute_both_targets() -> None:
     from tools.compat import test_policy
 
@@ -1428,7 +1517,11 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
         assert row.argv[row.argv.index(option) + 1] == value
     assert "--no-retry-oom" in row.argv
     assert "--warm-cache" not in row.argv
-    assert set(row.dependencies) == {"wasm.build.backend", "wasm.build.shared-runtime"}
+    assert set(row.dependencies) == {
+        "wasm.build.backend",
+        "wasm.build.native-backend",
+        "wasm.build.shared-runtime",
+    }
     assert {"node", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"} <= set(
         PLAN.required_toolchains(row)
     )
@@ -1462,15 +1555,22 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     by_id = {command.id: command for command in PLAN.commands}
     freestanding = by_id["wasm.test.freestanding-e2e"]
-    parity = by_id["wasm.test.finally-pending-observer-parity"]
+    native = by_id["wasm.test.finally-pending-observer-parity.native"]
+    wasm = by_id["wasm.test.finally-pending-observer-parity.wasm"]
 
     assert freestanding.argv[-1] == "tests/test_wasm_freestanding.py"
     assert {"python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(freestanding)
     )
-    assert parity.argv[-1] == "tests/test_finally_pending_observer_parity.py"
+    for row, target in ((native, "native"), (wasm, "wasm")):
+        assert row.argv[-3:] == (
+            "tests/test_finally_pending_observer_parity.py",
+            "-k",
+            target,
+        )
+    assert {"clang", "lld-link"}.issubset(PLAN.required_toolchains(native))
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
-        PLAN.required_toolchains(parity)
+        PLAN.required_toolchains(wasm)
     )
     harness = by_id["python.unit.harness"]
     assert "tests/test_finally_pending_observer_harness.py" in harness.argv
@@ -4883,7 +4983,7 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.run.comprehension",
         "wasm.run.sieve",
         "wasm.test.control-flow",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.wasm",
     ):
         assert "wasm.build.host" in commands[name].dependencies
     for name in (
@@ -4892,7 +4992,7 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.compile.sieve",
         "wasm.test.control-flow",
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.wasm",
         "wasm.integration.split-runtime",
     ):
         assert "wasm.build.backend" in commands[name].dependencies
@@ -4921,7 +5021,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "linker.test.generated-object-admission",
         "llvm.clippy.backend",
         "rust.test.compiler-authorities",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
         "rust.test.ir-wasm-runtime-authorities",
         "portability.rust.macos.runtime-gate",
         "rust.test.runtime-cold-lifecycle",
@@ -4963,7 +5063,11 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             delegated = command_admission.envelope_for_command(wrapped)
             assert delegated["cargo_native_units"] == required
             assert delegated["delegated"]["cargo_native_units"] == required
-    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+    for name in (
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release",
+        "wasm.test.finally-pending-observer-parity.wasm",
+    ):
         row = next(row for row in plan.commands if row.id == name)
         assert proof_plan.cargo_native_units(row.data) == {}
 
