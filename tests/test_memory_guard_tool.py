@@ -35,6 +35,7 @@ from tests.process_guard_common import (
     check_output_guarded_test_process,
     install_module_os_view,
     install_module_view,
+    install_thread_module_view,
     start_owned_test_process,
 )
 from molt.memory_guard_paths import (
@@ -44,6 +45,18 @@ from molt.memory_guard_paths import (
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+# The guard re-exports process_custody's signal helpers, and process_model
+# reads os.getpid for the watched set, so one fake must reach all three.
+_GUARD_MODULES = (memory_guard, process_custody, process_model)
+
+
+def _fake_guard(monkeypatch, attribute: str, real: object, **fakes: Any) -> None:
+    """Fake ``real`` in every memory-guard module, on this test's thread only.
+
+    Other threads of the pytest process call these modules too; they keep
+    the real functions.
+    """
+    install_thread_module_view(monkeypatch, attribute, real, *_GUARD_MODULES, **fakes)
 
 
 @pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
@@ -2085,11 +2098,12 @@ def test_windows_termination_requires_creation_identity(monkeypatch) -> None:
     )
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
     )
 
     report = process_custody.terminate_watched_processes(
@@ -2135,11 +2149,12 @@ def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
     )
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
     )
 
     report = process_custody.terminate_watched_processes(
@@ -2270,7 +2285,6 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
@@ -2283,8 +2297,14 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
             raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
-    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=fake_killpg,
+        kill=fake_kill,
+    )
 
     process_custody.terminate_watched_processes(
         100,
@@ -2327,17 +2347,14 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
-    monkeypatch.setattr(
-        process_custody.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-    )
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     process_custody.terminate_watched_processes(
@@ -2494,12 +2511,13 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
         ),
     }
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
 
     assert memory_guard._terminate_single_process_group(100, grace=0.001) is True
@@ -2527,12 +2545,13 @@ def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
         started_at_ns=9101,
     )
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     action = memory_guard._send_pid_signal_if_identity_action(
@@ -2566,12 +2585,13 @@ def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
         started_at_ns=101,
     )
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
 
     action = memory_guard._send_process_group_signal_if_identities_match_action(
@@ -2605,12 +2625,13 @@ def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> N
         started_at_ns=9101,
     )
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     action = memory_guard._terminate_pid_if_identity_action(
@@ -2654,17 +2675,14 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-    )
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     report = process_custody.terminate_watched_processes(
@@ -2723,17 +2741,14 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-    )
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     report = process_custody.terminate_watched_processes(
@@ -2774,7 +2789,6 @@ def test_terminate_watched_processes_filters_protected_escaped_pid(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
@@ -2782,11 +2796,13 @@ def test_terminate_watched_processes_filters_protected_escaped_pid(
         if sig == process_custody.signal.SIGTERM:
             raise ProcessLookupError
 
-    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=fake_killpg,
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     process_custody.terminate_watched_processes(
@@ -2818,7 +2834,6 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
@@ -2831,8 +2846,14 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
             raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
-    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=fake_killpg,
+        kill=fake_kill,
+    )
 
     process_custody.terminate_watched_processes(
         100,
@@ -2868,7 +2889,6 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
     assert tracker.update(samples) == {100, 101}
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
@@ -2881,8 +2901,14 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
             raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
-    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=fake_killpg,
+        kill=fake_kill,
+    )
 
     process_custody.terminate_watched_processes(
         100,
@@ -2915,7 +2941,6 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
     monkeypatch.setattr(process_custody, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
@@ -2928,8 +2953,14 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
             raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
-    monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
-    monkeypatch.setattr(process_custody.os, "kill", fake_kill)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        killpg=fake_killpg,
+        kill=fake_kill,
+    )
 
     process_custody.terminate_watched_processes(
         100,
@@ -2969,17 +3000,14 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_custody.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-    )
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent_pids.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
+        kill=lambda pid, sig: sent_pids.append((pid, sig)),
     )
 
     process_custody.terminate_watched_processes(
@@ -3315,7 +3343,13 @@ def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
         lambda resource, limits: calls.append((resource, limits)),
     )
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
-    monkeypatch.setattr(memory_guard.sys, "platform", "linux")
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        memory_guard,
+        platform="linux",
+    )
 
     memory_guard._apply_child_resource_limit(1024)
 
@@ -4841,16 +4875,20 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
     }
     terminated: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0 and any(sent_pid == pid for sent_pid, _sig in terminated):
             raise ProcessLookupError
         if sig == memory_guard.signal.SIGTERM:
             terminated.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getpgrp=lambda: 999,
+        kill=fake_kill,
+    )
 
     cleaned = memory_guard.cleanup_repo_scoped_orphans_since_baseline(
         baseline_pgids=frozenset({500}),
@@ -4939,15 +4977,14 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
     # Synthetic PIDs may name live host processes; a regressed identity gate
     # must fail here, never reach a real signal.
     signals: list[tuple[str, int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "killpg",
-        lambda pgid, sig: signals.append(("killpg", pgid, sig)),
-    )
-    monkeypatch.setattr(
-        memory_guard.os, "kill", lambda pid, sig: signals.append(("kill", pid, sig))
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getpgrp=lambda: 999,
+        killpg=lambda pgid, sig: signals.append(("killpg", pgid, sig)),
+        kill=lambda pid, sig: signals.append(("kill", pid, sig)),
     )
     monkeypatch.setattr(
         memory_guard,
@@ -4994,17 +5031,18 @@ def test_terminate_verified_pid_revalidates_identity_before_fallback(
     sample_sets = iter([{200: original}, {200: reused_pid}])
     sent: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
     monkeypatch.setattr(
         memory_guard,
         "_pid_exited_or_unobservable",
         lambda pid, *, grace: False,
     )
-    monkeypatch.setattr(
-        memory_guard.os,
-        "kill",
-        lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getpgrp=lambda: 999,
+        kill=lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
     )
 
     actions = memory_guard.terminate_verified_pid(
@@ -5033,12 +5071,13 @@ def test_terminate_verified_pid_preserves_host_control_plane(
         started_at_ns=333,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "kill",
-        lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getpgrp=lambda: 999,
+        kill=lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
     )
 
     actions = memory_guard.terminate_verified_pid(
@@ -5109,11 +5148,12 @@ def test_windows_cleanup_sampler_failure_never_signals_remembered_pid(
         raise RuntimeError("live sampler unavailable")
 
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
-    monkeypatch.setattr(
-        process_custody.os,
-        "kill",
-        lambda pid, sig: sent.append((pid, sig)),
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
     )
 
     with pytest.raises(RuntimeError, match="live sampler unavailable"):
@@ -5141,15 +5181,20 @@ def test_pid_permission_error_is_live_unknown_not_completed(
     )
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
 
     def permission_liveness(pid: int, sig: int) -> None:
         if sig == 0:
             raise PermissionError("EPERM")
         sent.append((pid, sig))
 
-    monkeypatch.setattr(memory_guard.os, "kill", permission_liveness)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getpgrp=lambda: 999,
+        kill=permission_liveness,
+    )
 
     action = memory_guard._terminate_pid_if_identity_action(
         300,
@@ -5187,7 +5232,12 @@ def test_process_group_exit_probe_observes_at_the_end_of_its_window(
             raise ProcessLookupError
 
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(process_custody.os, "killpg", killpg, raising=False)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        killpg=killpg,
+    )
 
     assert process_custody.process_group_exited_or_unobservable(300, grace=grace)
     assert probes[-1] >= exit_at and probes[-1] <= grace
@@ -5197,11 +5247,11 @@ def test_process_group_permission_error_is_live_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(
-        memory_guard.os,
-        "killpg",
-        lambda _pgid, _sig: (_ for _ in ()).throw(PermissionError("EPERM")),
-        raising=False,
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        killpg=lambda _pgid, _sig: (_ for _ in ()).throw(PermissionError("EPERM")),
     )
 
     assert not memory_guard._process_group_exited_or_unobservable(300, grace=0.01)
@@ -5434,8 +5484,13 @@ def test_completed_process_group_does_not_emit_redundant_member_kill(
         ),
     }
     monkeypatch.setattr(custody, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(custody.os, "name", "posix", raising=False)
-    monkeypatch.setattr(custody.os, "getpid", lambda: 999)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        name="posix",
+        getpid=lambda: 999,
+    )
     monkeypatch.setattr(custody, "_safe_getpgrp", lambda: 999)
     monkeypatch.setattr(custody, "_safe_getpgid", lambda _pid: 100)
     monkeypatch.setattr(custody, "_safe_getsid", lambda _pid: 100)
@@ -7041,8 +7096,13 @@ def test_repro_context_includes_bounded_host_control_plane(
         ),
     }
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
-    monkeypatch.setattr(memory_guard.os, "getppid", lambda: 10)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        getppid=lambda: 10,
+    )
     monkeypatch.setattr(memory_guard, "_safe_getpgrp", lambda: 999)
 
     repro = memory_guard.repro_context_payload(
@@ -7138,7 +7198,7 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
     ]
     if os.name == "nt":
         monkeypatch.setattr(memory_guard, "inherit_stdio_kwargs", lambda: stdio)
-        monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
+        _fake_guard(monkeypatch, "subprocess", subprocess, run=fake_subprocess_run)
         assert (
             memory_guard.main(
                 main_argv,
@@ -7599,7 +7659,7 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
     ]
     if os.name == "nt":
         monkeypatch.setattr(memory_guard, "inherit_stdio_kwargs", lambda: stdio)
-        monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
+        _fake_guard(monkeypatch, "subprocess", subprocess, run=fake_subprocess_run)
         assert (
             memory_guard.main(
                 main_argv,
@@ -7803,10 +7863,11 @@ def test_spawn_failure_preserves_single_started_fd_close_authority(
             started_read_fd=started_fd,
         ),
     )
-    monkeypatch.setattr(
-        memory_guard.subprocess,
-        "Popen",
-        fail_spawn,
+    _fake_guard(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        Popen=fail_spawn,
     )
     monkeypatch.setattr(
         memory_guard,
@@ -8417,8 +8478,13 @@ def test_launch_identity_survives_a_child_the_kernel_no_longer_reports(
     def esrch(pid: int) -> int:
         raise ProcessLookupError(errno.ESRCH, "No such process")
 
-    monkeypatch.setattr(memory_guard.os, "getpgid", esrch)
-    monkeypatch.setattr(memory_guard.os, "getsid", esrch)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgid=esrch,
+        getsid=esrch,
+    )
 
     result = memory_guard.run_guarded(
         [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
@@ -8502,10 +8568,21 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
         calls.append((pid, flags))
         return pid, 0, types.SimpleNamespace(ru_maxrss=64)
 
-    monkeypatch.setattr(process_custody.os, "wait4", wait4, raising=False)
-    monkeypatch.setattr(process_custody.os, "waitid", lambda *args: None, raising=False)
-    for name, value in (("WNOWAIT", 1), ("WEXITED", 2), ("P_PID", 3), ("WNOHANG", 4)):
-        monkeypatch.setattr(process_custody.os, name, value, raising=False)
+    # The clock's own reaper thread calls wait4 and waitid, so these fakes
+    # answer every thread that reads process_custody's os.
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        process_custody,
+        wait4=wait4,
+        waitid=lambda *args: None,
+        name="posix",
+        WNOWAIT=1,
+        WEXITED=2,
+        P_PID=3,
+        WNOHANG=4,
+    )
     proc = types.SimpleNamespace(
         pid=123456,
         args=["owned-mock"],
@@ -8513,7 +8590,6 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
         wait=lambda: None,
         _waitpid_lock=threading.Lock(),
     )
-    monkeypatch.setattr(process_custody.os, "name", "posix")
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
     assert proc.wait(timeout=1) == 0
     exited = clock.finished

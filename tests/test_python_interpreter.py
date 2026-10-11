@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -124,7 +125,13 @@ def test_selector_refuses_missing_explicit_path(tmp_path: Path):
 
 def test_target_python_resolution_fails_closed_with_attempts(monkeypatch):
     target = python_interpreter.parse_target_python_version("3.13")
-    monkeypatch.setattr(python_interpreter.shutil, "which", lambda _name: None)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        python_interpreter,
+        which=lambda _name: None,
+    )
 
     def fake_run_command(command, **_kwargs):
         return "", f"missing {' '.join(command)}", 127

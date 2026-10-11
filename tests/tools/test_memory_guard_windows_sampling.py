@@ -16,7 +16,11 @@ from tools.memory_guard_core import windows_snapshot
 from tools.memory_guard_core import process_model
 
 import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
-from tests.process_guard_common import install_module_os_view
+from tests.process_guard_common import (
+    install_module_os_view,
+    install_module_view,
+    install_thread_module_view,
+)
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -24,6 +28,23 @@ pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "memory_guard.py"
+# The custody modules call each other: process_custody signals and reads
+# os.getpid, and process_model reads os.getpid for the watched set.
+_CUSTODY_MODULES = (
+    process_custody,
+    process_model,
+    windows_snapshot,
+    pytest_memory_guard_bootstrap,
+)
+
+
+def _fake_custody(monkeypatch, attribute: str, real: object, **fakes) -> None:
+    """Fake ``real`` in every custody module, on this test's thread only.
+
+    Other threads of the pytest process call the custody modules too, so
+    each function fake answers only the installing thread.
+    """
+    install_thread_module_view(monkeypatch, attribute, real, *_CUSTODY_MODULES, **fakes)
 
 
 def _load_memory_guard():
@@ -41,13 +62,7 @@ def _load_memory_guard():
 @pytest.fixture(autouse=True)
 def custody_modules_use_a_private_os(monkeypatch) -> None:
     """Every ``os`` patch in this file stays inside the custody modules."""
-    install_module_os_view(
-        monkeypatch,
-        process_custody,
-        process_model,
-        windows_snapshot,
-        pytest_memory_guard_bootstrap,
-    )
+    install_module_os_view(monkeypatch, *_CUSTODY_MODULES)
 
 
 @pytest.mark.parametrize("name", ["nt", "posix"])
@@ -121,8 +136,8 @@ def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None
     def missing_ps(*args, **kwargs):  # noqa: ANN002, ANN003
         raise FileNotFoundError("ps")
 
-    monkeypatch.setattr(process_model.sys, "platform", "freebsd14")
-    monkeypatch.setattr(process_model.subprocess, "run", missing_ps)
+    install_module_view(monkeypatch, "sys", sys, process_model, platform="freebsd14")
+    _fake_custody(monkeypatch, "subprocess", subprocess, run=missing_ps)
 
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="POSIX process snapshot"
@@ -144,7 +159,7 @@ def _darwin_row(
 
 
 def _install_fake_darwin_authority(monkeypatch, authority: object) -> None:
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, process_model, platform="darwin")
     monkeypatch.setattr(
         process_model,
         "_darwin_process_authority_cache",
@@ -167,7 +182,7 @@ def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
         raise AssertionError("Darwin sampler must not shell out to ps")
 
     _install_fake_darwin_authority(monkeypatch, FakeAuthority())
-    monkeypatch.setattr(process_model.subprocess, "run", forbidden_run)
+    _fake_custody(monkeypatch, "subprocess", subprocess, run=forbidden_run)
 
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="Darwin process enumeration failed"
@@ -254,7 +269,7 @@ def test_darwin_process_authority_retains_one_library_binding_set(
         loads.append(path)
         return libproc if path.endswith("libproc.dylib") else libsystem
 
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, process_model, platform="darwin")
     monkeypatch.setattr(
         process_model,
         "_darwin_process_authority_cache",
@@ -351,7 +366,7 @@ def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) 
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Windows sampler must not shell out")
 
-    monkeypatch.setattr(module.subprocess, "run", fail_run)
+    _fake_custody(monkeypatch, "subprocess", subprocess, run=fail_run)
     monkeypatch.setattr(
         module,
         "_windows_process_snapshot_rows_hard_timeout",
@@ -421,7 +436,7 @@ def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None
     def timed_out(*args, **kwargs):  # noqa: ANN002, ANN003
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-    monkeypatch.setattr(windows_snapshot.subprocess, "run", timed_out)
+    _fake_custody(monkeypatch, "subprocess", subprocess, run=timed_out)
 
     with pytest.raises(windows_snapshot.WindowsProcessSnapshotTimeout):
         windows_snapshot._windows_process_snapshot_rows_hard_timeout()
@@ -449,7 +464,7 @@ def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
             stderr="",
         )
 
-    monkeypatch.setattr(windows_snapshot.subprocess, "run", fake_run)
+    _fake_custody(monkeypatch, "subprocess", subprocess, run=fake_run)
 
     assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == [
         (7, 1, 9, "python.exe", 3, 123456789, "full")
@@ -465,10 +480,11 @@ def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
         "_windows_process_snapshot_timeout_sec",
         lambda: 0.25,
     )
-    monkeypatch.setattr(
-        windows_snapshot.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
+    _fake_custody(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        run=lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
             returncode=0,
             stdout='[[7,1,9,"python.exe",3]]',
             stderr="",
@@ -494,10 +510,11 @@ def test_windows_process_snapshot_hard_timeout_preserves_failure_authority(
     message: str,
 ) -> None:
     install_module_os_view(monkeypatch, windows_snapshot, name="nt")
-    monkeypatch.setattr(
-        windows_snapshot.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
+    _fake_custody(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        run=lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
             returncode=returncode,
             stdout=stdout,
             stderr=stderr,
@@ -566,17 +583,13 @@ def test_windows_process_handle_rss_rejects_invalid_handle_values(
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
     module = _load_memory_guard()
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(
-        module.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        module,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        CREATE_NO_WINDOW=0x08000000,
     )
 
     kwargs = module._guarded_popen_process_isolation_kwargs()
@@ -658,17 +671,13 @@ def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) ->
     import tools.harness_memory_guard as harness_memory_guard
 
     install_module_os_view(monkeypatch, harness_memory_guard, name="nt")
-    monkeypatch.setattr(
-        harness_memory_guard.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        harness_memory_guard.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        harness_memory_guard,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        CREATE_NO_WINDOW=0x08000000,
     )
 
     assert harness_memory_guard.batch_process_group_kwargs() == {
@@ -679,6 +688,10 @@ def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) ->
 def test_process_spawn_is_single_windows_hidden_group_authority(monkeypatch) -> None:
     import molt.process_spawn as process_spawn
 
+    # These two stay process-wide: the helpers' default ``subprocess_module``
+    # bound the real module when Python defined them, so a module view in
+    # ``process_spawn`` never reaches the default. The fakes are the Windows
+    # values, which only Windows-path callers read.
     monkeypatch.setattr(
         process_spawn.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -711,17 +724,13 @@ def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    install_thread_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        CREATE_NO_WINDOW=0x08000000,
     )
 
     assert pytest_memory_guard_bootstrap._windows_process_group_kwargs() == {
@@ -768,19 +777,21 @@ def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_flush_standard_streams", lambda: None
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
+    install_thread_module_view(
+        monkeypatch,
+        "os",
+        os,
+        pytest_memory_guard_bootstrap,
+        _exit=fake_exit,
     )
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    install_thread_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        run=fake_run,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        CREATE_NO_WINDOW=0x08000000,
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -1147,8 +1158,13 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", fake_kill)
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=fake_kill,
+    )
 
     module.terminate_watched_processes(
         100,
@@ -1188,8 +1204,13 @@ def test_windows_termination_revalidates_identity_between_discovery_and_term(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     report = module.terminate_watched_processes(
         100,
@@ -1231,8 +1252,13 @@ def test_windows_termination_revalidates_identity_between_term_and_kill(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     report = module.terminate_watched_processes(
         100,
@@ -1277,8 +1303,13 @@ def test_terminate_watched_processes_windows_refuses_codex_root(
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     module.terminate_watched_processes(
         100,
@@ -1298,8 +1329,13 @@ def test_terminate_watched_processes_windows_refuses_owned_root_with_empty_sampl
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     report = module.terminate_watched_processes(
         100,
@@ -1357,8 +1393,13 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     report = module.terminate_watched_processes(
         200,
@@ -1470,8 +1511,13 @@ def test_terminate_single_pid_windows_refuses_external_codex_lineage(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     assert module._terminate_single_pid(200, grace=0.0) is True
     assert sent == []
@@ -1520,8 +1566,13 @@ def test_terminate_single_pid_windows_rechecks_identity_before_signal(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
-    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _fake_custody(
+        monkeypatch,
+        "os",
+        os,
+        getpid=lambda: 99999,
+        kill=lambda pid, sig: sent.append((pid, sig)),
+    )
 
     assert module._terminate_single_pid(200, grace=0.0) is True
     assert sent == []
@@ -1865,10 +1916,11 @@ def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, modul
 
 def test_windows_native_av_helper_is_typed_failure(monkeypatch):
     install_module_os_view(monkeypatch, windows_snapshot, name="nt")
-    monkeypatch.setattr(
-        windows_snapshot.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
+    _fake_custody(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        run=lambda *args, **kwargs: SimpleNamespace(
             returncode=3221225477, stdout="[]", stderr="native query fault"
         ),
     )

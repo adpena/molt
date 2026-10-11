@@ -2,16 +2,34 @@ from __future__ import annotations
 
 import importlib.util
 from functools import cache
+import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    install_module_view,
+    install_thread_module_view,
+)
 from tools import guarded_entrypoints
+from tools.memory_guard_core import process_custody
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "process_sentinel.py"
 WINDOWS_ROOT = Path("C:/repo/molt")
+
+
+def _install_sentinel_os(monkeypatch, module, **fakes: Any) -> None:
+    """Give the sentinel and its signal path one private ``os`` view.
+
+    ``terminate_group`` reads ``os.getpid``. It sends its signals through
+    ``memory_guard_core.process_custody``, which reads ``os.getpid``,
+    ``os.kill`` and ``os.killpg`` itself, so both modules get the view.
+    Other threads also call the custody module, so each fake answers only
+    this test's thread.
+    """
+    install_thread_module_view(monkeypatch, "os", os, module, process_custody, **fakes)
 
 
 def _codex_launched_molt_build_command() -> str:
@@ -1411,20 +1429,14 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
     }
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
+        kill=lambda pid, sig: sent_groups.append((pid, sig)),
+    )
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        module.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module.os,
-        "kill",
-        lambda pid, sig: sent_groups.append((pid, sig)),
-        raising=False,
-    )
 
     module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
 
@@ -1448,14 +1460,13 @@ def test_terminate_group_refuses_posix_group_without_expected_identities(
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        module.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-        raising=False,
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
 
     module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
 
@@ -1478,13 +1489,12 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(
-        module.os,
-        "killpg",
-        lambda pgid, sig: killpg_calls.append((pgid, sig)),
-        raising=False,
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+        killpg=lambda pgid, sig: killpg_calls.append((pgid, sig)),
     )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
@@ -1518,8 +1528,12 @@ def test_terminate_group_report_only_env_skips_windows_termination(
     monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
@@ -1555,8 +1569,12 @@ def test_terminate_group_refuses_windows_group_without_expected_identity(
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
@@ -1589,8 +1607,12 @@ def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> Non
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
@@ -1632,8 +1654,12 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(100, grace=0.001)
@@ -1680,8 +1706,12 @@ def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
@@ -1737,8 +1767,12 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 999,
+        kill=lambda pid, sig: killed.append((pid, sig)),
+    )
     install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
@@ -1770,14 +1804,13 @@ def test_terminate_group_report_only_env_skips_posix_termination(
     monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        module.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-        raising=False,
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
 
     module.terminate_group(
         100,
@@ -1820,14 +1853,13 @@ def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", sample_processes)
-    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        module.os,
-        "killpg",
-        lambda pgid, sig: sent_groups.append((pgid, sig)),
-        raising=False,
+    _install_sentinel_os(
+        monkeypatch,
+        module,
+        getpid=lambda: 9999,
+        killpg=lambda pgid, sig: sent_groups.append((pgid, sig)),
     )
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
 
     module.terminate_group(100, grace=0.0)
 

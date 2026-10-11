@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import signal
+import time
 
 import pytest
 
 from molt import backend_daemon_custody as custody
 from tools import memory_guard
-from tools.memory_guard_core import process_custody
+from tools.memory_guard_core import process_custody, process_model
+from tests.process_guard_common import install_thread_module_view
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -59,18 +62,25 @@ def _patch_memory_guard_termination(
 ) -> None:
     monkeypatch.setattr(custody, "_load_memory_guard_module", lambda: memory_guard)
     monkeypatch.setattr(memory_guard, "sample_processes", samples)
-    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999_999)
-    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999_999, raising=False)
-    monkeypatch.setattr(memory_guard.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         memory_guard,
         "_pid_exited_or_unobservable",
         lambda pid, *, grace: False,
     )
-    monkeypatch.setattr(
-        memory_guard.os,
-        "kill",
-        lambda pid, sig: None if sig == 0 else signals.append(sig),
+    # The guard signals through process_custody, which reads its own os and
+    # time; other threads use both modules, so the fakes answer this thread.
+    guard_modules = (memory_guard, process_custody, process_model)
+    install_thread_module_view(
+        monkeypatch,
+        "os",
+        os,
+        *guard_modules,
+        getpid=lambda: 999_999,
+        getpgrp=lambda: 999_999,
+        kill=lambda pid, sig: None if sig == 0 else signals.append(sig),
+    )
+    install_thread_module_view(
+        monkeypatch, "time", time, *guard_modules, sleep=lambda seconds: None
     )
 
 

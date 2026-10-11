@@ -98,6 +98,30 @@ def current_thread_only(
     return dispatch
 
 
+def install_thread_module_view(
+    monkeypatch: Any, attribute: str, real: object, *modules: object, **fakes: Any
+) -> ModuleView:
+    """Give ``modules`` one private view whose function fakes answer this thread.
+
+    Use it when other threads of the pytest process also call the modules
+    under test, as they call the memory-guard custody modules. A function
+    fake answers only the installing thread; other threads reach the real
+    function. A value fake (``sys.platform``), a class, or a fake for a
+    function the host lacks (``os.killpg`` on Windows) cannot be scoped and
+    answers every reader of the view.
+    """
+
+    scoped = {
+        name: current_thread_only(fake, original)
+        if callable(fake)
+        and not isinstance(fake, type)
+        and callable(original := getattr(real, name, None))
+        else fake
+        for name, fake in fakes.items()
+    }
+    return install_module_view(monkeypatch, attribute, real, *modules, **scoped)
+
+
 class GuardedProcessRole(str, Enum):
     """Orthogonal operation role for a suite-family process guard."""
 
