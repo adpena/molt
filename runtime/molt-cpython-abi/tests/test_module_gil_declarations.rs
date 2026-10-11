@@ -34,31 +34,14 @@ use molt_cpython_abi::gil_declarations::{
     ModuleGilDeclaration, module_gil_declaration, modules_requiring_gil,
     unresolved_gil_declaration_count,
 };
-use std::collections::HashSet;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
-use std::sync::{LazyLock, Mutex};
-static MODULES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 thread_local! {
     static EXEC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EXEC_MODULE_CHECK: std::cell::Cell<c_int> = const { std::cell::Cell::new(0) };
 }
-unsafe extern "C" fn classify(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        MoltTypeTag::Str as u8
-    } else if MODULES.lock().unwrap().contains(&bits) {
-        MoltTypeTag::Module as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-unsafe extern "C" fn alloc_module(_data: *const u8, _len: usize) -> u64 {
-    let bits = molt_lang_obj_model::MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
-    MODULES.lock().unwrap().insert(bits);
-    bits
-}
 unsafe extern "C" fn exec_begin(bits: u64, _definition: usize) -> c_int {
-    if MODULES.lock().unwrap().contains(&bits) {
+    if unsafe { support::fake_runtime::classify_heap(bits) } == MoltTypeTag::Module as u8 {
         0
     } else {
         -1
@@ -66,9 +49,7 @@ unsafe extern "C" fn exec_begin(bits: u64, _definition: usize) -> c_int {
 }
 fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
-    support::fake_strings::wire(&mut hooks);
-    hooks.classify_heap = Some(classify);
-    hooks.alloc_module = alloc_module;
+    support::fake_runtime::wire(&mut hooks);
     hooks.module_exec_begin = exec_begin;
     support::enter_runtime_class_abi_test(hooks)
 }

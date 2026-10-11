@@ -758,7 +758,7 @@ pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u
         let Some(list_ptr) = obj_from_bits(items_bits).as_ptr() else {
             return array_bits(py, handle);
         };
-        let result = unsafe {
+        let result: Result<(), ArrayStorageError> = unsafe {
             crate::object::seq_access::with_borrowed(list_ptr, |seq| {
                 for &bits in seq {
                     let elem = storage_elem(tc, bits)?;

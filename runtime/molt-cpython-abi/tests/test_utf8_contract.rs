@@ -92,7 +92,18 @@ unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
     }
 }
 
-unsafe extern "C" fn noop_ref(_bits: u64) {}
+// This binary's original storage is process-lifetime. FOREIGN class edges
+// use the shared fixture owner and must retain/release through that registry.
+unsafe extern "C" fn fixture_inc_ref(bits: u64) {
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::inc_ref(bits) };
+    }
+}
+unsafe extern "C" fn fixture_dec_ref(bits: u64) {
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::dec_ref(bits) };
+    }
+}
 
 fn init() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
@@ -101,8 +112,9 @@ fn init() -> support::AbiTestThreadStateTransaction {
     hooks.str_data = str_data;
     hooks.bytes_data = bytes_data;
     hooks.classify_heap = Some(classify_heap);
-    hooks.inc_ref = noop_ref;
-    hooks.dec_ref = noop_ref;
+    hooks.foreign_new = support::fake_runtime::foreign_new;
+    hooks.inc_ref = fixture_inc_ref;
+    hooks.dec_ref = fixture_dec_ref;
     support::enter_runtime_class_abi_test(hooks)
 }
 

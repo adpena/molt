@@ -83,9 +83,21 @@ The standalone ABI run at `1c61bb0ce` also compiles, with 739 passes, 41
 failures and one ignored case. Thirty-eight failures share incompatible
 process-owned fixture tables; two numeric protocol controls and one slice
 control expose native fixture declarations incorrectly registered as managed
-runtime classes. Those fixture families are being migrated through the existing
-ownership and child-process capture authorities. Production type admission
-remains strict. This result does not qualify the ABI family.
+runtime classes. The fixture correction uses the existing FOREIGN owner for
+native declarations and genuine Type identities for dedicated managed-subtype
+controls. Normal and partial providers migrate together through the existing
+ownership and child-process capture authorities; duplicate fixture registries
+are removed. Production type admission remains strict. The combined ABI
+consumer execution is still required. The dedicated subtype-provider control
+does not establish numeric-to-managed-subtype injected-error composition.
+
+The optimized runtime attempt at `67a216abe` stops at compilation with three
+integration errors: a reference helper imported from the wrong namespace, an
+uncast native boolean pointer, and an unconstrained array storage-result error
+type. Their corrections use the existing signatures and typed storage error;
+the same-mechanism source census found no additional instances in those
+families. No runtime test executed in this attempt. Retained build diagnostics
+and the earlier executed results remain distinct evidence.
 
 The combined source correction follows explicit allocation and operation results,
 borrows managed scalar fields through their canonical layout authority, and

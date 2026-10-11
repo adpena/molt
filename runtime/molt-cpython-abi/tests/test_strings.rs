@@ -14,7 +14,7 @@ thread_local! {
 
 unsafe extern "C" fn alloc_string(data: *const u8, len: usize) -> u64 {
     if STRING_ALLOCATION_ENABLED.with(std::cell::Cell::get) {
-        unsafe { support::fake_strings::alloc_str(data, len) }
+        unsafe { support::fake_runtime::alloc_str(data, len) }
     } else {
         unsafe { fail_allocation(data, len) }
     }
@@ -35,24 +35,15 @@ unsafe extern "C" fn fail_allocation(_data: *const u8, _len: usize) -> u64 {
     0
 }
 
-unsafe extern "C" fn classify(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
-    } else {
-        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
-    }
-}
-
 fn init() -> support::AbiTestThreadStateTransaction {
     STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(false));
     SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
     FAILED_ALLOCATION_CALLS.with(|calls| calls.set(0));
     let mut hooks = support::stub_runtime_hooks();
-    support::fake_strings::wire(&mut hooks);
+    support::fake_runtime::wire(&mut hooks);
     hooks.alloc_str = Some(alloc_string);
     hooks.alloc_bytes = fail_allocation;
     hooks.alloc_bytearray = fail_allocation;
-    hooks.classify_heap = Some(classify);
     support::enter_runtime_class_abi_test(hooks)
 }
 
@@ -726,7 +717,12 @@ fn missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error() {
     // This is a registered partial provider: the transaction supplies native
     // GC and class custody, but text allocation remains absent. Diagnostic
     // construction must not recursively invoke its unavailable allocator.
-    let _abi_test = support::enter_runtime_class_abi_test(support::stub_runtime_hooks());
+    let mut hooks = support::stub_runtime_hooks();
+    hooks.foreign_new = support::fake_runtime::foreign_new;
+    hooks.inc_ref = support::fake_runtime::inc_ref;
+    hooks.dec_ref = support::fake_runtime::dec_ref;
+    hooks.ref_count = Some(support::fake_runtime::ref_count);
+    let _abi_test = support::enter_runtime_class_abi_test(hooks);
     assert!(
         molt_cpython_abi::hooks::hooks_or_stubs()
             .native_gc_allocate

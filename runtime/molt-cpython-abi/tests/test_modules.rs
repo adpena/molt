@@ -830,28 +830,77 @@ fn init() -> (
     (transaction, guard)
 }
 
+// StaticType/Box own the physical shell; this guard owns only its semantic
+// binding. Declare it after the shell and before every dependent instance.
+struct BoundType {
+    pointer: *mut PyTypeObject,
+    bits: u64,
+    bound: bool,
+}
+impl BoundType {
+    unsafe fn new(pointer: *mut PyTypeObject) -> Self {
+        let mut binding = Self {
+            pointer,
+            bits: support::fake_runtime::managed_type_handle(),
+            bound: false,
+        };
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                pointer.cast(),
+                binding.bits,
+                true,
+            )
+        }
+        .expect("bind the fixture's genuine managed Type identity");
+        binding.bound = true;
+        binding
+    }
+}
+impl Drop for BoundType {
+    fn drop(&mut self) {
+        if self.bound {
+            assert!(unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .unbind_static_pyobj_from_runtime_handle(self.pointer.cast(), self.bits)
+            });
+        }
+        unsafe { support::fake_runtime::dec_ref(self.bits) };
+    }
+}
+
+// Declare before the projected instance: it must remain valid during final
+// instance retirement and be removed before the class binding/shell retires.
+struct InstanceClassOverride(u64);
+impl Drop for InstanceClassOverride {
+    fn drop(&mut self) {
+        FAKE_CLASS_OVERRIDES.lock().unwrap().remove(&self.0);
+        FAKE_CALLABLE_BITS.lock().unwrap().remove(&self.0);
+        FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
+    }
+}
+
 #[test]
 fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
     let _guard = init();
-    let class_bits = support::fake_runtime::fresh_handle();
     let mut class: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
     class.ob_base.ob_base.ob_refcnt = 1;
     class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
     class.tp_name = c"fixture.Custom".as_ptr();
     class.tp_base = &raw mut PyBaseObject_Type;
     let class_ptr = &mut *class as *mut PyTypeObject;
-    unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .bind_static_pyobj_to_runtime_handle(class_ptr.cast(), class_bits, true)
-            .expect("bind a custom runtime class to its existing ABI Type view");
-    }
+    let binding = unsafe { BoundType::new(class_ptr) };
     let instance_bits = support::fake_runtime::fresh_handle();
     FAKE_CLASS_OVERRIDES
         .lock()
         .unwrap()
-        .insert(instance_bits, class_bits);
-    let instance =
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(instance_bits) };
+        .insert(instance_bits, binding.bits);
+    let class_override = InstanceClassOverride(instance_bits);
+    let instance_owner = unsafe {
+        molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(instance_bits),
+        )
+    };
+    let instance = instance_owner.as_ptr();
     assert!(!instance.is_null());
     assert_eq!(unsafe { (*instance).ob_type }, &raw mut MoltManaged_Type);
     assert_eq!(
@@ -859,46 +908,46 @@ fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
         class_ptr
     );
     let initial_refs = class.ob_base.ob_base.ob_refcnt;
-    let owned_class = unsafe { molt_cpython_abi::api::typeobj::PyObject_Type(instance) };
-    assert_eq!(owned_class, class_ptr.cast());
+    let owned_class = unsafe {
+        molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::typeobj::PyObject_Type(instance),
+        )
+    };
+    assert_eq!(owned_class.as_ptr(), class_ptr.cast());
     assert_eq!(class.ob_base.ob_base.ob_refcnt, initial_refs + 1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(owned_class) };
+    drop(owned_class);
     assert_eq!(class.ob_base.ob_base.ob_refcnt, initial_refs);
     assert_eq!(
         unsafe { molt_cpython_abi::api::typeobj::_Py_TYPE(instance) },
         class_ptr
     );
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(instance) };
-    FAKE_CLASS_OVERRIDES.lock().unwrap().remove(&instance_bits);
-    assert!(unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .unbind_static_pyobj_from_runtime_handle(class_ptr.cast(), class_bits)
-    });
-    unsafe { support::fake_runtime::dec_ref(class_bits) };
+    drop(instance_owner);
+    drop(class_override);
+    drop(binding);
 }
 
 #[test]
 fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_class() {
     let _guard = init();
-    let class_bits = support::fake_runtime::fresh_handle();
     let mut class: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
     class.ob_base.ob_base.ob_refcnt = 1;
     class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
     class.tp_name = c"fixture.Callable".as_ptr();
     class.tp_call = Some(semantic_call_slot);
     let class_ptr = &mut *class as *mut PyTypeObject;
-    unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .bind_static_pyobj_to_runtime_handle(class_ptr.cast(), class_bits, true)
-            .expect("bind semantic class view");
-    }
+    let binding = unsafe { BoundType::new(class_ptr) };
     let instance_bits = support::fake_runtime::fresh_handle();
     FAKE_CLASS_OVERRIDES
         .lock()
         .unwrap()
-        .insert(instance_bits, class_bits);
-    let instance =
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(instance_bits) };
+        .insert(instance_bits, binding.bits);
+    let class_override = InstanceClassOverride(instance_bits);
+    let instance_owner = unsafe {
+        molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(instance_bits),
+        )
+    };
+    let instance = instance_owner.as_ptr();
     assert!(!instance.is_null());
     assert_eq!(unsafe { (*instance).ob_type }, &raw mut MoltManaged_Type);
 
@@ -915,86 +964,115 @@ fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_clas
     unsafe {
         use molt_cpython_abi::api::{object, refcount, typeobj};
         assert_eq!(typeobj::PyCallable_Check(instance), 1);
-        let direct = object::PyObject_Call(instance, ptr::null_mut(), ptr::null_mut());
-        assert!(!direct.is_null());
-        refcount::Py_DECREF(direct);
+        let direct = refcount::OwnedPyObject::from_owned(object::PyObject_Call(
+            instance,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ));
+        assert!(!direct.as_ptr().is_null());
+        drop(direct);
 
-        let vector = object::PyObject_Vectorcall(instance, ptr::null_mut(), 0, ptr::null_mut());
-        assert!(!vector.is_null());
-        refcount::Py_DECREF(vector);
+        let vector = refcount::OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+            instance,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        ));
+        assert!(!vector.as_ptr().is_null());
+        drop(vector);
 
-        let vector_dict =
-            object::PyObject_VectorcallDict(instance, ptr::null_mut(), 0, ptr::null_mut());
-        assert!(!vector_dict.is_null());
-        refcount::Py_DECREF(vector_dict);
+        let vector_dict = refcount::OwnedPyObject::from_owned(object::PyObject_VectorcallDict(
+            instance,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        ));
+        assert!(!vector_dict.as_ptr().is_null());
+        drop(vector_dict);
 
         // The direct metatype slot is public to C callers too. Even there a
         // managed view must not try to instantiate its semantic class layout.
-        let slot = typeobj::molt_type_call(instance, ptr::null_mut(), ptr::null_mut());
-        assert!(!slot.is_null());
-        refcount::Py_DECREF(slot);
+        let slot = refcount::OwnedPyObject::from_owned(typeobj::molt_type_call(
+            instance,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ));
+        assert!(!slot.as_ptr().is_null());
+        drop(slot);
 
         let mut type_args = CallTuple::new([instance]);
-        let reported = object::PyObject_Call(
+        let reported = refcount::OwnedPyObject::from_owned(object::PyObject_Call(
             (&raw mut PyType_Type).cast(),
             (&raw mut type_args).cast(),
             ptr::null_mut(),
-        );
-        assert_eq!(reported, class_ptr.cast());
-        refcount::Py_DECREF(reported);
-        refcount::Py_DECREF(instance);
+        ));
+        assert_eq!(reported.as_ptr(), class_ptr.cast());
+        drop(reported);
+        drop(instance_owner);
     }
-    FAKE_CALLABLE_BITS.lock().unwrap().remove(&instance_bits);
-    FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
     assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 4);
     assert_eq!(FAKE_LAST_CALLED.load(Ordering::Relaxed), instance_bits);
     assert_eq!(SEMANTIC_CALL_SLOT_CALLS.load(Ordering::Relaxed), 0);
-    FAKE_CLASS_OVERRIDES.lock().unwrap().remove(&instance_bits);
-    assert!(unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .unbind_static_pyobj_from_runtime_handle(class_ptr.cast(), class_bits)
-    });
-    unsafe { support::fake_runtime::dec_ref(class_bits) };
+    drop(class_override);
+    drop(binding);
 }
 
 #[test]
 fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
+    use molt_cpython_abi::api::{errors, object, refcount, typeobj};
+
     let _guard = init();
-    let canonical_new = unsafe { PyType_Type.tp_new };
-    assert!(canonical_new.is_none());
+    let mut class = support::StaticType::new();
+    class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+    class.tp_name = c"fixture.RuntimeConstructor".as_ptr();
+    class.tp_flags = Py_TPFLAGS_READY;
+    assert!(class.tp_new.is_none());
+    let binding = unsafe { BoundType::new(class.as_ptr()) };
+    struct ResetCall;
+    impl Drop for ResetCall {
+        fn drop(&mut self) {
+            FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
+        }
+    }
+    let _reset_call = ResetCall;
     FAKE_CALLS.store(0, Ordering::Relaxed);
     FAKE_CALL_ENABLED.store(true, Ordering::Relaxed);
     unsafe {
-        use molt_cpython_abi::api::{object, refcount, typeobj};
         let mut args = CallTuple::new([(&raw mut Py_None).cast(); 3]);
-        let constructed = object::PyObject_Call(
-            (&raw mut PyType_Type).cast(),
+        let constructed = refcount::OwnedPyObject::from_owned(object::PyObject_Call(
+            binding.pointer.cast(),
             (&raw mut args).cast(),
             ptr::null_mut(),
-        );
-        assert!(!constructed.is_null());
-        refcount::Py_DECREF(constructed);
+        ));
+        assert!(!constructed.as_ptr().is_null());
+        drop(constructed);
         assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            FAKE_LAST_CALLED.load(Ordering::Relaxed),
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .molt_handle_for_pyobj((&raw mut PyType_Type).cast())
-                .unwrap()
-                .bits()
-        );
+        assert_eq!(FAKE_LAST_CALLED.load(Ordering::Relaxed), binding.bits);
 
-        // A direct invocation of the metatype slot has the same authority.
-        let direct = typeobj::molt_type_call(
+        // Direct invocation of the metatype slot delegates the same managed
+        // constructor. No builtin native type identity is rebound to this owner.
+        let direct = refcount::OwnedPyObject::from_owned(typeobj::molt_type_call(
+            binding.pointer.cast(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ));
+        assert!(!direct.as_ptr().is_null());
+        drop(direct);
+        assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 2);
+        assert_eq!(FAKE_LAST_CALLED.load(Ordering::Relaxed), binding.bits);
+        assert!(errors::PyErr_Occurred().is_null());
+
+        // Physical `type()` retains its independent zero-argument arity rule.
+        let physical = refcount::OwnedPyObject::from_owned(typeobj::molt_type_call(
             (&raw mut PyType_Type).cast(),
             ptr::null_mut(),
             ptr::null_mut(),
-        );
-        assert!(direct.is_null());
-        // `type()` still rejects the zero-argument shape before delegation.
-        assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 1);
-        molt_cpython_abi::api::errors::PyErr_Clear();
+        ));
+        assert!(physical.as_ptr().is_null());
+        assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 2);
+        assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_TypeError).cast());
+        errors::PyErr_Clear();
     }
-    FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
 }
 
 #[test]
