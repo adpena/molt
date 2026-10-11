@@ -89,7 +89,7 @@ fn pending_reporting_consumes_runtime_error_and_observes_c_precedence() {
             let c_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(c_error);
             assert!(!c_view.is_null());
             set_c_error(c_view);
-            crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
+            crate::test_support::restore_runtime_raised(py, runtime);
             errors::PyErr_WriteUnraisable(ptr::null_mut());
             assert_eq!(REPORTED_ERROR.with(|reported| reported.get()), (c_error, 2));
             assert!(errors::PyErr_Occurred().is_null());
@@ -156,7 +156,7 @@ fn pending_native_clear_reports_inner_runtime_error_and_preserves_both_outer_cha
             let c_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(c_error);
             assert!(!c_view.is_null());
             set_c_error(c_view);
-            crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
+            crate::test_support::restore_runtime_raised(py, runtime);
             assert_eq!(
                 molt_cpython_abi::api::memory::native_gc_node_clear(
                     (&raw mut callback.object).addr()
@@ -556,7 +556,7 @@ fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
             assert!(!original_view.is_null() && !cleanup_view.is_null() && !handled_view.is_null());
             errors::PyErr_SetHandledException(handled_view);
             set_c_error(original_view);
-            crate::builtins::exceptions::molt_exception_set_last(runtime);
+            crate::test_support::restore_runtime_raised(py, runtime);
             let result = errors::with_preserved_error(|| {
                 assert!(errors::PyErr_Occurred().is_null());
                 assert!(!crate::exception_pending(py));
@@ -565,12 +565,12 @@ fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
                     Some(handled)
                 );
                 set_c_error(cleanup_view);
-                crate::builtins::exceptions::molt_exception_set_last(handled);
+                crate::test_support::restore_runtime_raised(py, handled);
                 errors::with_preserved_error(|| {
                     assert!(errors::PyErr_Occurred().is_null());
                     assert!(!crate::exception_pending(py));
                     set_c_error(original_view);
-                    crate::builtins::exceptions::molt_exception_set_last(runtime);
+                    crate::test_support::restore_runtime_raised(py, runtime);
                 });
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(handled));
                 let restored = errors::PyErr_GetRaisedException();
@@ -615,10 +615,7 @@ unsafe extern "C" fn sequence_input_drop(object: *mut PyObject) {
     SEQUENCE_INPUT_DROPS.with(|count| count.set(count.get() + 1));
     crate::with_gil_entry_nopanic!(py, {
         unsafe { set_c_error(input.c_error) };
-        crate::record_exception(
-            py,
-            crate::obj_from_bits(input.runtime_error).as_ptr().unwrap(),
-        );
+        crate::test_support::restore_runtime_raised(py, input.runtime_error);
     });
 }
 
@@ -665,7 +662,7 @@ fn explicit_cleanup_preserves_both_errors_through_sequence_retirement_and_item_t
                 dec_ref_bits(py, MoltObject::from_ptr(tuple).bits());
                 assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0);
                 set_c_error(original_view);
-                crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
+                crate::test_support::restore_runtime_raised(py, runtime);
                 if mode == 3 {
                     let transferred = item_owner.unwrap().into_bits();
                     assert_eq!(
@@ -715,7 +712,7 @@ fn pending_cleanup_restores_both_channels_before_resuming_unwind() {
             assert!(!original_view.is_null() && !cleanup_view.is_null());
             errors::PyErr_SetHandledException(cleanup_view);
             set_c_error(original_view);
-            crate::builtins::exceptions::molt_exception_set_last(runtime);
+            crate::test_support::restore_runtime_raised(py, runtime);
             let unwind = crate::test_support::catch_expected_unwind(|| {
                 errors::with_preserved_error(|| {
                     assert!(errors::PyErr_Occurred().is_null());
@@ -1006,7 +1003,7 @@ fn core_protected_value_preserves_both_errors_during_native_retirement() {
                     bits,
                 );
                 set_c_error(original_view);
-                crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
+                crate::test_support::restore_runtime_raised(py, runtime);
                 if transfer {
                     let bits = owner.into_bits();
                     assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0);
@@ -1492,8 +1489,8 @@ thread_local! {
 }
 
 unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
-    // Emergency MemoryError has no allocatable instance under this denial.
-    // Observing its public class leaves it selected and is valid in tp_dealloc.
+    // Observing the selected public class leaves it pending and is valid in
+    // tp_dealloc, including when allocation has been denied.
     let selected = unsafe { errors::PyErr_Occurred() }.addr();
     let reentry_name = OOM_REENTRY_NAME.with(std::cell::Cell::get);
     let array = OOM_ARRAY_HANDLE.with(std::cell::Cell::get);
@@ -1643,6 +1640,72 @@ fn assert_oom_prior_retired(prior: usize) {
         )
     };
     assert_eq!(OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get), expected);
+}
+
+#[test]
+fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
+    use super::native_test_fixture::NativeType;
+    use crate::builtins::exceptions::{ExceptionFieldSlot, ExceptionValue, exception_field};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"SemanticRaisePriorPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let _reset = RestoreOomObserver;
+            for runtime_prior in [false, true] {
+                // Exercise direct recording, a cold explicit raise, and the
+                // existing-trace transport branch through their real callers.
+                for publication in 0..3 {
+                    let selected = ExceptionValue::adopt(py, exception_bits(py, "TypeError"));
+                    let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(selected.bits());
+                    assert!(!view.is_null());
+                    if publication == 2 {
+                        let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
+                            .as_ptr()
+                            .unwrap();
+                        let trace = crate::alloc_instance_for_class(py, trace_class);
+                        let trace = refcount::OwnedPyObject::from_owned(
+                            GLOBAL_BRIDGE.owned_handle_to_pyobj(trace),
+                        );
+                        assert!(!trace.as_ptr().is_null());
+                        assert_eq!(errors::PyException_SetTraceback(view, trace.as_ptr()), 0);
+                    }
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
+                    OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                    install_oom_prior(&raw mut *payload_type, runtime_prior);
+                    if publication == 0 {
+                        crate::record_exception(
+                            py,
+                            crate::obj_from_bits(selected.bits()).as_ptr().unwrap(),
+                        );
+                    } else {
+                        crate::molt_exception_set_last(selected.bits());
+                    }
+                    assert_eq!(
+                        OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get),
+                        (1, (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).addr()),
+                        "the sole prior payload retires under the new error"
+                    );
+                    assert_eq!(OOM_SELECTED_INSTANCE.with(std::cell::Cell::get), view.addr());
+                    assert_eq!(crate::exception_last_bits_noinc(py), Some(selected.bits()));
+                    assert!(errors::take_current_error().is_none(), "native reentry completed");
+                    assert_eq!(
+                        exception_field(py, selected.bits(), ExceptionFieldSlot::Context)
+                            .unwrap()
+                            .bits(),
+                        MoltObject::none().bits(),
+                        "a displaced pending error is not a handled exception"
+                    );
+                    crate::clear_exception(py);
+                }
+            }
+        }
+    });
 }
 
 #[test]

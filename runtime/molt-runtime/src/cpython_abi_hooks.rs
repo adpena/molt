@@ -5750,11 +5750,11 @@ mod tests {
                 errors::PyErr_SetHandledException(second_view);
                 refcount::Py_INCREF(first_view);
                 errors::PyErr_SetRaisedException(first_view);
-                crate::builtins::exceptions::molt_exception_set_last(second_bits);
+                crate::test_support::restore_runtime_raised(py, second_bits);
                 with_preserved_error(|| {
                     refcount::Py_INCREF(second_view);
                     errors::PyErr_SetRaisedException(second_view);
-                    crate::builtins::exceptions::molt_exception_set_last(first_bits);
+                    crate::test_support::restore_runtime_raised(py, first_bits);
                 });
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(second_bits));
                 let restored = errors::PyErr_GetRaisedException();
@@ -5765,7 +5765,7 @@ mod tests {
                 for operation in 0..4 {
                     refcount::Py_INCREF(first_view);
                     errors::PyErr_SetRaisedException(first_view);
-                    crate::builtins::exceptions::molt_exception_set_last(second_bits);
+                    crate::test_support::restore_runtime_raised(py, second_bits);
                     assert!(crate::exception_pending(py));
                     match operation {
                         0 => {

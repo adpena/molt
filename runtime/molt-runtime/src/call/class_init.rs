@@ -1036,28 +1036,39 @@ mod tests {
     }
 
     #[test]
-    fn class_instance_capacity_failure_preserves_pending_error_identity() {
+    fn class_instance_capacity_failure_replaces_prior_error_with_memory_error() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class_ptr = obj_from_bits(builtin_classes(py).object)
                 .as_ptr()
                 .expect("builtin object class");
-            raise_exception::<()>(py, "ValueError", "original allocation caller error");
-            let original = molt_exception_last_pending();
-            assert!(obj_from_bits(original).as_ptr().is_some());
-            unsafe {
-                for total_size in [0, usize::MAX] {
-                    let result = super::alloc_published_instance_for_class_with_total_size(
+            let class_owners = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
+            for total_size in [0, usize::MAX] {
+                raise_exception::<()>(py, "ValueError", "original allocation caller error");
+                let original = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    molt_exception_last_pending(),
+                );
+                assert!(obj_from_bits(original.bits()).as_ptr().is_some());
+                let result = unsafe {
+                    super::alloc_published_instance_for_class_with_total_size(
                         py, class_ptr, total_size,
-                    );
-                    assert!(obj_from_bits(result).is_none());
-                }
+                    )
+                };
+                assert!(obj_from_bits(result).is_none());
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
+                    class_owners
+                );
+                // Both invalid allocation extents select the canonical,
+                // allocation-free MemoryError, replacing the incoming error.
+                assert_eq!(
+                    unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                );
+                assert!(exception_pending(py));
+                let _ = molt_exception_clear();
             }
-            let observed = molt_exception_last_pending();
-            assert_eq!(observed, original);
-            let _ = molt_exception_clear();
-            dec_ref_bits(py, observed);
-            dec_ref_bits(py, original);
         });
     }
 

@@ -1322,7 +1322,9 @@ fn native_matching_preserves_both_exact_pending_error_channels() {
                 traceback: ptr::null_mut(),
             });
             let runtime_error = managed_exception(py, "RuntimeError");
-            crate::record_exception(py, obj_from_bits(runtime_error).as_ptr().unwrap());
+            // Matching preserves two independently restored owners. Publishing
+            // a new semantic raise would supersede the C indicator instead.
+            crate::test_support::restore_runtime_raised(py, runtime_error);
             let native_refs = (*native).ob_refcnt;
             let class_refs = class.ob_base.ob_base.ob_refcnt;
 
