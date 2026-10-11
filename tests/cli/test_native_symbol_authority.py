@@ -1,4 +1,9 @@
-"""Symbol-tool protocol and admission tests, without invoking a compiler or nm."""
+"""Symbol reader, bitcode-reader protocol and admission tests.
+
+Native objects carry real symbol tables from an independent fixture writer and
+go through the in-process reader. Only LLVM bitcode reaches the llvm-nm
+ladder; those tests fabricate its output, without invoking a compiler or nm.
+"""
 
 from __future__ import annotations
 
@@ -28,11 +33,13 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactValidationError,
 )
 from tests.cli.native_link_test_support import (
+    LLVM_BITCODE_STAND_IN,
     mock_symbol_reader_admission,
     static_archive_bytes,
 )
 from tests.llvm_sdk_test_support import verified_llvm_tools
 from tests.native_artifact_fixtures import native_relocatable_object
+from molt.native_symbol_table import NativeSymbolRow
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -44,11 +51,10 @@ def test_native_content_admission_rejects_old_digest_with_current_metadata(
     tmp_path, monkeypatch, archive, tier
 ):
     artifact = tmp_path / "input.a"
-    artifact.write_bytes(static_archive_bytes(b"before"))
+    artifact.write_bytes(_archive("before"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout="object.o:\n0000 T before\n")
     read = (
         native_symbol_inspection._native_archive_global_symbol_facts
         if archive
@@ -61,14 +67,14 @@ def test_native_content_admission_rejects_old_digest_with_current_metadata(
         native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
         native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     stamp = artifact.stat()
-    artifact.write_bytes(static_archive_bytes(b"after!"))
+    artifact.write_bytes(_archive("afterx"))
     os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     current = native_symbol_inspection._native_symbol_artifact_identity(artifact)
     supplied = replace(current, sha256=old.sha256)
     monkeypatch.setattr(
         native_symbol_inspection,
-        "_run_completed_command",
-        lambda *args, **kwargs: pytest.fail("unadmitted content reached nm"),
+        "read_symbol_rows",
+        lambda *args, **kwargs: pytest.fail("unadmitted content reached the reader"),
     )
     with pytest.raises(
         native_symbol_inspection.NativeSymbolInspectionError, match="content changed"
@@ -113,7 +119,7 @@ def test_backend_supplied_digest_is_checked_before_native_shape(
 
 
 @pytest.mark.parametrize("archive", [False, True])
-def test_native_shape_members_and_nm_share_one_owned_artifact_handle(
+def test_native_shape_members_and_symbol_reader_share_one_owned_artifact_handle(
     tmp_path, monkeypatch, archive
 ):
     from molt.cli import backend_artifact_contract, static_archive_identity
@@ -137,16 +143,16 @@ def test_native_shape_members_and_nm_share_one_owned_artifact_handle(
     monkeypatch.setattr(native_symbol_inspection, "open_stable_regular_file", own)
     monkeypatch.setattr(backend_artifact_contract, "open_stable_regular_file", own)
     monkeypatch.setattr(static_archive_identity, "open_stable_regular_file", own)
-    _tool(monkeypatch)
+    original_read = native_symbol_inspection.read_symbol_rows
+    reads = []
 
-    def run(argv, **kwargs):
+    def read(reader, **kwargs):
         assert len(opened) == 1 and not opened[0].stream.closed
         assert opened[0].path == artifact
-        return subprocess.CompletedProcess(
-            argv, 0, ("object.o:\n" if archive else "") + "0000 T application\n", ""
-        )
+        reads.append(reader.size)
+        return original_read(reader, **kwargs)
 
-    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", read)
     contract = BackendArtifactContract(
         BackendArtifactKind.NATIVE_ARCHIVE
         if archive
@@ -157,6 +163,7 @@ def test_native_shape_members_and_nm_share_one_owned_artifact_handle(
         artifact, artifact_contract=contract
     )
     assert len(opened) == 1 and opened[0].stream.closed
+    assert len(reads) == 1
     assert identity.sha256 == hashlib.sha256(payload).hexdigest()
 
 
@@ -197,29 +204,28 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
     from molt.cli import runtime_callable_symbols
 
     artifact = tmp_path / "runtime.a"
-    artifact.write_bytes(static_archive_bytes(b"native-callable-fixture"))
+    artifact.write_bytes(_archive("molt_fixture"))
     identity = native_symbol_inspection._native_symbol_artifact_identity(artifact)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout="object.o:\n0000 T molt_fixture\n")
     captured = []
     original_hash = native_symbol_inspection.stable_regular_file_handle_identity
-    original_run = native_symbol_inspection._run_completed_command
+    original_read = native_symbol_inspection.read_symbol_rows
     inspected = []
 
     def capture(opened, **kwargs):
         captured.append(opened.path)
         return original_hash(opened, **kwargs)
 
-    def run(argv, **kwargs):
-        inspected.append(tuple(argv))
-        return original_run(argv, **kwargs)
+    def read(reader, **kwargs):
+        inspected.append(reader.size)
+        return original_read(reader, **kwargs)
 
     monkeypatch.setattr(
         native_symbol_inspection, "stable_regular_file_handle_identity", capture
     )
-    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", read)
     for _ in range(2):
         captured.clear()
         projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
@@ -244,13 +250,24 @@ def isolated_symbol_cache(
         yield
 
 
-def _tool(monkeypatch, *, code=0, stdout="", stderr=""):
+# The fabricated llvm-nm output owns the symbol evidence for this stand-in.
+_BITCODE = LLVM_BITCODE_STAND_IN
+
+
+def _archive(*functions: str, **kwargs) -> bytes:
+    """One real relocatable object with these functions, framed as an archive."""
+    return static_archive_bytes(native_relocatable_object(symbols=functions, **kwargs))
+
+
+def _bitcode_tool(monkeypatch, *, code=0, stdout="", stderr=""):
+    """Fabricate the llvm-nm run that only LLVM bitcode reaches."""
     monkeypatch.setattr(
         native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
     )
 
     def run(argv, **kwargs):
         assert kwargs["errors"] == "strict"
+        assert argv[1:-1] == ["-g"]
         return subprocess.CompletedProcess(argv, code, stdout, stderr)
 
     monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
@@ -284,10 +301,10 @@ def test_incomplete_or_malformed_tool_evidence_is_never_symbol_success(
     tmp_path, monkeypatch, code, stdout, stderr
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
-    _tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
+    artifact.write_bytes(_BITCODE)
+    _bitcode_tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
     with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
-        native_symbol_inspection._read_native_global_symbol_facts(artifact, timeout=1)
+        native_symbol_inspection._read_native_global_symbol_facts(artifact)
     assert caught.value.path == artifact
     assert "llvm-nm" in str(caught.value)
     assert caught.value.attempts
@@ -306,11 +323,9 @@ def test_legitimate_empty_artifact_has_successful_empty_facts(
     tmp_path, monkeypatch, code, stdout, stderr
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
-    _tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
-    facts = native_symbol_inspection._read_native_global_symbol_facts(
-        artifact, timeout=1
-    )
+    artifact.write_bytes(_BITCODE)
+    _bitcode_tool(monkeypatch, code=code, stdout=stdout, stderr=stderr)
+    facts = native_symbol_inspection._read_native_global_symbol_facts(artifact)
     assert facts == native_symbol_inspection._NativeGlobalSymbolFacts(
         frozenset(), frozenset(), frozenset()
     )
@@ -352,9 +367,22 @@ def test_successful_archive_can_contain_empty_members(
         + (diagnostic if channel == "stdout" else ""),
         stderr=diagnostic if channel == "stderr" else "",
     )
-    assert native_symbol_inspection._parse_native_nm_result(
-        result, path=path, target_triple=target, archive_members=members
-    ).defined == {"provider"}
+    names = frozenset(item.member.name for item in members)
+    tables = native_symbol_inspection._bind_nm_archive_tables(
+        native_symbol_inspection._validated_nm_output(
+            result, archive_member_names=names
+        ),
+        path=path,
+        members=members,
+    )
+    facts = [
+        native_symbol_inspection._parse_native_nm_global_symbol_facts(
+            table, target_triple=target
+        )
+        for table in tables
+    ]
+    assert facts[0].defined == {"provider"}
+    assert facts[1].defined == facts[1].undefined == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -368,15 +396,19 @@ def test_object_and_archive_caches_share_parsing_protocol_identity(
     tmp_path, monkeypatch, reader
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(static_archive_bytes(b"symbol-protocol-input"))
+    artifact.write_bytes(_archive("before"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout="object.o:\n0000 T before\n")
     assert reader(artifact).defined == {"before"}
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    _tool(monkeypatch, stdout="object.o:\n0000 T after\n")
+    # A different reader generation would read other facts from the same bytes.
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "read_symbol_rows",
+        lambda *args, **kwargs: (NativeSymbolRow("T", "after"),),
+    )
     # Persistent facts remain reusable under the exact existing protocol.
     assert reader(artifact).defined == {"before"}
     monkeypatch.setattr(
@@ -393,14 +425,13 @@ def test_symbol_facts_reuse_exact_bytes_and_reader_across_incidental_changes(
 ):
     artifact = tmp_path / "archive.a"
     artifact.write_bytes(
-        static_archive_bytes(b"same-member")
+        _archive("preserved")
         if archive
         else native_relocatable_object(symbols=("preserved",))
     )
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout=("object.o:\n" if archive else "") + "0000 T preserved\n")
     read = (
         native_symbol_inspection._native_archive_global_symbol_facts
         if archive
@@ -416,7 +447,6 @@ def test_symbol_facts_reuse_exact_bytes_and_reader_across_incidental_changes(
         monkeypatch.setenv(
             "PATH", os.environ.get("PATH", "") + os.pathsep + "unrelated"
         )
-        monkeypatch.setenv("MOLT_NM_TIMEOUT_SEC", "121")
     elif change == "metadata":
         before = artifact.stat()
         os.utime(artifact, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
@@ -447,7 +477,6 @@ def test_symbol_fact_retention_bounds_persistent_and_memory_admission(
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch, stdout=("object.o:\n" if archive else "") + "0000 T preserved\n")
     read = (
         native_symbol_inspection._native_archive_global_symbol_facts
         if archive
@@ -469,14 +498,14 @@ def test_symbol_fact_retention_bounds_persistent_and_memory_admission(
     for index in range(4):
         path = tmp_path / f"{index}.a"
         path.write_bytes(
-            static_archive_bytes(str(index).encode())
+            _archive("preserved", f"input_{index}")
             if archive
-            else native_relocatable_object(symbols=(f"input_{index}",))
+            else native_relocatable_object(symbols=("preserved", f"input_{index}"))
         )
         artifacts.append(path)
-        assert (read(path) if archive else read(path, publish=True)).defined == {
-            "preserved"
-        }
+        assert (
+            "preserved" in (read(path) if archive else read(path, publish=True)).defined
+        )
         assert len(cache) <= 2
     cache.clear()
 
@@ -490,7 +519,7 @@ def test_symbol_fact_retention_bounds_persistent_and_memory_admission(
     )
     # Persistent admissions obey the same bound; a memory hit retains its entry.
     for index in (0, 1, 0, 2, 3):
-        assert read(artifacts[index]).defined == {"preserved"}
+        assert read(artifacts[index]).defined == {"preserved", f"input_{index}"}
         assert len(cache) <= 2
         if index == 2:
             assert {key.artifact_digest for key in cache} == {
@@ -505,13 +534,16 @@ def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(
     tmp_path, monkeypatch
 ):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
+    artifact.write_bytes(_BITCODE)
     monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
     with pytest.raises(
         native_symbol_inspection.NativeSymbolInspectionError,
-        match="no nm/llvm-nm candidate",
-    ):
-        native_symbol_inspection._read_native_global_symbol_facts(artifact, timeout=1)
+        match="no llvm-nm candidate",
+    ) as missing:
+        native_symbol_inspection._read_native_global_symbol_facts(artifact)
+    assert not isinstance(
+        missing.value, native_symbol_inspection.NativeSymbolArtifactError
+    )
     primary = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid tool output")
     monkeypatch.setattr(
         native_symbol_inspection,
@@ -526,7 +558,7 @@ def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(
 
     monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", fail)
     with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
-        native_symbol_inspection._read_native_global_symbol_facts(artifact, timeout=1)
+        native_symbol_inspection._read_native_global_symbol_facts(artifact)
     assert caught.value.__cause__ is primary
     assert len(caught.value.attempts) == 2
     assert "UnicodeDecodeError" in str(caught.value)
@@ -535,7 +567,7 @@ def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(
 
 def test_failed_candidate_does_not_hide_later_valid_candidate(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
+    artifact.write_bytes(_BITCODE)
     monkeypatch.setattr(
         native_symbol_inspection,
         "_nm_candidate_binaries",
@@ -551,7 +583,7 @@ def test_failed_candidate_does_not_hide_later_valid_candidate(tmp_path, monkeypa
 
     monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
     assert native_symbol_inspection._read_native_global_symbol_facts(
-        artifact, timeout=1
+        artifact
     ).defined == {"provider"}
     assert calls == ["bad-nm", "good-nm"]
 
@@ -627,10 +659,22 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
     )
 
 
+def _unavailable_symbol_evidence(path, **kwargs):
+    # An operational reader failure, as an unreadable bitcode member raises.
+    raise native_symbol_inspection.NativeSymbolInspectionError(
+        path, ["LLVM bitcode reader unavailable"]
+    )
+
+
 def test_failed_symbol_read_cannot_mint_or_reuse_success_token(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     _shared_metadata(artifact)
-    monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", lambda: [])
+    original = native_symbol_inspection._read_native_global_symbol_facts
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        _unavailable_symbol_evidence,
+    )
     for _ in range(2):
         with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
             cache._shared_stdlib_cache_matches_key(
@@ -641,7 +685,9 @@ def test_failed_symbol_read_cannot_mint_or_reuse_success_token(tmp_path, monkeyp
             )
         assert not cache._stdlib_object_symbol_contract_sidecar_path(artifact).exists()
     assert not native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
-    _tool(monkeypatch, stdout="object.o:\n0000 T molt_init_sys\n")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", original
+    )
     assert cache._shared_stdlib_cache_matches_key(
         artifact,
         "key",
@@ -722,9 +768,8 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
 @pytest.mark.parametrize(
     "kind", [BackendArtifactKind.NATIVE_OBJECT, BackendArtifactKind.NATIVE_ARCHIVE]
 )
-@pytest.mark.parametrize("tool_failure", ["missing", "failed"])
 def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
-    tmp_path, monkeypatch, kind, tool_failure
+    tmp_path, monkeypatch, kind
 ):
     target = "x86_64-unknown-linux-gnu"
     contract = BackendArtifactContract(kind, target)
@@ -736,12 +781,11 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
         _shared_metadata(artifact, payload=payload)
     else:
         artifact.write_bytes(payload)
-    if tool_failure == "missing":
-        monkeypatch.setattr(
-            native_symbol_inspection, "_nm_candidate_binaries", lambda: []
-        )
-    else:
-        _tool(monkeypatch, code=1, stderr="llvm-nm: reader failed\n")
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_global_symbol_facts",
+        _unavailable_symbol_evidence,
+    )
     checks = [
         lambda: cache._is_valid_cached_backend_artifact(
             artifact, artifact_contract=contract
@@ -966,7 +1010,6 @@ def test_validation_and_token_mint_share_one_generation_lock(tmp_path, monkeypat
 def test_same_size_restored_mtime_cannot_reuse_validated_token(tmp_path, monkeypatch):
     artifact = tmp_path / "archive.a"
     _shared_metadata(artifact)
-    _tool(monkeypatch, stdout="object.o:\n0000 T molt_init_sys\n")
     token = cache._shared_stdlib_cache_validation_token(
         artifact,
         "key",
@@ -997,10 +1040,6 @@ def test_empty_leaf_is_not_an_application_cache_hit(tmp_path, monkeypatch, kind)
     if kind is BackendArtifactKind.NATIVE_ARCHIVE:
         payload = static_archive_bytes(payload)
     artifact.write_bytes(payload)
-    _tool(
-        monkeypatch,
-        stdout="object.o:\n" if kind is BackendArtifactKind.NATIVE_ARCHIVE else "",
-    )
     assert (
         native_symbol_inspection._native_object_global_symbol_facts(artifact).defined
         == frozenset()
@@ -1021,10 +1060,6 @@ def test_symbol_fact_generation_is_rechecked_on_every_return(
     payload = native_relocatable_object(symbols=("original_symbol",))
     artifact.write_bytes(static_archive_bytes(payload) if archive else payload)
     stamp = artifact.stat()
-    _tool(
-        monkeypatch,
-        stdout=("object.o:\n" if archive else "") + "0000 T original_symbol\n",
-    )
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -1109,7 +1144,6 @@ def test_native_cache_shape_and_symbols_share_one_generation(tmp_path, monkeypat
     monkeypatch.setattr(
         BackendArtifactContract, "validate_native_shape", replace_after_shape
     )
-    _tool(monkeypatch, stdout="0000 T application\n")
     with pytest.raises(BackendArtifactValidationError, match="changed"):
         cache._validate_backend_cache_artifact(artifact, artifact_contract=contract)
 
@@ -1120,7 +1154,6 @@ def test_native_cache_admission_hashes_once_and_returns_reusable_generation(
     artifact = tmp_path / "application.o"
     artifact.write_bytes(native_relocatable_object(symbols=("application",)))
     contract = BackendArtifactContract(BackendArtifactKind.NATIVE_OBJECT)
-    _tool(monkeypatch, stdout="0000 T application\n")
     captures = []
     original = native_symbol_inspection.stable_regular_file_handle_identity
 
@@ -1244,93 +1277,69 @@ def test_immutable_publication_returns_admitted_identity_without_source_alias(tm
     assert destination.read_text(encoding="utf-8") == payload
 
 
-@pytest.mark.parametrize(
-    "first_stdout", ["", "0000 T irrelevant\n", "0000 T molt_borrowed\n"]
-)
-def test_typed_callable_requirement_continues_reader_ladder_and_partitions_cache(
-    tmp_path, monkeypatch, first_stdout
+def test_typed_callable_requirement_admits_facts_and_partitions_cache(
+    tmp_path, monkeypatch
 ):
     archive = tmp_path / "runtime.a"
-    archive.write_bytes(static_archive_bytes(b"archive"))
+    archive.write_bytes(_archive("molt_borrowed", "irrelevant"))
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_nm_candidate_binaries",
-        lambda: ["first-nm", "second-nm"],
-    )
-    calls = []
-
-    def inspect(command, **kwargs):
-        calls.append(command[0])
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            "object.o:\n"
-            + (first_stdout if command[0] == "first-nm" else "0000 T molt_ready\n"),
-            "",
-        )
-
-    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", inspect)
-    native_symbol_inspection._native_archive_global_symbol_facts(archive)
-    assert calls == ["first-nm"]
-    calls.clear()
+    read = native_symbol_inspection._native_archive_global_symbol_facts
+    assert read(archive).defined_functions == {"molt_borrowed", "irrelevant"}
     requirement = native_symbol_inspection.NativeSymbolRequirement(
         function_prefix="molt_", excluded_functions=frozenset({"molt_borrowed"})
     )
-    facts = native_symbol_inspection._native_archive_global_symbol_facts(
-        archive, requirement=requirement
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="consumer requirement",
+    ) as caught:
+        read(archive, requirement=requirement)
+    assert not isinstance(
+        caught.value, native_symbol_inspection.NativeSymbolArtifactError
     )
-    assert facts.defined_functions == {"molt_ready"}
-    assert calls == ["first-nm", "second-nm"]
-    calls.clear()
-    assert (
-        native_symbol_inspection._native_archive_global_symbol_facts(
-            archive, requirement=requirement
-        )
-        == facts
-    )
-    assert calls == []
+    archive.write_bytes(_archive("molt_borrowed", "molt_ready"))
+    facts = read(archive, requirement=requirement)
+    assert facts.defined_functions == {"molt_borrowed", "molt_ready"}
+    original = native_symbol_inspection.read_symbol_rows
+    reads = []
+
+    def counted(reader, **kwargs):
+        reads.append(reader.size)
+        return original(reader, **kwargs)
+
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", counted)
+    assert read(archive, requirement=requirement) == facts
+    assert reads == []
+    # A rejected read publishes nothing; each requirement owns its cache entry.
+    keys = list(native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE)
+    assert len(keys) == 2
+    assert len({key.reader_identity for key in keys}) == 2
 
 
-def test_typed_callable_requirement_reports_every_incompatible_reader(
-    tmp_path, monkeypatch
-):
-    artifact = tmp_path / "runtime.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_nm_candidate_binaries",
-        lambda: ["first-nm", "second-nm"],
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_run_completed_command",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, "0000 T unrelated\n", ""
-        ),
-    )
-    with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as caught:
-        native_symbol_inspection._read_native_global_symbol_facts(
-            artifact,
-            timeout=1,
-            requirement=native_symbol_inspection.NativeSymbolRequirement(
-                function_prefix="molt_"
-            ),
-        )
-    assert len(caught.value.attempts) == 2
-    assert all("consumer requirement" in item for item in caught.value.attempts)
-    assert "first-nm" in caught.value.attempts[0]
-    assert "second-nm" in caught.value.attempts[1]
+_ELF = "x86_64-unknown-linux-gnu"
+_FIRST_MEMBER = native_relocatable_object(
+    target_triple=_ELF,
+    symbols=("root",),
+    undefined_symbols=("callback", "optional"),
+    weak_symbols=("optional",),
+)
+_SECOND_MEMBER = native_relocatable_object(
+    target_triple=_ELF,
+    symbols=("callback",),
+    undefined_symbols=("external",),
+    weak_symbols=("callback",),
+)
 
 
-def _two_member_archive(path):
+def _two_member_archive(path, first=_FIRST_MEMBER, second=_SECOND_MEMBER):
     # Equal names, different payloads: identity must include ordinal and bytes.
-    path.write_bytes(
-        static_archive_bytes(b"first") + static_archive_bytes(b"second")[8:]
-    )
+    path.write_bytes(static_archive_bytes(first) + static_archive_bytes(second)[8:])
     return static_archive_member_identities(path)
+
+
+def _two_bitcode_member_archive(path):
+    return _two_member_archive(path, _BITCODE + b"first", _BITCODE + b"second")
 
 
 @pytest.mark.parametrize("cache_kind", ["object", "archive"])
@@ -1342,21 +1351,14 @@ def test_member_custody_and_aggregate_projections_survive_both_cache_forms(
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(
-        monkeypatch,
-        stdout=(
-            "object.o:\n0000 T root\n U callback\n w optional\n"
-            "object.o:\n0000 W callback\n U external\n"
-        ),
-    )
     read = getattr(
         native_symbol_inspection, f"_native_{cache_kind}_global_symbol_facts"
     )
     facts = read(path)
     assert facts.members is not None
     assert tuple(item.identity for item in facts.members) == members
-    assert members[0].sha256 == hashlib.sha256(b"first").hexdigest()
-    assert members[1].sha256 == hashlib.sha256(b"second").hexdigest()
+    assert members[0].sha256 == hashlib.sha256(_FIRST_MEMBER).hexdigest()
+    assert members[1].sha256 == hashlib.sha256(_SECOND_MEMBER).hexdigest()
     assert facts.members[0].symbols.undefined == {"callback"}
     assert facts.members[1].symbols.undefined == {"external"}
     assert facts.defined == {"root", "callback"}
@@ -1368,12 +1370,10 @@ def test_member_custody_and_aggregate_projections_survive_both_cache_forms(
         native_symbol_inspection, f"_NATIVE_{cache_kind.upper()}_SYMBOL_SETS_CACHE"
     ).clear()
 
-    def no_second_tool(*args, **kwargs):
-        pytest.fail("content-bound cache should retain ordered facts without nm")
+    def no_second_read(*args, **kwargs):
+        pytest.fail("content-bound cache should retain ordered facts without a read")
 
-    monkeypatch.setattr(
-        native_symbol_inspection, "_run_completed_command", no_second_tool
-    )
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", no_second_read)
     assert read(path) == facts
 
 
@@ -1391,8 +1391,8 @@ def test_member_facts_reject_missing_extra_or_unbound_tables(
     tmp_path, monkeypatch, output
 ):
     path = tmp_path / "archive.a"
-    _two_member_archive(path)
-    _tool(monkeypatch, stdout=output)
+    _two_bitcode_member_archive(path)
+    _bitcode_tool(monkeypatch, stdout=output)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -1410,11 +1410,19 @@ def test_member_facts_reject_missing_extra_or_unbound_tables(
 def test_member_cache_codec_cannot_replace_current_content_custody(tmp_path, mutation):
     path = tmp_path / "archive.a"
     members = _two_member_archive(path)
-    facts = native_symbol_inspection._parse_native_archive_symbol_facts(
-        "object.o:\n0000 T root\nobject.o:\n0000 W leaf\n",
-        path=path,
-        members=members,
-        target_triple="x86_64-unknown-linux-gnu",
+    parse = native_symbol_inspection._parse_native_nm_global_symbol_facts
+    facts = native_symbol_inspection._NativeGlobalSymbolFacts(
+        frozenset(),
+        frozenset(),
+        frozenset(),
+        members=(
+            native_symbol_inspection._NativeArchiveMemberSymbolFacts(
+                members[0], parse("0000 T root\n", target_triple=_ELF)
+            ),
+            native_symbol_inspection._NativeArchiveMemberSymbolFacts(
+                members[1], parse("0000 W leaf\n", target_triple=_ELF)
+            ),
+        ),
     )
     payload = native_symbol_inspection._symbol_facts_payload(facts)
     rows = payload["members"]
@@ -1563,7 +1571,6 @@ def test_empty_archive_is_distinct_from_object_and_missing_member_output(
 ):
     path = tmp_path / "empty.a"
     path.write_bytes(b"!<arch>\n")
-    _tool(monkeypatch)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
@@ -1574,8 +1581,8 @@ def test_empty_archive_is_distinct_from_object_and_missing_member_output(
 
 def test_archive_empty_diagnostic_must_name_a_framed_member(tmp_path, monkeypatch):
     path = tmp_path / "archive.a"
-    _two_member_archive(path)
-    _tool(
+    _two_bitcode_member_archive(path)
+    _bitcode_tool(
         monkeypatch,
         stdout="object.o:\nobject.o:\n",
         stderr=f"{path}(foreign.o): no symbols\n",
@@ -1708,8 +1715,6 @@ def test_explicit_symbol_publication_materializes_content_hit_without_reextracti
     source = tmp_path / "source.o"
     payload = native_relocatable_object(symbols=("published_function",))
     source.write_bytes(static_archive_bytes(payload) if archive else payload)
-    output = "0000 T published_function\n"
-    _tool(monkeypatch, stdout=("object.o:\n" if archive else "") + output)
     original = native_symbol_inspection._native_object_global_symbol_facts(source)
     destination = tmp_path / "destination.o"
     destination.write_bytes(source.read_bytes())
@@ -1757,7 +1762,6 @@ def test_cached_artifact_input_failures_are_misses(
     target = "x86_64-unknown-linux-gnu"
     artifact = tmp_path / "stdlib.a"
     _shared_metadata(artifact)
-    _tool(monkeypatch, stdout="object.o:\n0000 T molt_init_sys\n")
     original_open = native_symbol_inspection.open_stable_regular_file
 
     if failure in {"missing", "nonregular"}:
@@ -1851,22 +1855,24 @@ def test_external_symbol_admission_uses_content_policy_without_input_sidecars(
     # The admitted suffix deliberately disagrees with the bytes.
     # External consumers own neither the input nor a sidecar beside it.
     artifact = tmp_path / ("external.o" if archive else "external.a")
-    payload = native_relocatable_object(symbols=("provider",))
+    payload = native_relocatable_object(
+        target_triple="x86_64-unknown-linux-gnu"
+        if consumer == "link-selection"
+        else None,
+        symbols=("provider",),
+    )
     artifact.write_bytes(static_archive_bytes(payload) if archive else payload)
-    monkeypatch.delenv("MOLT_NM_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    _tool(monkeypatch)
+    original_read = native_symbol_inspection.read_symbol_rows
     calls = []
 
-    def run(argv, **kwargs):
-        calls.append(kwargs["timeout"])
-        return subprocess.CompletedProcess(
-            argv, 0, ("object.o:\n" if archive else "") + "0000 T provider\n", ""
-        )
+    def read(reader, **kwargs):
+        calls.append(reader.size)
+        return original_read(reader, **kwargs)
 
-    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
+    monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", read)
     if consumer == "generic":
         facts = native_symbol_inspection._native_object_global_symbol_facts(artifact)
     else:
@@ -1880,7 +1886,7 @@ def test_external_symbol_admission_uses_content_policy_without_input_sidecars(
         facts = selected.facts[artifact.resolve()]
     assert facts.defined == {"provider"}
     assert (facts.members is not None) is archive
-    assert calls == [120 if archive else 60]
+    assert calls == [len(payload)]
     assert not native_symbol_inspection._native_object_symbol_facts_sidecar_path(
         artifact
     ).exists()
@@ -1893,7 +1899,7 @@ def test_external_symbol_admission_uses_content_policy_without_input_sidecars(
             if consumer == "link-selection"
             else None,
         )
-        assert again == facts and calls == [120]
+        assert again == facts and calls == [len(payload)]
 
 
 def test_nm_reader_family_is_classified_from_the_version_banner():
@@ -1905,11 +1911,24 @@ def test_nm_reader_family_is_classified_from_the_version_banner():
     assert classify(None) is None
 
 
-def test_unrecognized_nm_banner_fails_candidate_admission(monkeypatch):
+@pytest.mark.parametrize(
+    "banner,error",
+    [
+        (
+            "Apple, Inc. version cctools-1010.6",
+            "unrecognized nm reader banner: 'Apple, Inc. version cctools-1010.6'",
+        ),
+        (
+            "GNU nm (GNU Binutils for Ubuntu) 2.42",
+            "GNU nm cannot read LLVM bitcode: 'GNU nm (GNU Binutils for Ubuntu) 2.42'",
+        ),
+        (None, "nm reader printed no --version banner"),
+    ],
+)
+def test_only_llvm_nm_passes_bitcode_reader_admission(monkeypatch, banner, error):
     monkeypatch.undo()  # Admit a real executable instead of the fixture's fake.
     probe = native_symbol_inspection._cached_nm_reader_family
     probe.cache_clear()
-    banner = "Apple, Inc. version cctools-1010.6"
     monkeypatch.setattr(native_symbol_inspection, "_tool_version", lambda path: banner)
     try:
         candidate = native_symbol_inspection._native_symbol_reader_candidate(
@@ -1917,69 +1936,113 @@ def test_unrecognized_nm_banner_fails_candidate_admission(monkeypatch):
         )
     finally:
         probe.cache_clear()
-    assert candidate.reader_family is None
-    assert candidate.admission_error == f"unrecognized nm reader banner: {banner!r}"
+    assert candidate.admission_error == error
 
 
-def test_llvm_nm_reads_the_native_symbol_table_not_embedded_bitcode(
-    tmp_path, monkeypatch
-):
-    # Rust's sysroot objects for Apple targets embed bitcode. llvm-nm's default
-    # bitcode reader lists those IR symbols with a dash placeholder, which is
-    # not a symbol-table row; GNU nm has no such reader and no such flag.
-    artifact = tmp_path / "libmolt_runtime.a"
-    artifact.write_bytes(b"symbol-reader protocol input")
-    identity = cache.stable_regular_file_identity(
-        Path(sys.executable).resolve(strict=True), label="test symbol reader"
-    )
-    families = {"llvm-nm": "llvm", "gnu-nm": "gnu"}
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_symbol_reader_candidate",
-        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
-            tuple(command),
-            executable_identity=identity,
-            reader_family=families[command[0]],
-        ),
-    )
+def test_bitcode_reader_keeps_llvm_nm_bitcode_reader_enabled(tmp_path, monkeypatch):
     # Rows captured from llvm-nm 22.1.8 reading a dev-fast libmolt_runtime
-    # staticlib on aarch64-apple-darwin, with and without --no-llvm-bc.
+    # staticlib on aarch64-apple-darwin: llvm-nm prints dashes, not an
+    # address, for a defined bitcode symbol.
+    artifact = tmp_path / "runtime.bc"
+    artifact.write_bytes(_BITCODE)
     bitcode_rows = (
         "---------------- T __RINvMs5_NtNtCscEX5ZwinSox_3std2io5errorNtB6_"
         "5Error3newReEBa_\n000000000000274c T _molt_abs_builtin\n"
+        "                 U _molt_required\n"
     )
-    native_rows = "000000000000274c T _molt_abs_builtin\n"
     commands: list[list[str]] = []
 
     def run(argv, **kwargs):
         commands.append(list(argv))
-        if argv[0] == "gnu-nm":
-            assert "--no-llvm-bc" not in argv
-            return subprocess.CompletedProcess(
-                argv, 0, "000000000000274c T molt_abs_builtin\n", ""
-            )
-        rows = native_rows if "--no-llvm-bc" in argv else bitcode_rows
-        return subprocess.CompletedProcess(argv, 0, rows, "")
+        assert kwargs["timeout"] == (
+            native_symbol_inspection._LLVM_NM_BITCODE_READ_TIMEOUT_S
+        )
+        return subprocess.CompletedProcess(argv, 0, bitcode_rows, "")
 
     monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
     monkeypatch.setattr(
         native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
     )
     facts = native_symbol_inspection._read_native_global_symbol_facts(
-        artifact, timeout=1, target_triple="aarch64-apple-darwin"
+        artifact, target_triple="aarch64-apple-darwin"
     )
-    assert facts.defined == {"molt_abs_builtin"}
-    assert commands[-1][1:] == ["-g", "--no-llvm-bc", str(artifact)]
+    assert facts.defined == {
+        "_RINvMs5_NtNtCscEX5ZwinSox_3std2io5errorNtB6_5Error3newReEBa_",
+        "molt_abs_builtin",
+    }
+    assert facts.undefined == {"molt_required"}
+    assert commands == [["llvm-nm", "-g", str(artifact)]]
+
+
+def test_native_objects_never_reach_the_bitcode_reader(tmp_path, monkeypatch):
+    artifact = tmp_path / "runtime.a"
+    artifact.write_bytes(_archive("molt_native"))
     monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["gnu-nm"]
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
     )
-    facts = native_symbol_inspection._read_native_global_symbol_facts(
-        artifact, timeout=1, target_triple="x86_64-unknown-linux-gnu"
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a native object reached the external reader")
+
+    monkeypatch.setattr(native_symbol_inspection, "_native_symbol_reader", unexpected)
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", unexpected)
+    facts = native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact, nm_command=("ignored-nm",)
     )
-    assert facts.defined == {"molt_abs_builtin"}
-    assert commands[-1][1:] == ["-g", str(artifact)]
-    # The parser stays strict: a bitcode placeholder row is never a symbol fact.
-    with pytest.raises(ValueError, match="unrecognized nm symbol row"):
-        native_symbol_inspection._parse_native_nm_global_symbol_facts(
-            bitcode_rows, target_triple="aarch64-apple-darwin"
-        )
+    assert facts.defined_functions == {"molt_native"}
+
+
+def test_mixed_archive_binds_llvm_nm_tables_only_to_bitcode_members(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "mixed.a"
+    members = _two_member_archive(path, _FIRST_MEMBER, _BITCODE + b"module")
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    # llvm-nm also prints the native member; that table never becomes a fact.
+    _bitcode_tool(
+        monkeypatch,
+        stdout=(
+            "object.o:\n0000 T invented_native\n"
+            "object.o:\n---------------- T bitcode_root\n U root\n"
+        ),
+    )
+    facts = native_symbol_inspection._native_archive_global_symbol_facts(
+        path, target_triple=_ELF
+    )
+    assert facts.members is not None
+    assert tuple(item.identity for item in facts.members) == members
+    assert facts.members[0].symbols.defined == {"root"}
+    assert facts.members[0].symbols.weak_undefined == {"optional"}
+    assert facts.members[1].symbols.defined == {"bitcode_root"}
+    assert facts.members[1].symbols.undefined == {"root"}
+    key = next(iter(native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE))
+    assert key.reader_identity[1] != "in-process:molt.native_symbol_table"
+
+
+@pytest.mark.parametrize(
+    "archive,payload",
+    [
+        (archive, payload)
+        for archive in (False, True)
+        for payload in (b"", b"\x7fEL", b"plain text, not an object")
+    ]
+    + [(True, b"!<arch>\n")],  # A nested archive is not an object.
+)
+def test_unreadable_objects_are_typed_artifact_errors(
+    tmp_path, monkeypatch, archive, payload
+):
+    artifact = tmp_path / "input.o"
+    if archive:
+        payload = static_archive_bytes(payload)
+    artifact.write_bytes(payload)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    with pytest.raises(native_symbol_inspection.NativeSymbolArtifactError) as caught:
+        native_symbol_inspection._native_object_global_symbol_facts(artifact)
+    if archive:
+        assert "archive member 0 ('object.o')" in str(caught.value)
+    assert not native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE
+    assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
