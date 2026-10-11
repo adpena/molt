@@ -67,7 +67,7 @@ coordination records retain active worker scope and exact donor custody; the
 ledger remains the single release-status index. Complete semantic families must
 be qualified and landed together, with replaced internal lanes deleted.
 
-Current qualification (2026-10-11 UTC): candidate `bdca2f503` passes the complete
+Prior qualification (2026-10-11 UTC): candidate `bdca2f503` passes the complete
 optimized Linux/aarch64 runtime gate: 1,836 parallel cases and all ten isolated
 lifecycle controls. Complete ABI execution passes 783 cases across 56 binaries,
 with one ignored case. The exact-integer fixture now preserves the incoming
@@ -82,26 +82,35 @@ artifact decoder; all 298 focused tooling checks pass and actual successor image
 exercise the gate. Effective Rust flags remain owned by the existing toolchain
 capture, separately from Cargo's resolved-feature evidence. Seven alternating
 matched timing pairs show empty public async safepoints 11.64% faster and
-one-worker creation plus waiting shutdown 5.58% slower. The worker regression
-remains open; the runtime family is not qualified for landing. Thread-pool
-construction eagerly starts workers while pinned CPython starts them on demand;
-any correction must preserve submit, cancellation, shutdown and retirement custody
-and be measured through both empty and active workloads.
+one-worker creation plus waiting shutdown 5.58% slower. That finding led to the
+demand-driven successor below: pinned CPython starts pool workers on demand.
 
 The current-main baseline plus an identical four-case probe (`cb8d3c82f`) passes
 the same 1,846 optimized semantic cases with the allocation observer absent.
 The demand-driven successor preserves original numeric worker limits, uses a
 pool-local GIL-aware submit/stop gate, and removes per-job pending-map ownership.
 Independent source review and focused formatting pass; the expanded public
-fixture passes on CPython. Candidate `1b453d030` passes all 1,852 optimized
-runtime cases. Seven alternating timing pairs measure empty-pool creation and
-waiting shutdown at 279.53 ns versus 26,662 ns; first-job cost is approximately
-unchanged, while steady submission/result/drop rises from 14,175 to 14,355 ns
-(1.27%). The additional steady cost remains explicit; unused-pool savings do not
-offset it. Review identified one redundant future-owner clone to remove before
-the final comparison. Public differential execution remains unverified. The private
+fixture passes on CPython. Candidate `72776ff6d` removes a redundant future-owner
+clone and passes all 1,852 optimized runtime cases. Seven alternating timing
+pairs measure empty-pool creation and waiting shutdown at 285.45 ns versus
+26,684.45 ns (about 93 times faster). First-job cost is 35,922.60 ns versus
+35,764.03 ns; steady submission/result/drop is 14,394.40 ns versus 14,270.31 ns
+(0.87% higher), with overlapping process measurements. Empty async safepoints
+measure 7.49 ns versus 7.40 ns. These are observed costs in one Linux/aarch64
+cell, not proof of a general performance ceiling or of the clone's timing effect.
+Public differential execution remains unverified, so the complete runtime family
+is not qualified for landing. The private
 paired runner consumes both current gate publications and identical metric
 rosters, with one retained image per side and no historical configuration waiver.
+
+The browser asset graph's stale WASM ABI hash is repaired through the existing
+generator dependency chain. All 28 WASM projections and the graph are current;
+486 browser/ABI-generation and affected typed-command consumer tests pass with
+four platform skips. Reviewed differential case selection reuses the existing
+named lanes, binds the expanded file closure to exact hashes, and preserves
+their compiler permissions. Its full queue consumer qualification is pending
+on Linux: macOS native build admission requires more free disk space than is
+available. These are development-side controls with no emitted-binary cost.
 
 Automatic cache retention has an independently reviewed complete source candidate.
 Required stdlib outputs are build-owned before cache admission, optional cache
