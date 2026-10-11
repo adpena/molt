@@ -105,9 +105,9 @@ def _census_view(
     if isinstance(census, LoadedNativeModuleSnapshot):
         executable = str(census.executable)
         paths: list[object] = list(census.paths)
-        aliases: Mapping[object, object] = census.aliases
+        aliases = {str(name): str(path) for name, path in census.aliases.items()}
         identities = {
-            str(path): tuple(identity)
+            str(path): tuple(int(part) for part in identity)
             for path, identity in census.macho_identities.items()
         }
     else:
@@ -115,10 +115,14 @@ def _census_view(
         raw_paths = census.get("paths")
         paths = list(raw_paths) if isinstance(raw_paths, list) else []
         raw_aliases = census.get("aliases")
-        aliases = raw_aliases if isinstance(raw_aliases, Mapping) else {}
+        aliases = (
+            {str(name): str(path) for name, path in raw_aliases.items()}
+            if isinstance(raw_aliases, Mapping)
+            else {}
+        )
         rows = census.get("macho_identities")
         identities = {
-            str(row[0]): tuple(row[1])
+            str(row[0]): tuple(int(part) for part in row[1])
             for row in (rows if isinstance(rows, list) else ())
             if isinstance(row, list) and len(row) == 2 and isinstance(row[1], list)
         }
