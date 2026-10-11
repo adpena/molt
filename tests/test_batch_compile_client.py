@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import queue
 import threading
+import time
 
 import pytest
 
@@ -81,7 +82,13 @@ def test_batch_compile_client_readline_timeout_is_bounded() -> None:
 def test_batch_request_custody_is_immutable_across_responses_and_errors(monkeypatch):
     client = _bare_client()
     times = iter((100, 200, 300))
-    monkeypatch.setattr(batch_compile_client.time, "monotonic_ns", lambda: next(times))
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        batch_compile_client,
+        monotonic_ns=lambda: next(times),
+    )
     replies = iter(
         (
             '{"id": 1, "ok": true, "returncode": 0}',
