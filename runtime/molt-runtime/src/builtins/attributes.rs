@@ -568,7 +568,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "format" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     let bits = memoryview_format_bits(obj_ptr);
@@ -577,7 +577,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "itemsize" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     return Ok(Some(
@@ -586,7 +586,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "ndim" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     return Ok(Some(
@@ -595,7 +595,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "shape" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     let shape = memoryview_shape(obj_ptr).unwrap_or(&[]);
@@ -608,7 +608,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "strides" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     let strides = memoryview_strides(obj_ptr).unwrap_or(&[]);
@@ -621,7 +621,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "readonly" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     return Ok(Some(
@@ -630,7 +630,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 }
                 "nbytes" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     return Ok(Some(
@@ -1001,7 +1001,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                             type_name(_py, res_obj)
                         );
                         dec_ref_bits(_py, res_bits);
-                        let _ = raise_exception::<_>(_py, "TypeError", &msg);
+                        raise_exception::<()>(_py, "TypeError", &msg);
                         return Err(());
                     };
                     if object_type_id(res_ptr) != TYPE_ID_DICT {
@@ -1010,7 +1010,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                             type_name(_py, res_obj)
                         );
                         dec_ref_bits(_py, res_bits);
-                        let _ = raise_exception::<_>(_py, "TypeError", &msg);
+                        raise_exception::<()>(_py, "TypeError", &msg);
                         return Err(());
                     }
                     res_bits

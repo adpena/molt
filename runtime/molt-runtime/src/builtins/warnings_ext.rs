@@ -702,7 +702,7 @@ mod tests {
     use molt_cpython_abi::abi_types::{
         PyExc_DeprecationWarning, PyExc_RuntimeWarning, PyExc_Warning,
     };
-    use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject, typeobj};
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, typeobj};
     use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
     use std::cell::RefCell;
 
