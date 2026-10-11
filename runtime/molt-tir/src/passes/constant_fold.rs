@@ -11,10 +11,6 @@ use std::collections::BTreeMap;
 // yielding a 3-5% binary size reduction on constant-heavy code.
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn fold_constants(ops: &mut [OpIR]) {
     // Map from variable name -> known constant integer value (raw, unboxed).
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();

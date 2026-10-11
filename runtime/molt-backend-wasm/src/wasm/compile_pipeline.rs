@@ -96,61 +96,7 @@ impl WasmBackend {
         crate::apply_profile_order(&mut ir);
         let source_callables =
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::rewrite_stateful_loops(func_ir);
-        }
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::eliminate_unbound_local_checks(func_ir);
-            crate::eliminate_redundant_guard_tags(func_ir);
-            crate::elide_dead_struct_allocs(func_ir);
-        }
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::escape_analysis(func_ir);
-        }
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::rc_coalescing(func_ir);
-        }
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::fold_constants(&mut func_ir.ops);
-        }
-        // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
-        // callargs_push_pos + call_bind) into a single allocation-free
-        // `call_method_ic` op, and `super().method(args)` into
-        // `call_super_method_ic` (CPython LOAD_METHOD/CALL_METHOD parity).
-        // Fusion rewrites source calls, so it runs before the TIR lift, as on
-        // every native lane: the fused call carries its source call's adoption
-        // (design 20 §1.6) into ownership planning, and the receiver moves into
-        // the call as in CPython's method-form LOAD_ATTR and CALL. The IC opcodes
-        // lower back to the same SimpleIR spellings after the roundtrip, and
-        // `eliminate_dead_ops` keeps them because method dispatch runs arbitrary
-        // user code.
-        for func_ir in ir
-            .functions
-            .iter_mut()
-            .filter(|function| !function.is_extern)
-        {
-            crate::passes::fuse_method_dispatch(func_ir);
-        }
+        molt_tir::passes::run_simple_ir_pipeline(&mut ir, &target_info);
         split_wasm_megafunctions(&mut ir);
         super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info, stage_audit);
 

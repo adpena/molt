@@ -16,6 +16,7 @@ mod exception_edges;
 mod guard_elision;
 mod megafunction_split;
 mod method_fusion;
+mod pipeline;
 mod profile_order;
 mod purity;
 mod rc_coalescing;
@@ -47,6 +48,9 @@ pub use self::megafunction_split::{
     split_large_function, split_megafunctions, split_megafunctions_with_filter,
 };
 pub use self::method_fusion::fuse_method_dispatch;
+pub use self::pipeline::{
+    SIMPLE_IR_FUNCTION_PASSES, SimpleIrLowering, SimpleIrPass, run_simple_ir_pipeline,
+};
 pub use self::profile_order::apply_profile_order;
 pub use self::purity::{
     SimpleIrScalarPurityFacts, simple_ir_op_is_provably_nonthrowing_with_facts,

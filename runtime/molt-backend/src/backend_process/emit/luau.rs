@@ -12,6 +12,8 @@ pub(super) fn emit_luau_target(
     output_file: &str,
     use_ir_pipeline: bool,
 ) -> io::Result<()> {
+    let luau_target = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
+    molt_backend::run_simple_ir_pipeline(ir, &luau_target);
     let tir_start = Instant::now();
     let module_stats = run_luau_tir_module_pipeline(ir)?;
     let tir_elapsed = tir_start.elapsed();
@@ -19,10 +21,7 @@ pub(super) fn emit_luau_target(
         "[molt-luau] TIR module pipeline: {} functions, {} module-changed in {tir_elapsed:.2?}",
         module_stats.functions, module_stats.module_changed
     );
-    molt_backend::eliminate_dead_ops(
-        ir,
-        &molt_backend::tir::target_info::TargetInfo::luau_release_fast(),
-    );
+    molt_backend::eliminate_dead_ops(ir, &luau_target);
 
     let mut backend = LuauBackend::new();
     let source = if use_ir_pipeline {

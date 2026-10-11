@@ -44,38 +44,14 @@ impl SimpleBackend {
         // partitioning; physical symbol spelling carries no authority.
         let source_callables =
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
-        // Pre-TIR IR passes (parallel). Each pass operates on a single
-        // FunctionIR with no shared mutable state, so all passes can run in
-        // parallel across functions. Fusing them into one par_iter_mut avoids
-        // repeated thread-pool dispatch overhead and keeps each function hot.
-        {
-            use rayon::prelude::*;
-            ir.functions.par_iter_mut().for_each(|func_ir| {
-                rewrite_stateful_loops(func_ir);
-                // Eliminate UnboundLocalError checks early; they are dead code
-                // in type-annotated functions and removing them before other
-                // passes prevents the variable-access pattern from polluting
-                // escape analysis and constant folding.
-                eliminate_unbound_local_checks(func_ir);
-                eliminate_redundant_guard_tags(func_ir);
-                elide_dead_struct_allocs(func_ir);
-                escape_analysis(func_ir);
-                // rc_coalescing has its own MOLT_DISABLE_RC_COALESCE
-                // early-return gate: single source of truth, no parallel
-                // pre-check.
-                rc_coalescing(func_ir);
-                fold_constants(&mut func_ir.ops);
-                fold_constants_cross_block(&mut func_ir.ops);
-                elide_safe_exception_checks(func_ir);
-                // Fuse `obj.method(args)` / `super().method(args)` into the
-                // allocation-free IC calls before the TIR lift, on both native
-                // lanes. The fused call carries its source call's adoption
-                // (design 20 §1.6), so the receiver moves into the call as
-                // in CPython's method-form LOAD_ATTR and CALL, and ownership
-                // planning sees one instruction.
-                fuse_method_dispatch(func_ir);
-            });
-        }
+        // One lane target answers every target query below: the shared SimpleIR
+        // pipeline, the Cranelift TIR cache, and dead-op elimination.
+        let lane_target_info = if use_llvm {
+            crate::tir::target_info::TargetInfo::llvm_release_fast()
+        } else {
+            crate::tir::target_info::TargetInfo::native_from_simd_caps(self.target_simd_caps())
+        };
+        molt_tir::passes::run_simple_ir_pipeline(ir, &lane_target_info);
 
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
@@ -84,9 +60,7 @@ impl SimpleBackend {
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
 
-        let native_tti = (!use_llvm).then(|| {
-            crate::tir::target_info::TargetInfo::native_from_simd_caps(self.target_simd_caps())
-        });
+        let native_tti = (!use_llvm).then(|| lane_target_info.clone());
         let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
             crate::tir::pipeline_cache::run_cached_tir_pipeline(
                 &mut ir.functions,
@@ -106,10 +80,7 @@ impl SimpleBackend {
             .cached_tir
         });
         if !self.skip_ir_passes {
-            let dead_op_target = native_tti
-                .clone()
-                .unwrap_or_else(crate::tir::target_info::TargetInfo::llvm_release_fast);
-            eliminate_dead_ops(ir, &dead_op_target);
+            eliminate_dead_ops(ir, &lane_target_info);
         }
 
         // Bound per-function optimization growth while transport allocations

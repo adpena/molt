@@ -7,6 +7,10 @@ use molt_artifact_publish::write_text_atomically;
 
 pub(crate) fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
     let mut ir = ir.clone();
+    molt_backend::run_simple_ir_pipeline(
+        &mut ir,
+        &molt_backend::tir::target_info::TargetInfo::rust_release_fast(),
+    );
     ir.tree_shake_source_emission();
     let mut backend = RustBackend::new();
     backend.compile_checked(&ir).map_err(|err| {
