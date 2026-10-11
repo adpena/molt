@@ -86,6 +86,13 @@ full gate. Windows/macOS process cells remain unverified. The candidate also
 reconciles newer main through `e127d7360`, preserving its guard, cache, compiler
 and release-authority changes; that reconciliation is not qualification.
 
+Guarded development commands and benchmark interpreter selection now preserve
+the selected virtual-environment entrypoint through working-directory changes.
+Eight focused checks pass, including actual interpreter execution and imports
+from a distinct environment through relative, absolute and PATH selections.
+The change reuses the lexical executable-path authority and adds no work to
+emitted binaries. Windows execution remains unverified.
+
 The current standalone Linux/aarch64 ABI run at `78ddd63bf` passes 771 cases,
 with no failures and one explicit developer timing probe ignored across 56 test
 summaries. Native process custody is complete with no custody violations.

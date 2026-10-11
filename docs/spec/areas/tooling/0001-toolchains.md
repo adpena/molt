@@ -326,6 +326,12 @@ PATH-resolved name must retain its lexical role. Mutable external readers pass
 resolved-content custody before probing and retain execution/cache-reuse checks.
 Quoted paths preserve spaces and native separators without admitting arguments.
 
+Development launchers likewise preserve the selected Python entrypoint when
+making it absolute for a different child working directory. Resolving a virtual
+environment's interpreter symlink to its base executable changes its import
+environment. Guarded commands and benchmark interpreter selection share the
+lexical executable-path authority; content identity remains a separate check.
+
 Optimized linked WASM builds require Binaryen. Managed installations come from
 `config/binaryen_releases.toml`, provisioned by `tools/provision_binaryen.py`.
 The manifest owns each host archive and extracted-tree identity, not
