@@ -383,7 +383,7 @@ def test_uv_project_abbreviations_are_rejected_without_any_exec(option, monkeypa
     )
     monkeypatch.setattr(
         uv_project_env,
-        "run_command",
+        "forward_command",
         lambda *args, **kwargs: pytest.fail("invalid options reached execution"),
     )
     with pytest.raises(SystemExit) as caught:
