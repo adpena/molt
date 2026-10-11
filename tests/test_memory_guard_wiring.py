@@ -810,6 +810,26 @@ def test_checkout_target_oracle_reports_what_a_session_adds(tmp_path: Path) -> N
         )
         == ()
     )
+    # Test state beside the target is a leak in every layout (HF-135).
+    (target.parent / ".hypothesis").mkdir()
+    (target.parent / "uv-project-envs").mkdir()
+    with_state = pytest_conftest.checkout_target_entries(target)
+    for in_checkout in (False, True):
+        assert pytest_conftest.checkout_target_leaks(
+            after, with_state, cargo_target_in_checkout=in_checkout
+        ) == (".hypothesis", "uv-project-envs")
+
+
+def test_hypothesis_storage_lives_in_scratch_not_the_checkout() -> None:
+    from hypothesis.configuration import storage_directory
+
+    from molt.dx import checkout_component, scratch_dir
+
+    home = scratch_dir(REPO_ROOT, f"hypothesis/{checkout_component(REPO_ROOT)}")
+    for name in ("examples", "constants", "unicode_data"):
+        path = storage_directory(name, intent_to_write=False).path
+        assert path == home / name
+        assert REPO_ROOT not in path.parents
 
 
 @pytest.mark.parametrize("kind", ["pytest", "test-custody"])
