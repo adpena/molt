@@ -3418,14 +3418,6 @@ owner = "src/molt/cli/cargo_execution.py"
 summary = "Set to 1, true, or yes to add -C target-cpu=native to CARGO_BUILD_RUSTFLAGS for the Cargo build when no target-cpu flag is already present; default off."
 
 [[variable]]
-name = "MOLT_NM_TIMEOUT_SEC"
-audience = "user"
-kind = "float"
-default = ""
-owner = "src/molt/cli/native_symbol_inspection.py"
-summary = "Wall-clock limit in seconds for one nm or llvm-nm symbol read of a native object; a positive float replaces the caller's default timeout, any other value keeps that default."
-
-[[variable]]
 name = "MOLT_NODE_BIN"
 audience = "user"
 kind = "path"

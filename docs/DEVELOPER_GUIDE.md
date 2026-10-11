@@ -75,8 +75,10 @@ complete structural primitive that deletes or unifies a real authority.
 
 Before risky commands in this mode, leave a death capsule: command, cwd, guard
 pid, expected child pid when known, status, timestamp, and evidence path. Use
-the guard state root (`<artifact root>/tmp/memory_guard/active/` and
-`.../incidents/`; `molt.memory_guard_paths`), pytest outer-guard summaries, `logs/agents/codex_stall/*.json`, and
+the guard state root (`<artifact root>/tmp/memory_guard/active/` for live or
+unresolved runs, `.../retired/` for finished ones, and `.../incidents/`;
+`molt.memory_guard_paths`; `python tools/memory_guard_custody.py` classifies
+them), pytest outer-guard summaries, `logs/agents/codex_stall/*.json`, and
 `logs/agents/codex_crash/*.json` before relying on chat history. For Codex
 Desktop crash dialogs, run
 `uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`

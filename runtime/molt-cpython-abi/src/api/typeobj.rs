@@ -483,6 +483,18 @@ pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObjec
     }
 }
 
+/// Process-owned type shells private to this ABI. Neither is a canonical
+/// builtin, but lazy `PyType_Ready` gives each a runtime-owned dict, bases,
+/// MRO and slot-wrapper descriptors. They therefore join the builtin
+/// retirement cohort: otherwise shutdown finds their descriptors still live
+/// after the last callback drain and the lifecycle fails terminally.
+pub(crate) fn private_process_type_shells() -> [*mut PyTypeObject; 2] {
+    [
+        native_slot_dispatch::python_buffer_export_type_shell(),
+        crate::api::object::sequence_iterator_type_shell(),
+    ]
+}
+
 /// Reopen only the supplied process-owned shells at the next runtime bootstrap.
 /// This does not resurrect old live identities, roots, version tags, or watches.
 pub(crate) fn reopen_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {

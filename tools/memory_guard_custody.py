@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Inspect or explicitly reconcile stale active-marker evidence without pruning."""
+"""Inspect, reconcile and retire memory-guard custody records.
+
+Dry run is the default. ``--apply`` marks a record ``custody_reconciled`` when
+one native process snapshot proves its guard, child and child process group
+gone. It then moves every resolved record out of the active directory into
+its bounded retired history, and hands a dead guard's leased or indeterminate
+scratch to the scratch reclaim authority. ``--release MARKER`` resolves a
+record whose evidence is inconclusive, after the operator confirms that no
+process of that run is alive; live evidence still refuses it.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +28,7 @@ bind_repository_imports(__file__)
 from tools.memory_guard_core.active_custody import (  # noqa: E402
     ActiveCustodyError,
     reconcile_active_guard_markers,
+    record_custody_sweep,
 )
 from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402
@@ -37,7 +47,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="terminalize only birth-identified stale records; default is dry-run",
+        help="write receipts and retire resolved records; default is dry-run",
+    )
+    parser.add_argument(
+        "--release",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="MARKER",
+        help=(
+            "operator attestation: resolve this inconclusive record "
+            "(repeatable); a record with a live process is still refused"
+        ),
     )
     parser.add_argument(
         "--json", action="store_true", help="emit machine-readable evidence"
@@ -50,8 +71,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         report = reconcile_active_guard_markers(
-            active_dir, sample_processes, apply=args.apply
+            active_dir,
+            sample_processes,
+            apply=args.apply,
+            release=tuple(path.expanduser() for path in args.release),
         )
+        if args.apply and not args.release:
+            record_custody_sweep(report)
     except (ActiveCustodyError, ProcessSnapshotError, OSError) as exc:
         print(
             f"memory_guard_custody: custody unavailable; no markers changed: {exc}",
@@ -60,17 +86,32 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
-    else:
-        mode = "apply" if args.apply else "dry-run"
-        print(
-            f"memory_guard_custody [{mode}] active_dir={report.active_dir} "
-            f"snapshot_processes={report.snapshot_processes} "
-            f"terminalized={report.terminalized} preserved={report.preserved}"
-        )
-        for decision in report.decisions:
-            if decision.disposition != "already_terminal":
-                verb = "terminalized" if decision.applied else decision.disposition
-                print(f"  {verb}: {decision.marker} ({decision.reason})")
+        return 0
+    mode = "apply" if args.apply else "dry-run"
+    print(
+        f"memory_guard_custody [{mode}] active_dir={report.active_dir} "
+        f"snapshot_processes={report.snapshot_processes} "
+        f"terminalized={report.terminalized} retired={report.retired} "
+        f"preserved={report.preserved} remaining={report.remaining}"
+    )
+    for decision in report.decisions:
+        if decision.retired_to is not None:
+            continue
+        if decision.disposition == "already_terminal" and decision.retirement is None:
+            continue
+        detail = decision.reason
+        if decision.retirement is not None:
+            detail += f"; stays active: {decision.retirement}"
+        print(f"  {decision.disposition}: {decision.marker} ({detail})")
+    for retention in report.scratch_retention:
+        errors = retention.get("errors")
+        for error in errors if isinstance(errors, list) else ():
+            print(f"  scratch error: {error}")
+    steps = report.next_steps()
+    if steps:
+        print("operator action required:")
+        for step in steps:
+            print(f"  {step}")
     return 0
 
 

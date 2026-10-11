@@ -1,11 +1,13 @@
 """Tests for the Monty-through-Molt conformance runner."""
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from tests.process_guard_common import install_module_view
 
 sys.path.insert(0, "tests/harness")
 
@@ -63,7 +65,13 @@ def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
 
     monkeypatch.delenv("MOLT_BIN", raising=False)
     monkeypatch.setattr(run_molt_conformance, "SRC_ROOT", repo_root / "src")
-    monkeypatch.setattr(run_molt_conformance.shutil, "which", lambda *_: None)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        run_molt_conformance,
+        which=lambda *_: None,
+    )
 
     assert run_molt_conformance.find_molt() == [sys.executable, "-m", "molt.cli"]
 

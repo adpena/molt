@@ -5,11 +5,13 @@ import io
 import json
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 import tools.bench_wasm as bench_wasm
+from tests.process_guard_common import install_module_view
 from molt.cli import atomic_io, wasm_link_args
 from tests.runtime_profile_fixtures import (
     process_profile_payload,
@@ -32,7 +34,13 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
     calls = []
     diagnostics = []
     ticks = iter((10.0, 12.5))
-    monkeypatch.setattr(bench_wasm.time, "perf_counter", lambda: next(ticks))
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_wasm,
+        perf_counter=lambda: next(ticks),
+    )
     monkeypatch.setattr(bench_wasm, "molt_args_for_benchmark", lambda _script: [])
     monkeypatch.setattr(bench_wasm, "_parse_env_float", lambda *a, **k: 90.0)
     monkeypatch.setattr(
@@ -491,7 +499,13 @@ def test_wasm_profile_parsers_require_current_schemas_and_preserve_epochs() -> N
 
 
 def test_zero_duration_wasm_run_is_invalid_sample(monkeypatch) -> None:
-    monkeypatch.setattr(bench_wasm.time, "perf_counter", lambda: 10.0)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_wasm,
+        perf_counter=lambda: 10.0,
+    )
     monkeypatch.setattr(
         bench_wasm,
         "_run_cmd",

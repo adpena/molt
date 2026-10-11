@@ -22,7 +22,7 @@ from molt.process_spawn import (
     inherit_stdio_kwargs,
 )
 from molt.memory_guard_paths import (
-    active_guard_marker_dir,
+    ACTIVE_DIRNAME,
     canonical_pytest_current_test_file_path,
     pytest_custody_artifact_path as _pytest_custody_artifact_path,
     pytest_custody_path_is_canonical as _pytest_custody_path_is_canonical,
@@ -209,14 +209,30 @@ def outer_guard_summary_dir(
     return _pytest_guard_summary_dir(ROOT, environ)
 
 
+# Current-test files this process admitted, keyed by process: a forked child
+# admits its own.
+_ADMITTED_CURRENT_TEST_FILES: set[tuple[int, str]] = set()
+
+
 def install_pytest_current_test_file_env() -> Path:
+    """Admit the current-test file under the custody root, then keep it.
+
+    The outer guard reads the path it allocated for this process. A test
+    session later points the guards its tests start at a session-scoped
+    state root; a path this process already admitted stays admitted, so that
+    change cannot move the record the outer guard reads.
+    """
+    raw = os.environ.get(PYTEST_CURRENT_TEST_FILE_ENV)
+    if raw is not None and (os.getpid(), raw) in _ADMITTED_CURRENT_TEST_FILES:
+        return Path(raw)
     path = canonical_pytest_current_test_file_path(
         ROOT,
-        os.environ.get(PYTEST_CURRENT_TEST_FILE_ENV),
+        raw,
         fallback_kind="pytest",
         environ=os.environ,
     )
     os.environ[PYTEST_CURRENT_TEST_FILE_ENV] = str(path)
+    _ADMITTED_CURRENT_TEST_FILES.add((os.getpid(), str(path)))
     return path
 
 
@@ -359,7 +375,7 @@ def _ensure_windows_readable_dir(path: Path) -> None:
 
 def guarded_pytest_temp_root() -> Path:
     """Use the parent guard's short, terminal-owned scratch on every platform."""
-    return guard_scratch(ROOT, os.environ)
+    return guard_scratch(os.environ)
 
 
 def _pytest_user_temp_root(temproot: Path) -> Path:
@@ -572,10 +588,13 @@ def _active_guard_marker_valid(
     marker = Path(marker_raw).expanduser()
     try:
         marker_resolved = marker.resolve(strict=False)
-        marker_root = active_guard_marker_dir(ROOT, environ).resolve(strict=False)
     except OSError:
         return False
-    if marker_resolved.parent != marker_root:
+    # The marker lives in its own guard's active directory. Do not compare it
+    # with this process's state root: a test session points the guards its
+    # tests start at another root, and its children still belong to the outer
+    # guard. The record below binds name, pid, token, status and guard path.
+    if marker_resolved.parent.name != ACTIVE_DIRNAME:
         return False
     from tools.memory_guard_core.active_custody import read_marker_record
 

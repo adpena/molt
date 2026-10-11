@@ -14,7 +14,8 @@ from typing import Literal, Mapping
 
 from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
-from tools.memory_guard_core.active_custody import MarkerRecord, read_marker_records
+from molt.memory_guard_paths import ACTIVE_DIRNAME
+from tools.memory_guard_core.active_custody import MarkerRecord, guard_marker_records
 from tools.proof_queue_pkg import command_admission, command_identity, custody, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
@@ -363,18 +364,17 @@ def _summary_guard_marker(
     root = Path(raw_root.strip()).expanduser()
     if not root.is_absolute():
         root = Path(str(row["cwd"])) / root
-    marker_dir = root.resolve(strict=False) / "active"
+    # A finished guard's marker moves to the retired history beside active/.
+    marker_dir = root.resolve(strict=False) / ACTIVE_DIRNAME
     expected_command = summary.get("command")
     expected_created_at = summary.get("recorded_at")
     matches: list[MarkerRecord] = []
     unreadable = False
     try:
-        candidates = read_marker_records(marker_dir)
+        candidates = guard_marker_records(marker_dir, guard_pid)
     except (OSError, ValueError):
         return "unavailable", None, None, None
     for record in candidates:
-        if not record.path.name.startswith(f"guard-{guard_pid}-"):
-            continue
         marker = record.payload
         if marker is None:
             unreadable = True

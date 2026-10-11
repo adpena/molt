@@ -229,7 +229,19 @@ def _in_process_lock_drop(key: str, entry: _InProcessLockEntry) -> None:
 
 def _open_file_lock_handle(lock_path: Path) -> BinaryIO:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    return _file_lock_stream(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666))
+
+
+def _open_existing_file_lock_handle(lock_path: Path) -> BinaryIO:
+    """Open only a lock that exists; never create its file or directory.
+
+    A custody record that another owner removed must stay removed, not
+    reappear as a new lock.
+    """
+    return _file_lock_stream(os.open(lock_path, os.O_RDWR))
+
+
+def _file_lock_stream(fd: int) -> BinaryIO:
     try:
         # Lock ownership is the OS region plus the in-process mutex, never file
         # contents. Windows permits locking byte zero beyond EOF. In particular,
@@ -271,18 +283,23 @@ def _unlock_file_handle(handle: BinaryIO) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _try_acquire_file_lock(lock_path: Path) -> _FileLockHandle | None:
+def _try_acquire_file_lock(
+    lock_path: Path, *, create: bool = True
+) -> _FileLockHandle | None:
     with _file_lock_descriptor_action():
-        return _try_acquire_file_lock_unserialized(lock_path)
+        return _try_acquire_file_lock_unserialized(lock_path, create=create)
 
 
-def _try_acquire_file_lock_unserialized(lock_path: Path) -> _FileLockHandle | None:
+def _try_acquire_file_lock_unserialized(
+    lock_path: Path, *, create: bool = True
+) -> _FileLockHandle | None:
     registry_key, entry = _in_process_lock_reserve(lock_path)
     if not entry.mutex.acquire(blocking=False):
         _in_process_lock_drop(registry_key, entry)
         return None
     try:
-        file_handle = _open_file_lock_handle(lock_path)
+        opener = _open_file_lock_handle if create else _open_existing_file_lock_handle
+        file_handle = opener(lock_path)
     except BaseException:
         entry.mutex.release()
         _in_process_lock_drop(registry_key, entry)

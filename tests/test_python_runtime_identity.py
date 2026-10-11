@@ -320,6 +320,34 @@ def test_runtime_receipt_platform_version_architecture_matrix(
     }
 
 
+def test_startup_selection_difference_names_fields_and_native_images() -> None:
+    before = {
+        "schema": "molt-python-startup-selection-v1",
+        "import_paths": [{"lexical": "/a"}],
+        "native": {
+            "executable": "/py",
+            "paths": ["/lib/a.dll", "/lib/wbemprox.dll"],
+            "contracts": [],
+        },
+    }
+    after = {
+        "schema": "molt-python-startup-selection-v1",
+        "import_paths": [{"lexical": "/a"}, {"lexical": "/b"}],
+        "native": {
+            "executable": "/py",
+            "paths": ["/lib/a.dll", "/lib/_hashlib.pyd"],
+            "contracts": ["c"],
+        },
+    }
+
+    assert runtime.startup_selection_difference(before, before) == []
+    assert runtime.startup_selection_difference(before, after) == [
+        "import_paths",
+        "native images gained /lib/_hashlib.pyd; lost /lib/wbemprox.dll; "
+        "changed contracts",
+    ]
+
+
 def test_macos_runtime_receipt_accepts_distinct_python_basename_components() -> None:
     payload = _runtime_payload(operating_system="macos")
     dependency = payload["native_dependency_closure"]

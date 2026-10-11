@@ -94,7 +94,11 @@ from molt.dx import (  # noqa: E402
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
-from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
+from tools.memory_guard_core.active_custody import (  # noqa: E402
+    CUSTODY_COMMAND,
+    active_guard_blockers,
+    has_active_guard_marker,
+)
 
 _GB = 1024**3
 
@@ -833,6 +837,36 @@ def _has_active_guard(root: Path) -> bool:
     )
 
 
+def _active_guard_custody(roots: Iterable[Path]) -> list[dict]:
+    """Name the records that keep each owner root active, and the next step.
+
+    This reads files only. The custody tool takes the process snapshot that
+    tells a live guard from a stale or inconclusive record.
+    """
+    directories = sorted(
+        {markers for root in roots for markers in active_guard_marker_dirs_of(root)},
+        key=str,
+    )
+    custody = []
+    for markers in directories:
+        blockers = active_guard_blockers(markers)
+        if not blockers:
+            continue
+        custody.append(
+            {
+                "active_dir": str(markers),
+                "blocking_records": len(blockers),
+                "examples": list(blockers[:5]),
+                "next_step": (
+                    f"{CUSTODY_COMMAND} --active-dir {markers} names the live, "
+                    "stale and inconclusive records; add --apply to resolve "
+                    "the stale ones"
+                ),
+            }
+        )
+    return custody
+
+
 def discover_candidates(
     root: Path,
     config: GuardConfig,
@@ -955,6 +989,8 @@ class ReclaimResult:
     skipped: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     mode: str = "apply"
+    # Active guard records that blocked a candidate, with the next step.
+    custody: list[dict] = field(default_factory=list)
 
     @property
     def reclaimed_bytes(self) -> int:
@@ -974,6 +1010,7 @@ class ReclaimResult:
             "reclaimed": self.reclaimed,
             "skipped": self.skipped,
             "errors": self.errors,
+            "custody": self.custody,
         }
 
 
@@ -1055,6 +1092,11 @@ def ensure_free(
         result.skipped.append(
             {"path": str(cand.path), "reason": why, "kind": cand.kind}
         )
+    result.custody = _active_guard_custody(
+        cand.owner_root or resolved_root
+        for cand, why in plan.skipped
+        if why == "active-guard"
+    )
 
     deadline = time.monotonic() + budget_s
     free_now = free_before
@@ -1151,6 +1193,9 @@ def gc(
         min_idle_s=cfg.min_idle_s,
         protected=protected,
     )
+    result.custody = _active_guard_custody(
+        cand.owner_root or resolved_root for cand in cands if cand.guard_active
+    )
     collected_norms: set[str] = set()
     for cand in collectable:
         if apply:
@@ -1228,6 +1273,8 @@ def reclaim_completed_lane(
     )
     if not allowed:
         result.skipped.append({"path": str(target), "reason": reason})
+        if reason == "lane-active":
+            result.custody = _active_guard_custody((resolved_root,))
         return result
     if not target.is_dir():
         return result
@@ -1472,6 +1519,11 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
         print(f"  skip: {skip['path']} ({skip['reason']})")
     for err in result.errors[:10]:
         _eprint(f"  ERROR {err}")
+    for item in result.custody:
+        print(
+            f"  active guard records: {item['blocking_records']} in "
+            f"{item['active_dir']}; next step: {item['next_step']}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

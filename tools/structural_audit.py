@@ -2639,8 +2639,18 @@ _PROCESS_WIDE_ATTRIBUTES = frozenset(
         ("sys", "stdout"),
         ("sys", "stderr"),
         ("sys", "modules"),
+        # The import system reads its finders and caches from the real sys
+        # module; no module view can reach it.
+        ("sys", "meta_path"),
+        ("sys", "path_hooks"),
+        ("sys", "path_importer_cache"),
         ("os", "environ"),
     }
+)
+# Helpers whose positional arguments are (monkeypatch, stdlib name, real
+# module, *modules); each installs one view of the stdlib module.
+_MODULE_VIEW_INSTALLERS = frozenset(
+    {"install_module_view", "install_thread_module_view"}
 )
 _PROCESS_WIDE_PATCH_PREFILTER = re.compile(
     r"setattr\(\s*(?:\"[\w.]*\b(?:"
@@ -2669,7 +2679,7 @@ def _process_wide_patch_lines(tree: ast.AST) -> list[int]:
         for call in calls:
             func = call.func
             name = func.id if isinstance(func, ast.Name) else None
-            if name == "install_module_view" and len(call.args) >= 4:
+            if name in _MODULE_VIEW_INSTALLERS and len(call.args) >= 4:
                 stdlib = call.args[1]
                 if isinstance(stdlib, ast.Constant) and isinstance(stdlib.value, str):
                     views.update(
