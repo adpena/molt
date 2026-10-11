@@ -15,6 +15,7 @@ process-global allocator counters and refusal must never share a libtest run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -35,6 +36,7 @@ from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
+from molt.exact_json import loads_exact  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
@@ -292,6 +294,160 @@ def select_artifacts(
     return selected
 
 
+def observed_abi_dependency(
+    cargo_output: str,
+    metadata_output: str,
+    *,
+    policy: str,
+    source_root: Path,
+) -> dict:
+    """Bind allocation policy to the actual workspace ABI library compilation.
+
+    Calibration core is intentionally legal in timing/semantic images. Only
+    the dedicated allocation-observer feature enables platform C counters.
+    Package identity and target shape come from Cargo's manifest metadata,
+    never a package-id spelling or an executable's top-level features. This
+    proves Cargo feature resolution; effective rustc cfg/config custody remains
+    with the existing build/toolchain capture authority. Manually injected cfgs
+    are not represented in Cargo compiler-artifact feature lists.
+    """
+    if policy not in {"semantic", "allocation-observer"}:
+        raise RuntimeError(f"unknown ABI allocation policy: {policy}")
+    identities = truth.package_identities_from_metadata(metadata_output)
+    try:
+        metadata = loads_exact(metadata_output)
+    except ValueError as exc:
+        raise RuntimeError("malformed Cargo package metadata") from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError("Cargo package metadata must be an object")
+    manifest = (source_root / "runtime/molt-cpython-abi/Cargo.toml").resolve()
+    packages = [
+        package
+        for package in metadata["packages"]
+        if isinstance(package.get("manifest_path"), str)
+        and Path(package["manifest_path"]).resolve() == manifest
+    ]
+    if len(packages) != 1:
+        raise RuntimeError("requires one canonical ABI package manifest in metadata")
+    package = packages[0]
+    package_id = package["id"]
+    if (
+        package.get("source") is not None
+        or not Path(package["manifest_path"]).is_absolute()
+        or not isinstance(metadata.get("workspace_root"), str)
+        or Path(metadata["workspace_root"]).resolve() != source_root.resolve()
+        or not isinstance(metadata.get("workspace_members"), list)
+        or metadata["workspace_members"].count(package_id) != 1
+    ):
+        raise RuntimeError("ABI package is not the canonical workspace member")
+    targets = package.get("targets")
+    if not isinstance(targets, list) or not all(
+        isinstance(t, dict) and isinstance(t.get("crate_types"), list) for t in targets
+    ):
+        raise RuntimeError("ABI package lacks target metadata")
+    libraries = [t for t in targets if "rlib" in t.get("crate_types", [])]
+    if len(libraries) != 1:
+        raise RuntimeError("requires one ABI library target in metadata")
+    target = libraries[0]
+    if (
+        not isinstance(target.get("name"), str)
+        or not isinstance(target.get("src_path"), str)
+        or Path(target["src_path"]).resolve() != manifest.parent / "src/lib.rs"
+        or not isinstance(target.get("kind"), list)
+        or not isinstance(target.get("crate_types"), list)
+        or not all(
+            isinstance(k, str) and k for k in target["kind"] + target["crate_types"]
+        )
+        or set(target["kind"]) != set(target["crate_types"])
+        or set(target["crate_types"]) != {"rlib", "cdylib"}
+    ):
+        raise RuntimeError("ABI metadata does not describe its canonical library")
+    declared = package.get("features")
+    if (
+        not isinstance(declared, dict)
+        or not all(
+            isinstance(k, str)
+            and isinstance(v, list)
+            and all(isinstance(f, str) for f in v)
+            for k, v in declared.items()
+        )
+        or "l7-attestation-core" not in declared
+        or "l7-attestation-core" not in declared.get("allocation-observer", [])
+    ):
+        raise RuntimeError(
+            "ABI manifest lacks the separate allocation feature contract"
+        )
+    matches = []
+    for item in truth.compiler_artifacts(cargo_output, source_context="compiler-only"):
+        emitted_target = item.get("target")
+        if not isinstance(emitted_target, dict):
+            raise RuntimeError("Cargo compiler artifact lacks target metadata")
+        if item.get("package_id") == package_id:
+            if emitted_target.get("kind") == ["custom-build"]:
+                continue
+            matches.append(item)
+        elif emitted_target.get("name") == target["name"]:
+            raise RuntimeError("foreign ABI compiler artifact package identity")
+    if len(matches) != 1:
+        raise RuntimeError("requires one unambiguous emitted ABI library artifact")
+    item = matches[0]
+    emitted_target = item["target"]
+    features, profile, filenames = (
+        item.get("features"),
+        item.get("profile"),
+        item.get("filenames"),
+    )
+    if (
+        item.get("manifest_path") != package["manifest_path"]
+        or any(
+            emitted_target.get(k) != target[k]
+            for k in ("name", "src_path", "kind", "crate_types")
+        )
+        or item.get("executable") is not None
+        or not isinstance(profile, dict)
+        or profile.get("test") is not False
+        or type(profile.get("debug_assertions")) is not bool
+        or not isinstance(profile.get("opt_level"), str)
+        or not isinstance(features, list)
+        or not all(isinstance(f, str) and f for f in features)
+        or len(features) != len(set(features))
+        or not set(features) <= declared.keys()
+        or not isinstance(filenames, list)
+        or not filenames
+        or not all(isinstance(f, str) and Path(f).is_absolute() for f in filenames)
+        or len(filenames) != len(set(filenames))
+        or sum(Path(f).suffix == ".rlib" for f in filenames) != 1
+    ):
+        raise RuntimeError(
+            "ABI compiler artifact lacks exact library/features evidence"
+        )
+    observed = set(features)
+    observer = "allocation-observer" in observed
+    if observer != (policy == "allocation-observer") or (
+        observer and "l7-attestation-core" not in observed
+    ):
+        raise RuntimeError(
+            f"ABI allocation features contradict {policy} policy: {features}"
+        )
+    return {
+        "package_id": package_id,
+        "package": identities[package_id],
+        "manifest_path": package["manifest_path"],
+        "target": emitted_target,
+        "features": features,
+        "allocation_feature_contract": {
+            name: declared[name]
+            for name in ("allocation-observer", "l7-attestation-core")
+        },
+        "observed_profile": profile,
+        "filenames": filenames,
+        "metadata_sha256": hashlib.sha256(metadata_output.encode("utf-8")).hexdigest(),
+        "compiler_stdout_sha256": hashlib.sha256(
+            cargo_output.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def observed_build(
     cargo_output: str,
     artifact: dict[str, str],
@@ -299,13 +455,9 @@ def observed_build(
     environment: dict[str, str | None],
 ) -> dict:
     matches = []
-    for line in cargo_output.splitlines():
-        if not line.startswith("{"):
-            continue
-        item = json.loads(line)
+    for item in truth.compiler_artifacts(cargo_output, source_context="compiler-only"):
         if (
-            item.get("reason") == "compiler-artifact"
-            and item.get("executable")
+            item.get("executable")
             and str(Path(item["executable"]).resolve()) == artifact["executable"]
         ):
             matches.append(item)
@@ -494,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
             check=True,
             encoding="utf-8",
         )
+        (run / "cargo.metadata.json").write_bytes(metadata.stdout.encode("utf-8"))
         admit_cargo_build(command, cwd=ROOT, env=None)
         build = COMMANDS.run(
             command,
@@ -504,7 +657,7 @@ def main(argv: list[str] | None = None) -> int:
             check=False,
             encoding="utf-8",
         )
-        (run / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
+        (run / "build.stdout.jsonl").write_bytes(build.stdout.encode("utf-8"))
         (run / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
         aggregate["build_command"] = command
         aggregate["build_returncode"] = build.returncode
@@ -548,21 +701,28 @@ def main(argv: list[str] | None = None) -> int:
             build.stdout, truth.package_identities_from_metadata(metadata.stdout)
         )
         selected_artifacts = select_artifacts(artifacts, args.policy)
-        if truth.git_source_identity() != source:
-            raise RuntimeError("source changed during Cargo compilation")
-        # Inventory every required image before launching any selected test.
-        images = {}
-        for target, artifact in selected_artifacts.items():
-            observed = observed_build(
+        aggregate["abi_dependency"] = observed_abi_dependency(
+            build.stdout, metadata.stdout, policy=args.policy, source_root=ROOT
+        )
+        observed_images = {
+            target: observed_build(
                 build.stdout, artifact, args.profile, aggregate["build_environment"]
             )
-            if (
+            for target, artifact in selected_artifacts.items()
+        }
+        for target, observed in observed_images.items():
+            if (OBSERVER_FEATURE in observed["features"]) != (
                 args.policy == "allocation-observer"
-                and OBSERVER_FEATURE not in observed["features"]
             ):
                 raise RuntimeError(
-                    f"{target}: observer feature absent from compiled image"
+                    f"{target}: compiled observer feature contradicts {args.policy} policy"
                 )
+        if truth.git_source_identity() != source:
+            raise RuntimeError("source changed during Cargo compilation")
+        # Admit every image's features before invoking even libtest inventory.
+        images = {}
+        for target, artifact in selected_artifacts.items():
+            observed = observed_images[target]
             binary = Path(artifact["executable"])
             identity = truth._file_identity(binary)
             runner._ACTIVE_EVIDENCE_DIR = run / target / "discovery-evidence"

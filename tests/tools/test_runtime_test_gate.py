@@ -297,6 +297,184 @@ def test_resolved_compiler_profile_features_preserved():
     )
 
 
+def abi_compiler_fixture(source_root: Path, features: list[str]):
+    # Cargo metadata and compiler-artifact are independent structured inputs.
+    # The library carries no executable, so executable-only discovery misses it.
+    manifest = source_root / "runtime/molt-cpython-abi/Cargo.toml"
+    package_id = f"path+{manifest.parent.as_uri()}#molt-lang-cpython-abi@0.1.0"
+    target = {
+        "name": "molt_cpython_abi",
+        "kind": ["rlib", "cdylib"],
+        "crate_types": ["rlib", "cdylib"],
+        "src_path": str(manifest.parent / "src/lib.rs"),
+    }
+    package = {
+        "id": package_id,
+        "name": "molt-lang-cpython-abi",
+        "version": "0.1.0",
+        "source": None,
+        "manifest_path": str(manifest),
+        "targets": [deepcopy(target)],
+        "features": {
+            "default": [],
+            "runtime-test-support": [],
+            "l7-attestation-core": [],
+            "allocation-observer": ["l7-attestation-core"],
+        },
+    }
+    metadata = {
+        "packages": [package],
+        "workspace_members": [package_id],
+        "workspace_root": str(source_root),
+    }
+    artifact = {
+        "reason": "compiler-artifact",
+        "package_id": package_id,
+        "manifest_path": str(manifest),
+        "target": target,
+        "profile": {"test": False, "debug_assertions": False, "opt_level": "3"},
+        "features": features,
+        "filenames": [
+            str(source_root / "target/deps/libmolt_cpython_abi-fixture.rlib")
+        ],
+        "executable": None,
+        "fresh": True,
+    }
+    return metadata, artifact
+
+
+@pytest.mark.parametrize(
+    "policy,features",
+    [
+        ("semantic", []),
+        ("semantic", ["l7-attestation-core", "runtime-test-support"]),
+        ("allocation-observer", ["allocation-observer", "l7-attestation-core"]),
+    ],
+)
+def test_abi_features_bound_to_emitted_library_not_runtime_labels(
+    tmp_path, policy, features
+):
+    import json
+
+    metadata, artifact = abi_compiler_fixture(tmp_path, features)
+    build_script = {
+        "reason": "compiler-artifact",
+        "package_id": artifact["package_id"],
+        "target": {"kind": ["custom-build"], "name": "build-script-build"},
+    }
+    output = "\n".join(json.dumps(item) for item in [build_script, artifact])
+    metadata_output = json.dumps(metadata)
+    observed = gate.observed_abi_dependency(
+        output, metadata_output, policy=policy, source_root=tmp_path
+    )
+    assert observed["package_id"] == artifact["package_id"]
+    assert observed["package"] == "molt-lang-cpython-abi@0.1.0"
+    for key in ("manifest_path", "target", "features", "filenames"):
+        assert observed[key] == artifact[key]
+    assert observed["compiler_stdout_sha256"] == support.sha256(output.encode())
+    assert observed["metadata_sha256"] == support.sha256(metadata_output.encode())
+    assert observed["allocation_feature_contract"] == {
+        "allocation-observer": ["l7-attestation-core"],
+        "l7-attestation-core": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "duplicate",
+        "foreign_package",
+        "foreign_manifest",
+        "foreign_source",
+        "foreign_target",
+        "test_image",
+        "missing_features",
+        "malformed_features",
+        "duplicate_features",
+        "unknown_feature",
+        "no_rlib",
+        "relative_output",
+        "missing_core",
+        "missing_observer",
+        "timing_observer",
+        "missing_package",
+        "duplicate_package",
+        "nonworkspace",
+        "foreign_workspace",
+        "foreign_metadata_source",
+        "malformed_target",
+        "missing_split_contract",
+        "malformed_json",
+        "duplicate_json_key",
+    ],
+)
+def test_abi_dependency_evidence_fails_closed(tmp_path, mutation):
+    import json
+
+    metadata, artifact = abi_compiler_fixture(
+        tmp_path, ["allocation-observer", "l7-attestation-core"]
+    )
+    records = [artifact]
+    package = metadata["packages"][0]
+    policy = "allocation-observer"
+    if mutation == "missing":
+        records.clear()
+    elif mutation == "duplicate":
+        records.append(deepcopy(artifact))
+    elif mutation == "foreign_package":
+        artifact["package_id"] = "registry+foreign#molt-lang-cpython-abi@0.1.0"
+    elif mutation == "foreign_manifest":
+        artifact["manifest_path"] = str(tmp_path / "foreign/Cargo.toml")
+    elif mutation == "foreign_source":
+        artifact["target"]["src_path"] = str(tmp_path / "foreign/lib.rs")
+    elif mutation == "foreign_target":
+        artifact["target"]["kind"] = ["bin"]
+    elif mutation == "test_image":
+        artifact["profile"]["test"] = True
+    elif mutation == "missing_features":
+        del artifact["features"]
+    elif mutation == "malformed_features":
+        artifact["features"] = [False]
+    elif mutation == "duplicate_features":
+        artifact["features"].append("allocation-observer")
+    elif mutation == "unknown_feature":
+        artifact["features"].append("undeclared")
+    elif mutation == "no_rlib":
+        artifact["filenames"] = [str(tmp_path / "target/abi.rmeta")]
+    elif mutation == "relative_output":
+        artifact["filenames"] = ["target/abi.rlib"]
+    elif mutation == "missing_core":
+        artifact["features"] = ["allocation-observer"]
+    elif mutation == "missing_observer":
+        artifact["features"] = ["l7-attestation-core"]
+    elif mutation == "timing_observer":
+        policy = "semantic"
+    elif mutation == "missing_package":
+        metadata["packages"].clear()
+    elif mutation == "duplicate_package":
+        metadata["packages"].append(deepcopy(package))
+    elif mutation == "nonworkspace":
+        metadata["workspace_members"].clear()
+    elif mutation == "foreign_workspace":
+        metadata["workspace_root"] = str(tmp_path / "foreign")
+    elif mutation == "foreign_metadata_source":
+        package["source"] = "registry+foreign"
+    elif mutation == "malformed_target":
+        package["targets"][0]["crate_types"] = None
+    elif mutation == "missing_split_contract":
+        del package["features"]["allocation-observer"]
+    output = "\n".join(json.dumps(item) for item in records)
+    if mutation == "malformed_json":
+        output += '\n{"reason":'
+    elif mutation == "duplicate_json_key":
+        output = output.replace('"features":', '"features": [], "features":')
+    with pytest.raises(RuntimeError):
+        gate.observed_abi_dependency(
+            output, json.dumps(metadata), policy=policy, source_root=tmp_path
+        )
+
+
 @pytest.mark.parametrize(
     "variable,value",
     [
@@ -312,6 +490,13 @@ def test_flags_cannot_override_disabled_assertions_claim(variable, value):
     artifact, _, output = observed_fixture()
     with pytest.raises(RuntimeError):
         gate.observed_build(output, artifact, "release-fast", {variable: value})
+
+
+@pytest.mark.parametrize("nonobject", ["[]", "null", "123", '"status"'])
+def test_nonobject_compiler_evidence_fails_with_diagnostic(nonobject):
+    artifact, _, output = observed_fixture()
+    with pytest.raises(RuntimeError, match="must contain JSON objects"):
+        gate.observed_build(output + "\n" + nonobject, artifact, "release-fast", {})
 
 
 def test_false_observed_profile_cannot_be_replaced_by_profile_label():
@@ -431,6 +616,7 @@ def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path, output_
         "aggregate.json",
         "build.stdout.jsonl",
         "build.stderr.log",
+        "cargo.metadata.json",
     }
     if output_owner != "proof-plan":
         assert list(source.iterdir()) == []
@@ -569,6 +755,12 @@ OBSERVER_WITNESSES = {
         "changed_image",
         "changed_source",
         "first_image_failure",
+        "missing_abi",
+        "foreign_abi",
+        "duplicate_abi",
+        "uninstrumented_abi",
+        "abi_missing_core",
+        "malformed_abi_features",
     ],
 )
 def test_observer_builds_once_and_requires_isolated_source_bound_controls(
@@ -581,9 +773,12 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
     # and libtest launch themselves are fake, so this test cannot build Rust.
     images = {name: support.make_image(tmp_path / name) for name in OBSERVER_WITNESSES}
     package_id = "path+file:///runtime#molt-runtime@0.1.0"
-    metadata = {
-        "packages": [{"id": package_id, "name": "molt-runtime", "version": "0.1.0"}]
-    }
+    metadata, abi_artifact = abi_compiler_fixture(
+        gate.ROOT, ["allocation-observer", "l7-attestation-core"]
+    )
+    metadata["packages"].append(
+        {"id": package_id, "name": "molt-runtime", "version": "0.1.0"}
+    )
     artifacts = [
         {
             "reason": "compiler-artifact",
@@ -604,6 +799,18 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
         artifacts[-1]["target"]["kind"] = ["bin"]
     elif mutation == "missing_feature":
         artifacts[-1]["features"] = ["stdlib_full"]
+    if mutation != "missing_abi":
+        artifacts.append(abi_artifact)
+    if mutation == "foreign_abi":
+        abi_artifact["package_id"] = "registry+foreign#molt-lang-cpython-abi@0.1.0"
+    elif mutation == "duplicate_abi":
+        artifacts.append(deepcopy(abi_artifact))
+    elif mutation == "uninstrumented_abi":
+        abi_artifact["features"] = ["l7-attestation-core"]
+    elif mutation == "abi_missing_core":
+        abi_artifact["features"] = ["allocation-observer"]
+    elif mutation == "malformed_abi_features":
+        abi_artifact["features"] = "allocation-observer"
     inventories = {
         name: [*sorted(required), "ordinary_not_selected", "timed_probe_not_selected"]
         for name, required in OBSERVER_WITNESSES.items()
@@ -711,8 +918,24 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
             "missing_image",
             "wrong_target",
             "missing_feature",
+            "missing_abi",
+            "foreign_abi",
+            "duplicate_abi",
+            "uninstrumented_abi",
+            "abi_missing_core",
+            "malformed_abi_features",
         }:
             assert children == []
+        if mutation in {
+            "missing_feature",
+            "missing_abi",
+            "foreign_abi",
+            "duplicate_abi",
+            "uninstrumented_abi",
+            "abi_missing_core",
+            "malformed_abi_features",
+        }:
+            assert discoveries == []
         if mutation == "first_image_failure":
             assert "verification_error" in receipt["images"]["molt_runtime"]
             assert "passed_test_count" not in receipt["images"]["molt_runtime"]
@@ -729,6 +952,17 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
     assert code == 0 and receipt["status"] == "success"
     assert receipt["schema"] == "molt.runtime-test-gate.v2"
     assert receipt["policy"] == "allocation-observer"
+    assert receipt["abi_dependency"]["features"] == [
+        "allocation-observer",
+        "l7-attestation-core",
+    ]
+    run = next(root.iterdir())
+    assert receipt["abi_dependency"]["metadata_sha256"] == support.sha256(
+        (run / "cargo.metadata.json").read_bytes()
+    )
+    assert receipt["abi_dependency"]["compiler_stdout_sha256"] == support.sha256(
+        (run / "build.stdout.jsonl").read_bytes()
+    )
     assert set(receipt["images"]) == set(OBSERVER_WITNESSES)
     for target, required in OBSERVER_WITNESSES.items():
         image = receipt["images"][target]

@@ -20,6 +20,8 @@ extension-loader = ["dep:libloading"]
 # Compile the shared calibration and execution-control authority only for
 # explicit L7 verification. The C overlay witness remains an ABI-only probe.
 l7-attestation-core = []
+# Allocation instrumentation is separate from calibration-only timing images.
+allocation-observer = ["l7-attestation-core"]
 l7-test-probe = ["l7-attestation-core", "dep:molt-cpython-abi-test-support"]
 runtime-test-support = []
 

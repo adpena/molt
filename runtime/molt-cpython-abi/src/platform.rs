@@ -61,7 +61,7 @@ pub(crate) unsafe fn write_bytes(text: *const u8, length: usize, stream: *mut CF
 /// extension objects, so allocation and release can never cross heaps.
 #[inline]
 pub(crate) unsafe fn c_malloc(size: usize) -> *mut c_void {
-    #[cfg(feature = "l7-attestation-core")]
+    #[cfg(feature = "allocation-observer")]
     if crate::l7_attestation::c_allocations::record_attempt() {
         return std::ptr::null_mut();
     }
@@ -70,7 +70,7 @@ pub(crate) unsafe fn c_malloc(size: usize) -> *mut c_void {
 
 #[inline]
 pub(crate) unsafe fn c_calloc(size: usize) -> *mut c_void {
-    #[cfg(feature = "l7-attestation-core")]
+    #[cfg(feature = "allocation-observer")]
     if crate::l7_attestation::c_allocations::record_attempt() {
         return std::ptr::null_mut();
     }
@@ -79,7 +79,7 @@ pub(crate) unsafe fn c_calloc(size: usize) -> *mut c_void {
 
 #[inline]
 pub(crate) unsafe fn c_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
-    #[cfg(feature = "l7-attestation-core")]
+    #[cfg(feature = "allocation-observer")]
     if crate::l7_attestation::c_allocations::record_attempt() {
         return std::ptr::null_mut();
     }

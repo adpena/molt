@@ -61,6 +61,48 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
+Integration ownership (2026-10-11 UTC): the parent integrator is taking over all
+preserved WIP for reconciliation and landing against current main. Existing
+coordination records retain active worker scope and exact donor custody; the
+ledger remains the single release-status index. Complete semantic families must
+be qualified and landed together, with replaced internal lanes deleted.
+
+Current qualification (2026-10-11 UTC): candidate `203307fc7` passes the complete
+optimized Linux/aarch64 runtime gate: 1,836 parallel cases and all ten isolated
+lifecycle controls. Complete ABI execution finishes across 56 binaries with
+782 passes, one failure and one ignored case. The sole failure is an exact-index
+fixture expecting an incoming error to reject an exact integer. CPython preserves
+the integer owner and incoming error; the reviewed correction also proves that a
+new provider failure takes precedence. Corrected execution remains required.
+The allocation observer attempt stops at development disk admission before tests.
+The compiled timing image also exposes an instrumentation-selection defect:
+calibration-only `l7-attestation-core` enabled inactive C allocation checks.
+The reviewed source correction separates `allocation-observer` and connects it
+only to explicit runtime allocation proofs. The gate must verify actual compiled
+ABI dependency features before timing/semantic or observer acceptance. A corrected
+uninstrumented image, repeated matched measurements and remaining target cells
+are still required; the runtime family is not ready to land.
+
+The feature gate and existing buffered/streamed Cargo discovery now share one
+exact artifact decoder. Compiler-only evidence rejects malformed records; mixed
+test output preserves legitimate JSON fragments without crediting them as Cargo
+artifacts. All 298 focused tooling checks pass. Actual successor images must
+still exercise the new gate. Effective Rust flags remain owned by the existing
+toolchain capture, separately from Cargo's resolved-feature evidence.
+
+Automatic cache retention remains blocked on complete artifact custody. Its
+review found a publication-to-link eviction race, reuse of optional cache bytes
+as required build output, and generic eviction of active publication stages and
+TIR lock/epoch namespaces. The correction must make required outputs build-owned,
+positively identify evictable completed entries, and preserve each namespace's
+existing synchronization authority. Queue admission must use an indexed pending
+lookup independent of retained proof history. Suite-owned scratch passes 100
+focused checks; this does not qualify the pending cache migration. V1-25 remains
+open for its full producer/consumer, concurrency and cost proof.
+
+The commit-specific records below preserve earlier failures and bounded results;
+they do not override the current qualification above.
+
 Integration decision (2026-10-10 UTC): current main is the canonical base and
 one parent integrator owns reconciliation, qualification and landing. The
 qualified ABI/supervisor unit landed at `9d943eddd`, reconciled with `50d52e471` and preserving its

@@ -627,6 +627,53 @@ def test_truth_runner_derives_complete_binary_coverage_from_cargo_json() -> None
     )
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"reason":"compiler-artifact",',
+        '{"reason":"compiler-artifact","profile":{"test":false,"test":true}}',
+        '{"reason":"compiler-artifact","features":[NaN]}',
+        "[]",
+        "null",
+        "123",
+        '"child stdout"',
+    ],
+)
+def test_cargo_artifact_decoder_respects_compiler_vs_test_stdout_authority(raw):
+    runner = _load_tool("run_cargo_test_truth_exact_records", "run_cargo_test_truth.py")
+    with pytest.raises(RuntimeError, match="Cargo compiler evidence"):
+        list(runner.compiler_artifacts(raw, source_context="compiler-only"))
+    # Arbitrary child output cannot be identified as corrupt Cargo or credited
+    # as an artifact. Real binary coverage is still required by the caller.
+    assert (
+        list(runner.compiler_artifacts(raw, source_context="mixed-test-output")) == []
+    )
+    assert runner.expected_test_binaries(raw, {}) == {}
+    assert any(
+        "zero expected test binaries" in problem
+        for problem in runner.binary_coverage_problems({}, [])
+    )
+
+
+def test_cargo_artifact_decoder_keeps_dependency_records_for_feature_authority():
+    runner = _load_tool(
+        "run_cargo_test_truth_dependency_records", "run_cargo_test_truth.py"
+    )
+    artifact = {
+        "reason": "compiler-artifact",
+        "profile": {"test": False},
+        "features": ["allocation-observer", "l7-attestation-core"],
+        "executable": None,
+        "filenames": ["libmolt_cpython_abi.rlib"],
+    }
+    output = "ordinary diagnostic\n" + json.dumps(artifact)
+    assert list(runner.compiler_artifacts(output, source_context="compiler-only")) == [
+        artifact
+    ]
+    # Test executable discovery retains its independent test-profile filter.
+    assert runner.expected_test_binaries(output, {}) == {}
+
+
 def test_truth_runner_uses_metadata_for_version_only_and_renamed_path_ids() -> None:
     runner = _load_tool("run_cargo_test_truth_metadata_ids", "run_cargo_test_truth.py")
     ordinary_id = "path+file:///molt/runtime/molt-runtime#0.1.0"
@@ -977,10 +1024,11 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
 
 
 @pytest.mark.parametrize(
-    "test_output", [[], ["unsupported op"], None, 42, True, "stdout"]
+    "raw_test_output",
+    ["[]", '["unsupported op"]', "null", "42", "true", '"stdout"', "[", '{"fragment":'],
 )
 def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test_output: object
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_test_output: str
 ) -> None:
     runner = _load_tool(
         "run_cargo_test_truth_bounded_stream", "run_cargo_test_truth.py"
@@ -996,7 +1044,7 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
         + "\n"
     )
     diagnostic = "error[E0004]: " + ("x" * 1_000_000) + "\n"
-    json_stdout = json.dumps(test_output) + "\n"
+    json_stdout = raw_test_output + "\n"
 
     class FakeProcess:
         stdout = iter((json_stdout, artifact, diagnostic, json_stdout))

@@ -36,7 +36,7 @@ required-features = ["cext_loader"]
 
 [features]
 default = ["stdlib_full", "wasi_host"]
-l7-attestation-probe = ["molt-cpython-abi/l7-attestation-core"]
+l7-attestation-probe = ["molt-cpython-abi/allocation-observer"]
 free-threaded = ["molt-codegen-abi/free-threaded"]
 
 # Full stdlib — everything included (default for native builds).
