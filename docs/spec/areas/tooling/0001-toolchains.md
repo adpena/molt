@@ -302,9 +302,9 @@ the job. Target-qualified Cargo C/C++ compiler and archive selectors use that
 same SDK in place, preserving adjacent resources and libraries. Target C/C++
 flags disable implicit `clang.cfg` configuration; the admitted target and sysroot
 remain authoritative. Native PATH, compiler selectors, and flags are unchanged.
-WASM archive inspection consumes
-only an `llvm-nm` at the SDK's LLVM release, from `MOLT_LLVM_NM` or the
-custody-provisioned SDK. A reader in the selected managed generation retains
+WASM archive inspection reads WebAssembly objects in-process (see below) and
+runs only an `llvm-nm` at the SDK's LLVM release for bitcode members, from
+`MOLT_LLVM_NM` or the custody-provisioned SDK. A reader in the selected managed generation retains
 that installation and its finite role fact; its generation and content bind the
 symbol cache without image rehashing or version probes. An explicit external
 reader retains actual executable capture, exact-version admission, alias and
@@ -312,14 +312,28 @@ mutation fences. Object/archive byte custody, parsing and cache validation are
 unchanged. There is no Rust-toolchain or ambient native `nm` fallback. Build and readiness paths discover a provisioned SDK but never
 install one.
 
-Native archive inspection walks the managed `nm` ladder (`llvm-nm`, then
-`nm`) and admits each candidate by its `--version` banner: `llvm-nm, compatible
-with GNU nm` (LLVM's tool, which is also Xcode's `nm`) or `GNU nm (GNU Binutils
-...)`; any other banner fails that candidate's admission with the banner it
-printed. An llvm-nm reader runs with `--no-llvm-bc`, because Rust's sysroot
-objects for Apple targets embed bitcode and llvm-nm's default bitcode reader
-lists those IR symbols with a dash placeholder instead of an address, which is
-not a symbol-table row. GNU nm has no bitcode reader and takes no flag.
+Native symbol inspection reads ELF (32- and 64-bit, both byte orders),
+Mach-O (thin and universal), COFF (including bigobj and PE images), COFF
+short-import members and WebAssembly relocatable objects in-process, through
+`src/molt/native_symbol_table.py`. Archive members come from the
+`static_archive_identity` framing (GNU, BSD and COFF variants and long-name
+tables; thin archives are refused). The reader runs no subprocess and has no
+wall-clock bound, so its facts do not depend on the host's `nm` or its load.
+It classifies each global symbol as `llvm-nm -g --no-llvm-bc` does, so it reads
+the native symbol table of an object that embeds `__LLVM,__bitcode`. A universal
+Mach-O input yields the slice for the target architecture. Truncated, overlapping
+or inconsistent tables and unrecognized formats fail with a typed artifact
+error.
+
+Only LLVM bitcode (raw or wrapped, detected by magic) needs an external reader.
+An object or archive with a bitcode member walks the managed `nm` ladder
+(`llvm-nm`, then `nm`) and admits each candidate by its `--version` banner. Only
+`llvm-nm, compatible with GNU nm` (LLVM's tool, which is also Xcode's `nm`) can
+read bitcode; a `GNU nm (GNU Binutils ...)` banner or any other banner fails that
+candidate's admission with the banner it printed. The reader runs as
+`llvm-nm -g`, with its bitcode reader enabled, and only the tables of bitcode
+members become facts. The symbol-facts cache key names that reader only for
+artifacts that contain bitcode.
 
 `MOLT_LLVM_NM` selects one executable, not a shell command. A selected path or
 PATH-resolved name must retain its lexical role. Mutable external readers pass

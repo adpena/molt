@@ -79,9 +79,12 @@ Outputs:
 
 Native symbol evidence has one typed reader in `cli/native_symbol_inspection.py`, shared
 by application caches, shared-stdlib closure, extension object inspection, and
-external providers. Missing tools, failed reads, malformed output, and partial
-archive inspection are errors, never empty symbol tables or reusable negative
-facts. Diagnostics identify the artifact and bounded tool-attempt details;
+external providers. It reads ELF, Mach-O, COFF and WebAssembly symbol tables
+in-process (`native_symbol_table.py`); the toolchain's `nm` role reads only LLVM
+bitcode objects and must be an `llvm-nm`. Malformed objects, missing bitcode
+readers, failed reads, malformed output, and partial archive inspection are
+errors, never empty symbol tables or reusable negative facts. Diagnostics
+identify the artifact and bounded attempt details;
 extension builds return them through the normal text/JSON error surface without
 publishing a wheel or manifest. Successfully inspected empty symbol tables remain
 distinct from unavailable evidence. Weak undefined symbols are not providers or
