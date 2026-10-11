@@ -362,7 +362,7 @@ def test_startup_selections_disagree_when_a_loaded_name_resolves_elsewhere() -> 
         before, after, admit_new_images=True
     ) == [
         "import_paths",
-        "native executable",
+        "native executable C:/py/python.exe -> C:/py2/python.exe",
         "native image vcruntime140.dll: C:/py/VCRUNTIME140.dll -> "
         "C:/evil/vcruntime140.dll",
     ]

@@ -94,6 +94,101 @@ def _loader_name(name: str, operating_system: str) -> str:
     return name.casefold() if operating_system == "windows" else name
 
 
+def _census_view(
+    census: LoadedNativeModuleSnapshot | Mapping[str, object], operating_system: str
+) -> tuple[str, dict[str, tuple[str, ...]], dict[str, tuple[int, ...]]]:
+    """Executable, loader-name bindings and image identities of one census.
+
+    A live snapshot and its serialized startup-selection form reduce to the
+    same view, so both comparisons apply one rule.
+    """
+    if isinstance(census, LoadedNativeModuleSnapshot):
+        executable = str(census.executable)
+        paths: list[object] = list(census.paths)
+        aliases: Mapping[object, object] = census.aliases
+        identities = {
+            str(path): tuple(identity)
+            for path, identity in census.macho_identities.items()
+        }
+    else:
+        executable = str(census.get("executable"))
+        raw_paths = census.get("paths")
+        paths = list(raw_paths) if isinstance(raw_paths, list) else []
+        raw_aliases = census.get("aliases")
+        aliases = raw_aliases if isinstance(raw_aliases, Mapping) else {}
+        rows = census.get("macho_identities")
+        identities = {
+            str(row[0]): tuple(row[1])
+            for row in (rows if isinstance(rows, list) else ())
+            if isinstance(row, list) and len(row) == 2 and isinstance(row[1], list)
+        }
+    bindings: dict[str, set[str]] = {}
+    for path in paths:
+        name = _loader_name(Path(str(path)).name, operating_system)
+        bindings.setdefault(name, set()).add(str(path))
+    for name, path in aliases.items():
+        bindings.setdefault(_loader_name(str(name), operating_system), set()).add(
+            str(path)
+        )
+    return (
+        executable,
+        {name: tuple(sorted(found)) for name, found in bindings.items()},
+        identities,
+    )
+
+
+def native_census_disagreement(
+    before: LoadedNativeModuleSnapshot | Mapping[str, object],
+    after: LoadedNativeModuleSnapshot | Mapping[str, object],
+    *,
+    operating_system: str,
+    admit_new_images: bool,
+) -> list[str]:
+    """What makes a later loader census disagree with an admitted one.
+
+    The one rule for every census comparison. The executable, the paths
+    behind each loader name both censuses hold, and each shared image's
+    identity must match. An image the later census lacks was unloaded, which
+    keeps anything computed from the admitted census a sound
+    over-approximation (COM frees WMI providers during a capture). A later
+    census of the same process admits new images, which the process loaded
+    on first use (``kernel.appcore.dll`` on hosted Windows); a fresh minimal
+    launch does less work than the admitted process, so an image only it
+    holds is a new startup provider. Empty means the censuses agree.
+    """
+    old_executable, old_names, old_ids = _census_view(before, operating_system)
+    new_executable, new_names, new_ids = _census_view(after, operating_system)
+    changes: list[str] = []
+    if old_executable != new_executable:
+        changes.append(f"native executable {old_executable} -> {new_executable}")
+    moved = sorted(
+        name
+        for name in old_names.keys() & new_names.keys()
+        if old_names[name] != new_names[name]
+    )
+    changes += [
+        f"native image {name}: {', '.join(old_names[name])} -> "
+        f"{', '.join(new_names[name])}"
+        for name in moved[:4]
+    ]
+    if len(moved) > 4:
+        changes.append(f"{len(moved) - 4} more native images moved")
+    if not admit_new_images:
+        gained = sorted(new_names.keys() - old_names.keys())
+        changes += [
+            f"native image {name} gained: {', '.join(new_names[name])}"
+            for name in gained[:4]
+        ]
+        if len(gained) > 4:
+            changes.append(f"{len(gained) - 4} more native images gained")
+    changes += [
+        f"native image identity {path}"
+        for path in sorted(old_ids.keys() & new_ids.keys())
+        if old_ids[path] != new_ids[path]
+    ]
+    return changes
+
+
 def _linux_program_header_file_identity(address: int) -> tuple[int, int]:
     """Read only the kernel mapping covering the main image's program headers."""
     if sys.platform != "linux":
