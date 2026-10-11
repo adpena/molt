@@ -6315,7 +6315,11 @@ def test_main_writes_summary_when_guard_parent_receives_sigterm(
         "conventional_shell_status": True,
     }
     assert payload["incident"]["reason"] == "guard_interrupted"
-    assert payload["incident"]["cleanup"] == "terminated tracked process tree"
+    # HF-88: on hosted macOS this cleanup was once "process cleanup
+    # incomplete" while the child was exiting; name the unverified action.
+    assert payload["incident"]["cleanup"] == "terminated tracked process tree", (
+        json.dumps(payload["incident"], indent=2, sort_keys=True)
+    )
     assert payload["incident"]["signal"] == payload["guard_signal"]
 
 
