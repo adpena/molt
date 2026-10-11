@@ -14,8 +14,8 @@ from tests.runtime_build_identity_helper import (
     runtime_wasi_c_abi_plan,
 )
 from tests.operation_probe import same_thread_probe
+from molt import llvm_wasi_tools
 from molt.cli import (
-    llvm_wasi_tools,
     native_symbol_inspection,
     source_extension_target,
     source_extension_toolchain,
@@ -718,7 +718,7 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
     monkeypatch.setattr(
         llvm_wasi_tools,
         "__file__",
-        str(worktree / "src" / "molt" / "cli" / "llvm_wasi_tools.py"),
+        str(worktree / "src" / "molt" / "llvm_wasi_tools.py"),
     )
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
     monkeypatch.setattr(

@@ -159,7 +159,8 @@ def test_installed_compiler_cache_keys_never_probe_host_rustc(bundle, monkeypatc
 
 
 def test_installed_native_symbol_consumers_never_discover_rust(bundle, monkeypatch):
-    from molt.cli import llvm_wasi_tools, native_symbol_inspection
+    from molt import llvm_wasi_tools
+    from molt.cli import native_symbol_inspection
 
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(bundle / "source"))
 

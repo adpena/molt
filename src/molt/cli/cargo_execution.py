@@ -33,7 +33,7 @@ from molt.dx import (
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli import progress as _progress
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+from molt.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 
 

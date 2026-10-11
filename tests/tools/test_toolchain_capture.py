@@ -2141,6 +2141,15 @@ def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutatio
         installation.sysroot,
     ]
     images = toolchain_capture.capture_wasi_sdk_images(selection)
+    # Independent public compiler peer: bitcode reads use SDK nm, not native nm.
+    assert {row["role"] for row in images} == {
+        "wasi-sdk-clang",
+        "wasi-sdk-clang++",
+        "wasi-sdk-llvm-ar",
+        "wasi-sdk-llvm-ranlib",
+        "wasi-sdk-wasm-ld",
+        "wasi-sdk-llvm-nm",
+    }
     identity = {
         "path": process_image_capture._image_path_key(plan.driver),
         "wasi_sdk": selection,
@@ -2149,6 +2158,14 @@ def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutatio
     toolchain_capture.validate_wasi_sdk_closure(
         identity, full_capture=False, selected_role="clang"
     )
+    without_nm = dict(
+        identity,
+        process_images=[row for row in images if row["role"] != "wasi-sdk-llvm-nm"],
+    )
+    with pytest.raises(ValueError, match="process helper closure is incomplete"):
+        toolchain_capture.validate_wasi_sdk_closure(
+            without_nm, full_capture=False, selected_role="clang"
+        )
     verified_images = toolchain_capture.revalidate_wasi_sdk_selection(identity)
     assert plan.linker in {Path(row.path) for row in verified_images}
     closure = toolchain_capture.capture_wasi_sdk_resources(selection)

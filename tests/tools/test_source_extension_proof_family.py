@@ -254,7 +254,8 @@ def test_queue_cli_uses_shared_options_without_version_choices(
 def test_named_native_intent_reaches_host_compiler_selection(
     producer_request, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from molt.cli import llvm_wasi_tools, source_extension_toolchain
+    from molt import llvm_wasi_tools
+    from molt.cli import source_extension_toolchain
     from molt.cli.source_extension_target import resolve_source_extension_target_plan
 
     invocation, environment = producer_request

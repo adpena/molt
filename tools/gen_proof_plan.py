@@ -521,7 +521,11 @@ def _markdown_projection(plan: ProofPlan) -> str:
             provider = f"`{data['identity_provider']}`"
             probe_cwd = setup_value = setup_evidence = "—"
         else:
-            provider = "—"
+            provider = (
+                f"`compiler:{data['compiler_tool_selector']}`"
+                if data.get("compiler_tool_selector") is not None
+                else "—"
+            )
             probe_cwd = f"`{data.get('probe_cwd', '.')}`"
             setup_value = f"`{data['setup_value']}`"
             setup_evidence = str(len(data["setup_evidence"]))

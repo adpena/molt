@@ -125,9 +125,15 @@ the existing Cargo output owner binds differential/WASM target aliases and nativ
 guest scratch together. The real CLI regression observes the old detached runner
 die after a successful coordinator exit; all 20 corrected CLI controls pass.
 Focused output controls pass, including rejection before independent-root or
-secondary-target mutation. Non-Cargo admission remains unchanged. These fixes
-still require Linux integration and compiled native/WASM consumer execution;
-neither earlier failed run qualifies those consumers. This landing remains
+secondary-target mutation. Non-Cargo admission remains unchanged. Joined Linux
+execution passes 1,239 affected consumer checks with four platform skips; it
+exposes three stale wrapper-refusal fixtures. Those fixtures now exercise the
+canonical forwarder, and their complete 86-case module passes on both hosts.
+Actual native execution compiles the runtime and backend, then exposes an
+undeclared post-link stripping tool. The compiler-helper closure is being
+reconciled across native stripping, SDK symbol inspection and
+the default WASM optimizer before another compiled run. No native or WASM
+differential case has yet qualified this landing. This landing remains
 bounded to the complete reviewed runtime family and its required consumer
 migration. Other release findings remain in this ledger for subsequent changes.
 Verified inactive

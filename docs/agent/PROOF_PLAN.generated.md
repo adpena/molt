@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
-| Hashed executable authority inputs | 1 | 343 |
+| Hashed executable authority inputs | 1 | 348 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -135,7 +135,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-ar` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-ranlib` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-nm` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `llvm-strip` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-strip` | `executable` | `compiler:native-strip` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `wasm-opt` | `executable` | `compiler:wasm-opt` | `^wasm-opt version 133(?: \(version_133\))?$` | `.` | `133` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 23\.1\.0\b` | `.` | `23.1.0` | 2 |
 | `wasm-tools` | `executable` | — | `^wasm-tools 1\.261\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.261.0` | 2 |
 

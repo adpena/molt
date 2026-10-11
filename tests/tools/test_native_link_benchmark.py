@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molt.cli import llvm_wasi_tools
+from molt import llvm_wasi_tools
 from molt.cli import native_link_tool_identity
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli.native_link_plan import (
@@ -398,7 +398,7 @@ def test_implementation_identity_includes_canonical_tool_candidate_resolver() ->
     assert isinstance(files, list)
     names = {str(item["name"]) for item in files}
     assert {
-        "src/molt/cli/llvm_wasi_tools.py",
+        "src/molt/llvm_wasi_tools.py",
         "src/molt/cli/runtime_cargo_plan.py",
         "src/molt/cli/runtime_identity_schema.py",
         "src/molt/toolchain_identity.py",

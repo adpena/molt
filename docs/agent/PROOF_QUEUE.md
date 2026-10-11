@@ -158,6 +158,14 @@ resource generation separately from the native LLVM compiler. Selection,
 resource capture, identity checks and proof instrumentation run in development
 and compiler tooling, outside emitted guest execution.
 
+Compiler-producing commands declare the helpers their target and profile can
+execute. Native stripping and WASM optimization reuse the compiler's existing
+selectors. Their identities bind both the selected entrypoint and resolved
+executable bytes; changing or omitting either invalidates reuse. SDK capture
+includes its symbol reader.
+Compiler-selected dependency roles do not replace direct executable commands or
+make ordinary duplicate executable policies unambiguous.
+
 Cargo proofs bind the captured physical Rust compiler and Cargo executable
 before launch. Only commands declaring native C compilation acquire its
 compiler-phase and independently selected archiver capture; runtime-only WASI

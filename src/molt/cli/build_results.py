@@ -26,7 +26,7 @@ from molt.cli.command_runtime import (
 from molt.cli.output import success as _success
 from molt.cli.extension_manifest import _cpu_baseline
 from molt.cli.models import _StagedExternalPackageNativeArtifact
-from molt.cli.llvm_wasi_tools import llvm_tool_candidates
+from molt.llvm_wasi_tools import llvm_tool_candidates
 from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,

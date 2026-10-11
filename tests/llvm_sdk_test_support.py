@@ -52,7 +52,7 @@ class VerifiedLlvmTools:
         return _MACHO_ARCH_NAMES[self.architecture]
 
     def linker(self, role: str) -> str:
-        from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+        from molt.llvm_wasi_tools import llvm_linker_candidates
 
         return str(
             _sdk_tool(
@@ -73,7 +73,7 @@ def _sdk_tool(bin_dir: Path, role: str, candidates: Sequence[Path]) -> Path:
 
 @functools.cache
 def _verified_llvm_tools() -> VerifiedLlvmTools | str:
-    from molt.cli.llvm_wasi_tools import llvm_tool_candidates
+    from molt.llvm_wasi_tools import llvm_tool_candidates
     from molt.llvm_toolchain import (
         llvm_bootstrap_command,
         llvm_host_architecture,

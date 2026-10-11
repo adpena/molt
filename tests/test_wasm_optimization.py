@@ -266,7 +266,7 @@ class TestWasmOptReduction:
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
         install_module_view(
-            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+            monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
         )
         asset = SimpleNamespace(
             archive_root="binaryen-version_130",
@@ -276,7 +276,7 @@ class TestWasmOptReduction:
         monkeypatch.setattr(
             identity,
             "_managed_binaryen_asset",
-            lambda path: asset if path == expected.resolve() else None,
+            lambda path, **_kwargs: asset if path == expected.resolve() else None,
         )
 
         assert identity.find_wasm_opt() == str(expected)
@@ -302,7 +302,7 @@ class TestWasmOptReduction:
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
         install_module_view(
-            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+            monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
         )
         monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
 
@@ -1138,7 +1138,7 @@ def test_installed_binaryen_discovery_uses_shared_home_without_writes(
     monkeypatch.setattr(identity, "compiler_source_root", lambda: source)
     monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
     install_module_view(
-        monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+        monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
     )
     before = {
         str(p.relative_to(tmp_path)): p.read_bytes()
@@ -1260,3 +1260,19 @@ def test_managed_optimizer_retains_tagged_release_requirement(
                 executable, verify_managed_installation=verify_tree
             )
     assert probes == [[str(executable), "--version"]]
+
+
+def test_optimizer_selection_uses_explicit_proof_environment(tmp_path, monkeypatch):
+    from molt import wasm_optimizer_identity as identity
+
+    explicit, ambient = tmp_path / "explicit", tmp_path / "ambient"
+    explicit.write_bytes(b"selected optimizer")
+    ambient.write_bytes(b"ambient decoy")
+    monkeypatch.setenv("MOLT_WASM_OPT", str(ambient))
+    assert identity.find_wasm_opt(environment={"MOLT_WASM_OPT": str(explicit)}) == str(
+        explicit
+    )
+    assert (
+        identity.find_wasm_opt(environment={"MOLT_WASM_OPT": str(tmp_path / "missing")})
+        is None
+    )

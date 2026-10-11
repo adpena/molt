@@ -16,7 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from molt.cli import llvm_wasi_tools, source_extension_toolchain, wasm_link_inputs
+from molt import llvm_wasi_tools
+from molt.cli import source_extension_toolchain, wasm_link_inputs
 from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
 from molt.cli.source_extension_set_validation_target import (
     _source_extension_tool_role_contract,
@@ -1094,7 +1095,12 @@ def test_shared_sdk_armed_capture_and_cas_preserve_exact_family(tmp_path, monkey
         located_toolchains=located,
     )
     assert tree_calls == [abi.sdk / "lib", abi.sysroot]
-    assert len(image_calls) == len(set(image_calls)) == 5
+    expected_images = {
+        (abi.driver.parent / (name + abi.driver.suffix)).resolve()
+        for name in ("clang", "clang++", "llvm-ar", "llvm-ranlib", "wasm-ld", "llvm-nm")
+    }
+    assert set(image_calls) == expected_images
+    assert len(image_calls) == len(expected_images)
     assert (
         captured["wasi-clang"]["wasi_sdk"] is captured["source-extension"]["wasi_sdk"]
     )

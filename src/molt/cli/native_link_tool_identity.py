@@ -8,7 +8,7 @@ import re
 import subprocess
 
 from molt.file_hashing import _sha256_file
-from molt.cli.llvm_wasi_tools import (
+from molt.llvm_wasi_tools import (
     _tool_version,
     llvm_linker_candidates,
     llvm_named_tool_candidates,

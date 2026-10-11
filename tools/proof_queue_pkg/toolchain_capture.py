@@ -25,7 +25,7 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 from molt.wasi_sdk_identity import (
-    SDK_BUILD_TOOL_NAMES,
+    SDK_TOOL_NAMES,
     capture_wasi_sdk_tool_files,
     validate_wasi_sdk_selection,
 )
@@ -3829,7 +3829,7 @@ def validate_wasi_sdk_closure(
             "wasi-sdk-" + role: _image_path_key(
                 sdk / generation["facts"]["tools"][role]["path"]
             )
-            for role in SDK_BUILD_TOOL_NAMES
+            for role in SDK_TOOL_NAMES
         }
         images = identity.get("process_images")
         if (

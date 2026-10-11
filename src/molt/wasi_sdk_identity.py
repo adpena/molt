@@ -862,7 +862,7 @@ def capture_wasi_sdk_tool_files(
     tools = selected["generation"]["facts"]["tools"]
     captured: dict[Path, dict[str, object]] = {}
     result = []
-    for role in SDK_BUILD_TOOL_NAMES:
+    for role in SDK_TOOL_NAMES:
         fact = tools[role]
         path, content = sdk / fact["path"], sdk / fact["content_path"]
         if path.resolve(strict=True) != content:
