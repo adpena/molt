@@ -151,6 +151,7 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+#[cfg(molt_has_net_io)]
 fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
