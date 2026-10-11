@@ -619,7 +619,10 @@ def _command_registration(
             },
         )
 
-    if typed_python is not None and typed_python.get("family") == "prepared-named-lane":
+    if typed_python is not None and typed_python.get("family") in {
+        "prepared-named-lane",
+        "selected-differential-lane",
+    }:
         lane_id = str(typed_python["lane_id"])
         plan = registry["plan"]
         assert isinstance(plan, proof_plan.ProofPlan)
@@ -1468,8 +1471,10 @@ def _python_invocation_argv(
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
 
-def _registered_named_python_invocation(lane: proof_plan.NamedLane) -> PythonInvocation:
-    argv = list(lane.argv)
+def _registered_named_python_invocation(
+    lane: proof_plan.NamedLane, command: Sequence[str] | None = None
+) -> PythonInvocation:
+    argv = list(lane.argv if command is None else command)
     if _basename(argv[0]) in {"uv", "uv.exe"}:
         _prefix, argv = _uv_prefix_and_payload(argv)
     if not _PYTHON_COMMAND.fullmatch(_basename(argv[0])):
@@ -1477,10 +1482,98 @@ def _registered_named_python_invocation(lane: proof_plan.NamedLane) -> PythonInv
     return parse_python_invocation(argv)
 
 
-def prepared_named_lane_command(lane_id: str, executable: Path) -> list[str]:
-    """Bind the registered payload, without changing arguments, to prepared Python."""
+def selected_differential_lane_command(
+    lane_id: str,
+    *,
+    cases: Sequence[str],
+    case_lists: Sequence[str] = (),
+    repo_root: Path | None = None,
+) -> list[str]:
+    """Expand case selection once; the queued argv never rereads a list or suite."""
+    from molt.file_publication import resolve_owned_path
+    from tools.compat.test_policy import collect_test_files, read_test_list
+
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    lane = plan.named_lane(lane_id)
+    if not lane.differential_cases:
+        raise ValueError("case selection requires a differential named lane")
+    root = (_REPO_ROOT if repo_root is None else repo_root).resolve(strict=True)
+    if root != _REPO_ROOT.resolve(strict=True):
+        raise ValueError(
+            "differential selection source root differs from command authority"
+        )
+    targets = list(cases)
+    for raw in case_lists:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_relative_to(root):
+            raise ValueError("differential case list escapes the repository")
+        # Same no-link ancestry admission used by source custody; lists are
+        # submission inputs, while their expanded files govern exact replay.
+        path = resolve_owned_path(path)
+        if not path.is_relative_to(root):
+            raise ValueError("differential case list escapes the repository")
+        if not path.is_file():
+            raise ValueError("differential case list is not a regular file")
+        targets.extend(read_test_list(path))
+    if any(not target or target.startswith("-") for target in targets):
+        raise ValueError(
+            "differential case selection requires nonempty paths, not options"
+        )
+    selected = collect_test_files(targets, repo_root=root)
+    if not selected:
+        raise ValueError("differential case selection is empty")
+    return [
+        *lane.command_prefix,
+        "--",
+        *(path.relative_to(root).as_posix() for path in selected),
+    ]
+
+
+def _selected_differential_bindings(
+    lane: proof_plan.NamedLane, cases: Sequence[str]
+) -> list[dict[str, str]]:
+    """Admit only an already-expanded canonical file tail and bind its bytes."""
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    canonical = selected_differential_lane_command(lane.id, cases=cases)
+    if list(cases) != canonical[len(lane.command_prefix) + 1 :]:
+        raise ValueError(
+            "differential argv must contain the canonical expanded case files"
+        )
+    return [
+        {
+            "path": case,
+            "sha256": stable_regular_file_identity(
+                _REPO_ROOT / case, label="selected differential source"
+            ).sha256,
+        }
+        for case in cases
+    ]
+
+
+def differential_source_bindings(envelope: Mapping[str, object]) -> dict[str, str]:
+    """Project the exact admitted file hashes into the existing source capture."""
+    typed = envelope.get("typed_command")
+    if not isinstance(typed, Mapping):
+        return {}
+    return {row["path"]: row["sha256"] for row in typed.get("selected_cases", ())}
+
+
+def prepared_named_lane_command(
+    lane_id: str, executable: Path, *, command: Sequence[str] | None = None
+) -> list[str]:
+    """Bind the admitted payload, preserving selected cases, to prepared Python."""
     lane = proof_plan.ProofPlan.load().named_lane(lane_id)
-    invocation = _registered_named_python_invocation(lane)
+    if command is not None:
+        envelope = envelope_for_command(command)
+        if envelope["kind"] != "named-lane" or envelope["proof_plan_command_ids"] != [
+            lane_id
+        ]:
+            raise ValueError("prepared command belongs to another named lane")
+    invocation = _registered_named_python_invocation(lane, command)
     if invocation.mode != "script" or invocation.interpreter_options:
         raise ValueError(f"named lane {lane_id!r} is not a plain Python script")
     assert invocation.target is not None
@@ -1519,10 +1612,17 @@ def _typed_python_command_family(
     invocation: PythonInvocation,
 ) -> dict[str, object] | None:
     """Admit prepared payloads through their existing plan/CLI authorities."""
-    if python.get("kind") == "direct" and invocation.mode == "script":
+    if invocation.mode == "script":
+        if (
+            python.get("kind") != "direct"
+            and tuple(argv) in _proof_command_registry()["named"]
+        ):
+            return None
         plan = _proof_command_registry()["plan"]
         assert isinstance(plan, proof_plan.ProofPlan)
-        matches: list[tuple[proof_plan.NamedLane, PythonInvocation]] = []
+        matches: list[
+            tuple[proof_plan.NamedLane, PythonInvocation, tuple[str, ...] | None]
+        ] = []
         registered_entrypoint = False
         for lane in plan.named_lanes:
             if _command_entrypoint(lane.argv) != (
@@ -1531,36 +1631,64 @@ def _typed_python_command_family(
             ):
                 continue
             registered = _registered_named_python_invocation(lane)
-            if registered.mode != "script" or _normalized_entrypoint_target(
-                str(registered.target)
-            ) != _normalized_entrypoint_target(str(invocation.target)):
-                continue
             registered_entrypoint = True
-            if invocation.arguments == registered.arguments:
-                matches.append((lane, registered))
+            selected = None
+            if invocation.arguments != registered.arguments:
+                if not lane.differential_cases:
+                    continue
+                fixed = registered.arguments[: -len(lane.differential_cases)]
+                if invocation.arguments[: len(fixed)] != fixed:
+                    continue
+                tail = invocation.arguments[len(fixed) :]
+                if not tail or tail[0] != "--":
+                    continue
+                selected = tail[1:]
+            if python.get("kind") != "direct":
+                expected = (
+                    lane.argv
+                    if selected is None
+                    else (*lane.command_prefix, "--", *selected)
+                )
+                if tuple(argv) != expected:
+                    continue
+            matches.append((lane, registered, selected))
         if registered_entrypoint and not matches:
             raise ValueError(
                 "named-lane argv must match its registered command exactly"
             )
         if len(matches) > 1:
             raise ValueError(
-                "prepared named-lane payload has ambiguous registered authorities: "
-                + ", ".join(lane.id for lane, _registered in matches)
+                "named-lane payload has ambiguous registered authorities: "
+                + ", ".join(lane.id for lane, _registered, _selected in matches)
             )
         if matches:
-            lane, registered = matches[0]
-            if (
-                invocation.interpreter_options != ("-P",)
-                or registered.interpreter_options
-            ):
-                raise ValueError(
-                    "prepared named lane requires a direct locked interpreter with -P"
+            lane, registered, selected = matches[0]
+            if python.get("kind") == "direct":
+                if (
+                    invocation.interpreter_options != ("-P",)
+                    or registered.interpreter_options
+                ):
+                    raise ValueError(
+                        "prepared named lane requires a direct locked interpreter with -P"
+                    )
+                typed: dict[str, object] = {
+                    "family": "prepared-named-lane",
+                    "lane_id": lane.id,
+                    "environment_root": str(
+                        _locked_python_environment_root(str(argv[0]))
+                    ),
+                }
+            elif selected is not None:
+                typed = {"family": "selected-differential-lane", "lane_id": lane.id}
+            else:
+                # Exact ordinary lanes retain their existing source authority;
+                # dynamic byte binding hashes only explicitly selected files.
+                return None
+            if selected is not None:
+                typed["selected_cases"] = _selected_differential_bindings(
+                    lane, selected
                 )
-            return {
-                "family": "prepared-named-lane",
-                "lane_id": lane.id,
-                "environment_root": str(_locked_python_environment_root(str(argv[0]))),
-            }
+            return typed
     if not is_molt_cli_payload(
         invocation.mode, invocation.target, repo_root=_REPO_ROOT
     ) or invocation.arguments[:2] != ("extension", "produce-set"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -2104,3 +2105,64 @@ def test_native_build_process_closure_participates_in_cargo_cache_inputs(
     refreshed["identity_sha256"] = cache.canonical_json_sha256(refreshed)
     arguments["toolchains"] = {"rustc": refreshed}
     assert cache.input_identity(**arguments) != before
+
+
+def test_selected_ignored_differential_source_has_replay_capture_and_terminal_fences(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    root = inputs["source_root"]
+    ignored = root / "ignored.py"
+    ignored.write_bytes(b"print('before')\n")
+    # Existing source-admission fixture supplies only main.rs as Git-visible;
+    # this selected file must enter through the real explicit overlay owner.
+    monkeypatch.setattr(command_admission, "_REPO_ROOT", root)
+    command = command_admission.selected_differential_lane_command(
+        "runtime.public-consumers.native", cases=["ignored.py"]
+    )
+    envelope = command_admission.envelope_for_command(command)
+    expected = command_admission.differential_source_bindings(envelope)
+    assert expected == {"ignored.py": hashlib.sha256(b"print('before')\n").hexdigest()}
+    source_ref, telemetry, verify = execution_environment.capture_source_content(
+        source_root=root,
+        env=inputs["env"],
+        overlays=[ignored],
+        cas_root=inputs["result_root"] / "custody-cas",
+        hash_workers=1,
+        expected_files=expected,
+    )
+    assert telemetry["file_count"] == 2
+    recorded = custody_cas.read_ref(
+        source_ref, expected_root=inputs["result_root"] / "custody-cas"
+    )
+    assert (
+        next(row["sha256"] for row in recorded["files"] if row["path"] == "ignored.py")
+        == expected["ignored.py"]
+    )
+    command_admission.validate_envelope(envelope, command)
+    verify()
+    ignored.write_bytes(b"print('after!')\n")
+    # Independent replay, capture-gap, and live-generation controls all observe
+    # the actual ignored input bytes through their existing production owners.
+    with pytest.raises(ValueError, match="envelope"):
+        command_admission.validate_envelope(envelope, command)
+    with pytest.raises(ValueError, match="changed since command admission"):
+        execution_environment.capture_source_content(
+            source_root=root,
+            env=inputs["env"],
+            overlays=[ignored],
+            cas_root=inputs["result_root"] / "custody-cas",
+            hash_workers=1,
+            expected_files=expected,
+        )
+    with pytest.raises(ValueError):
+        verify()
+    with pytest.raises(ValueError, match="missing from"):
+        execution_environment.capture_source_content(
+            source_root=root,
+            env=inputs["env"],
+            overlays=(),
+            cas_root=inputs["result_root"] / "custody-cas",
+            hash_workers=1,
+            expected_files=expected,
+        )

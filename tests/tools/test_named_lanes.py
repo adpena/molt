@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -803,3 +804,223 @@ def test_sdk_role_and_generation_use_request_cwd_separately_from_probe_cwd(
         (str((installation.sdk / installation.tool_fact("clang")["path"])), "--version")
     ]
     assert not (ambient / "relative-tools").exists()
+
+
+DIFFERENTIAL_LANES = tuple(
+    lane.id for lane in PLAN.named_lanes if lane.differential_cases
+)
+
+
+@pytest.fixture
+def selected_diff_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    suite = tmp_path / "tests" / "differential" / "stdlib"
+    suite.mkdir(parents=True)
+    first = suite / "a.py"
+    second = suite / "b.py"
+    first.write_bytes(b"print('a')\n")
+    second.write_bytes(b"print('b')\n")
+    monkeypatch.setattr(command_admission, "_REPO_ROOT", tmp_path)
+    return tmp_path, first, second
+
+
+@pytest.mark.parametrize("lane_id", DIFFERENTIAL_LANES)
+def test_default_differential_lanes_do_not_hash_dynamic_selection(lane_id, monkeypatch):
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(
+        toolchain_identity,
+        "stable_regular_file_identity",
+        lambda *a, **kw: pytest.fail("unchanged default lane hashed dynamic cases"),
+    )
+    lane = PLAN.named_lane(lane_id)
+    envelope = command_admission.envelope_for_command(lane.argv)
+    assert envelope["kind"] == "named-lane"
+    assert envelope["typed_command"] is None
+    assert "--" not in lane.argv
+    assert command_admission.differential_source_bindings(envelope) == {}
+
+
+@pytest.mark.parametrize("lane_id", DIFFERENTIAL_LANES)
+def test_differential_file_and_list_selection_freezes_exact_case_closure(
+    selected_diff_sources, lane_id
+):
+    root, first, second = selected_diff_sources
+    selected_list = root / "selected.txt"
+    selected_list.write_text("# subset\n\n" + first.relative_to(root).as_posix() + "\n")
+    lane = PLAN.named_lane(lane_id)
+    spec = pact._named_lane_spec(
+        lane_id,
+        repo_root=root,
+        cases=[second.relative_to(root).as_posix()],
+        case_lists=["selected.txt"],
+    )
+    files = ["tests/differential/stdlib/a.py", "tests/differential/stdlib/b.py"]
+    assert spec["command"] == [*lane.command_prefix, "--", *files]
+    assert spec["scopes"] == ["tools/proof_plan.toml", *files]
+    assert spec["resource_family"] == lane.data["resource_family"]
+    assert spec["contention_key"] == lane.data["contention_key"]
+    envelope = command_admission.envelope_for_command(spec["command"])
+    assert envelope["proof_plan_command_ids"] == [lane_id]
+    assert envelope["process_closure"]["kind"] == "named-lane"
+    assert envelope["cargo_native_units"] == lane.data["cargo_native_units"]
+    assert set(lane.toolchains) <= set(envelope["toolchains"])
+    assert command_admission.differential_source_bindings(envelope) == {
+        files[0]: hashlib.sha256(b"print('a')\n").hexdigest(),
+        files[1]: hashlib.sha256(b"print('b')\n").hexdigest(),
+    }
+    # The persisted file closure, not this mutable submission list, is replayed.
+    selected_list.write_text("outside.py\n")
+    command_admission.validate_envelope(envelope, spec["command"])
+    first.write_bytes(b"print('z')\n")
+    with pytest.raises(ValueError, match="envelope"):
+        command_admission.validate_envelope(envelope, spec["command"])
+
+
+def test_differential_suite_expansion_is_frozen_before_queueing(selected_diff_sources):
+    root, first, second = selected_diff_sources
+    command = command_admission.selected_differential_lane_command(
+        "runtime.public-consumers.native", cases=["tests/differential/stdlib"]
+    )
+    assert command[-3:] == [
+        "--",
+        "tests/differential/stdlib/a.py",
+        "tests/differential/stdlib/b.py",
+    ]
+    envelope = command_admission.envelope_for_command(command)
+    (first.parent / "c.py").write_text("print('new member')\n")
+    command_admission.validate_envelope(envelope, command)
+    assert len(command_admission.differential_source_bindings(envelope)) == 2
+
+
+@pytest.mark.parametrize(
+    "mutation", ["foreign", "link", "duplicate", "unknown", "empty-case", "empty"]
+)
+def test_differential_selection_rejects_unowned_or_ambiguous_inputs(
+    selected_diff_sources, mutation
+):
+    root, first, second = selected_diff_sources
+    cases = [first.relative_to(root).as_posix()]
+    lists = []
+    if mutation == "foreign":
+        outside = root.parent / (root.name + "-foreign.py")
+        outside.write_text("print('foreign')\n")
+        cases = [str(outside)]
+    elif mutation == "link":
+        link = root / "alias.py"
+        try:
+            link.symlink_to(first)
+        except OSError as exc:
+            pytest.skip(f"host cannot create symlink control: {exc}")
+        cases = ["alias.py"]
+    elif mutation == "duplicate":
+        cases *= 2
+    elif mutation == "unknown":
+        cases = ["--unknown"]
+    elif mutation == "empty-case":
+        # Path("") would otherwise expand this real root-level program.
+        (root / "accidental.py").write_text("print('wrong case')\n")
+        cases = [""]
+    else:
+        (root / "empty.txt").write_text("# no cases\n")
+        cases, lists = [], ["empty.txt"]
+    with pytest.raises(ValueError):
+        command_admission.selected_differential_lane_command(
+            "runtime.public-consumers.native", cases=cases, case_lists=lists
+        )
+
+
+@pytest.mark.parametrize(
+    "option,value", [("--target", "llvm"), ("--jobs", "2"), ("--build-profile", "dev")]
+)
+def test_differential_selection_cannot_change_fixed_lane_options(
+    selected_diff_sources, option, value
+):
+    command = command_admission.selected_differential_lane_command(
+        "runtime.public-consumers.native", cases=["tests/differential/stdlib/a.py"]
+    )
+    command[command.index(option) + 1] = value
+    with pytest.raises(ValueError, match="registered command exactly"):
+        command_admission.envelope_for_command(command)
+
+
+def test_differential_admission_rejects_unexpanded_tail_and_unknown_arguments(
+    selected_diff_sources,
+):
+    lane = PLAN.named_lane("runtime.public-consumers.native")
+    for tail in (["tests/differential/stdlib"], ["--files-from", "selected.txt"], []):
+        with pytest.raises(ValueError):
+            command_admission.envelope_for_command([*lane.command_prefix, "--", *tail])
+    with pytest.raises(ValueError, match="differential named lane"):
+        pact._named_lane_spec(
+            "runtime.allocation-observer", cases=["tests/differential/stdlib/a.py"]
+        )
+
+
+def test_differential_list_must_be_owned_and_cli_rejects_unknown_options(
+    selected_diff_sources,
+):
+    from tools.proof_queue_pkg import cli
+
+    root, first, second = selected_diff_sources
+    outside = root.parent / (root.name + "-list.txt")
+    outside.write_text(first.relative_to(root).as_posix() + "\n")
+    with pytest.raises(ValueError, match="escapes"):
+        command_admission.selected_differential_lane_command(
+            "runtime.public-consumers.native", cases=[], case_lists=[str(outside)]
+        )
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "named-lane",
+            "runtime.public-consumers.native",
+            "--case",
+            "a.py",
+            "--cases-from",
+            "cases.txt",
+            "--print-spec",
+        ]
+    )
+    assert args.case == ["a.py"] and args.cases_from == ["cases.txt"]
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["named-lane", "runtime.public-consumers.native", "--unknown"]
+        )
+
+
+def test_prepared_differential_lane_keeps_selected_files(
+    selected_diff_sources, monkeypatch
+):
+    from molt.cli import source_build_environment as environment_authority
+    from molt.cli.source_build_environment_schema import (
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+    )
+
+    root, first, second = selected_diff_sources
+    custody = root / "environments"
+    environment = custody / ("a" * 64)
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"prepared-interpreter")
+    (environment / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+    monkeypatch.setattr(
+        environment_authority, "_source_build_custody_root", lambda _root: custody
+    )
+    command = command_admission.selected_differential_lane_command(
+        "runtime.public-consumers.native", cases=["tests/differential/stdlib/a.py"]
+    )
+    expected = command_admission.envelope_for_command(command)
+    prepared = command_admission.prepared_named_lane_command(
+        "runtime.public-consumers.native", python, command=command
+    )
+    assert prepared[:3] == [str(python), "-P", "tests/molt_diff.py"]
+    actual = command_admission.envelope_for_command(prepared)
+    assert actual["typed_command"]["family"] == "prepared-named-lane"
+    assert (
+        actual["typed_command"]["selected_cases"]
+        == expected["typed_command"]["selected_cases"]
+    )
+    assert actual["toolchains"] == expected["toolchains"]
+    with pytest.raises(ValueError, match="another named lane"):
+        command_admission.prepared_named_lane_command(
+            "runtime.public-consumers.wasm", python, command=command
+        )

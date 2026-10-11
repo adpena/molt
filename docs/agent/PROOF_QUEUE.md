@@ -1459,6 +1459,33 @@ Submit with:
 uv run --active --project . --python 3.12 python tools\proof_queue.py submit proof.toml
 ```
 
+## Differential Case Selection
+
+Differential named lanes own the interpreter, target Python, backend, profile,
+worker count, retry policy and compiler permissions. Their default case lists
+remain in `tools/proof_plan.toml`. To select another bounded source closure while
+keeping those settings, use repeated `--case` or repository `--cases-from` lists:
+
+```sh
+molt queue named-lane runtime.public-consumers.native --detach \
+  --case tests/differential/stdlib/threading_shared_call_identity.py
+```
+
+Use an existing repository case path. `--cases-from` accepts the same newline
+and comment format as the differential harness. Files, directories and suite
+`TESTS.txt` manifests expand through `tools.compat.test_policy`; paths outside
+the checkout, indirect paths, duplicate files and empty selections are refused.
+Selection is available only on lanes with declarative `differential_cases`.
+Unknown options cannot change the fixed lane command.
+
+The submitted command stores the expanded files after `--`, and its typed
+envelope binds their content hashes. Dispatch validates those bytes again and
+includes selected files in the existing source-content capture even when Git
+ignores them. The capture checks the admission hashes and its existing live
+fences. Editing a submission list after queueing cannot change that command;
+editing an admitted source invalidates its envelope. No wrapper, new build
+cache, alternate scheduler or end-user runtime instrumentation is involved.
+
 ## Named Pact Witness Lanes
 
 Use the named lane for Pact Kernel A acceptance. Do not queue ad hoc `molt

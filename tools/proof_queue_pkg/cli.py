@@ -569,6 +569,20 @@ def _build_parser() -> argparse.ArgumentParser:
     named_lane_p.add_argument(
         "lane_id", help="named lane id, e.g. pact.seal.numpy.produce"
     )
+    named_lane_p.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="select a repository differential file or suite; repeat to combine",
+    )
+    named_lane_p.add_argument(
+        "--cases-from",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="read a repository newline/comment list of differential files or suites",
+    )
     _add_named_lane_args(
         named_lane_p,
         note_help="append submission context to the named lane run",
