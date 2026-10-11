@@ -2100,11 +2100,12 @@ fn bytes_from_str_impl(
         Err(EncodeError::InvalidChar {
             encoding,
             code,
-            pos,
+            start,
+            end,
             limit,
         }) => {
             let reason = encode_error_reason(encoding, code, limit);
-            return raise_unicode_encode_error::<_>(_py, encoding, src_bits, pos, pos + 1, &reason);
+            return raise_unicode_encode_error::<_>(_py, encoding, src_bits, start, end, &reason);
         }
     };
     let out_ptr = match kind {

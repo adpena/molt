@@ -310,11 +310,12 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
             Err(OpsEncodeError::InvalidChar {
                 encoding,
                 code,
-                pos,
+                start,
+                end,
                 limit,
             }) => {
                 let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
-                raise_unicode_encode_error::<_>(_py, encoding, input_bits, pos, pos + 1, &reason)
+                raise_unicode_encode_error::<_>(_py, encoding, input_bits, start, end, &reason)
             }
         }
     })
@@ -904,17 +905,13 @@ pub extern "C" fn molt_codecs_stream_writer_write(handle_bits: u64, text_bits: u
             Err(OpsEncodeError::InvalidChar {
                 encoding,
                 code,
-                pos,
+                start,
+                end,
                 limit,
             }) => {
                 let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
                 return raise_unicode_encode_error::<_>(
-                    _py,
-                    encoding,
-                    text_bits,
-                    pos,
-                    pos + 1,
-                    &reason,
+                    _py, encoding, text_bits, start, end, &reason,
                 );
             }
         };
@@ -1331,28 +1328,42 @@ fn charmap_encode_replacement(
     map_ptr: *mut u8,
     out: &mut Vec<u8>,
     replacement: &str,
-    pos: usize,
-) -> Result<(), u64> {
+) -> Result<bool, u64> {
     for repl in replacement.chars() {
         if !charmap_lookup_encode_char(_py, map_ptr, out, repl as u32)? {
-            return Err(charmap_encode_undefined(_py, repl as u32, pos));
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
-fn charmap_encode_undefined(_py: &PyToken<'_>, code: u32, pos: usize) -> u64 {
-    let escaped = if code <= 0xFF {
-        format!("\\x{code:02x}")
-    } else if code <= 0xFFFF {
-        format!("\\u{code:04x}")
-    } else {
-        format!("\\U{code:08x}")
-    };
-    let msg = format!(
-        "'charmap' codec can't encode character '{escaped}' in position {pos}: character maps to <undefined>"
-    );
-    raise_exception::<_>(_py, "UnicodeEncodeError", &msg)
+/// CPython hands a mapping's whole run of unmappable characters to the error
+/// handler and reports that run as one `UnicodeEncodeError`.
+fn charmap_unmappable_run_end(
+    _py: &PyToken<'_>,
+    map_ptr: *mut u8,
+    chars: &[char],
+    start: usize,
+) -> Result<usize, u64> {
+    let mut probe = Vec::new();
+    let mut end = start + 1;
+    while end < chars.len()
+        && !charmap_lookup_encode_char(_py, map_ptr, &mut probe, chars[end] as u32)?
+    {
+        end += 1;
+    }
+    Ok(end)
+}
+
+fn charmap_encode_undefined(_py: &PyToken<'_>, input_bits: u64, start: usize, end: usize) -> u64 {
+    raise_unicode_encode_error::<_>(
+        _py,
+        "charmap",
+        input_bits,
+        start,
+        end,
+        "character maps to <undefined>",
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -1376,12 +1387,25 @@ pub extern "C" fn molt_codecs_charmap_encode(
                 Ok(encoded) => {
                     return charmap_encode_tuple(_py, &encoded, input_str.chars().count());
                 }
-                Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "UnicodeEncodeError",
-                        "charmap encode failed with latin-1 fallback",
+                Err(OpsEncodeError::InvalidChar {
+                    encoding,
+                    code,
+                    start,
+                    end,
+                    limit,
+                }) => {
+                    let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
+                    return raise_unicode_encode_error::<_>(
+                        _py, encoding, input_bits, start, end, &reason,
                     );
+                }
+                Err(OpsEncodeError::UnknownErrorHandler(name)) => {
+                    let msg = format!("unknown error handler name '{name}'");
+                    return raise_exception::<_>(_py, "LookupError", &msg);
+                }
+                Err(OpsEncodeError::UnknownEncoding(name)) => {
+                    let msg = format!("unknown encoding: {name}");
+                    return raise_exception::<_>(_py, "LookupError", &msg);
                 }
             }
         }
@@ -1393,56 +1417,48 @@ pub extern "C" fn molt_codecs_charmap_encode(
         if unsafe { object_type_id(map_ptr) } != TYPE_ID_DICT {
             return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
         }
-        for (idx, ch) in input_str.chars().enumerate() {
+        let chars: Vec<char> = input_str.chars().collect();
+        let mut idx = 0;
+        while idx < chars.len() {
+            let ch = chars[idx];
             let found = match charmap_lookup_encode_char(_py, map_ptr, &mut out, ch as u32) {
                 Ok(found) => found,
                 Err(bits) => return bits,
             };
             if found {
+                idx += 1;
                 continue;
             }
-            match errors.as_str() {
-                "ignore" => continue,
-                "replace" => {
-                    if let Err(bits) = charmap_encode_replacement(_py, map_ptr, &mut out, "?", idx)
-                    {
-                        return bits;
+            let end = match charmap_unmappable_run_end(_py, map_ptr, &chars, idx) {
+                Ok(end) => end,
+                Err(bits) => return bits,
+            };
+            for &ch in &chars[idx..end] {
+                let replacement = match errors.as_str() {
+                    "ignore" => continue,
+                    "replace" => "?".to_owned(),
+                    "xmlcharrefreplace" => {
+                        let mut replacement = Vec::new();
+                        push_xmlcharref_ascii(&mut replacement, ch as u32);
+                        String::from_utf8(replacement).unwrap_or_default()
                     }
-                }
-                "xmlcharrefreplace" => {
-                    let mut replacement = Vec::new();
-                    push_xmlcharref_ascii(&mut replacement, ch as u32);
-                    let replacement = String::from_utf8(replacement).unwrap_or_default();
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
-                        return bits;
+                    "backslashreplace" => unicode_escape_codepoint(ch as u32),
+                    "namereplace" => unicode_name_escape(ch as u32),
+                    "strict" | "surrogatepass" | "surrogateescape" => {
+                        return charmap_encode_undefined(_py, input_bits, idx, end);
                     }
-                }
-                "backslashreplace" => {
-                    let replacement = unicode_escape_codepoint(ch as u32);
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
-                        return bits;
+                    other => {
+                        let msg = format!("unknown error handler name '{other}'");
+                        return raise_exception::<_>(_py, "LookupError", &msg);
                     }
-                }
-                "namereplace" => {
-                    let replacement = unicode_name_escape(ch as u32);
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
-                        return bits;
-                    }
-                }
-                "strict" | "surrogatepass" | "surrogateescape" => {
-                    return charmap_encode_undefined(_py, ch as u32, idx);
-                }
-                other => {
-                    let msg = format!("unknown error handler name '{other}'");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                };
+                match charmap_encode_replacement(_py, map_ptr, &mut out, &replacement) {
+                    Ok(true) => {}
+                    Ok(false) => return charmap_encode_undefined(_py, input_bits, idx, end),
+                    Err(bits) => return bits,
                 }
             }
+            idx = end;
         }
         charmap_encode_tuple(_py, &out, input_str.chars().count())
     })

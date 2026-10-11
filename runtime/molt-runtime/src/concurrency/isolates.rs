@@ -450,6 +450,11 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>) {
     );
 }
 
+/// Isolate teardowns that panicked. The lifecycle survives such a failure,
+/// so tests read this count to prove every isolate tore down completely.
+#[cfg(test)]
+static ISOLATE_TEARDOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
 /// Own the complete fresh-isolate lifecycle. The final-image export remains the
 /// sole application initializer; parameters make this lifecycle testable without
 /// installing a second global provider or invoking libtest's Unavailable export.
@@ -504,6 +509,8 @@ fn run_isolate_thread(
         runtime_teardown_isolate(&py, unsafe { &*state_ptr });
     });
     if teardown.is_err() {
+        #[cfg(test)]
+        ISOLATE_TEARDOWN_FAILURES.fetch_add(1, AtomicOrdering::SeqCst);
         eprintln!("MOLT_ISOLATE_TEARDOWN_PANIC: detaching failed isolate");
     }
     clear_thread_runtime_state();
@@ -519,6 +526,27 @@ mod bootstrap_failure_tests {
     use crate::{builtin_classes, runtime_state};
     use std::ffi::c_void;
     use std::os::raw::c_int;
+
+    /// Fails the test if any isolate it started panicked during teardown.
+    struct IsolateTeardownWitness(usize);
+
+    impl IsolateTeardownWitness {
+        fn new() -> Self {
+            Self(ISOLATE_TEARDOWN_FAILURES.load(AtomicOrdering::SeqCst))
+        }
+    }
+
+    impl Drop for IsolateTeardownWitness {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                assert_eq!(
+                    ISOLATE_TEARDOWN_FAILURES.load(AtomicOrdering::SeqCst),
+                    self.0,
+                    "an isolate teardown panicked"
+                );
+            }
+        }
+    }
 
     static ISOLATE_DRAIN_ATEXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
     static ISOLATE_DRAIN_REENTRY_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
@@ -592,6 +620,9 @@ mod bootstrap_failure_tests {
         retained_abi_state_after_teardown: bool,
     }
 
+    /// Observe the pending error's class and stored message without running
+    /// Python: `str()` dispatch would read the isolate's exception namespace,
+    /// which is not what admission is being tested for.
     fn pending_runtime_error(_py: &PyToken<'_>) -> (bool, String) {
         if !exception_pending(_py) {
             return (false, String::new());
@@ -603,9 +634,8 @@ mod bootstrap_failure_tests {
                 bits,
                 "RuntimeError",
             );
-        let message = obj_from_bits(bits)
-            .as_ptr()
-            .map(|ptr| format_exception_with_traceback(_py, ptr))
+        let message = crate::builtins::exceptions::pending_exception_diagnostic(_py)
+            .map(|(_, message)| message)
             .unwrap_or_default();
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
@@ -637,6 +667,7 @@ mod bootstrap_failure_tests {
 
     fn exercise_bootstrap(fail: bool) -> (usize, usize) {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let _teardown = IsolateTeardownWitness::new();
         let handle = Arc::new(MoltThreadHandle::new());
         let initializations = Arc::new(AtomicUsize::new(0));
         let payloads = Arc::new(AtomicUsize::new(0));
@@ -679,6 +710,7 @@ mod bootstrap_failure_tests {
     #[test]
     fn isolate_object_and_type_metadata_use_runtime_declarations() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let _teardown = IsolateTeardownWitness::new();
         let handle = Arc::new(MoltThreadHandle::new());
         let worker_handle = Arc::clone(&handle);
         std::thread::spawn(move || {
@@ -752,6 +784,7 @@ mod bootstrap_failure_tests {
     #[test]
     fn isolate_teardown_drains_cpython_edges_published_after_the_early_worker_boundary() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let _teardown = IsolateTeardownWitness::new();
         ISOLATE_DRAIN_ATEXIT_CALLBACKS.store(0, AtomicOrdering::Release);
         ISOLATE_DRAIN_REENTRY_CALLBACKS.store(0, AtomicOrdering::Release);
         ISOLATE_DRAIN_LATE_TLS_BITS.store(0, AtomicOrdering::Release);
@@ -837,6 +870,7 @@ mod bootstrap_failure_tests {
     #[test]
     fn isolate_teardown_preserves_primary_pending_call_queue_and_admission() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let _teardown = IsolateTeardownWitness::new();
         ISOLATE_PRESERVED_PENDING_CALLBACKS.store(0, AtomicOrdering::Release);
         let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
         assert_eq!(
@@ -900,6 +934,7 @@ mod bootstrap_failure_tests {
     #[test]
     fn isolated_runtime_rejects_process_static_cpython_ownership() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let _teardown = IsolateTeardownWitness::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         let primary_bindings = primary_exception_bindings();
         let retained_before = molt_cpython_abi::api::object::runtime_retained_thread_state_count();

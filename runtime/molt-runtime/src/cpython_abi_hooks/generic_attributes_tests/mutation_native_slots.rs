@@ -856,6 +856,43 @@ fn private_abi_type_shells_retire_with_their_runtime() {
     });
 }
 
+/// Readiness inherits slots into a process-owned shell in place. Each new
+/// runtime must ready the shell from its bootstrap slots: CPython's `str`
+/// declares no `__init__`, and a restart must not publish the one `str`
+/// inherited from `object` in the previous runtime.
+#[test]
+fn restarted_runtime_publishes_only_declared_builtin_slot_wrappers() {
+    use crate::state::runtime_state::{
+        molt_runtime_init, molt_runtime_reset_for_testing, molt_runtime_shutdown,
+    };
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        for cycle in 0..2 {
+            crate::with_gil_entry_nopanic!(_py, {
+                unsafe {
+                    let str_type = &raw mut PyUnicode_Type;
+                    assert_eq!(typeobj::PyType_Ready(str_type), 0);
+                    let dict = (*str_type).tp_dict;
+                    assert!(!dict.is_null());
+                    for (name, declared) in [(c"__init__", false), (c"__new__", true)] {
+                        let entry = mapping::PyDict_GetItemString(dict, name.as_ptr());
+                        assert_eq!(
+                            !entry.is_null(),
+                            declared,
+                            "cycle {cycle}: str.__dict__ has {name:?} only if str declares it"
+                        );
+                    }
+                    assert!(errors::PyErr_Occurred().is_null());
+                }
+            });
+            assert_eq!(molt_runtime_shutdown(), 1, "cycle {cycle}");
+            if cycle == 0 {
+                molt_runtime_reset_for_testing();
+                assert_eq!(molt_runtime_init(), 1);
+            }
+        }
+    });
+}
+
 #[test]
 fn managed_base_mutation_publishes_native_descendants_before_retirement() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();

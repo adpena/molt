@@ -103,7 +103,8 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                     Err(crate::object::ops::EncodeError::InvalidChar {
                         encoding,
                         code,
-                        pos,
+                        start,
+                        end,
                         limit,
                     }) => {
                         let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
@@ -111,8 +112,8 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                             _py,
                             encoding,
                             data_obj.bits(),
-                            pos,
-                            pos + 1,
+                            start,
+                            end,
                             &reason,
                         );
                     }

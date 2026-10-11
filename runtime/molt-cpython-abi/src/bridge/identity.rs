@@ -308,6 +308,20 @@ impl ObjectBridge {
         address.foreign.get(&ptr.addr()).copied() == Some(bits)
     }
 
+    /// The foreign wrapper published for a native object, without creating
+    /// one. Foreign wrappers are not managed views, so `pyobj_to_handle` and
+    /// `molt_handle_for_pyobj` never report them.
+    pub fn foreign_wrapper_for_pyobj(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
+        if ptr.is_null() {
+            return None;
+        }
+        self.address_shard(ptr.addr())
+            .lock()
+            .foreign
+            .get(&ptr.addr())
+            .copied()
+    }
+
     pub fn molt_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<MoltValueHandle> {
         if let Some(bits) = pyobj_to_handle_static(ptr) {
             return Some(MoltValueHandle(bits));

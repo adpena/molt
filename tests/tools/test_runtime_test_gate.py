@@ -50,7 +50,7 @@ def test_complete_parallel_and_fresh_process_ledger_passes(tmp_path):
         **{name: None for name in gate.ISOLATED},
         support.EXIT: 2,
     }
-    assert len(children) == 8
+    assert len(children) == 1 + len(gate.ISOLATED) == 10
     assert "--test-threads=4" in selections["parallel"][0]
     for name in gate.ISOLATED:
         assert selections[name][0] == [

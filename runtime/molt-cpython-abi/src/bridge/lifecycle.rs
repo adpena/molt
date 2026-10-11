@@ -431,8 +431,16 @@ impl ObjectBridge {
     }
 
     pub(super) fn managed_entry_is_unique(&self, entry: &BridgeEntry, mirrored: usize) -> bool {
+        self.managed_entry_owners(entry, mirrored) == Some(1)
+    }
+
+    /// Semantic owners of one managed view: runtime owners plus direct C
+    /// references, excluding the bridge hold, the runtime-owner bias and
+    /// private mirrors of runtime edges. This is the CPython reference count.
+    /// None refuses a finalizing or immortal view.
+    fn managed_entry_owners(&self, entry: &BridgeEntry, mirrored: usize) -> Option<usize> {
         if entry.lifecycle == BridgeLifecycle::FinalizingPin {
-            return false;
+            return None;
         }
         let refs = unsafe { (*entry.view.py_obj()).ob_refcnt };
         let CReferenceCount::Counted(c_refs) =
@@ -442,12 +450,12 @@ impl ObjectBridge {
                 entry.lifecycle,
             )
         else {
-            return false;
+            return None;
         };
         let runtime_owners = if MoltObject::from_bits(entry.bits).as_ptr().is_some() {
             let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(entry.bits) };
             if runtime_refs == molt_codegen_abi::IMMORTAL_REFCOUNT as usize {
-                return false;
+                return None;
             }
             runtime_refs.checked_sub(1).unwrap_or_else(|| {
                 abort_refcount_invariant("unique ownership runtime hold", refs, entry.lifecycle)
@@ -461,7 +469,25 @@ impl ObjectBridge {
             .unwrap_or_else(|| {
                 abort_refcount_invariant("unique ownership mirrors", refs, entry.lifecycle)
             });
-        runtime_owners.checked_add(direct_refs) == Some(1)
+        runtime_owners.checked_add(direct_refs)
+    }
+
+    /// The CPython-visible reference count of a managed C view. `ob_refcnt`
+    /// also carries the runtime-owner bias and private mirrors, so it can
+    /// exceed this count. None identifies no managed view, or refuses a
+    /// finalizing or immortal one.
+    pub unsafe fn managed_semantic_refcount(&self, ptr: *mut PyObject) -> Option<usize> {
+        let bits = self.managed_handle_for_pyobj(ptr)?;
+        let (address, handle) = self.lock_address_then_handle(ptr.addr(), bits);
+        let entry = handle.to_py.get(&bits)?;
+        self.managed_entry_owners(
+            entry,
+            address
+                .projection_refs
+                .get(&ptr.addr())
+                .copied()
+                .unwrap_or(0),
+        )
     }
 
     /// Observe semantic ownership while excluding the bridge hold and duplicate

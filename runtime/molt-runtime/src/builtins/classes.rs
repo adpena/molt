@@ -1426,9 +1426,10 @@ pub(crate) fn builtin_classes_retire_identities(
     state: &RuntimeState,
     retirement: &crate::object::class_storage::RuntimeClassRetirement,
 ) {
+    let owns_process_cabi = crate::state::runtime_state::owns_process_cpython_state(state);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if ptr.is_null() {
-        retirement.detach_identities(py);
+        retirement.detach_identities(py, owns_process_cabi);
         return;
     }
     unsafe {
@@ -1441,7 +1442,7 @@ pub(crate) fn builtin_classes_retire_identities(
         builtins.assert_anchor_family_live("cycle breaking");
         // The shared transaction owns detachment for the entire canonical
         // cohort, including exception and descriptor classes outside this bank.
-        retirement.detach_identities(py);
+        retirement.detach_identities(py, owns_process_cabi);
         for (index, bits) in builtins.anchors().into_iter().enumerate() {
             assert_builtin_class_anchor_live(index, bits, "cycle break completion");
         }

@@ -175,6 +175,24 @@ fn checked_signed_value(
     }
 }
 
+/// Exact value of an object with physical long storage (int, bool and their
+/// subtypes), whatever its runtime handle: a C-origin carrier may resolve to a
+/// heap int identity, not an inline one. None: `op` has no long storage.
+/// `Some(Err(()))`: an exception is pending (an admission failure, or an
+/// OverflowError for a magnitude beyond 64 bits).
+pub(crate) fn physical_long_i128(op: *mut PyObject) -> Option<Result<i128, ()>> {
+    match py_long_value(op, false) {
+        Ok(LongValue::Signed(value)) => Some(Ok(value.into())),
+        Ok(LongValue::Big(value)) => Some(Ok(value.into())),
+        Ok(LongValue::Wide { .. }) => {
+            set_long_overflow_msg(c"int too big to convert");
+            Some(Err(()))
+        }
+        Err(LongError::NotInt) => None,
+        Err(LongError::Raised) => Some(Err(())),
+    }
+}
+
 fn checked_unsigned_value(op: *mut PyObject, max: u64) -> Result<u64, CheckedLongError> {
     match py_long_value(op, false) {
         Ok(LongValue::Signed(value)) if value < 0 => Err(CheckedLongError::Negative),

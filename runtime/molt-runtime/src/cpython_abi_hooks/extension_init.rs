@@ -1229,13 +1229,19 @@ mod tests {
                 "multiphase modules have metadata but no single-phase PyState root"
             );
             crate::builtins::modules::molt_module_cache_del(name);
+            let module_pointers =
+                [created, already_public].map(|bits| MoltObject::from_bits(bits).as_ptr().unwrap());
             for bits in [already_public, created, old, name, modules, sys, sys_name] {
                 dec_ref_bits(&py, bits);
             }
-            assert!(
-                !crate::c_api::c_api_module_clear_state(&py, crate::runtime_state(&py)),
-                "final module release must already retire multiphase metadata"
-            );
+            // Other tests' single-phase imports keep legitimate runtime roots
+            // in this shared runtime; check only this test's modules.
+            for module in module_pointers {
+                assert!(
+                    !crate::c_api::c_api_module_registered(&py, module, def_address),
+                    "final module release must already retire multiphase metadata"
+                );
+            }
         });
     }
 
