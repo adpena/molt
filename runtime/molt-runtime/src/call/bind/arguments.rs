@@ -25,6 +25,7 @@ pub(crate) struct CallArgs {
 
 impl CallArgs {
     /// Read the live dictionary, never a projection cached during expansion.
+    #[cfg(any(test, feature = "molt_gpu_primitives"))]
     pub(super) unsafe fn keyword_count(&self) -> usize {
         obj_from_bits(self.keywords)
             .as_ptr()

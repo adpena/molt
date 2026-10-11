@@ -1,20 +1,9 @@
 use molt_runtime_core::prelude::*;
 
-use super::alloc_string;
-
 pub fn index_i64_from_obj(_py: &CoreGilToken, obj_bits: u64, err: &str) -> i64 {
     crate::with_gil_entry_nopanic!(py, {
         crate::builtins::numbers::index_i64_from_obj(py, obj_bits, err)
     })
-}
-
-pub fn intern_static_name(_py: &CoreGilToken, key: &[u8]) -> u64 {
-    let ptr = alloc_string(_py, key);
-    if ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(ptr).bits()
-    }
 }
 
 pub fn bridge_molt_add(a: u64, b: u64) -> u64 {
@@ -129,12 +118,4 @@ pub fn alloc_itertools_class(
 
 pub fn alloc_kwd_mark(_py: &CoreGilToken) -> u64 {
     crate::with_gil_entry_nopanic!(py, { crate::state::cache::alloc_kwd_mark(py) })
-}
-
-/// # Safety
-///
-/// `ptr` must be a valid Molt runtime object pointer for the duration of this
-/// call.
-pub unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
-    unsafe { crate::object_class_bits(ptr) }
 }

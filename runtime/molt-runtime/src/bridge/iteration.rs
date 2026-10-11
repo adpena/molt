@@ -2,27 +2,8 @@ use molt_runtime_core::prelude::*;
 
 use super::ExceptionSentinel;
 
-pub fn molt_iter(_py: &CoreGilToken, bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
-}
-
 pub fn molt_iter_bridge(_py: &CoreGilToken, bits: u64) -> u64 {
     crate::object::ops_iter::molt_iter(bits)
-}
-
-pub fn molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> Option<u64> {
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    if result == MoltObject::none().bits() {
-        crate::with_gil_entry_nopanic!(py, {
-            if crate::exception_pending(py) {
-                None
-            } else {
-                Some(result)
-            }
-        })
-    } else {
-        Some(result)
-    }
 }
 
 pub fn raise_not_iterable<T: ExceptionSentinel>(_py: &CoreGilToken, bits: u64) -> T {

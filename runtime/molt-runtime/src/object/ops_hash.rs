@@ -224,6 +224,7 @@ impl SipHasher13 {
     }
 }
 
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn reduce_mersenne(mut value: u128) -> u64 {
     let mask = PY_HASH_MODULUS as u128;
     value = (value & mask) + (value >> PY_HASH_BITS);
@@ -234,6 +235,7 @@ fn reduce_mersenne(mut value: u128) -> u64 {
     if value == mask { 0 } else { value as u64 }
 }
 
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn mul_mod_mersenne(lhs: u64, rhs: u64) -> u64 {
     reduce_mersenne((lhs as u128) * (rhs as u128))
 }

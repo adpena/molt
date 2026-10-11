@@ -1651,46 +1651,6 @@ pub(crate) fn at_resolve_dir_fd(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<l
     }
 }
 
-/// Build the `[atime, mtime]` `timespec` pair for `utimensat` from four
-/// NaN-boxed `(sec, nsec)` ints. A `nsec` of `-1` maps to `UTIME_NOW`. Any
-/// non-integer raises `TypeError` (error bits carry the recorded exception).
-///
-/// `molt_os_utime_at` lives in os_ext; under `stdlib_path` the extracted
-/// `molt-runtime-path` crate carries its own copy of both the intrinsic and
-/// this helper, so this definition is only reachable from the `not(stdlib_path)`
-/// fallback `builtins/os_ext.rs` and is gated to match.
-#[cfg(all(not(target_arch = "wasm32"), unix, not(feature = "stdlib_path")))]
-#[inline]
-pub(crate) fn at_timespec_pair(
-    _py: &PyToken<'_>,
-    atime_sec_bits: u64,
-    atime_nsec_bits: u64,
-    mtime_sec_bits: u64,
-    mtime_nsec_bits: u64,
-) -> Result<[libc::timespec; 2], u64> {
-    let one = |bits: u64| -> Result<i64, u64> {
-        to_i64(obj_from_bits(bits)).ok_or_else(|| {
-            raise_exception::<u64>(_py, "TypeError", "utime: times must be integers")
-        })
-    };
-    let mk = |sec: i64, nsec: i64| -> libc::timespec {
-        if nsec == -1 {
-            libc::timespec {
-                tv_sec: sec as libc::time_t,
-                tv_nsec: libc::UTIME_NOW,
-            }
-        } else {
-            libc::timespec {
-                tv_sec: sec as libc::time_t,
-                tv_nsec: nsec as _,
-            }
-        }
-    };
-    let atime = mk(one(atime_sec_bits)?, one(atime_nsec_bits)?);
-    let mtime = mk(one(mtime_sec_bits)?, one(mtime_nsec_bits)?);
-    Ok([atime, mtime])
-}
-
 /// Build the canonical 10-field stat tuple from a raw `libc::stat`.
 ///
 /// Mirrors the integer-seconds shape of `stat_tuple_from_metadata` (which is
