@@ -181,6 +181,15 @@ fn detach_and_reset(
         *pointer.cast::<u64>().add(EXCEPTION_ARGS_SLOT) = args;
         *pointer.cast::<u64>().add(EXCEPTION_SUPPRESS_SLOT) = MoltObject::from_bool(false).bits();
     }
+    // Detached owners remain live until both representations expose the reset.
+    // Their destructors may observe, mutate, or revive this same exception.
+    if projection.is_some() {
+        assert!(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .refresh_exception_view(MoltObject::from_ptr(pointer).bits()),
+            "cleared MemoryError view must use prepared immutable fields"
+        );
+    }
     (detached, projection)
 }
 
@@ -195,6 +204,46 @@ fn release_detached(
     for bits in detached.bits[..detached.len].iter().copied() {
         dec_ref_bits(py, bits);
     }
+}
+
+// Shared reset invariant for reserve admission and shutdown fixed-point work.
+// Inspect physical fields without committing them: callbacks may have made
+// valid direct C writes that the managed payload does not yet represent.
+fn is_reset(reserve: &MemoryErrorReserve, pointer: *mut u8, has_view: bool) -> bool {
+    let args = reserve.empty_args.load(AtomicOrdering::Acquire);
+    let bits = MoltObject::from_ptr(pointer).bits();
+    let mut changed = unsafe {
+        EXCEPTION_OWNED_EDGE_SLOTS.iter().any(|&slot| {
+            let value = *pointer.cast::<u64>().add(slot);
+            match slot {
+                EXCEPTION_ARGS_SLOT => value != args,
+                EXCEPTION_MSG_SLOT | EXCEPTION_NOTES_SLOT => !exception_field_is_missing(value),
+                _ => !obj_from_bits(value).is_none(),
+            }
+        })
+    };
+    changed |= unsafe { *pointer.cast::<u64>().add(EXCEPTION_SUPPRESS_SLOT) }
+        != MoltObject::from_bool(false).bits();
+    if has_view {
+        let view =
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+        assert!(!view.is_null(), "MemoryError retains its prepared view");
+        let view = unsafe { &*view.cast::<molt_cpython_abi::abi_types::PyBaseExceptionObject>() };
+        let expected_args =
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(args) };
+        assert!(
+            !expected_args.is_null(),
+            "empty arguments retain their prepared view"
+        );
+        changed |= view.args != expected_args
+            || view.suppress_context != 0
+            || !view.dict.is_null()
+            || !view.notes.is_null()
+            || !view.traceback.is_null()
+            || !view.context.is_null()
+            || !view.cause.is_null();
+    }
+    !changed
 }
 
 /// The caller is the existing rc-zero authority, after its finalizer/weakref
@@ -240,16 +289,23 @@ pub(crate) unsafe fn try_recycle(py: &PyToken<'_>, pointer: *mut u8) -> bool {
         reserve.free.lock().unwrap().returning -= 1;
         return true;
     }
+    if !is_reset(reserve, pointer, has_view) {
+        // A callback changed a borrowed parent without retaining it. Its new
+        // fields belong to ordinary terminal teardown, not to the free pool.
+        // Decline reuse instead of running an unbounded reset/callback loop.
+        header.close_revival_window(window);
+        if has_view {
+            bridge.finish_finalization(bits, false);
+        }
+        reserve.free.lock().unwrap().returning -= 1;
+        return false;
+    }
     // This new ordinary reference belongs to the free pool, not to a live
     // exception's hidden lifetime pin. Closing the internal window leaves it.
     header.retain_owned(1, "MemoryError reserve return");
     header.close_revival_window(window);
     if has_view {
         bridge.finish_finalization(bits, true);
-        assert!(
-            bridge.refresh_exception_view(bits),
-            "cleared MemoryError view must use prepared immutable fields"
-        );
     }
     let returned = {
         let mut free = reserve.free.lock().unwrap();
@@ -298,44 +354,13 @@ pub(crate) fn clear_shutdown_fields(py: &PyToken<'_>) -> bool {
     let Some(pointer) = obj_from_bits(bits).as_ptr() else {
         return false;
     };
-    let args = reserve.empty_args.load(AtomicOrdering::Acquire);
-    let mut changed = unsafe {
-        EXCEPTION_OWNED_EDGE_SLOTS.iter().any(|&slot| {
-            let value = *pointer.cast::<u64>().add(slot);
-            match slot {
-                EXCEPTION_ARGS_SLOT => value != args,
-                EXCEPTION_MSG_SLOT | EXCEPTION_NOTES_SLOT => !exception_field_is_missing(value),
-                _ => !obj_from_bits(value).is_none(),
-            }
-        })
-    };
-    if reserve.c_views_ready.load(AtomicOrdering::Acquire) {
-        let view =
-            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
-        assert!(
-            !view.is_null(),
-            "last-resort view remains prepared through shutdown"
-        );
-        let view = unsafe { &*view.cast::<molt_cpython_abi::abi_types::PyBaseExceptionObject>() };
-        let expected_args =
-            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(args) };
-        assert!(
-            !expected_args.is_null(),
-            "empty arguments retain their prepared view"
-        );
-        changed |= view.args != expected_args
-            || view.suppress_context != 0
-            || !view.dict.is_null()
-            || !view.notes.is_null()
-            || !view.traceback.is_null()
-            || !view.context.is_null()
-            || !view.cause.is_null();
-    }
+    let changed = !is_reset(
+        reserve,
+        pointer,
+        unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) },
+    );
     let (detached, projection) = detach_and_reset(py, pointer);
     release_detached(py, detached, projection);
-    if reserve.c_views_ready.load(AtomicOrdering::Acquire) {
-        assert!(molt_cpython_abi::bridge::GLOBAL_BRIDGE.refresh_exception_view(bits));
-    }
     changed
 }
 
@@ -462,6 +487,258 @@ mod tests {
                 );
                 record_memory_error_without_allocation(py);
                 crate::test_support::assert_and_clear_emergency_memory_error(py);
+            }
+        });
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PayloadRevivalKind {
+        Native,
+        Managed,
+        BorrowedOnly,
+    }
+
+    // The capsule borrows its parent only until its destructor returns. These
+    // saved owners start empty: a pre-existing strong parent edge would turn
+    // this fixture into a cycle and never exercise terminal payload retirement.
+    struct PayloadRevival<'a, 'py> {
+        py: &'a PyToken<'py>,
+        kind: PayloadRevivalKind,
+        value: *mut PyObject,
+        bits: u64,
+        replacement_args: *mut PyObject,
+        calls: usize,
+        saw_empty_args: bool,
+        mutated_args: bool,
+        saw_clear_error: bool,
+        native_owner: Option<OwnedPyObject>,
+        managed_owner: Option<ExceptionValue<'a, 'py>>,
+    }
+
+    unsafe extern "C" fn payload_revive_parent(payload: *mut PyObject) {
+        let witness = unsafe {
+            &mut *capsule::PyCapsule_GetPointer(payload, std::ptr::null())
+                .cast::<PayloadRevival<'_, '_>>()
+        };
+        witness.calls += 1;
+        if witness.calls != 1 {
+            return;
+        }
+        match witness.kind {
+            PayloadRevivalKind::Managed => {
+                witness.managed_owner = Some(ExceptionValue::pin(witness.py, witness.bits));
+            }
+            PayloadRevivalKind::Native => {
+                // Direct C roots do not acquire ordinary managed references.
+                witness.native_owner = Some(unsafe { OwnedPyObject::from_borrowed(witness.value) });
+            }
+            PayloadRevivalKind::BorrowedOnly => {}
+        }
+        // User callbacks must observe the already published cleared state,
+        // not a half-cleared C projection repaired after they return.
+        let args = unsafe { OwnedPyObject::from_owned(errors::PyException_GetArgs(witness.value)) };
+        witness.saw_empty_args = !args.as_ptr().is_null()
+            && unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(args.as_ptr()) } == 0;
+        // Extensions may write the public physical args field with an owned
+        // reference. Do not commit it through a getter before the callback
+        // returns: that would hide a late runtime-to-C refresh overwriting it.
+        let base = witness
+            .value
+            .cast::<molt_cpython_abi::abi_types::PyBaseExceptionObject>();
+        let replacement = unsafe { OwnedPyObject::from_borrowed(witness.replacement_args) };
+        let old = unsafe { std::mem::replace(&mut (*base).args, replacement.into_ptr()) };
+        drop(unsafe { OwnedPyObject::from_owned(old) });
+        witness.mutated_args = unsafe { (*base).args } == witness.replacement_args;
+        witness.saw_clear_error =
+            unsafe { errors::PyErr_Occurred() }.is_null() && !exception_pending(witness.py);
+    }
+
+    #[test]
+    fn payload_destructor_revival_and_mutation_follow_the_actual_last_owner() {
+        use molt_cpython_abi::api::{numbers, sequences};
+
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for kind in [
+                PayloadRevivalKind::Native,
+                PayloadRevivalKind::Managed,
+                PayloadRevivalKind::BorrowedOnly,
+            ] {
+                // Declare the borrowed callback context before every possible
+                // capsule owner, so unwinding retires the capsule first.
+                let mut witness = PayloadRevival {
+                    py,
+                    kind,
+                    value: std::ptr::null_mut(),
+                    bits: 0,
+                    replacement_args: std::ptr::null_mut(),
+                    calls: 0,
+                    saw_empty_args: false,
+                    mutated_args: false,
+                    saw_clear_error: false,
+                    native_owner: None,
+                    managed_owner: None,
+                };
+                unsafe {
+                    let args = OwnedPyObject::from_owned(sequences::PyTuple_New(1));
+                    assert!(!args.as_ptr().is_null());
+                    let marker = OwnedPyObject::from_owned(numbers::PyLong_FromLong(41));
+                    assert!(!marker.as_ptr().is_null());
+                    assert_eq!(
+                        sequences::PyTuple_SetItem(args.as_ptr(), 0, marker.into_ptr()),
+                        0
+                    );
+                    witness.replacement_args = args.as_ptr();
+                    let args_refs = (*args.as_ptr()).ob_refcnt;
+                    assert!(errors::PyErr_NoMemory().is_null());
+                    let original = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!original.as_ptr().is_null());
+                    witness.value = original.as_ptr();
+                    witness.bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .managed_handle_for_pyobj(original.as_ptr())
+                        .expect("reserved error has canonical managed identity");
+                    let payload = OwnedPyObject::from_owned(capsule::PyCapsule_New(
+                        (&raw mut witness).cast(),
+                        std::ptr::null(),
+                        Some(payload_revive_parent),
+                    ));
+                    assert!(!payload.as_ptr().is_null());
+                    assert_eq!(
+                        object::PyObject_SetAttrString(
+                            original.as_ptr(),
+                            c"retained_payload".as_ptr(),
+                            payload.as_ptr()
+                        ),
+                        0
+                    );
+                    drop(payload);
+                    assert_eq!(witness.calls, 0);
+                    assert!(witness.native_owner.is_none() && witness.managed_owner.is_none());
+                    // Hold every other free value through the entire callback
+                    // and revival interval. Only this original can become free.
+                    let mut other: [Option<OwnedPyObject>; CAPACITY + 1] =
+                        std::array::from_fn(|_| None);
+                    for slot in &mut other {
+                        assert!(errors::PyErr_NoMemory().is_null());
+                        let value = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!value.as_ptr().is_null());
+                        assert_ne!(value.as_ptr(), witness.value);
+                        *slot = Some(value);
+                    }
+                    drop(original);
+                    if kind == PayloadRevivalKind::BorrowedOnly {
+                        // Read only the identity registry, never the retired
+                        // allocation. No intervening allocation can reuse it.
+                        assert!(
+                            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                                .managed_handle_for_pyobj(witness.value)
+                                .is_none()
+                        );
+                        assert_eq!(
+                            (*args.as_ptr()).ob_refcnt,
+                            args_refs,
+                            "terminal fallback must release the callback-owned field"
+                        );
+                    }
+                    assert_eq!(
+                        witness.calls, 1,
+                        "actual last-owner retirement ran the callback: {kind:?}"
+                    );
+                    assert!(
+                        witness.saw_empty_args,
+                        "callback must see valid cleared args: {kind:?}"
+                    );
+                    assert!(
+                        witness.mutated_args,
+                        "callback mutation must succeed: {kind:?}"
+                    );
+                    assert!(
+                        witness.saw_clear_error,
+                        "callback must not select an error: {kind:?}"
+                    );
+                    assert_eq!(
+                        witness.native_owner.is_some(),
+                        kind == PayloadRevivalKind::Native
+                    );
+                    assert_eq!(
+                        witness.managed_owner.is_some(),
+                        kind == PayloadRevivalKind::Managed
+                    );
+                    if kind != PayloadRevivalKind::BorrowedOnly {
+                        assert_eq!((*witness.value).ob_type, &raw mut PyExc_MemoryError);
+                        assert!(errors::PyErr_NoMemory().is_null());
+                        let while_live =
+                            OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!while_live.as_ptr().is_null());
+                        assert_ne!(
+                            while_live.as_ptr(),
+                            witness.value,
+                            "a live owner cannot reenter the pool: {kind:?}"
+                        );
+                        let physical = witness
+                            .value
+                            .cast::<molt_cpython_abi::abi_types::PyBaseExceptionObject>(
+                        );
+                        assert_eq!(
+                            (*physical).args,
+                            args.as_ptr(),
+                            "late refresh cannot overwrite direct C mutation: {kind:?}"
+                        );
+                        let observed_args =
+                            OwnedPyObject::from_owned(errors::PyException_GetArgs(witness.value));
+                        assert_eq!(
+                            observed_args.as_ptr(),
+                            args.as_ptr(),
+                            "late refresh cannot discard callback mutation: {kind:?}"
+                        );
+                        drop(observed_args);
+                        drop(while_live);
+                    }
+                    drop(witness.native_owner.take());
+                    drop(witness.managed_owner.take());
+                    // An unretained callback mutation takes terminal teardown,
+                    // so an exhausted reserve must select its held fallback.
+                    // Retained modes release a now-pristine owner into the pool.
+                    assert!(errors::PyErr_NoMemory().is_null());
+                    let reclaimed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    if kind == PayloadRevivalKind::BorrowedOnly {
+                        let fallback = other[CAPACITY].as_ref().unwrap().as_ptr();
+                        assert_eq!(fallback, other[CAPACITY - 1].as_ref().unwrap().as_ptr());
+                        assert_eq!(
+                            reclaimed.as_ptr(),
+                            fallback,
+                            "dirty unretained values must not reenter the reserve"
+                        );
+                    } else {
+                        assert_eq!(
+                            reclaimed.as_ptr(),
+                            witness.value,
+                            "the only newly free identity must be reusable: {kind:?}"
+                        );
+                    }
+                    assert_eq!(
+                        (*args.as_ptr()).ob_refcnt,
+                        args_refs,
+                        "retirement must release every callback-owned argument edge: {kind:?}"
+                    );
+                    let cleared_args =
+                        OwnedPyObject::from_owned(errors::PyException_GetArgs(reclaimed.as_ptr()));
+                    assert!(!cleared_args.as_ptr().is_null());
+                    assert_eq!(
+                        sequences::PyTuple_Size(cleared_args.as_ptr()),
+                        0,
+                        "callback writes cannot survive free-pool admission: {kind:?}"
+                    );
+                    assert_eq!(
+                        witness.calls, 1,
+                        "departed payload cannot be finalized twice"
+                    );
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert!(!exception_pending(py));
+                    drop(cleared_args);
+                    drop(reclaimed);
+                    drop(other);
+                }
             }
         });
     }
