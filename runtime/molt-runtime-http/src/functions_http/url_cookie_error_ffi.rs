@@ -466,7 +466,10 @@ pub extern "C" fn molt_http_cookies_render_morsel(
                 max_age_bits,
                 expires_bits,
             },
-        );
+        ) {
+            Ok(out) => out,
+            Err(bits) => return bits,
+        };
         let Some(bits) = alloc_string_bits(_py, &out) else {
             return MoltObject::none().bits();
         };
@@ -499,11 +502,11 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(reason_text) = crate::bridge::format_obj_str(_py, obj_from_bits(reason_bits)) else { return MoltObject::none().bits(); };
-        let out = format!("<urlopen error {reason_text}>") {
-            Ok(out) => out,
-            Err(bits) => return bits,
+        let Some(reason_text) = crate::bridge::format_obj_str(_py, obj_from_bits(reason_bits))
+        else {
+            return MoltObject::none().bits();
         };
+        let out = format!("<urlopen error {reason_text}>");
         let out_ptr = alloc_string(_py, out.as_bytes());
         if out_ptr.is_null() {
             MoltObject::none().bits()
