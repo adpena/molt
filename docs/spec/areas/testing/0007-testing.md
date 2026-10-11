@@ -87,7 +87,9 @@ percentages. Required conformance and release matrix gates still apply.
   scratch state in `tmp_path` or a fixture checkout; a gate that scans the
   repository takes `--root` so its teeth test can plant a violation there. The
   proof executor attests the checkout after every command, so even a file that
-  lives for seconds fails every command running beside it.
+  lives for seconds fails every command running beside it. The pytest session
+  oracle (`tests/conftest.py`) fails a session that leaves any new top-level
+  entry in the checkout, and Hypothesis keeps its storage in scratch.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
   stages before optimizing. Reuse immutable fixture inputs without sharing
