@@ -8213,14 +8213,16 @@ mod tests {
         })
     }
 
+    /// Name the pending exception's real class. A C-raised error stays a
+    /// native exception instance (a foreign object with no managed class
+    /// slot), so read the class through the one exception-class authority
+    /// that covers managed and native storage.
     pub(super) fn pending_exception_type_for_assertion() -> String {
         with_gil(|_py| {
             let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-            let type_name = MoltObject::from_bits(exc_bits)
-                .as_ptr()
-                .and_then(|exc_ptr| {
-                    let class_bits = unsafe { crate::object_class_bits(exc_ptr) };
-                    MoltObject::from_bits(class_bits)
+            let type_name = crate::builtins::exceptions::exception_class(&_py, exc_bits)
+                .and_then(|class| {
+                    MoltObject::from_bits(class.bits())
                         .as_ptr()
                         .and_then(|class_ptr| {
                             let name_bits = unsafe { crate::class_name_bits(class_ptr) };
@@ -8994,7 +8996,13 @@ mod tests {
         register_cpython_hooks();
         with_gil(|_py| crate::clear_exception(&_py));
 
-        let mut raw_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        // An extension's C type has static storage. The lookup below readies
+        // it, as CPython's `_PyType_Lookup` does, so runtime-owned MRO and
+        // bases tuples and the subclass registry hold its address after this
+        // test returns. A stack type would leave those edges dangling; the
+        // next cycle collection then reads a dead type pointer.
+        let raw_type: &'static mut PyTypeObject =
+            Box::leak(Box::new(unsafe { std::mem::zeroed() }));
         raw_type.ob_base.ob_base.ob_refcnt = 1;
         raw_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
         raw_type.tp_name = c"numpy.ndarray".as_ptr();
@@ -9012,7 +9020,7 @@ mod tests {
             },
             0
         );
-        let raw_type_ptr = (&raw mut raw_type).cast::<PyObject>();
+        let raw_type_ptr = (&raw mut *raw_type).cast::<PyObject>();
         assert!(
             molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .molt_handle_for_pyobj(raw_type_ptr)
@@ -9046,7 +9054,11 @@ mod tests {
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(result);
             molt_cpython_abi::api::refcount::Py_DECREF(finalize);
-            molt_cpython_abi::api::refcount::Py_DECREF(raw_type.tp_dict);
+            // The leaked type outlives its dictionary; do not leave it dangling.
+            molt_cpython_abi::api::refcount::Py_DECREF(std::mem::replace(
+                &mut raw_type.tp_dict,
+                ptr::null_mut(),
+            ));
         }
     }
 
@@ -10738,12 +10750,13 @@ mod tests {
 
         assert_eq!(out_bits, 0);
         assert_eq!(pending_exception_type_for_assertion(), "SystemError");
+        // The callback operand authority validates every native result, so
+        // its message names the operation, not the trampoline's flags.
         let message = pending_exception_message_for_assertion();
         assert!(
-            message.contains("returned NULL without setting an exception"),
+            message.contains("C extension function returned NULL without an exception"),
             "{message}"
         );
-        assert!(message.contains("0x80"), "{message}");
         unsafe { hook_dec_ref(method_bits) };
     }
 
