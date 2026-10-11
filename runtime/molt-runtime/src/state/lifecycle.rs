@@ -1131,6 +1131,10 @@ mod tests {
                 assert!(!crate::exception_pending(py));
                 REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
                 REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
+                // Every instance owns its class; the baseline proves that no
+                // finalizer-published value outlives the drain.
+                let class_owners =
+                    unsafe { (*crate::header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
                 publish_context_binding(py, class);
                 let state = runtime_state(py);
                 let mut passes = 0;
@@ -1144,12 +1148,17 @@ mod tests {
                         break;
                     }
                 }
-                assert!(
-                    passes >= 3,
-                    "runtime-only reentry requires another drain pass"
-                );
+                // The contract is the drain's result, not its pass count: the
+                // binding the first finalizer republished was revisited, so
+                // both finalizers ran, the context is empty and no value the
+                // finalizers published still owns the class.
                 assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
                 assert!(!crate::builtins::contextvars::clear_thread_context(py));
+                assert_eq!(
+                    unsafe { (*crate::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
+                    class_owners,
+                    "a finalizer-published value survived the drain"
+                );
                 assert!(!crate::exception_pending(py));
                 crate::dec_ref_bits(py, class);
                 REENTRANT_CONTEXT_CLASS.store(0, Ordering::SeqCst);
