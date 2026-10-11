@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from molt.process_spawn import forward_command
 from tools import venv_exec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -120,3 +121,46 @@ def test_wrapped_command_exit_status_propagates(status: int) -> None:
         timeout=120,
     )
     assert result.returncode == status, result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX failed exec changes cwd temporarily")
+@pytest.mark.parametrize("missing_cwd", [False, True])
+def test_forward_command_failed_exec_preserves_caller_state(
+    tmp_path: Path, missing_cwd: bool
+) -> None:
+    child_cwd = tmp_path / "child"
+    if not missing_cwd:
+        child_cwd.mkdir()
+    # Run the real failure boundary in an isolated process; no global cwd or
+    # os.exec monkeypatch can interfere with the session's custody threads.
+    code = """
+import os
+from pathlib import Path
+import sys
+from molt.process_spawn import forward_command
+before = Path.cwd()
+environment = dict(os.environ)
+try:
+    forward_command([str(Path(sys.argv[1]) / "missing-command")],
+                    cwd=sys.argv[1], env={"FORWARDED_ONLY": "1"})
+except FileNotFoundError:
+    assert Path.cwd() == before
+    assert dict(os.environ) == environment
+else:
+    raise AssertionError("missing executable or cwd was accepted")
+"""
+    result = run_guarded_test_process(
+        [sys.executable, "-c", code, str(child_cwd)], cwd=ROOT, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("command", ["python --version", b"python --version"])
+def test_forward_command_rejects_shell_text(command: str | bytes) -> None:
+    with pytest.raises(TypeError, match="typed argv"):
+        forward_command(command, env={})  # type: ignore[arg-type]
+
+
+def test_forward_command_rejects_empty_argv() -> None:
+    with pytest.raises(ValueError, match="command is required"):
+        forward_command([], env={})

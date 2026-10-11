@@ -9,6 +9,7 @@ import sys
 from molt.source_root import compiler_source_root
 from molt.dx import DxConfigError, development_artifact_env
 from molt import process_guard
+from molt.process_spawn import forward_command
 
 PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
 
@@ -140,9 +141,10 @@ def handle_queue_command(args: argparse.Namespace) -> int:
     except DxConfigError as exc:
         print(f"molt queue: {exc}", file=sys.stderr)
         return 2
-    result = process_guard.run_completed_command(
+    # The queue owns its detached runners and guards actual proof work. An
+    # enclosing command guard would reap that ownership on this CLI's exit.
+    return forward_command(
         [sys.executable, str(proof_queue), *queue_args],
         cwd=repo_root,
         env=env,
     )
-    return int(result.returncode)

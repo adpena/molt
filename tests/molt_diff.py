@@ -1475,6 +1475,11 @@ def _consume_dyld_guard_run() -> int | None:
 def _activate_dyld_quarantine_target(
     *, use_local: bool = False
 ) -> tuple[Path, Path, bool]:
+    from tools.proof_queue_pkg.cargo_output_environment import (
+        require_independent_cargo_target,
+    )
+
+    require_independent_cargo_target(os.environ)
     run_id = os.environ.get("MOLT_DIFF_RUN_ID", "").strip() or "adhoc"
     safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id)
     selected = diff_output_layout.selected_for_compat(
@@ -3519,7 +3524,12 @@ def _run_isolated_retry(
     local_tmp: bool = False,
     environment: Mapping[str, str] | None = None,
 ) -> compat_backends.BackendResult:
+    from tools.proof_queue_pkg.cargo_output_environment import (
+        require_independent_cargo_target,
+    )
+
     environment = dict(os.environ if environment is None else environment)
+    require_independent_cargo_target(environment)
     selected = diff_output_layout.selected_for_compat(
         environment, repo_root=_repo_root()
     )

@@ -334,6 +334,10 @@ def execute_guarded_request(request_path: Path) -> int:
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
         inherited_env = environment._wrapper_execution_environment(envelope, os.environ)
+        if "cargo" in envelope.get("toolchains", []):
+            cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                envelope
+            ).validate_request_environment(inherited_env)
         output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
             envelope, result_root=result_path.parent, source_root=effective_cwd
         )

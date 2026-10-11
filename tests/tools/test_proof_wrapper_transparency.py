@@ -35,7 +35,7 @@ from tools.proof_queue_pkg import command_admission
     "payload",
     [
         ["python", "-m", "ruff", "check", "."],
-        ["python", "-m", "pytest", "tests/test_dummy.py"],
+        ["python", "-m", "json.tool"],
         ["python", "tools/check_format.py"],
         ["python", "-c", "print(1)"],
         ["python", "-"],
@@ -49,6 +49,8 @@ def test_unrelated_wrapped_payload_is_admitted_without_wrapper_row(wrapper, payl
     ) == command_admission._command_entrypoint(payload)
     envelope = command_admission.envelope_for_command(command)
     assert envelope["kind"] != "rejected"
+    assert envelope["argv"] == payload
+    assert envelope["proof_plan_command_ids"] == []
 
 
 @pytest.mark.parametrize(
@@ -222,7 +224,9 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
 
 def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
     tmp_path,
+    monkeypatch,
 ):
+    import copy
     import os
     import sys
     from pathlib import Path
@@ -246,7 +250,22 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
         "-q",
         str(payload),
     ]
+    # Pytest is a registered spawning entrypoint. Admit only this fixture's
+    # exact row; the real registry must still reject altered pytest commands.
+    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
+        command_admission.envelope_for_command(submitted)
+    registry = copy.deepcopy(command_admission._proof_command_registry())
+    registry["exact"][tuple(submitted)] = {
+        "ids": ["fixture.wrapper-pytest"],
+        "toolchains": ("python",),
+        "cargo_native_units": {},
+    }
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
     envelope = command_admission.envelope_for_command(submitted)
+    assert envelope["kind"] == "proof-plan"
+    assert envelope["proof_plan_command_ids"] == ["fixture.wrapper-pytest"]
+    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
+        command_admission.envelope_for_command([*submitted, "-x"])
     assert envelope["submitted_argv"] == submitted
     assert command_admission.command_proof_kind(envelope) == "test-execution"
     command_admission.validate_envelope(envelope, submitted)
@@ -403,10 +422,14 @@ def test_wrapper_help_remains_a_terminal_leaf_query(script):
 )
 def test_repository_wrapper_component_aliases_keep_inner_authority(spelling):
     envelope = command_admission.envelope_for_command(
-        ["python", spelling, "--", "python", "-m", "pytest", "tests"]
+        ["python", spelling, "--", "python", "-m", "json.tool"]
     )
-    assert envelope["argv"] == ["python", "-m", "pytest", "tests"]
-    assert command_admission.command_proof_kind(envelope) == "test-execution"
+    assert envelope["argv"] == ["python", "-m", "json.tool"]
+    assert envelope["proof_plan_command_ids"] == []
+    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
+        command_admission.envelope_for_command(
+            ["python", spelling, "--", "python", "-m", "pytest", "tests"]
+        )
 
 
 @pytest.mark.parametrize("seed", [None, "0", "123", "random"])

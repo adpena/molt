@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from types import ModuleType
 from typing import IO, Any, TextIO, TypedDict
 
@@ -105,3 +105,36 @@ def detached_process_group_kwargs(
             subprocess_module=subprocess_module,
         )
     return {"start_new_session": True}
+
+
+def forward_command(
+    command: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    cwd: str | os.PathLike[str] | None = None,
+) -> int:
+    """Transfer a CLI wrapper to its command without adding a custody owner.
+
+    POSIX exec preserves process identity and signal delivery. Windows has no
+    equivalent exec: wait for the child so its actual status reaches the caller.
+    The command (or an existing outer guard) owns any descendant lifecycle.
+    """
+    if isinstance(command, (str, bytes)):
+        raise TypeError("command must be typed argv, not shell text")
+    argv = list(command)
+    if not argv:
+        raise ValueError("command is required")
+    child_env = dict(env)
+    if os.name == "nt":
+        return subprocess.run(argv, cwd=cwd, env=child_env, check=False).returncode
+    if cwd is None:
+        os.execvpe(argv[0], argv, child_env)
+    else:
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(cwd)
+            os.execvpe(argv[0], argv, child_env)
+        finally:
+            # Only failed exec returns to Python; leave a reusable caller intact.
+            os.chdir(original_cwd)
+    raise AssertionError("os.execvpe returned")
