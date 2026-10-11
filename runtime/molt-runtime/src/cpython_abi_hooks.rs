@@ -4316,39 +4316,18 @@ fn call_cext_context(closure_bits: u64, arguments: CExtCallArguments<'_, '_, '_>
         )
     };
 
+    // The callback operand authority validates the native result: NULL
+    // always carries an exception and a returned object never does.
     let result_pyobj = unsafe { operands.complete_result(result_pyobj, "C extension function") };
     drop(operands);
 
-    let returned_null = result_pyobj.is_null();
     let pending = take_native_pending_snapshot();
-    let call_left_error = pending.has_error();
-    if !returned_null && call_left_error {
-        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result_pyobj) };
-    }
+    debug_assert_eq!(result_pyobj.is_null(), pending.has_error());
     drop(ingress);
     restore_native_pending_snapshot(pending);
-    match (returned_null, call_left_error) {
-        (true, true) => {
-            let _ = transfer_pending_cpython_exception();
-            return 0;
-        }
-        (true, false) => {
-            return with_gil(|_py| {
-                let msg = format!(
-                    "C extension function returned NULL without setting an exception (convention flags 0x{:x})",
-                    entry.flags
-                );
-                crate::raise_exception::<i64>(&_py, "SystemError", &msg)
-            });
-        }
-        (false, true) => {
-            let msg = format!(
-                "C extension function returned a result with an exception set (convention flags 0x{:x})",
-                entry.flags
-            );
-            return raise_native_result_with_error(&msg);
-        }
-        (false, false) => {}
+    if result_pyobj.is_null() {
+        let _ = transfer_pending_cpython_exception();
+        return 0;
     }
 
     let result_bits =
