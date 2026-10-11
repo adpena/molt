@@ -3879,24 +3879,14 @@ pub unsafe extern "C" fn PyException_GetArgs(exc: *mut PyObject) -> *mut PyObjec
     args
 }
 
-/// Route warnings through the runtime `warnings.warn` callable so filters,
-/// warning-as-error policy, category validation, and stacklevel share the same
-/// authority as compiled Python.
+/// Emit through the same runtime warning authority as managed numeric protocols.
+/// A cold runtime does not need to import a compiled Python warnings module.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WarnEx(
     category: *mut PyObject,
     message: *const c_char,
     stack_level: Py_ssize_t,
 ) -> c_int {
-    let warnings = unsafe { crate::api::imports::PyImport_ImportModule(c"warnings".as_ptr()) };
-    if warnings.is_null() {
-        return -1;
-    }
-    let warn = unsafe { crate::api::object::PyObject_GetAttrString(warnings, c"warn".as_ptr()) };
-    unsafe { crate::api::refcount::Py_DECREF(warnings) };
-    if warn.is_null() {
-        return -1;
-    }
     let message = unsafe {
         crate::api::strings::PyUnicode_FromString(if message.is_null() {
             c"".as_ptr()
@@ -3904,38 +3894,33 @@ pub unsafe extern "C" fn PyErr_WarnEx(
             message
         })
     };
-    let category = if category.is_null() {
-        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
-    } else {
-        unsafe { crate::api::object::Py_NewRef(category) }
-    };
-    let stack_level = unsafe { crate::api::numbers::PyLong_FromLongLong(stack_level as i64) };
-    let args = unsafe { crate::api::sequences::PyTuple_New(3) };
-    if message.is_null() || category.is_null() || stack_level.is_null() || args.is_null() {
-        unsafe {
-            crate::api::refcount::Py_XDECREF(message);
-            crate::api::refcount::Py_XDECREF(category);
-            crate::api::refcount::Py_XDECREF(stack_level);
-            crate::api::refcount::Py_XDECREF(args);
-            crate::api::refcount::Py_DECREF(warn);
-        }
+    if message.is_null() {
         return -1;
     }
-    unsafe {
-        let _ = crate::api::sequences::PyTuple_SetItem(args, 0, message);
-        let _ = crate::api::sequences::PyTuple_SetItem(args, 1, category);
-        let _ = crate::api::sequences::PyTuple_SetItem(args, 2, stack_level);
-    }
-    let result = unsafe { crate::api::object::PyObject_CallObject(warn, args) };
-    unsafe {
-        crate::api::refcount::Py_DECREF(args);
-        crate::api::refcount::Py_DECREF(warn);
-    }
-    if result.is_null() {
-        -1
+    let message = unsafe { crate::api::refcount::OwnedPyObject::from_owned(message) };
+    let category = if category.is_null() {
+        (&raw mut crate::abi_types::PyExc_RuntimeWarning).cast()
     } else {
-        unsafe { crate::api::refcount::Py_DECREF(result) };
-        0
+        category
+    };
+    let Some(message_bits) = (unsafe { crate::bridge::RuntimeValue::acquire(message.as_ptr()) })
+    else {
+        return -1;
+    };
+    let Some(category_bits) = (unsafe { crate::bridge::RuntimeValue::acquire(category) }) else {
+        return -1;
+    };
+    let status = unsafe {
+        (crate::hooks::hooks_or_stubs().warning_emit)(
+            message_bits.bits(),
+            category_bits.bits(),
+            stack_level as i64,
+        )
+    };
+    if status < 0 {
+        unsafe { check_native_status(status, "warning emission") }
+    } else {
+        status
     }
 }
 

@@ -633,7 +633,7 @@ fn install() -> support::AbiTestThreadStateTransaction {
     hooks.alloc_bytes = support::fake_runtime::alloc_bytes;
     hooks.bytes_data = support::fake_runtime::bytes_data;
     hooks.target_python_minor = member_target_minor;
-    hooks.import_module = support::warnings::import_module;
+    hooks.warning_emit = support::warnings::emit;
     let transaction = support::enter_runtime_class_abi_test(hooks);
     MEMBER_TARGET.with(|value| value.set(12));
     MEMBER_RESULT.with(|value| value.set(0));

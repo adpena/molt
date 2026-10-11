@@ -47,6 +47,14 @@ unsafe extern "C" fn gil_check() -> std::os::raw::c_int {
     1
 }
 
+pub(crate) unsafe extern "C" fn operation_enter() -> u64 {
+    1
+}
+
+pub(crate) unsafe extern "C" fn operation_leave(token: u64) {
+    assert_eq!(token, 1);
+}
+
 unsafe extern "C" fn thread_state_drop_enter() -> u64 {
     1
 }
@@ -158,11 +166,14 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             gil_release,
             gil_restore,
             gil_check,
+            operation_enter,
+            operation_leave,
             runtime_is_initialized,
             thread_state_drop_enter,
             thread_state_drop_leave,
             attached_runtime_context,
             pending_call_error,
+            warning_emit,
             alloc_bytes,
             alloc_bytearray,
             float_payload,
@@ -356,6 +367,8 @@ impl AbiTestThreadStateTransaction {
             .unwrap_or_else(|error| error.into_inner());
         hooks.runtime_is_initialized = runtime_is_initialized;
         hooks.gil_ensure = gil_ensure;
+        hooks.operation_enter = operation_enter;
+        hooks.operation_leave = operation_leave;
         hooks.gil_leave = gil_leave;
         hooks.gil_check = gil_check;
         hooks.thread_state_drop_enter = thread_state_drop_enter;

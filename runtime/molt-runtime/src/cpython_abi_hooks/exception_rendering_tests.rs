@@ -998,12 +998,13 @@ fn declaring_slots_own_foreign_arguments_and_distinguish_null_fields() {
         drop(payload);
         OWNER.store(error.cast(), Ordering::SeqCst);
         let rendered = OwnedPyObject::from_owned(typeobj::PyObject_Str(error));
-        let raised = errors::take_current_error();
+        let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert!(rendered.as_ptr().is_null());
         assert_eq!(DROPS.load(Ordering::SeqCst), 1);
-        let raised = raised.expect("callback exception");
+        assert!(!raised.as_ptr().is_null(), "callback exception");
         assert_eq!(
-            raised.value, failure,
+            raised.as_ptr(),
+            failure,
             "cleanup preserves the exact callback exception"
         );
         assert_eq!(DROP_ERROR.load(Ordering::SeqCst), failure);
@@ -1503,10 +1504,10 @@ unsafe fn python_text_transport_cases() {
         TEXT_DROP_RAISES.store(true, Ordering::SeqCst);
         let rendered =
             OwnedPyObject::from_owned(percent(b"%(key\xed\xa0\x80\0)s", mapping.as_ptr()));
-        let raised = errors::take_current_error();
+        let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert!(rendered.as_ptr().is_null());
-        let raised = raised.expect("callback failure preserved");
-        assert_eq!(raised.value, failure);
+        assert!(!raised.as_ptr().is_null(), "callback failure preserved");
+        assert_eq!(raised.as_ptr(), failure);
         assert_eq!(TEXT_DROPS.load(Ordering::SeqCst), 3);
         assert_eq!(TEXT_DROP_ERROR.load(Ordering::SeqCst), failure);
         TEXT_CALLBACK_FAILS.store(false, Ordering::SeqCst);
@@ -1885,14 +1886,6 @@ unsafe extern "C" fn percent_long_drop(value: *mut PyObject) {
     unsafe {
         molt_cpython_abi::api::memory::PyObject_Free(value.cast());
     }
-    if TEXT_DROP_RAISES.load(Ordering::SeqCst) {
-        unsafe {
-            errors::PyErr_SetString(
-                (&raw mut PyExc_ValueError).cast(),
-                c"numeric result cleanup".as_ptr(),
-            );
-        }
-    }
 }
 extern "C" fn percent_managed_mod(_self: u64, _rhs: u64) -> u64 {
     PERCENT_MOD_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -2001,7 +1994,6 @@ fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols()
         assert_eq!(take_raw(percent(b"%6x", value.as_ptr())), b"    2a");
         assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
         assert!(!PERCENT_DROP_SAW_OVERFLOW.load(Ordering::SeqCst));
-        TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
         percent_error(
             b"%.2147483645x",
             value.as_ptr(),
@@ -2010,7 +2002,6 @@ fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols()
         );
         assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 2);
         assert!(PERCENT_DROP_SAW_OVERFLOW.load(Ordering::SeqCst));
-        TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
         PERCENT_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
 
         let mut tuple_slots: PySequenceMethods = std::mem::zeroed();

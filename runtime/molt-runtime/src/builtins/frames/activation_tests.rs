@@ -614,7 +614,16 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             let failed = traceback_payload_to_traceback_bits(py, lazy);
             drop(budget);
             assert_eq!(failed, None);
-            take_error(py, "MemoryError");
+            assert_eq!(
+                crate::builtins::exceptions::pending_exception_class(py),
+                molt_cpython_abi::hooks::PendingExceptionClass::EmergencyMemoryError
+            );
+            assert!(crate::exception_last_bits_noinc(py).is_none());
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+            );
+            crate::clear_exception(py);
         }
         frame_stack_set_line(20);
         let prefix = frame_stack_trace_payload_prepend_bits(py, None, false, eager).unwrap();

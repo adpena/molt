@@ -1,11 +1,12 @@
-//! One foreign warnings provider for numeric protocol and member-write tests.
-//! Real PyErr_WarnEx still owns import, lookup, argument construction and call.
+//! One warning-emission hook provider for numeric protocol and member tests.
+//! Public PyErr_WarnEx owns default category, string conversion and borrowed
+//! crossings; this provider observes that exact hook contract without imports.
 
-use molt_cpython_abi::abi_types::{Py_None, PyObject};
-use molt_cpython_abi::api::{errors, numbers, object, refcount, sequences, strings};
+use molt_cpython_abi::abi_types::PyObject;
+use molt_cpython_abi::api::{errors, object, refcount, strings};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
 use std::ptr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,56 +17,34 @@ pub struct Emission {
 }
 
 thread_local! {
-    static MODULE: Cell<usize> = const { Cell::new(0) };
-    static CALLABLE: Cell<usize> = const { Cell::new(0) };
     static EMISSIONS: RefCell<Vec<Emission>> = const { RefCell::new(Vec::new()) };
     static AS_ERROR: Cell<bool> = const { Cell::new(false) };
     static OBSERVER: Cell<Option<fn()>> = const { Cell::new(None) };
     static ERROR_INSTANCE: RefCell<Option<refcount::ProtectedPyObject>> = const { RefCell::new(None) };
 }
 
-pub unsafe extern "C" fn import_module(data: *const u8, len: usize) -> u64 {
-    if unsafe { std::slice::from_raw_parts(data, len) } == b"warnings" {
-        let module = MODULE.with(Cell::get) as *mut PyObject;
-        if !module.is_null() {
-            return unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(module) }.unwrap_or(0);
-        }
+pub unsafe extern "C" fn emit(message: u64, category: u64, stacklevel: i64) -> i32 {
+    let message = unsafe { GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(message) };
+    if message.is_null() {
+        return -1;
     }
-    unsafe {
-        errors::PyErr_SetString(
-            (&raw mut molt_cpython_abi::abi_types::PyExc_ImportError).cast(),
-            c"test module unavailable".as_ptr(),
-        )
-    };
-    0
-}
-
-unsafe extern "C" fn getattr(_object: *mut PyObject, name: *const c_char) -> *mut PyObject {
-    if unsafe { CStr::from_ptr(name) }.to_bytes() == b"warn" {
-        return unsafe { object::Py_NewRef(CALLABLE.with(Cell::get) as *mut PyObject) };
+    let message = unsafe { refcount::OwnedPyObject::from_owned(message) };
+    let category = unsafe { GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(category) };
+    if category.is_null() {
+        return -1;
     }
-    ptr::null_mut()
-}
-
-unsafe extern "C" fn call(
-    _object: *mut PyObject,
-    args: *mut PyObject,
-    _kwargs: *mut PyObject,
-) -> *mut PyObject {
-    let message = unsafe { sequences::PyTuple_GetItem(args, 0) };
-    let text = unsafe { strings::PyUnicode_AsUTF8(message) };
+    let category = unsafe { refcount::OwnedPyObject::from_owned(category) };
+    let text = unsafe { strings::PyUnicode_AsUTF8(message.as_ptr()) };
     if text.is_null() {
-        return ptr::null_mut();
+        return -1;
     }
-    let category = unsafe { sequences::PyTuple_GetItem(args, 1) };
-    let stacklevel = unsafe { numbers::PyLong_AsSsize_t(sequences::PyTuple_GetItem(args, 2)) };
     EMISSIONS.with(|stored| {
         stored.borrow_mut().push(Emission {
             message: unsafe { CStr::from_ptr(text) }
                 .to_string_lossy()
                 .into_owned(),
-            category: category as usize,
-            stacklevel,
+            category: category.as_ptr() as usize,
+            stacklevel: stacklevel as isize,
         });
     });
     if let Some(observer) = OBSERVER.with(Cell::get) {
@@ -79,13 +58,13 @@ unsafe extern "C" fn call(
                 .map_or(ptr::null_mut(), |owner| owner.as_ptr())
         });
         if error.is_null() {
-            unsafe { errors::PyErr_SetString(category, text) };
+            unsafe { errors::PyErr_SetString(category.as_ptr(), text) };
         } else {
             unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
         }
-        ptr::null_mut()
+        -1
     } else {
-        unsafe { object::Py_NewRef(&raw mut Py_None) }
+        0
     }
 }
 
@@ -141,38 +120,15 @@ pub fn with_provider(run: impl FnOnce()) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
-            MODULE.with(|value| value.set(0));
-            CALLABLE.with(|value| value.set(0));
             set_as_error(false);
             set_observer(None);
             unsafe { set_error_instance(ptr::null_mut()) };
         }
     }
-    let mut module_type = super::StaticType::new();
-    module_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
-    module_type.tp_name = c"WarningModule".as_ptr();
-    module_type.tp_getattr = Some(getattr);
-    let mut callable_type = super::StaticType::new();
-    callable_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
-    callable_type.tp_name = c"WarningCallable".as_ptr();
-    callable_type.tp_call = Some(call);
-    let mut module = PyObject {
-        ob_refcnt: 1,
-        ob_type: module_type.as_ptr(),
-    };
-    let mut callable = PyObject {
-        ob_refcnt: 1,
-        ob_type: callable_type.as_ptr(),
-    };
-    MODULE.with(|value| value.set((&raw mut module) as usize));
-    CALLABLE.with(|value| value.set((&raw mut callable) as usize));
     clear();
     set_as_error(false);
     set_observer(None);
     unsafe { set_error_instance(ptr::null_mut()) };
-    let reset = Reset;
+    let _reset = Reset;
     run();
-    drop(reset);
-    assert_eq!(module.ob_refcnt, 1);
-    assert_eq!(callable.ob_refcnt, 1);
 }

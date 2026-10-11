@@ -883,7 +883,10 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
         let zero = zero_owner.as_ptr();
         let other_zero = other_zero_owner.as_ptr();
         assert!(!zero.is_null() && !other_zero.is_null());
-        assert_ne!(zero, other_zero, "equal fresh C floats retain distinct origins");
+        assert_ne!(
+            zero, other_zero,
+            "equal fresh C floats retain distinct origins"
+        );
         let none = &raw mut molt_cpython_abi::abi_types::Py_None;
         let mut zero_identities = Vec::new();
         for receiver in [ptr::null_mut(), none, zero, other_zero] {
@@ -903,7 +906,10 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             } else if receiver == none {
                 Some(MoltObject::none().bits())
             } else {
-                assert_eq!(numeric::PyFloat_AsDouble(receiver).to_bits(), 0.0f64.to_bits());
+                assert_eq!(
+                    numeric::PyFloat_AsDouble(receiver).to_bits(),
+                    0.0f64.to_bits()
+                );
                 let identity = GLOBAL_BRIDGE
                     .molt_handle_for_pyobj(receiver)
                     .expect("C callable receiver acquired a runtime identity")
@@ -945,7 +951,10 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             assert_eq!(runtime, raw);
         }
         assert_eq!(zero_identities.len(), 2);
-        assert_ne!(zero_identities[0], zero_identities[1], "equal values must not merge C origins");
+        assert_ne!(
+            zero_identities[0], zero_identities[1],
+            "equal values must not merge C origins"
+        );
         assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     }
 }
@@ -1910,6 +1919,86 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
         dec_ref_bits(&py, explicit);
         assert!(errors::PyErr_Occurred().is_null());
     });
+}
+
+#[test]
+fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() {
+    use molt_cpython_abi::abi_types::{PyExc_LookupError, PyExc_MemoryError};
+    use molt_cpython_abi::api::{errors, object, refcount};
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    unsafe {
+        let value = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(1234));
+        let (prior_bits, prior, trace) = with_gil(|py| {
+            let prior = crate::builtins::exceptions::alloc_exception(
+                &py,
+                "LookupError",
+                "operation preserves its caller",
+            );
+            assert!(!prior.is_null());
+            let bits = crate::MoltObject::from_ptr(prior).bits();
+            let prior =
+                refcount::OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(bits));
+            let trace_class = crate::obj_from_bits(crate::builtin_classes(&py).traceback)
+                .as_ptr()
+                .unwrap();
+            let trace = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE
+                    .owned_handle_to_pyobj(crate::alloc_instance_for_class(&py, trace_class)),
+            );
+            assert!(!prior.as_ptr().is_null() && !trace.as_ptr().is_null());
+            assert_eq!(
+                errors::PyException_SetTraceback(prior.as_ptr(), trace.as_ptr()),
+                0
+            );
+            (bits, prior, trace)
+        });
+        assert!(!value.as_ptr().is_null());
+        for nested in [false, true] {
+            let _execution = nested.then(RuntimeExecutionGuard::enter);
+            for channel in 0..3 {
+                errors::PyErr_Clear();
+                with_gil(|py| match channel {
+                    0 => crate::record_exception(
+                        &py,
+                        crate::obj_from_bits(prior_bits).as_ptr().unwrap(),
+                    ),
+                    1 => errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr())),
+                    _ => crate::record_memory_error_without_allocation(&py),
+                });
+                assert_eq!(gil_owned_by_current_thread(), nested);
+                let attached = object::runtime_execution_thread_is_attached();
+                refcount::Py_INCREF(value.as_ptr());
+                refcount::Py_DECREF(value.as_ptr());
+                assert_eq!(gil_owned_by_current_thread(), nested);
+                assert_eq!(object::runtime_execution_thread_is_attached(), attached);
+                assert_eq!(
+                    errors::PyErr_Occurred(),
+                    if channel == 2 {
+                        (&raw mut PyExc_MemoryError).cast()
+                    } else {
+                        (&raw mut PyExc_LookupError).cast()
+                    },
+                    "ordinary refcount custody must preserve the caller's raised class"
+                );
+                if channel == 2 {
+                    with_gil(|py| {
+                        assert!(crate::exception_last_bits_noinc(&py).is_none());
+                    });
+                } else {
+                    let raised =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(raised.as_ptr(), prior.as_ptr());
+                    let observed_trace = refcount::OwnedPyObject::from_owned(
+                        errors::PyException_GetTraceback(raised.as_ptr()),
+                    );
+                    assert_eq!(observed_trace.as_ptr(), trace.as_ptr());
+                }
+                errors::PyErr_Clear();
+            }
+        }
+    }
 }
 
 #[test]

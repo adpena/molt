@@ -383,6 +383,12 @@ second native-slot or module-association authority.
 Native embedding must link runtime and ABI into one image. Copying a hook table
 between an ABI DLL and a statically linked runtime does not merge their object
 identity, type singletons, exception state or finalization authority.
+Internal ABI operations acquire ordinary execution custody and preserve the
+caller's thread state and exact raised exception across their final release.
+They do not end an embedding session. `PyGILState_Ensure`/`PyGILState_Release`
+retain their separate nested embedding lifecycle and clean up only state owned
+by that boundary. Both use the canonical runtime execution guard; nested
+operations retain the existing zero-acquire path.
 Managed semantic type queries use the runtime's actual class edge, shared with
 exception projection. Builtin bindings and heap-class projections retain their
 canonical identity; a generic physical carrier is not a second Python class.
@@ -434,6 +440,11 @@ Fallible preparation uses the same saved-state authority with explicit completio
 success restores the incoming state, while failure retains the new error and
 retires the displaced owner. This includes allocation-free runtime emergency
 errors; preparing a C exception projection is not required to preserve them.
+Native warning requests share the runtime emitter used by managed protocols;
+an unloaded Python warnings module is not a reason to import or fail. The
+actual warning category and signed stack level cross the ABI, and cold emission
+constructs the warning before selecting its filter. Constructor and loaded-module
+callback failures retain their selected exception identity.
 Semantic operation temporaries use ordinary reference retirement: native
 `tp_dealloc` callbacks can observe the pending error and must preserve its exact
 identity. Python `__del__` and `tp_finalize` execution retain their explicit

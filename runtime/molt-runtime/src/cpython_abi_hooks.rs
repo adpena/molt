@@ -223,6 +223,16 @@ unsafe extern "C" fn hook_gil_check() -> c_int {
     c_int::from(gil_owned_by_current_thread())
 }
 
+unsafe extern "C" fn hook_operation_enter() -> u64 {
+    RuntimeExecutionGuard::enter().into_encoded_lane()
+}
+
+unsafe extern "C" fn hook_operation_leave(token: u64) {
+    // The internal operation returns its exact custody, without the worker
+    // cleanup required when an embedding PyGILState boundary ends.
+    drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(token) });
+}
+
 unsafe extern "C" fn hook_runtime_is_initialized() -> c_int {
     c_int::from(crate::state::runtime_state::runtime_is_initialized())
 }
@@ -2053,6 +2063,16 @@ unsafe extern "C" fn hook_alloc_module(name_data: *const u8, name_len: usize) ->
             return 0;
         }
         MoltObject::from_ptr(module_ptr).bits()
+    })
+}
+
+unsafe extern "C" fn hook_warning_emit(message: u64, category: u64, stacklevel: i64) -> c_int {
+    with_gil(|py| {
+        if crate::builtins::warnings_ext::emit_warning_object(&py, message, category, stacklevel) {
+            0
+        } else {
+            -1
+        }
     })
 }
 
@@ -5114,11 +5134,14 @@ pub fn register_cpython_hooks() -> bool {
                 gil_release: hook_gil_release,
                 gil_restore: hook_gil_restore,
                 gil_check: hook_gil_check,
+                operation_enter: hook_operation_enter,
+                operation_leave: hook_operation_leave,
                 runtime_is_initialized: hook_runtime_is_initialized,
                 thread_state_drop_enter: hook_thread_state_drop_enter,
                 thread_state_drop_leave: hook_thread_state_drop_leave,
                 attached_runtime_context: hook_attached_runtime_context,
                 pending_call_error: hook_pending_call_error,
+                warning_emit: hook_warning_emit,
                 alloc_str: Some(hook_alloc_str),
                 alloc_bytes: hook_alloc_bytes,
                 alloc_bytearray: hook_alloc_bytearray,

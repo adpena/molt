@@ -596,6 +596,7 @@ struct AnnotationDescriptorState {
     active: std::cell::Cell<bool>,
     drops: std::cell::Cell<usize>,
     dropped_in_callback: std::cell::Cell<bool>,
+    drop_pending: std::cell::Cell<*mut PyObject>,
 }
 
 #[repr(C)]
@@ -610,15 +611,19 @@ unsafe extern "C" fn annotation_descriptor_drop(descriptor: *mut PyObject) {
             std::rc::Rc::from_raw((*descriptor.cast::<AnnotationDescriptorPayload>()).state);
         state.drops.set(state.drops.get() + 1);
         state.dropped_in_callback.set(state.active.get());
+        let pending = molt_cpython_abi::api::errors::PyErr_GetRaisedException();
+        state.drop_pending.set(pending);
         molt_cpython_abi::api::memory::PyObject_Free(descriptor.cast());
         if state.replace && !state.failure.is_null() {
-            // Releasing the callback's last owned edge must retain its exact
-            // pending exception even when native destruction raises another.
+            // A native deallocator must preserve the caller's error itself.
+            // Exercise temporary cleanup failure without making the runtime
+            // silently shield an ordinary semantic reference release.
             molt_cpython_abi::api::errors::PyErr_SetString(
                 (&raw mut PyExc_RuntimeError).cast(),
                 c"annotation descriptor cleanup sentinel".as_ptr(),
             );
         }
+        molt_cpython_abi::api::errors::PyErr_SetRaisedException(pending);
     }
 }
 
@@ -739,6 +744,7 @@ fn native_annotation_reads_bind_owned_descriptors_and_reject_static_types() {
                     active: Cell::new(false),
                     drops: Cell::new(0),
                     dropped_in_callback: Cell::new(false),
+                    drop_pending: Cell::new(ptr::null_mut()),
                 });
                 let descriptor = OwnedPyObject::from_owned(typeobj::PyType_GenericNew(
                     &raw mut *descriptor_type,
@@ -774,6 +780,7 @@ fn native_annotation_reads_bind_owned_descriptors_and_reject_static_types() {
                 }
                 if replace {
                     assert_eq!(state.drops.get(), 1);
+                    assert_eq!(state.drop_pending.get(), state.failure);
                     // The mutation remains visible even if the callback raised.
                     let value = OwnedPyObject::from_owned(typeobj::native_type_attribute_get(
                         heap.as_ptr(),
