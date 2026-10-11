@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tests.process_guard_common import current_thread_only, install_module_view
+from tests.process_guard_common import (
+    install_module_view,
+    install_thread_module_view,
+)
 from tools import guarded_entrypoints
 from tools.memory_guard_core import process_custody
 
@@ -23,18 +26,10 @@ def _install_sentinel_os(monkeypatch, module, **fakes: Any) -> None:
     ``terminate_group`` reads ``os.getpid``. It sends its signals through
     ``memory_guard_core.process_custody``, which reads ``os.getpid``,
     ``os.kill`` and ``os.killpg`` itself, so both modules get the view.
-    Other threads of the pytest process also call the custody module, so
-    each fake answers only this test's thread. A fake for a function this
-    host lacks (``os.killpg`` on Windows) has no real function to fall back
-    to and answers every thread.
+    Other threads also call the custody module, so each fake answers only
+    this test's thread.
     """
-    overrides = {
-        name: fake
-        if (real := getattr(os, name, None)) is None
-        else current_thread_only(fake, real)
-        for name, fake in fakes.items()
-    }
-    install_module_view(monkeypatch, "os", os, module, process_custody, **overrides)
+    install_thread_module_view(monkeypatch, "os", os, module, process_custody, **fakes)
 
 
 def _codex_launched_molt_build_command() -> str:

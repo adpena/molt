@@ -355,6 +355,40 @@ def test_current_thread_only_leaves_other_threads_on_the_original():
     assert sorted(calls) == [("double", "owner"), ("original", "worker")]
 
 
+def test_thread_module_view_scopes_function_fakes_to_the_installing_thread(
+    monkeypatch,
+):
+    import os
+    import sys
+    import threading
+
+    from tests.process_guard_common import install_thread_module_view
+    from tools.memory_guard_core import process_custody, process_model
+
+    real_pid = os.getpid()
+    view = install_thread_module_view(
+        monkeypatch, "os", os, process_custody, process_model, getpid=lambda: 999
+    )
+    platform_view = install_thread_module_view(
+        monkeypatch, "sys", sys, process_model, platform="fake-os"
+    )
+    seen = []
+    worker = threading.Thread(
+        target=lambda: seen.append(
+            (process_custody.os.getpid(), process_model.sys.platform)
+        )
+    )
+    worker.start()
+    worker.join(5)
+
+    assert process_custody.os is view and process_model.os is view
+    assert process_custody.os.getpid() == 999
+    # Another thread reaches the real function; a value fake cannot be scoped.
+    assert seen == [(real_pid, "fake-os")]
+    assert process_model.sys is platform_view
+    assert os.getpid() == real_pid and sys.platform != "fake-os"
+
+
 def test_isolated_python_probe_excludes_concurrent_parent_allocations(tmp_path) -> None:
     from concurrent.futures import ThreadPoolExecutor
     import os
