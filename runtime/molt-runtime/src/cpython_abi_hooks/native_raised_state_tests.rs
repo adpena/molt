@@ -392,11 +392,18 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             0,
         );
         assert!(!code.is_null());
+        // A Python frame always binds its globals and builtins namespaces;
+        // the frame stack takes ownership of all three objects.
+        let [globals, builtins] = [(); 2].map(|()| {
+            let namespace = crate::alloc_dict_with_pairs(py, &[]);
+            assert!(!namespace.is_null());
+            MoltObject::from_ptr(namespace).bits()
+        });
         crate::builtins::frames::frame_stack_push_owned(
             py,
             MoltObject::from_ptr(code).bits(),
-            0,
-            0,
+            globals,
+            builtins,
             0,
         );
         let payload = crate::builtins::frames::frame_stack_trace_payload_bits(py, None, false);
