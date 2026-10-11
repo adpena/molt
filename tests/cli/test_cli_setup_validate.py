@@ -720,15 +720,17 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         fake_run_completed_command,
         raising=True,
     )
-    monkeypatch.setattr(
-        cli.shutil,
-        "which",
-        lambda name: (
+    # Of the modules this test drives, only compiler_metadata looks tools up.
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        COMPILER_METADATA,
+        which=lambda name: (
             f"/usr/bin/{name}"
             if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
             else None
         ),
-        raising=True,
     )
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
@@ -1301,11 +1303,12 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
         "wasm-tools": "wasm-tools",
     }
 
-    monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
-        "which",
-        lambda name: present.get(name),
-        raising=True,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        TOOLCHAIN_VALIDATION,
+        which=lambda name: present.get(name),
     )
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
@@ -1376,11 +1379,12 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
         "wasmtime": "wasmtime",
         "zig": "zig",
     }
-    monkeypatch.setattr(
-        SETUP_READINESS.shutil,
-        "which",
-        lambda name: present.get(name),
-        raising=True,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        SETUP_READINESS,
+        which=lambda name: present.get(name),
     )
     monkeypatch.setattr(
         SETUP_READINESS,
@@ -1450,11 +1454,12 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
         "wasm-tools": "wasm-tools",
         "wasm-pack": "wasm-pack",
     }
-    monkeypatch.setattr(
-        SETUP_READINESS.shutil,
-        "which",
-        lambda name: present.get(name),
-        raising=True,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        SETUP_READINESS,
+        which=lambda name: present.get(name),
     )
     monkeypatch.setattr(
         SETUP_READINESS,
@@ -1508,11 +1513,12 @@ def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
 def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
-        "which",
-        lambda name: "rustup" if name == "rustup" else None,
-        raising=True,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        TOOLCHAIN_VALIDATION,
+        which=lambda name: "rustup" if name == "rustup" else None,
     )
 
     steps, warnings = TOOLCHAIN_VALIDATION._planned_update_steps(
@@ -1682,10 +1688,12 @@ def test_install_wrappers_require_explicit_dependency_setup() -> None:
 
 def test_update_provisions_managed_validator_even_with_ambient_tool(monkeypatch):
     monkeypatch.setattr(TOOLCHAIN_VALIDATION, "pinned_executable", lambda *_a: None)
-    monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
-        "which",
-        lambda name: name if name == "wasm-tools" else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        TOOLCHAIN_VALIDATION,
+        which=lambda name: name if name == "wasm-tools" else None,
     )
     steps, _ = TOOLCHAIN_VALIDATION._planned_update_steps(
         ROOT,
