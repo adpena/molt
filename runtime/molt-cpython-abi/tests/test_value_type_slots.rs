@@ -31,7 +31,7 @@ use molt_cpython_abi::api::typeobj::{PyObject_Hash, PyObject_RichCompareBool};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::os::raw::c_int;
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 const PY_LT: c_int = 0;
 const PY_EQ: c_int = 2;
@@ -193,6 +193,53 @@ unsafe extern "C" fn fixture_builtin_compare(
     }
 }
 
+// The numeric declaring slots require real managed builtin class owners, as
+// register_cpython_hooks supplies. Other binaries use native FOREIGN classes;
+// this binary must bind its three declaring owners before the shared Classes
+// table acquires any native references to those same physical types.
+struct DeclaringClassBinding {
+    pointer: *mut PyObject,
+    bits: u64,
+    rollback: bool,
+}
+impl DeclaringClassBinding {
+    unsafe fn new(pointer: *mut PyTypeObject) -> Self {
+        let mut binding = Self {
+            pointer: pointer.cast(),
+            bits: support::fake_runtime::managed_type_handle(),
+            rollback: false,
+        };
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                binding.pointer,
+                binding.bits,
+                true,
+            )
+        }
+        .expect("bind genuine managed declaring class before native class population");
+        binding.rollback = true;
+        binding
+    }
+
+    fn transfer_to_class_table(mut self) {
+        // The existing process-lifetime Classes table has acquired its root;
+        // Drop releases only our setup reference, leaving its binding intact.
+        assert_eq!(unsafe { support::fake_runtime::ref_count(self.bits) }, 2);
+        self.rollback = false;
+    }
+}
+impl Drop for DeclaringClassBinding {
+    fn drop(&mut self) {
+        if self.rollback {
+            assert!(unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .unbind_static_pyobj_from_runtime_handle(self.pointer, self.bits)
+            });
+        }
+        unsafe { support::fake_runtime::dec_ref(self.bits) };
+    }
+}
+
 fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire_numeric(&mut hooks);
@@ -204,7 +251,23 @@ fn install() -> support::AbiTestThreadStateTransaction {
     hooks.complex_parts = support::fake_complex::parts;
     hooks.str_data = fx_str_data;
     hooks.bytes_data = fx_bytes_data;
-    support::enter_runtime_class_abi_test(hooks)
+    support::fake_runtime::wire_class_identity(&mut hooks);
+    let transaction = support::enter_abi_test(hooks);
+    static DECLARING_CLASSES: Once = Once::new();
+    DECLARING_CLASSES.call_once(|| {
+        let bindings = unsafe {
+            [
+                DeclaringClassBinding::new(&raw mut PyLong_Type),
+                DeclaringClassBinding::new(&raw mut PyFloat_Type),
+                DeclaringClassBinding::new(&raw mut PyComplex_Type),
+            ]
+        };
+        support::fake_runtime::prepare_class_bindings();
+        for binding in bindings {
+            binding.transfer_to_class_table();
+        }
+    });
+    transaction
 }
 
 // ── minting molt-native operands ───────────────────────────────────────────
