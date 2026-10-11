@@ -940,17 +940,16 @@ def test_terminal_publication_pins_custody_against_postcheck_transfer(
         assert file_locks._file_lock_is_owned(handle)
         return original(*args)
 
-    sweep = scratch.reclaim_terminal_scratch
+    remove = scratch._remove_reclaimed_generation
 
-    def sweep_after_transfer(*args, **kwargs):
-        # The finisher's sweep competes for the released lock. Order it after
-        # the transfer so the contender's lock is deterministic; a sweep that
-        # finds the generation busy defers its receipt removal.
+    def remove_after_transfer(generation):
+        # The finisher removes its reclaimed receipts once its lock is free.
+        # Order that after the transfer so the contender's lock is certain.
         assert transferred.wait(5)
-        return sweep(*args, **kwargs)
+        return remove(generation)
 
     monkeypatch.setattr(scratch, "_publish_index", publish)
-    monkeypatch.setattr(scratch, "reclaim_terminal_scratch", sweep_after_transfer)
+    monkeypatch.setattr(scratch, "_remove_reclaimed_generation", remove_after_transfer)
     thread = threading.Thread(target=transfer)
     thread.start()
     try:
@@ -960,9 +959,16 @@ def test_terminal_publication_pins_custody_against_postcheck_transfer(
         assert contender[0] is not None
         assert not file_locks._file_lock_is_owned(handle)
         assert file_locks._file_lock_is_owned(contender[0])
-        assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
-        assert result["retention"]["protected_count"] == 1
-        assert scratch._index_path(lease.generation).is_file()
+        if os.name == "nt":
+            # Windows cannot move a directory while its lock file is open:
+            # the removal waits for the next sweep, which keeps the index.
+            assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+            assert result["retention"]["deferred"]
+            assert scratch._index_path(lease.generation).is_file()
+        else:
+            # Reclaimed is final, so the held lock does not keep the receipts.
+            assert not lease.generation.exists()
+            assert not scratch._index_path(lease.generation).exists()
     finally:
         reached.set()
         thread.join(5)
@@ -1250,16 +1256,14 @@ def test_receipt_removal_that_cannot_move_now_is_deferred_and_retried(
 ):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)
-    move = scratch.durable_namespace_publish_directory_exclusive
+    move = scratch.namespace_move_exclusive
 
     def contended(source, destination):
         if source == lease.generation:
             raise PermissionError("fixture: a contender holds the generation lock")
         return move(source, destination)
 
-    monkeypatch.setattr(
-        scratch, "durable_namespace_publish_directory_exclusive", contended
-    )
+    monkeypatch.setattr(scratch, "namespace_move_exclusive", contended)
     first = scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
@@ -1267,8 +1271,46 @@ def test_receipt_removal_that_cannot_move_now_is_deferred_and_retried(
     assert first["deferred"] and "contender" in first["deferred"][0]
     assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
     assert scratch._index_path(lease.generation).exists()
-    monkeypatch.setattr(scratch, "durable_namespace_publish_directory_exclusive", move)
+    monkeypatch.setattr(scratch, "namespace_move_exclusive", move)
     second = scratch.reclaim_terminal_scratch(lease.generation.parent)
     assert second["errors"] == [] and second["deferred"] == []
     assert not lease.generation.exists()
     assert not scratch._index_path(lease.generation).exists()
+
+
+def test_success_path_custody_bookkeeping_issues_no_fsync(tmp_path, monkeypatch):
+    """Receipts whose loss a crash cannot turn into lost custody stay cheap.
+
+    Hosted Linux disks pay milliseconds per fsync on every guarded launch.
+    """
+    fsyncs = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: fsyncs.append(fd) or real_fsync(fd))
+    lease, env = _lease(tmp_path)
+    allocation = len(fsyncs)
+    receipt = lease.target / ".molt-scratch-target.json"
+    fsyncs.clear()
+    scratch._write_target_receipt(tmp_path, "0" * 32)
+    assert fsyncs == []
+    assert allocation > 0  # The owner record itself stays durable.
+    finished = len(fsyncs)
+    result = _finish(lease)
+    assert result["state"] == "reclaimed" and not lease.generation.exists()
+    durable_finish = len(fsyncs) - finished
+    # Removing the reclaimed receipts adds nothing to the durable finish.
+    remove = scratch._remove_reclaimed_generation
+    counted = []
+
+    def counted_remove(generation):
+        before = len(fsyncs)
+        try:
+            return remove(generation)
+        finally:
+            counted.append(len(fsyncs) - before)
+
+    monkeypatch.setattr(scratch, "_remove_reclaimed_generation", counted_remove)
+    second, _ = _lease(tmp_path, 2)
+    _finish(second)
+    assert counted == [0]
+    assert durable_finish > 0
+    assert receipt.exists() is False
