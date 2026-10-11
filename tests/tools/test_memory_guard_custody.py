@@ -1200,3 +1200,35 @@ def test_a_real_orphaned_group_protects_until_its_last_member_exits(tmp_path):
     assert report.terminalized == 1 and report.retired == 1
     receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
     assert group in receipt["empty_process_groups"]
+
+
+def test_retirement_issues_no_fsync(tmp_path, monkeypatch):
+    """A crash that rolls the move back leaves a terminal record to retire again."""
+    active = _active(tmp_path)
+    marker = _marker(active, status="completed")
+    fsyncs = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: fsyncs.append(fd) or real_fsync(fd))
+    assert custody.retire_active_guard_marker(marker, _payload(marker)["token"])
+    assert fsyncs == []
+    assert not marker.exists()
+
+
+def test_exit_sweep_gate_grows_with_the_records_that_stay(tmp_path, monkeypatch):
+    monkeypatch.setattr(custody, "AUTO_SWEEP_GROWTH", 2)
+    active = _active(tmp_path)
+    own = _sample(os.getpid(), 1)
+    live = [own]
+    for pid in range(10, 30):
+        _marker(active, pid=pid)
+        live.append(_sample(pid, 100))
+    # 20 live records: the first sweep leaves all 20.
+    assert custody.sweep_active_guard_markers(active, _snapshot(*live)).remaining == 20
+    # The next sweep waits for more than 2 * 20 + 2 records, not 20 + 2.
+    for pid in range(30, 52):
+        _marker(active, pid=pid)
+        live.append(_sample(pid, 100))
+    assert custody.sweep_active_guard_markers(active, _snapshot(*live)) is None
+    _marker(active, pid=52)
+    live.append(_sample(52, 100))
+    assert custody.sweep_active_guard_markers(active, _snapshot(*live)).remaining == 43

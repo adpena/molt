@@ -610,7 +610,11 @@ after the generation lock is released, the generation moves into `gs/removing/`
 and is deleted, and only then is its index dropped. The generation namespace
 holds only live, retained, blocked and unresolved work. If the move cannot run
 now (Windows refuses while a contender holds the lock file), the index stays and
-the next sweep removes it; the sweep reports it under `deferred`. Guard summaries
+the next sweep removes it; the sweep reports it under `deferred`. The move and
+the deletion carry no durability barrier: a crash can only roll the move back,
+and a reclaimed generation with its index is removed again. The finisher
+removes its own reclaimed generation directly, and the target receipt is
+written without an fsync, because its loss only blocks adoption. Guard summaries
 keep the outcome and closure evidence. Guard summaries and command
 profiles expose outcome, evidence path and finalization time; elapsed command
 time includes cleanup. `child_returncode` records the actual child result;
