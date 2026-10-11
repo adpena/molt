@@ -480,7 +480,12 @@ def plan(
                 )
             )
             continue
-        located = replace(base, paths=(*(entry.path for entry in files), *scratch))
+        # Directory listing order differs by platform; the claim records one
+        # canonical order so reports and receipts are deterministic.
+        located = replace(
+            base,
+            paths=tuple(sorted((*(entry.path for entry in files), *scratch))),
+        )
         if disposition:
             classified.append(
                 replace(
