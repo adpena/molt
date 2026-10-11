@@ -37,7 +37,10 @@ from molt.python_native_dependency_custody import (
     _native_dependency_closure,
 )
 from molt.python_environment_location import python_startup_configuration_paths
-from molt.python_native_locations import _loader_name, _native_contract_valid
+from molt.python_native_locations import (
+    _native_contract_valid,
+    native_census_disagreement,
+)
 
 PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
@@ -381,22 +384,6 @@ def _runtime_import_candidates(
     return directories, archives
 
 
-def _native_name_bindings(
-    census: Mapping[str, object], system: str
-) -> dict[str, tuple[str, ...]]:
-    """Loader name to the image paths one census binds it to."""
-
-    bindings: dict[str, set[str]] = {}
-    paths = census.get("paths")
-    for path in paths if isinstance(paths, list) else ():
-        name = _loader_name(Path(str(path)).name, system)
-        bindings.setdefault(name, set()).add(str(path))
-    aliases = census.get("aliases")
-    for name, path in aliases.items() if isinstance(aliases, Mapping) else ():
-        bindings.setdefault(_loader_name(str(name), system), set()).add(str(path))
-    return {name: tuple(sorted(found)) for name, found in bindings.items()}
-
-
 def startup_selection_difference(
     before: Mapping[str, object],
     after: Mapping[str, object],
@@ -423,52 +410,15 @@ def startup_selection_difference(
     old, new = before.get("native"), after.get("native")
     if not isinstance(old, Mapping) or not isinstance(new, Mapping):
         return changes + (["native"] if old != new else [])
-    if old.get("executable") != new.get("executable"):
-        changes.append("native executable")
     platform_payload = before.get("platform")
     system = (
         str(platform_payload.get("operating_system", ""))
         if isinstance(platform_payload, Mapping)
         else ""
     )
-    old_names = _native_name_bindings(old, system)
-    new_names = _native_name_bindings(new, system)
-    moved = sorted(
-        name
-        for name in old_names.keys() & new_names.keys()
-        if old_names[name] != new_names[name]
+    return changes + native_census_disagreement(
+        old, new, operating_system=system, admit_new_images=admit_new_images
     )
-    changes += [
-        f"native image {name}: {', '.join(old_names[name])} -> "
-        f"{', '.join(new_names[name])}"
-        for name in moved[:4]
-    ]
-    if len(moved) > 4:
-        changes.append(f"{len(moved) - 4} more native images moved")
-    if not admit_new_images:
-        gained = sorted(new_names.keys() - old_names.keys())
-        changes += [
-            f"native image {name} gained: {', '.join(new_names[name])}"
-            for name in gained[:4]
-        ]
-        if len(gained) > 4:
-            changes.append(f"{len(gained) - 4} more native images gained")
-
-    def identities(census: Mapping[str, object]) -> dict[str, object]:
-        rows = census.get("macho_identities")
-        return {
-            str(row[0]): row[1]
-            for row in (rows if isinstance(rows, list) else ())
-            if isinstance(row, list) and len(row) == 2
-        }
-
-    old_ids, new_ids = identities(old), identities(new)
-    changes += [
-        f"native image identity {path}"
-        for path in sorted(old_ids.keys() & new_ids.keys())
-        if old_ids[path] != new_ids[path]
-    ]
-    return changes
 
 
 def current_python_runtime_selection() -> dict[str, object]:
