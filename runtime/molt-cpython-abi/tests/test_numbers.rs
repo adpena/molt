@@ -344,7 +344,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     hooks.number_binary_op = capture_binary;
     hooks.number_unary_op = protocol_unary;
     hooks.target_python_minor = numeric_target_minor;
-    hooks.import_module = support::warnings::import_module;
+    hooks.warning_emit = support::warnings::emit;
     hooks.numeric_identity_new = Some(counted_numeric_identity_new);
     hooks.int_from_bytes = counted_int_from_bytes;
     hooks.runtime_class_borrowed = Some(protocol_runtime_class);
@@ -2945,5 +2945,29 @@ fn test_complex_subtype_result_warning_and_failure_preserve_owners() {
         SLOT_RESULT.with(|value| value.set(0));
         molt_cpython_abi::api::refcount::Py_CLEAR(&raw mut class.tp_dict);
         assert_eq!(callable.ob_refcnt, 1);
+    });
+}
+
+#[test]
+fn public_warning_hook_preserves_default_category_and_signed_stacklevel() {
+    let _state = init();
+    support::warnings::with_provider(|| unsafe {
+        assert_eq!(
+            molt_cpython_abi::api::errors::PyErr_WarnEx(
+                std::ptr::null_mut(),
+                c"native default warning".as_ptr(),
+                -3,
+            ),
+            0
+        );
+        assert_eq!(
+            support::warnings::emissions(),
+            vec![support::warnings::Emission {
+                message: "native default warning".into(),
+                category: (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeWarning) as usize,
+                stacklevel: -3,
+            }]
+        );
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     });
 }

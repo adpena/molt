@@ -595,6 +595,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_release: fake_gil_release,
     gil_restore: fake_gil_restore,
     gil_check: fake_gil_check,
+    operation_enter: support::operation_enter,
+    operation_leave: support::operation_leave,
     runtime_is_initialized: fake_runtime_is_initialized,
     thread_state_drop_enter: fake_thread_state_drop_enter,
     thread_state_drop_leave: fake_thread_state_drop_leave,

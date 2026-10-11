@@ -1192,15 +1192,25 @@ mod tests {
                     for callable_admission in [true, false] {
                         if emergency {
                             // The allocation-free error is a real raised class
-                            // without a heap value or a C triple. Failed
-                            // projection/propagation must preserve it exactly.
+                            // without a heap value or a C triple. Structural
+                            // inquiries preserve it even if projection fails.
                             crate::record_memory_error_without_allocation(py);
+                            assert!(is_real_subtype(py, class_bits, builtins.object));
+                            assert!(is_real_instance(py, bits, builtins.object));
+                            assert!(!is_real_subtype(py, class_bits, owner));
+                            assert!(!is_real_instance(py, bits, owner));
                             assert_eq!(
                                 pending_exception_class(py),
                                 PendingExceptionClass::EmergencyMemoryError
                             );
                             assert!(crate::exception_last_bits_noinc(py).is_none());
+                            observe_class((&raw mut PyExc_MemoryError).cast());
                         }
+                        // Admission is fallible preparation, not an inquiry.
+                        // Its new projection error replaces an incoming error,
+                        // including an allocation-free MemoryError. Preserve
+                        // that failure instead of manufacturing a receiver
+                        // TypeError or restoring the displaced prior error.
                         if callable_admission {
                             assert!(
                                 native_descriptor_receiver(
@@ -1218,25 +1228,15 @@ mod tests {
                         }
                         assert_eq!(
                             pending_exception_class(py),
-                            if emergency {
-                                PendingExceptionClass::EmergencyMemoryError
-                            } else {
-                                // A foreign projection failure retains its native
-                                // exception identity in the runtime pending slot.
-                                PendingExceptionClass::NativeClass(&raw mut PyExc_SystemError)
-                            },
+                            PendingExceptionClass::NativeClass(&raw mut PyExc_SystemError),
                             "projection failure must retain its class, not become a receiver TypeError"
                         );
-                        observe_class(if emergency {
-                            (&raw mut PyExc_MemoryError).cast()
-                        } else {
-                            (&raw mut PyExc_SystemError).cast()
-                        });
+                        observe_class((&raw mut PyExc_SystemError).cast());
                         assert!(
                             errors::take_current_error().is_none(),
                             "admission leaves the failure in the runtime channel"
                         );
-                        assert_eq!(crate::exception_last_bits_noinc(py).is_none(), emergency);
+                        assert!(crate::exception_last_bits_noinc(py).is_some());
                         errors::PyErr_Clear();
                         assert!(!exception_pending(py));
                         assert_eq!(pending_exception_class(py), PendingExceptionClass::None);

@@ -467,12 +467,14 @@ fn memoryview_snapshot_rejects_null_outputs_and_clears_terminal_geometry() {
         refcount::Py_DECREF(view);
     });
 }
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 static EXPORT_RELEASES: AtomicUsize = AtomicUsize::new(0);
 static EXPORT_FREES: AtomicUsize = AtomicUsize::new(0);
 static SLICE_CALLBACK_PARENT: AtomicU64 = AtomicU64::new(0);
 static SLICE_CALLBACK_FAILURE: AtomicUsize = AtomicUsize::new(0);
-static EXPORT_RELEASE_ERROR: AtomicUsize = AtomicUsize::new(0);
+// Borrowed observations: the raised slot/test owns the exception throughout.
+static EXPORT_RELEASE_OBSERVED_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static SLICE_CALLBACK_ERROR_BITS: AtomicU64 = AtomicU64::new(0);
 
 #[repr(C)]
 struct Exporter {
@@ -496,13 +498,11 @@ unsafe extern "C" fn exporter_get(object: *mut PyObject, view: *mut Py_buffer, f
 }
 unsafe extern "C" fn exporter_release(_object: *mut PyObject, _view: *mut Py_buffer) {
     EXPORT_RELEASES.fetch_add(1, Ordering::SeqCst);
-    if EXPORT_RELEASE_ERROR.load(Ordering::SeqCst) != 0 {
-        unsafe {
-            errors::PyErr_SetString(
-                (&raw mut PyExc_RuntimeError).cast(),
-                c"exporter release error".as_ptr(),
-            )
-        };
+    unsafe {
+        // A lawful native releaser observes and restores the exact raised owner.
+        let error = errors::PyErr_GetRaisedException();
+        EXPORT_RELEASE_OBSERVED_ERROR.store(error, Ordering::SeqCst);
+        errors::PyErr_SetRaisedException(error);
     }
 }
 
@@ -518,7 +518,12 @@ extern "C" fn release_native_slice_parent(_self: u64) -> u64 {
         assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 0);
         assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 0);
         if SLICE_CALLBACK_FAILURE.load(Ordering::SeqCst) != 0 {
-            return crate::raise_exception(py, "LookupError", "native slice callback");
+            let result = crate::raise_exception(py, "LookupError", "native slice callback");
+            SLICE_CALLBACK_ERROR_BITS.store(
+                crate::exception_last_bits_noinc(py).unwrap_or(0),
+                Ordering::SeqCst,
+            );
+            return result;
         }
         crate::MoltObject::from_int(0).bits()
     })
@@ -688,7 +693,8 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
         {
             EXPORT_RELEASES.store(0, Ordering::SeqCst);
             EXPORT_FREES.store(0, Ordering::SeqCst);
-            EXPORT_RELEASE_ERROR.store(0, Ordering::SeqCst);
+            EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            SLICE_CALLBACK_ERROR_BITS.store(0, Ordering::SeqCst);
             let exporter = typeobj::PyType_GenericAlloc(&raw mut *class, 0);
             assert!(!exporter.is_null());
             (*exporter.cast::<Exporter>()).data = *b"ABC";
@@ -777,7 +783,6 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                 5..=7 => {
                     SLICE_CALLBACK_PARENT.store(source, Ordering::SeqCst);
                     SLICE_CALLBACK_FAILURE.store(usize::from(path >= 6), Ordering::SeqCst);
-                    EXPORT_RELEASE_ERROR.store(usize::from(path >= 6), Ordering::SeqCst);
                     let index = native_slice_index(&py);
                     let result = crate::object::ops_builtins::molt_slice(source, index, two);
                     crate::dec_ref_bits(&py, index);
@@ -788,7 +793,11 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
             };
             if path >= 6 {
                 assert!(crate::exception_pending(&py));
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error_owner = crate::builtins::exceptions::ExceptionValue::adopt(
+                    &py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                let error = error_owner.bits();
                 assert!(crate::builtins::exceptions::exception_matches_builtin_name(
                     &py,
                     error,
@@ -801,11 +810,20 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                     ),
                     "native slice callback"
                 );
+                assert_eq!(error, SLICE_CALLBACK_ERROR_BITS.load(Ordering::SeqCst));
+                let raised =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!raised.as_ptr().is_null());
+                assert_eq!(
+                    raised.as_ptr(),
+                    EXPORT_RELEASE_OBSERVED_ERROR.load(Ordering::SeqCst)
+                );
                 crate::clear_exception(&py);
-                crate::dec_ref_bits(&py, error);
+                drop(error_owner);
                 assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
                 assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
-                EXPORT_RELEASE_ERROR.store(0, Ordering::SeqCst);
+                EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                SLICE_CALLBACK_ERROR_BITS.store(0, Ordering::SeqCst);
                 crate::dec_ref_bits(&py, source);
                 refcount::Py_XDECREF(native_view);
                 assert!(errors::PyErr_Occurred().is_null());
@@ -837,11 +855,12 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
         }
 
         // Assignment releases its acquired source on both success and callback
-        // failure. A hostile native releaser must replace neither outcome.
+        // failure. A lawful native releaser observes and restores either outcome.
         for failure in [false, true] {
             EXPORT_RELEASES.store(0, Ordering::SeqCst);
             EXPORT_FREES.store(0, Ordering::SeqCst);
-            EXPORT_RELEASE_ERROR.store(1, Ordering::SeqCst);
+            EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            SLICE_CALLBACK_ERROR_BITS.store(0, Ordering::SeqCst);
             SLICE_CALLBACK_PARENT.store(0, Ordering::SeqCst);
             SLICE_CALLBACK_FAILURE.store(usize::from(failure), Ordering::SeqCst);
             let exporter = typeobj::PyType_GenericAlloc(&raw mut *class, 0);
@@ -865,7 +884,11 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
             crate::molt_store_index(destination, key, source);
             assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
             if failure {
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error_owner = crate::builtins::exceptions::ExceptionValue::adopt(
+                    &py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                let error = error_owner.bits();
                 assert!(crate::builtins::exceptions::exception_matches_builtin_name(
                     &py,
                     error,
@@ -878,10 +901,23 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                     ),
                     "native slice callback"
                 );
+                assert_eq!(error, SLICE_CALLBACK_ERROR_BITS.load(Ordering::SeqCst));
+                let raised =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!raised.as_ptr().is_null());
+                assert_eq!(
+                    raised.as_ptr(),
+                    EXPORT_RELEASE_OBSERVED_ERROR.load(Ordering::SeqCst)
+                );
                 crate::clear_exception(&py);
-                crate::dec_ref_bits(&py, error);
+                drop(error_owner);
             } else {
                 assert!(!crate::exception_pending(&py));
+                assert!(
+                    EXPORT_RELEASE_OBSERVED_ERROR
+                        .load(Ordering::SeqCst)
+                        .is_null()
+                );
             }
             assert_eq!(
                 crate::object::memoryview::bytes_like_slice_raw(owner).unwrap(),
@@ -896,7 +932,8 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
             assert!(!crate::exception_pending(&py));
         }
         SLICE_CALLBACK_FAILURE.store(0, Ordering::SeqCst);
-        EXPORT_RELEASE_ERROR.store(0, Ordering::SeqCst);
+        EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+        SLICE_CALLBACK_ERROR_BITS.store(0, Ordering::SeqCst);
     });
 }
 

@@ -1,5 +1,6 @@
 use std::sync::{LazyLock, Mutex};
 
+use crate::builtins::exceptions::ExceptionValue;
 use crate::*;
 
 // ─── Warning filter and registry types ──────────────────────────────────────
@@ -221,17 +222,82 @@ fn should_suppress(action: &str, message: &str, category: &str, lineno: i64) -> 
 
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
-/// One filter/emission authority for native warnings and warning intrinsics.
-/// No Python callback executes while the warnings-state mutex is held.
+fn warning_category_bits(py: &PyToken<'_>, bits: u64) -> u64 {
+    if obj_from_bits(bits).is_none() {
+        return crate::builtins::exceptions::exception_type_bits_from_name(py, "UserWarning");
+    }
+    // Preserve the intrinsic's existing category-name input while actual
+    // category objects retain their identity all the way to construction.
+    if let Some(name) = string_from_bits(py, bits) {
+        return crate::builtins::exceptions::exception_type_bits_from_name(py, &name);
+    }
+    bits
+}
+
+fn warning_category_name(py: &PyToken<'_>, category: u64) -> Option<String> {
+    let ptr = obj_from_bits(category).as_ptr()?;
+    match unsafe { object_type_id(ptr) } {
+        TYPE_ID_TYPE => Some(class_name_for_error(category)),
+        TYPE_ID_FOREIGN => {
+            // Read canonical type metadata, not metaclass __getattribute__.
+            // Filter classification must not add a Python callback.
+            use crate::object::foreign::{NativeObjectOwner, foreign_ptr_from_obj};
+            use molt_cpython_abi::api::{strings, typeobj};
+            let native = std::ptr::with_exposed_provenance_mut::<
+                molt_cpython_abi::abi_types::PyObject,
+            >(unsafe { foreign_ptr_from_obj(ptr) });
+            if unsafe { typeobj::PyType_Check(native) } == 0 {
+                return None;
+            }
+            let name = unsafe { typeobj::PyType_GetName(native.cast()) };
+            if name.is_null() {
+                crate::cpython_abi_hooks::transfer_pending_cpython_exception();
+                return None;
+            }
+            let name = unsafe { NativeObjectOwner::from_owned(name) };
+            let text = unsafe { strings::PyUnicode_AsUTF8(name.as_ptr()) };
+            let result = if text.is_null() {
+                None
+            } else {
+                Some(
+                    unsafe { std::ffi::CStr::from_ptr(text) }
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            };
+            drop(name);
+            if exception_pending(py) { None } else { result }
+        }
+        _ => None,
+    }
+}
+
+/// Shared filter/emission authority; no callback runs with the state mutex held.
 fn emit_warning(
     py: &PyToken<'_>,
-    message: &str,
-    category: &str,
+    message_bits: u64,
+    category_bits: u64,
     module: &str,
     filename: &str,
     lineno: i64,
 ) -> bool {
-    let action = action_for(message, category, module, lineno);
+    let category_bits = warning_category_bits(py, category_bits);
+    // CPython normalizes the warning instance before selecting a filter, even
+    // for ignore. Constructor callbacks may mutate the live warning policy.
+    let warning = ExceptionValue::adopt(py, unsafe {
+        call_callable1(py, category_bits, message_bits)
+    });
+    if exception_pending(py) {
+        return false;
+    }
+    let message = string_from_bits_or(py, message_bits, "");
+    let Some(category) = warning_category_name(py, category_bits) else {
+        if !exception_pending(py) {
+            raise_exception::<()>(py, "TypeError", "warning category __name__ must be str");
+        }
+        return false;
+    };
+    let action = action_for(&message, &category, module, lineno);
     if !is_valid_action(&action) {
         raise_exception::<()>(
             py,
@@ -241,60 +307,71 @@ fn emit_warning(
         return false;
     }
     if action == "error" {
-        raise_exception::<()>(py, category, message);
+        molt_raise(warning.bits());
         return false;
     }
-    if !should_suppress(&action, message, category, lineno) {
+    if !should_suppress(&action, &message, &category, lineno) {
         eprintln!("{filename}:{lineno}: {category}: {message}");
     }
-    true
+    drop(warning);
+    !exception_pending(py)
 }
 
-/// Runtime warnings use the active public warnings module when loaded so
-/// record/custom-display hooks observe them. Before that module is loaded, the
-/// same intrinsic filter/emission authority applies; there is no private cache.
-/// False means a pending warning/callback exception which callers must preserve.
+/// Runtime warnings share one filter/emission authority with warning intrinsics.
 pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool {
     emit_runtime_warning(py, message, "DeprecationWarning")
 }
 
 pub(crate) fn emit_runtime_warning(py: &PyToken<'_>, message: &str, category: &str) -> bool {
+    let category = crate::builtins::exceptions::exception_type_bits_from_name(py, category);
+    if category == 0 || exception_pending(py) {
+        return false;
+    }
+    let message = ExceptionValue::adopt(py, alloc_string_result(py, message));
+    if exception_pending(py) {
+        return false;
+    }
+    emit_warning_object(py, message.bits(), category, 1)
+}
+
+/// Borrowed message/category emission used by the public C API and managed
+/// protocols. A loaded public module keeps its capture/display callbacks;
+/// absence uses the same intrinsic engine, without initiating an import.
+pub(crate) fn emit_warning_object(
+    py: &PyToken<'_>,
+    message: u64,
+    category: u64,
+    stacklevel: i64,
+) -> bool {
     let Some(name) = attr_name_bits_from_bytes(py, b"warnings") else {
         return false;
     };
-    let module = molt_module_cache_get(name);
-    dec_ref_bits(py, name);
+    let name = ExceptionValue::adopt(py, name);
+    let module = ExceptionValue::adopt(py, molt_module_cache_get(name.bits()));
     if exception_pending(py) {
-        dec_ref_bits(py, module);
         return false;
     }
-    if obj_from_bits(module).is_none() {
+    if obj_from_bits(module.bits()).is_none() {
         return emit_warning(py, message, category, "__main__", "<string>", 1);
     }
     let Some(name) = attr_name_bits_from_bytes(py, b"warn") else {
-        dec_ref_bits(py, module);
         return false;
     };
-    let warn = molt_get_attr_name(module, name);
-    dec_ref_bits(py, name);
+    let name = ExceptionValue::adopt(py, name);
+    let warn = ExceptionValue::adopt(py, molt_get_attr_name(module.bits(), name.bits()));
     if exception_pending(py) {
-        dec_ref_bits(py, warn);
-        dec_ref_bits(py, module);
         return false;
     }
-    let category = crate::builtins::exceptions::exception_type_bits_from_name(py, category);
-    let message = alloc_string_result(py, message);
-    if exception_pending(py) || category == 0 {
-        dec_ref_bits(py, message);
-        dec_ref_bits(py, warn);
-        dec_ref_bits(py, module);
+    let stacklevel = ExceptionValue::adopt(py, int_bits_from_i64(py, stacklevel));
+    if exception_pending(py) {
         return false;
     }
-    let result =
-        unsafe { call_callable3(py, warn, message, category, MoltObject::from_int(1).bits()) };
-    for bits in [result, message, warn, module] {
-        dec_ref_bits(py, bits);
-    }
+    let result = ExceptionValue::adopt(py, unsafe {
+        call_callable3(py, warn.bits(), message, category, stacklevel.bits())
+    });
+    drop(result);
+    drop(warn);
+    drop(module);
     !exception_pending(py)
 }
 
@@ -305,11 +382,8 @@ pub extern "C" fn molt_warnings_warn(
     stacklevel_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let message = string_from_bits_or(_py, message_bits, "");
-        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let _stacklevel = i64_from_bits_default(stacklevel_bits, 1);
-
-        emit_warning(_py, &message, &category, "__main__", "<string>", 1);
+        emit_warning(_py, message_bits, category_bits, "__main__", "<string>", 1);
 
         MoltObject::none().bits()
     })
@@ -339,13 +413,11 @@ pub extern "C" fn molt_warnings_warn_explicit(
     _module_globals_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let message = string_from_bits_or(_py, message_bits, "");
-        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
         let lineno = i64_from_bits_default(lineno_bits, 1);
         let module = string_from_bits_or(_py, module_bits, "__main__");
 
-        emit_warning(_py, &message, &category, &module, &filename, lineno);
+        emit_warning(_py, message_bits, category_bits, &module, &filename, lineno);
 
         MoltObject::none().bits()
     })
@@ -622,4 +694,253 @@ pub extern "C" fn molt_warnings_filters_get() -> u64 {
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use molt_cpython_abi::abi_types::{
+        PyExc_DeprecationWarning, PyExc_RuntimeWarning, PyExc_Warning,
+    };
+    use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static OBSERVED: RefCell<Option<(String, u64, i64)>> = const { RefCell::new(None) };
+        static CALLBACK_ERROR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    extern "C" fn capture_warning(message: u64, category: u64, stacklevel: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            OBSERVED.with(|value| {
+                *value.borrow_mut() = Some((
+                    string_from_bits(py, message).unwrap(),
+                    category,
+                    to_i64(obj_from_bits(stacklevel)).unwrap(),
+                ))
+            });
+            let error = CALLBACK_ERROR.with(std::cell::Cell::get);
+            if error != 0 {
+                return molt_raise(error);
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    extern "C" fn warning_init_changes_filter(_receiver: u64, _message: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            set_action(py, b"error");
+            MoltObject::none().bits()
+        })
+    }
+
+    struct ResetWarnings;
+    impl Drop for ResetWarnings {
+        fn drop(&mut self) {
+            CALLBACK_ERROR.with(|value| value.set(0));
+            OBSERVED.with(|value| *value.borrow_mut() = None);
+            crate::with_gil_entry_nopanic!(py, {
+                unsafe { errors::PyErr_Clear() };
+                clear_exception(py);
+                molt_warnings_resetwarnings();
+                if let Some(name) = attr_name_bits_from_bytes(py, b"warnings") {
+                    let result = crate::builtins::modules::molt_module_cache_del(name);
+                    dec_ref_bits(py, result);
+                    dec_ref_bits(py, name);
+                }
+            });
+        }
+    }
+
+    fn set_action(py: &PyToken<'_>, action: &[u8]) {
+        molt_warnings_resetwarnings();
+        let action = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, action).unwrap());
+        let category = crate::builtins::exceptions::exception_type_bits_from_name(py, "Warning");
+        let result = molt_warnings_simplefilter(
+            action.bits(),
+            category,
+            MoltObject::from_int(0).bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        dec_ref_bits(py, result);
+        assert!(!exception_pending(py));
+    }
+
+    #[test]
+    fn native_warning_emission_uses_cold_filters_and_preserves_category() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::cpython_abi_hooks::register_cpython_hooks();
+        let _reset = ResetWarnings;
+        crate::with_gil_entry_nopanic!(py, {
+            let name =
+                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"warnings").unwrap());
+            let module = ExceptionValue::adopt(
+                py,
+                crate::builtins::modules::molt_module_cache_get(name.bits()),
+            );
+            assert!(obj_from_bits(module.bits()).is_none());
+            set_action(py, b"ignore");
+            assert_eq!(
+                unsafe {
+                    errors::PyErr_WarnEx(
+                        (&raw mut PyExc_DeprecationWarning).cast(),
+                        c"cold native warning".as_ptr(),
+                        3,
+                    )
+                },
+                0
+            );
+            assert!(!exception_pending(py));
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+            set_action(py, b"error");
+            for category in [
+                std::ptr::null_mut(),
+                (&raw mut PyExc_DeprecationWarning).cast(),
+            ] {
+                assert_eq!(
+                    unsafe { errors::PyErr_WarnEx(category, c"cold warning error".as_ptr(), 3) },
+                    -1
+                );
+                let error = unsafe { errors::PyErr_GetRaisedException() };
+                assert!(!error.is_null());
+                let error = unsafe { OwnedPyObject::from_owned(error) };
+                let class = unsafe { object::PyObject_Type(error.as_ptr()) };
+                assert!(!class.is_null());
+                let class = unsafe { OwnedPyObject::from_owned(class) };
+                let expected = if category.is_null() {
+                    (&raw mut PyExc_RuntimeWarning).cast()
+                } else {
+                    category
+                };
+                assert_eq!(class.as_ptr(), expected);
+            }
+            let custom = unsafe {
+                errors::PyErr_NewException(
+                    c"fixture.SpecialWarning".as_ptr(),
+                    (&raw mut PyExc_Warning).cast(),
+                    std::ptr::null_mut(),
+                )
+            };
+            assert!(!custom.is_null());
+            let custom = unsafe { OwnedPyObject::from_owned(custom) };
+            assert_eq!(
+                unsafe {
+                    errors::PyErr_WarnEx(custom.as_ptr(), c"custom warning identity".as_ptr(), 2)
+                },
+                -1
+            );
+            let error = unsafe { errors::PyErr_GetRaisedException() };
+            assert!(!error.is_null());
+            let error = unsafe { OwnedPyObject::from_owned(error) };
+            let class = unsafe { object::PyObject_Type(error.as_ptr()) };
+            assert!(!class.is_null());
+            let class = unsafe { OwnedPyObject::from_owned(class) };
+            assert_eq!(class.as_ptr(), custom.as_ptr());
+            // Normalization must execute before even an ignore filter. The
+            // constructor changes that live policy to error for this call.
+            let category_bits =
+                unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(custom.as_ptr()) }.unwrap();
+            let category_bits = ExceptionValue::adopt(py, category_bits);
+            let init_name =
+                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"__init__").unwrap());
+            let init = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(
+                    "warning_test_init_changes_filter",
+                    warning_init_changes_filter as *const (),
+                ),
+                2,
+            );
+            assert!(!init.is_null());
+            let init = ExceptionValue::adopt(py, MoltObject::from_ptr(init).bits());
+            let result =
+                crate::molt_set_attr_name(category_bits.bits(), init_name.bits(), init.bits());
+            dec_ref_bits(py, result);
+            assert!(!exception_pending(py));
+            set_action(py, b"ignore");
+            assert_eq!(
+                unsafe {
+                    errors::PyErr_WarnEx(custom.as_ptr(), c"constructor changes policy".as_ptr(), 1)
+                },
+                -1
+            );
+            let mutated = unsafe { errors::PyErr_GetRaisedException() };
+            assert!(!mutated.is_null());
+            let mutated = unsafe { OwnedPyObject::from_owned(mutated) };
+            let actual_class = unsafe { object::PyObject_Type(mutated.as_ptr()) };
+            assert!(!actual_class.is_null());
+            let actual_class = unsafe { OwnedPyObject::from_owned(actual_class) };
+            assert_eq!(actual_class.as_ptr(), custom.as_ptr());
+        });
+    }
+
+    #[test]
+    fn native_warning_emission_preserves_loaded_callback_arguments_and_failure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::cpython_abi_hooks::register_cpython_hooks();
+        let _reset = ResetWarnings;
+        crate::with_gil_entry_nopanic!(py, {
+            let name =
+                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"warnings").unwrap());
+            let module = alloc_module_obj(py, name.bits());
+            assert!(!module.is_null());
+            let module = ExceptionValue::adopt(py, MoltObject::from_ptr(module).bits());
+            let warn_name =
+                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"warn").unwrap());
+            let function = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr("warnings_test_capture", capture_warning as *const ()),
+                3,
+            );
+            assert!(!function.is_null());
+            let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
+            let result =
+                crate::molt_set_attr_name(module.bits(), warn_name.bits(), function.bits());
+            dec_ref_bits(py, result);
+            let result =
+                crate::builtins::modules::molt_module_cache_set(name.bits(), module.bits());
+            dec_ref_bits(py, result);
+            assert!(!exception_pending(py));
+            let category = (&raw mut PyExc_DeprecationWarning).cast();
+            let category_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(category) }.unwrap();
+            let category_bits = ExceptionValue::adopt(py, category_bits);
+            assert_eq!(
+                unsafe { errors::PyErr_WarnEx(category, c"live callback".as_ptr(), 7) },
+                0
+            );
+            OBSERVED.with(|value| {
+                assert_eq!(
+                    *value.borrow(),
+                    Some(("live callback".into(), category_bits.bits(), 7))
+                )
+            });
+            let failure = crate::builtins::exceptions::alloc_exception(
+                py,
+                "ValueError",
+                "warning callback failed",
+            );
+            assert!(!failure.is_null());
+            let failure = ExceptionValue::adopt(py, MoltObject::from_ptr(failure).bits());
+            let expected = unsafe { GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(failure.bits()) };
+            assert!(!expected.is_null());
+            let expected = unsafe { OwnedPyObject::from_owned(expected) };
+            CALLBACK_ERROR.with(|value| value.set(failure.bits()));
+            assert_eq!(
+                unsafe { errors::PyErr_WarnEx(category, c"live failure".as_ptr(), 11) },
+                -1
+            );
+            let actual = unsafe { errors::PyErr_GetRaisedException() };
+            assert!(!actual.is_null());
+            let actual = unsafe { OwnedPyObject::from_owned(actual) };
+            assert_eq!(actual.as_ptr(), expected.as_ptr());
+            OBSERVED.with(|value| {
+                assert_eq!(
+                    *value.borrow(),
+                    Some(("live failure".into(), category_bits.bits(), 11))
+                )
+            });
+            CALLBACK_ERROR.with(|value| value.set(0));
+        });
+    }
 }

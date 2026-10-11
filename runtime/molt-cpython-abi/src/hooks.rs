@@ -598,6 +598,11 @@ pub struct RuntimeHooks {
     pub gil_release: unsafe extern "C" fn(),
     pub gil_restore: unsafe extern "C" fn(),
     pub gil_check: unsafe extern "C" fn() -> std::os::raw::c_int,
+    /// Admit one internal ABI operation without ending its caller's thread
+    /// state. The nonzero token owns exactly this operation's lifetime/GIL
+    /// custody; it is distinct from an embedding PyGILState_Ensure boundary.
+    pub operation_enter: unsafe extern "C" fn() -> u64,
+    pub operation_leave: unsafe extern "C" fn(token: u64),
     pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
     /// Acquire runtime-lifetime and default-GIL custody for destruction of a
     /// retained CPython thread-state record. This lane must never attach or
@@ -614,6 +619,11 @@ pub struct RuntimeHooks {
     /// existing runtime error, otherwise consume the exact C error, otherwise
     /// synthesize the typed failure represented by `reason`.
     pub pending_call_error: unsafe extern "C" fn(reason: u32),
+    /// Emit a warning through the shared runtime warnings authority. Both handles
+    /// are borrowed for this call; category is the actual class (never a name).
+    /// Returns 0 on success or -1 with the selected warning/callback error.
+    pub warning_emit:
+        unsafe extern "C" fn(message: u64, category: u64, stacklevel: i64) -> std::os::raw::c_int,
     // ── Allocation ────────────────────────────────────────────────────────────
     /// Allocate a UTF-8 string object. Returns handle bits, 0 on failure.
     pub alloc_str: Option<unsafe extern "C" fn(data: *const u8, len: usize) -> u64>,
@@ -1412,7 +1422,7 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // domains are ABI even when the pointer-sized table layout is unchanged.
 // Version 61 adds the sole Context owner and cold static-shell admission.
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 63;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 64;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -1822,6 +1832,14 @@ unsafe extern "C" fn stub_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn stub_numeric_identity_new(_bits: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
+unsafe extern "C" fn stub_warning_emit(
+    _message: u64,
+    _category: u64,
+    _stacklevel: i64,
+) -> std::os::raw::c_int {
+    -1
+}
+
 unsafe extern "C" fn stub_float_payload(_bits: u64, _out: *mut f64) -> std::os::raw::c_int {
     -1
 }
@@ -2381,6 +2399,10 @@ unsafe extern "C" fn stub_gil_restore() {}
 unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
     0
 }
+unsafe extern "C" fn stub_operation_enter() -> u64 {
+    0
+}
+unsafe extern "C" fn stub_operation_leave(_token: u64) {}
 unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
     0
 }
@@ -2604,11 +2626,14 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_release: stub_gil_release,
     gil_restore: stub_gil_restore,
     gil_check: stub_gil_check,
+    operation_enter: stub_operation_enter,
+    operation_leave: stub_operation_leave,
     runtime_is_initialized: stub_runtime_is_initialized,
     thread_state_drop_enter: stub_thread_state_drop_enter,
     thread_state_drop_leave: stub_thread_state_drop_leave,
     attached_runtime_context: stub_attached_runtime_context,
     pending_call_error: stub_pending_call_error,
+    warning_emit: stub_warning_emit,
     alloc_str: None,
     alloc_bytes: stub_alloc_bytes,
     alloc_bytearray: stub_alloc_bytes,
@@ -2790,16 +2815,17 @@ pub fn hooks_or_stubs() -> &'static RuntimeHooks {
     RUNTIME_HOOKS.get().unwrap_or(&STUB_HOOKS)
 }
 
-/// Pins the managed-runtime GIL for a complete ABI bridge transaction.
+/// Pins runtime lifetime and the GIL for a complete ABI bridge transaction.
 ///
 /// Acquiring once before any bridge shard lock preserves the global lock order
 /// (`runtime GIL -> bridge locks`) and avoids the inversion that would result
 /// from acquiring inside `try_mark_abi_view` while address/handle shards are
 /// held. Calls made from an existing Molt execution frame are a zero-acquire
 /// fast path: `gil_check` observes the current owner and Drop does nothing.
+/// A cold operation preserves its caller's thread/error state; only an actual
+/// embedding or worker boundary is allowed to perform terminal cleanup.
 pub(crate) struct RuntimeGilGuard {
-    state: std::os::raw::c_int,
-    acquired: bool,
+    token: u64,
 }
 
 impl RuntimeGilGuard {
@@ -2807,14 +2833,10 @@ impl RuntimeGilGuard {
     pub(crate) fn ensure() -> Self {
         let hooks = hooks_or_stubs();
         if unsafe { (hooks.gil_check)() } != 0 {
-            Self {
-                state: 0,
-                acquired: false,
-            }
+            Self { token: 0 }
         } else {
             Self {
-                state: unsafe { (hooks.gil_ensure)() },
-                acquired: true,
+                token: unsafe { (hooks.operation_enter)() },
             }
         }
     }
@@ -2823,8 +2845,8 @@ impl RuntimeGilGuard {
 impl Drop for RuntimeGilGuard {
     #[inline]
     fn drop(&mut self) {
-        if self.acquired {
-            unsafe { (hooks_or_stubs().gil_leave)(self.state) };
+        if self.token != 0 {
+            unsafe { (hooks_or_stubs().operation_leave)(self.token) };
         }
     }
 }

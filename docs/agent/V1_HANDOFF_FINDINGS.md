@@ -86,12 +86,35 @@ full gate. Windows/macOS process cells remain unverified. The candidate also
 reconciles newer main through `e127d7360`, preserving its guard, cache, compiler
 and release-authority changes; that reconciliation is not qualification.
 
+Retained-image diagnosis separates the remaining causes. Ordinary ABI reference
+operations were entering an embedding boundary whose exit cleared the caller's
+raised state; the candidate now uses the existing preserving execution guard.
+Native numerical warnings also imported the Python warnings module unnecessarily;
+their candidate hook shares the runtime emitter and preserves the actual warning
+category through construction. These changes and corrected fixture observers
+await combined execution. Dictionary admission and callback results still need
+explicit success/error propagation without concealing a prior error from user
+callbacks. Failed descriptor preparation replaces an incoming error, while
+structural inquiries preserve it; the corrected oracle covers both, including
+allocation-free MemoryError. The warnings filter engine's category-name matching,
+limited patterns, source-location approximations and separate Python capture path
+remain V1-27 conformance obligations. None of these source repairs establishes
+crash resolution, performance acceptance or release qualification.
+An assertion-exclusion diagnostic reaches two further independently reproduced
+failures: linked C type metadata is rejected by a shared result converter that
+confuses an existing error with operation failure, and a descriptor fixture's
+native destructor replaces the caller's error. The converter migration belongs
+to the same explicit-result family; the fixture now observes and restores the
+exact public error. Other pooled-test failures pass alone and remain unqualified
+until the complete repaired gate proves cleanup and cross-test independence.
+
 Guarded development commands and benchmark interpreter selection now preserve
 the selected virtual-environment entrypoint through working-directory changes.
 Eight focused checks pass, including actual interpreter execution and imports
 from a distinct environment through relative, absolute and PATH selections.
-The change reuses the lexical executable-path authority and adds no work to
-emitted binaries. Windows execution remains unverified.
+The change landed on main at `09cfb25c1`, reuses the lexical executable-path
+authority and adds no work to emitted binaries. Windows execution remains
+unverified.
 
 The current standalone Linux/aarch64 ABI run at `78ddd63bf` passes 771 cases,
 with no failures and one explicit developer timing probe ignored across 56 test
