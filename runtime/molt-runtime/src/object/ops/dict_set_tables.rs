@@ -360,14 +360,17 @@ pub(crate) extern "C" fn dict_update_method(self_bits: u64, other_bits: u64) -> 
     })
 }
 
+#[must_use]
 pub(crate) unsafe fn dict_update_set_via_store(
     _py: &PyToken<'_>,
     target_bits: u64,
     key_bits: u64,
     val_bits: u64,
-) {
+) -> bool {
     crate::gil_assert();
-    let _ = molt_store_index(target_bits, key_bits, val_bits);
+    // StoreIndex returns its borrowed receiver on success and None on failure.
+    let result = molt_store_index(target_bits, key_bits, val_bits);
+    result != MoltObject::none().bits() && result == target_bits
 }
 
 /// Class layout metadata maps refuse every write.
@@ -414,26 +417,28 @@ pub(crate) unsafe fn dict_inc_in_place(
             inc_ref_bits(py, bits);
         }
         let result = (|| {
-            let current =
-                dict_get_in_place(py, dict, key).unwrap_or(MoltObject::from_int(0).bits());
-            if exception_pending(py) {
-                return false;
-            }
+            let current = match dict_get_in_place(py, dict, key) {
+                Ok(value) => value.unwrap_or(MoltObject::from_int(0).bits()),
+                Err(()) => return false,
+            };
             inc_ref_bits(py, current);
-            let sum =
-                inline_increment_sum(current, delta).unwrap_or_else(|| molt_add(current, delta));
-            if !exception_pending(py) {
-                dict_set_in_place(py, dict, key, sum);
-            }
+            let (sum, arithmetic_ok) = match inline_increment_sum(current, delta) {
+                Some(sum) => (sum, true),
+                None => {
+                    let sum = molt_add(current, delta);
+                    (sum, !exception_pending(py))
+                }
+            };
+            let completed = arithmetic_ok && dict_set_in_place(py, dict, key, sum);
             // __add__ returning None is a valid value, not a failure sentinel.
             dec_ref_bits(py, sum);
             dec_ref_bits(py, current);
-            !exception_pending(py)
+            completed
         })();
         for bits in [delta, key, dictionary] {
             dec_ref_bits(py, bits);
         }
-        result && !exception_pending(py)
+        result
     }
 }
 
@@ -981,7 +986,7 @@ fn hash_slot_for_row(table: &[usize], row: usize, hash: StoredHash) -> Option<us
 #[inline]
 unsafe fn dict_key_hash(py: &PyToken<'_>, key_bits: u64) -> Option<u64> {
     unsafe {
-        if !exception_pending(py) && exact_string_bytes(py, key_bits).is_some() {
+        if exact_string_bytes(py, key_bits).is_some() {
             return Some(crate::object::ops_hash::hash_string(
                 py,
                 obj_from_bits(key_bits).as_ptr().unwrap(),
@@ -990,14 +995,8 @@ unsafe fn dict_key_hash(py: &PyToken<'_>, key_bits: u64) -> Option<u64> {
         if !ensure_hashable(py, key_bits, HashContext::DictKey) {
             return None;
         }
-        let pending_before = exception_pending(py);
-        let previous = exception_last_bits_noinc(py);
         let hash = hash_bits(py, key_bits);
-        if exception_pending(py) && (!pending_before || exception_last_bits_noinc(py) != previous) {
-            None
-        } else {
-            Some(hash)
-        }
+        (hash != u64::MAX).then_some(hash)
     }
 }
 
@@ -1010,37 +1009,19 @@ pub(crate) unsafe fn dict_find_entry(
     py: &PyToken<'_>,
     dict: *mut u8,
     key_bits: u64,
-) -> Option<usize> {
+) -> Result<Option<usize>, ()> {
     unsafe {
         let key = obj_from_bits(key_bits);
-        // Existing pending exceptions retain the ordinary read contract. In
-        // particular, do not turn a failed hashability admission into a hit.
-        if !exception_pending(py)
-            && let Some(bytes) = exact_string_bytes(py, key_bits)
-        {
-            // Reuse the string object's canonical cached hash. Rehashing bytes
-            // here would make repeated reads of long keys linear in key length.
+        if let Some(bytes) = exact_string_bytes(py, key_bits) {
             let hash = crate::object::ops_hash::hash_string(py, key.as_ptr().unwrap()) as u64;
             match dict_exact_string_lookup(py, dict, bytes, hash) {
-                ExactStringLookup::Found(index) => return Some(index),
-                ExactStringLookup::Absent => return None,
+                ExactStringLookup::Found(index) => return Ok(Some(index)),
+                ExactStringLookup::Absent => return Ok(None),
                 ExactStringLookup::Undecided => {}
             }
         }
-        let pending_before = exception_pending(py);
-        let previous = if pending_before {
-            exception_last_bits_noinc(py).unwrap_or(0)
-        } else {
-            0
-        };
-        let hash = dict_key_hash(py, key_bits)?;
-        let found = dict_find_entry_with_hash(py, dict, key_bits, hash);
-        if exception_pending(py)
-            && (!pending_before || exception_last_bits_noinc(py).unwrap_or(0) != previous)
-        {
-            return None;
-        }
-        found
+        let hash = dict_key_hash(py, key_bits).ok_or(())?;
+        dict_find_entry_with_hash(py, dict, key_bits, hash)
     }
 }
 
@@ -1300,8 +1281,8 @@ pub(crate) unsafe fn dict_find_entry_with_hash(
     dict: *mut u8,
     key: u64,
     hash: u64,
-) -> Option<usize> {
-    unsafe { dict_probe_with_hash(py, dict, key, hash).map(|probe| probe.row) }
+) -> Result<Option<usize>, ()> {
+    unsafe { dict_probe_with_hash(py, dict, key, hash).map(|probe| probe.map(|probe| probe.row)) }
 }
 
 unsafe fn dict_probe_with_hash(
@@ -1309,7 +1290,7 @@ unsafe fn dict_probe_with_hash(
     dict: *mut u8,
     key_bits: u64,
     hash: u64,
-) -> Option<HashProbe> {
+) -> Result<Option<HashProbe>, ()> {
     unsafe {
         'restart: loop {
             let epoch = dict_structural_epoch(dict);
@@ -1318,14 +1299,14 @@ unsafe fn dict_probe_with_hash(
                 (table.as_ptr(), table.len())
             };
             if table_len == 0 {
-                return None;
+                return Ok(None);
             }
             let mask = table_len - 1;
             let mut slot = hash as usize & mask;
             for _ in 0..table_len {
                 let entry = dict_table(dict)[slot];
                 if entry == 0 {
-                    return None;
+                    return Ok(None);
                 }
                 if entry != TABLE_TOMBSTONE {
                     let index = entry - 1;
@@ -1336,25 +1317,26 @@ unsafe fn dict_probe_with_hash(
                         .map(StoredHash::get);
                     let (Some(candidate), Some(candidate_hash)) = (candidate, candidate_hash)
                     else {
-                        return raise_exception::<_>(
+                        raise_exception::<()>(
                             _py,
                             "SystemError",
                             "dictionary table references an invalid entry",
                         );
+                        return Err(());
                     };
                     if candidate_hash == hash {
                         if candidate == key_bits {
-                            return Some(HashProbe { row: index, slot });
+                            return Ok(Some(HashProbe { row: index, slot }));
                         }
                         if let Some(equal) = string_bits_eq(_py, candidate, key_bits) {
                             if equal {
-                                return Some(HashProbe { row: index, slot });
+                                return Ok(Some(HashProbe { row: index, slot }));
                             }
                         } else {
                             inc_ref_bits(_py, candidate);
                             let equal = eq_bool_from_bits(_py, candidate, key_bits);
                             dec_ref_bits(_py, candidate);
-                            let equal = equal?;
+                            let equal = equal.ok_or(())?;
                             // Python equality/truth/destruction may mutate this
                             // dict, including resizing or removing the candidate.
                             // Re-acquire backing and restart from its new table.
@@ -1376,14 +1358,15 @@ unsafe fn dict_probe_with_hash(
                                 continue 'restart;
                             }
                             if equal {
-                                return Some(HashProbe { row: index, slot });
+                                return Ok(Some(HashProbe { row: index, slot }));
                             }
                         }
                     }
                 }
                 slot = (slot + 1) & mask;
             }
-            return raise_exception::<_>(_py, "SystemError", "dictionary table has no empty slot");
+            raise_exception::<()>(_py, "SystemError", "dictionary table has no empty slot");
+            return Err(());
         }
     }
 }
@@ -1486,7 +1469,7 @@ unsafe fn set_probe_with_hash(
 pub(crate) unsafe fn set_find_entry(py: &PyToken<'_>, set: *mut u8, key: u64) -> Option<usize> {
     let _key = PinnedSetEntry::borrow(py, key, 0);
     let hash = hash_bits(py, key);
-    if exception_pending(py) {
+    if hash == u64::MAX {
         return None;
     }
     unsafe { set_find_entry_in_place_with_hash(py, set, key, hash) }
@@ -1581,13 +1564,20 @@ pub(in crate::object) fn fill_repeated_bytes(dst: &mut [u8], pattern: &[u8]) {
     }
 }
 
+#[must_use]
 pub(crate) unsafe fn dict_set_in_place(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
-) {
-    drop(unsafe { dict_set_deferred(_py, ptr, key_bits, val_bits) });
+) -> bool {
+    match unsafe { dict_set_deferred(_py, ptr, key_bits, val_bits) } {
+        Ok(retired) => {
+            drop(retired);
+            true
+        }
+        Err(()) => false,
+    }
 }
 
 /// Publish a mapping update while retaining displaced ownership until the
@@ -1612,22 +1602,26 @@ pub(crate) unsafe fn dict_set_deferred<'a, 'py>(
             return dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash_int(i) as u64);
         }
         let hash = dict_key_hash(_py, key_bits).ok_or(())?;
-        if exception_pending(_py) {
-            return Err(());
-        }
         dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash)
     }
 }
 
 /// Merge prehashed dictionary entries without replaying Python __hash__.
+#[must_use]
 pub(crate) unsafe fn dict_set_with_hash_in_place(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
     hash: u64,
-) {
-    drop(unsafe { dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash) });
+) -> bool {
+    match unsafe { dict_set_with_hash_deferred(_py, ptr, key_bits, val_bits, hash) } {
+        Ok(retired) => {
+            drop(retired);
+            true
+        }
+        Err(()) => false,
+    }
 }
 
 unsafe fn dict_set_with_hash_deferred<'a, 'py>(
@@ -1643,10 +1637,7 @@ unsafe fn dict_set_with_hash_deferred<'a, 'py>(
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
             return Err(());
         }
-        let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get());
-        if exception_pending(_py) {
-            return Err(());
-        }
+        let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get())?;
         if let Some(entry_idx) = found {
             let val_idx = entry_idx;
             return Ok(dict_commit_value_replacement(_py, ptr, val_idx, val_bits));
@@ -1676,9 +1667,6 @@ pub(crate) unsafe fn dict_setdefault_in_place(
 ) -> Option<u64> {
     unsafe {
         crate::gil_assert();
-        if exception_pending(py) {
-            return None;
-        }
         // Equality can remove the very namespace edges that supplied the call
         // operands. Keep them live without holding any dictionary backing view.
         let inputs = [MoltObject::from_ptr(dict).bits(), key, default.unwrap_or(0)];
@@ -1687,10 +1675,7 @@ pub(crate) unsafe fn dict_setdefault_in_place(
         }
         let result = (|| {
             let hash = admit_stored_hash(py, dict_key_hash(py, key)?)?;
-            let found = dict_find_entry_with_hash(py, dict, key, hash.get());
-            if exception_pending(py) {
-                return None;
-            }
+            let found = dict_find_entry_with_hash(py, dict, key, hash.get()).ok()?;
             if let Some(index) = found {
                 let value = dict_entries(dict)[index].value;
                 inc_ref_bits(py, value);
@@ -1795,9 +1780,6 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
 ) -> Result<DetachedDictReferences<'a, 'py, [u64; DICT_STRING_BINDING_LIMIT]>, ()> {
     unsafe {
         crate::gil_assert();
-        if exception_pending(_py) {
-            return Err(());
-        }
         if (*header_from_obj_ptr(dict)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
             return Err(());
@@ -1825,10 +1807,7 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
             let epoch = dict_structural_epoch(dict);
             for (index, &(key_bits, _)) in entries.iter().enumerate() {
                 found[index] =
-                    dict_find_entry_with_hash(_py, dict, key_bits, hashes[index].unwrap().get());
-                if exception_pending(_py) {
-                    return Err(());
-                }
+                    dict_find_entry_with_hash(_py, dict, key_bits, hashes[index].unwrap().get())?;
             }
             let added = found[..entries.len()]
                 .iter()
@@ -1876,13 +1855,14 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
 /// Prehashed scalar entry points retain the same lookup/equality authority:
 /// an integer probe may still encounter an equal bool, float or user key.
 #[inline]
+#[must_use]
 pub(crate) unsafe fn dict_set_inline_int_in_place(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     key_bits: u64,
     key_int: i64,
     val_bits: u64,
-) {
+) -> bool {
     unsafe { dict_set_with_hash_in_place(_py, ptr, key_bits, val_bits, hash_int(key_int) as u64) }
 }
 
@@ -1892,7 +1872,7 @@ pub(crate) unsafe fn dict_get_inline_int_in_place(
     ptr: *mut u8,
     key_bits: u64,
     key_int: i64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe { dict_get_with_hash_in_place(_py, ptr, key_bits, hash_int(key_int) as u64) }
 }
 pub(crate) unsafe fn set_add_in_place(py: &PyToken<'_>, ptr: *mut u8, key: u64, ctx: HashContext) {
@@ -1901,7 +1881,7 @@ pub(crate) unsafe fn set_add_in_place(py: &PyToken<'_>, ptr: *mut u8, key: u64, 
         return;
     }
     let hash = hash_bits(py, key);
-    if exception_pending(py) {
+    if hash == u64::MAX {
         return;
     }
     unsafe { set_add_with_hash_in_place(py, ptr, key, hash) };
@@ -1981,10 +1961,10 @@ pub(crate) unsafe fn dict_get_with_hash_in_place(
     dict: *mut u8,
     key_bits: u64,
     hash: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         let index = dict_find_entry_with_hash(py, dict, key_bits, hash)?;
-        Some(dict_entries(dict)[index].value)
+        Ok(index.map(|index| dict_entries(dict)[index].value))
     }
 }
 
@@ -1992,13 +1972,13 @@ pub(crate) unsafe fn dict_get_in_place(
     py: &PyToken<'_>,
     dict: *mut u8,
     key_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         if let Some(integer) = obj_from_bits(key_bits).as_int() {
             return dict_get_inline_int_in_place(py, dict, key_bits, integer);
         }
         let index = dict_find_entry(py, dict, key_bits)?;
-        Some(dict_entries(dict)[index].value)
+        Ok(index.map(|index| dict_entries(dict)[index].value))
     }
 }
 
@@ -2049,11 +2029,13 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
     py: &PyToken<'_>,
     dict: *mut u8,
     key_bits: u64,
-) -> Option<(u64, u64)> {
+) -> Result<Option<(u64, u64)>, ()> {
     unsafe {
         let index = dict_find_entry(py, dict, key_bits)?;
-        let row = dict_entries(dict)[index];
-        Some((row.key, row.value))
+        Ok(index.map(|index| {
+            let row = dict_entries(dict)[index];
+            (row.key, row.value)
+        }))
     }
 }
 
@@ -2063,7 +2045,7 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         return false;
     }
     let hash = hash_bits(_py, key_bits);
-    if exception_pending(_py) {
+    if hash == u64::MAX {
         return false;
     }
     unsafe { set_del_with_hash_in_place(_py, ptr, key_bits, hash) }
@@ -2176,16 +2158,20 @@ pub(crate) unsafe fn set_clear_in_place(py: &PyToken<'_>, set: *mut u8) {
     }
 }
 
-pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
-    unsafe { dict_del_deferred(_py, ptr, key_bits) }.is_some()
+pub(crate) unsafe fn dict_del_in_place(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Result<bool, ()> {
+    Ok(unsafe { dict_del_deferred(py, ptr, key_bits) }?.is_some())
 }
 
 pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
-    _py: &'a PyToken<'py>,
+    py: &'a PyToken<'py>,
     ptr: *mut u8,
     key_bits: u64,
-) -> Option<DetachedDictReferences<'a, 'py>> {
-    unsafe { dict_delete_deferred(_py, ptr, key_bits, None) }
+) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
+    unsafe { dict_delete_deferred(py, ptr, key_bits, None) }
 }
 
 /// The supplied hash belongs to the caller's retained actual dictionary entry.
@@ -2195,8 +2181,8 @@ pub(crate) unsafe fn dict_del_with_hash_deferred<'a, 'py>(
     ptr: *mut u8,
     key_bits: u64,
     hash: u64,
-) -> Option<DetachedDictReferences<'a, 'py>> {
-    let hash = admit_stored_hash(py, hash)?;
+) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
+    let hash = admit_stored_hash(py, hash).ok_or(())?;
     unsafe { dict_delete_deferred(py, ptr, key_bits, Some(hash.get())) }
 }
 
@@ -2205,20 +2191,17 @@ unsafe fn dict_delete_deferred<'a, 'py>(
     ptr: *mut u8,
     key: u64,
     hash: Option<u64>,
-) -> Option<DetachedDictReferences<'a, 'py>> {
+) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
         if dict_layout_frozen(ptr) {
-            return raise_exception(py, "TypeError", "class layout metadata is immutable");
+            raise_exception::<()>(py, "TypeError", "class layout metadata is immutable");
+            return Err(());
         }
         let hash = match hash {
             Some(hash) => hash,
-            None => dict_key_hash(py, key)?,
+            None => dict_key_hash(py, key).ok_or(())?,
         };
-        let probe = dict_probe_with_hash(py, ptr, key, hash)?;
-        if exception_pending(py) {
-            return None;
-        }
-        Some(dict_remove_row(py, ptr, probe))
+        Ok(dict_probe_with_hash(py, ptr, key, hash)?.map(|probe| dict_remove_row(py, ptr, probe)))
     }
 }
 

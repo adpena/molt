@@ -51,7 +51,7 @@ fn runtime_functions_are_declared() {
     assert!(module.get_function("molt_code_new").is_some());
     assert!(module.get_function("molt_print_newline").is_some());
     assert!(module.get_function("molt_print_obj").is_some());
-    assert!(module.get_function("molt_bigint_from_str").is_some());
+    assert!(module.get_function("molt_bigint_from_bytes").is_some());
     assert!(
         module
             .get_function("molt_function_defaults_version")
@@ -385,21 +385,21 @@ fn custom_fixed_runtime_import_signatures_are_typed() {
     assert!(has_fn_attr(string_from_bytes, "nounwind"));
     assert!(has_fn_attr(string_from_bytes, "willreturn"));
 
-    let bigint_from_str = module
-        .get_function("molt_bigint_from_str")
-        .expect("molt_bigint_from_str should be fixed-declared");
-    assert_eq!(bigint_from_str.count_params(), 2);
-    let params = bigint_from_str.get_type().get_param_types();
+    let bigint_from_bytes = module
+        .get_function("molt_bigint_from_bytes")
+        .expect("molt_bigint_from_bytes should be fixed-declared");
+    assert_eq!(bigint_from_bytes.count_params(), 2);
+    let params = bigint_from_bytes.get_type().get_param_types();
     assert!(params[0].is_pointer_type());
     assert_eq!(params[1].into_int_type().get_bit_width(), 64);
-    let ret_ty = bigint_from_str
+    let ret_ty = bigint_from_bytes
         .get_type()
         .get_return_type()
-        .expect("molt_bigint_from_str should return i64");
+        .expect("molt_bigint_from_bytes should return i64");
     assert!(ret_ty.is_int_type());
     assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-    assert!(has_fn_attr(bigint_from_str, "nounwind"));
-    assert!(has_fn_attr(bigint_from_str, "willreturn"));
+    assert!(has_fn_attr(bigint_from_bytes, "nounwind"));
+    assert!(has_fn_attr(bigint_from_bytes, "willreturn"));
 
     let get_attr_object_ic = module
         .get_function("molt_get_attr_object_ic")
@@ -553,18 +553,18 @@ fn diagnostics_and_constant_runtime_functions_are_declared() {
     assert!(has_fn_attr(print_obj, "nounwind"));
     assert!(has_fn_attr(print_obj, "willreturn"));
 
-    let bigint_from_str = module
-        .get_function("molt_bigint_from_str")
-        .expect("molt_bigint_from_str should be declared");
-    assert_eq!(bigint_from_str.count_params(), 2);
-    let ret_ty = bigint_from_str
+    let bigint_from_bytes = module
+        .get_function("molt_bigint_from_bytes")
+        .expect("molt_bigint_from_bytes should be declared");
+    assert_eq!(bigint_from_bytes.count_params(), 2);
+    let ret_ty = bigint_from_bytes
         .get_type()
         .get_return_type()
-        .expect("molt_bigint_from_str should return i64");
+        .expect("molt_bigint_from_bytes should return i64");
     assert!(ret_ty.is_int_type());
     assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-    assert!(has_fn_attr(bigint_from_str, "nounwind"));
-    assert!(has_fn_attr(bigint_from_str, "willreturn"));
+    assert!(has_fn_attr(bigint_from_bytes, "nounwind"));
+    assert!(has_fn_attr(bigint_from_bytes, "willreturn"));
 }
 
 #[test]

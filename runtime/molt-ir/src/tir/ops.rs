@@ -243,8 +243,8 @@ pub enum OpCode {
     // Constants
     ConstInt,
     /// Arbitrary-precision integer constant whose value does not fit the
-    /// raw i64 fast-path window. The decimal text lives in the `s_value`
-    /// attr; lowering materializes it via `molt_bigint_from_str(ptr, len)`
+    /// raw i64 fast-path window. The minimal signed big-endian bytes live in the `bytes`
+    /// attr; lowering materializes it via `molt_bigint_from_bytes(ptr, len)`
     /// and the result is ALWAYS a boxed heap int (`DynBox` carrier — never
     /// `I64`, never RawI64Safe). First-class (not a `Copy` fallback) so the
     /// TIR-consuming LLVM backend defines the result value: as a fallback

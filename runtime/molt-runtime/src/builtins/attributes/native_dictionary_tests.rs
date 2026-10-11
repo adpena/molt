@@ -143,8 +143,16 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
             let private_dictionary = function_dict_bits(native);
             assert_ne!(private_dictionary, 0);
 
-            assert!(attr_lookup_ptr(py, native, dictionary).is_none());
-            assert!(attr_lookup_ptr(py, native, name).is_none());
+            assert!(
+                attr_lookup_ptr(py, native, dictionary)
+                    .expect("operation succeeds")
+                    .is_none()
+            );
+            assert!(
+                attr_lookup_ptr(py, native, name)
+                    .expect("operation succeeds")
+                    .is_none()
+            );
             assert!(!exception_pending(py));
             molt_set_attr_name(builtin, name, MoltObject::from_int(99).bits());
             assert_attribute_error(py);
@@ -156,7 +164,8 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
                     py,
                     obj_from_bits(private_dictionary).as_ptr().unwrap(),
                     name
-                ),
+                )
+                .expect("dictionary lookup succeeds"),
                 Some(value)
             );
             molt_set_attr_name(builtin, module, value);
@@ -175,13 +184,15 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
             assert!(!exception_pending(py));
             let public_dictionary = molt_get_attr_name(managed_bits, dictionary);
             assert_eq!(
-                dict_get_in_place(py, obj_from_bits(public_dictionary).as_ptr().unwrap(), name),
+                dict_get_in_place(py, obj_from_bits(public_dictionary).as_ptr().unwrap(), name)
+                    .expect("dictionary lookup succeeds"),
                 Some(value)
             );
             molt_del_attr_name(managed_bits, name);
             assert!(!exception_pending(py));
             assert_eq!(
-                dict_get_in_place(py, obj_from_bits(public_dictionary).as_ptr().unwrap(), name),
+                dict_get_in_place(py, obj_from_bits(public_dictionary).as_ptr().unwrap(), name)
+                    .expect("dictionary lookup succeeds"),
                 None
             );
 
@@ -322,27 +333,35 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             ));
             let dict_class = obj_from_bits(classes.dict).as_ptr().unwrap();
             let namespace = obj_from_bits(class_dict_bits(dict_class)).as_ptr().unwrap();
-            let class_descriptor = dict_get_in_place(py, namespace, key).unwrap();
+            let class_descriptor = dict_get_in_place(py, namespace, key)
+                .expect("dictionary lookup succeeds")
+                .unwrap();
             assert_eq!(
                 object_class_bits(obj_from_bits(class_descriptor).as_ptr().unwrap()),
                 classes.classmethod_descriptor
             );
             assert_eq!(
                 crate::builtins::methods::builtin_class_method_bits(py, classes.dict, "fromkeys"),
-                Some(class_descriptor)
+                Ok(Some(class_descriptor))
             );
             let append =
                 crate::builtins::methods::builtin_class_method_bits(py, classes.list, "append")
+                    .expect("method lookup succeeds")
                     .unwrap();
             let length =
                 crate::builtins::methods::builtin_class_method_bits(py, classes.list, "__len__")
+                    .expect("method lookup succeeds")
                     .unwrap();
             assert_eq!(type_of_bits(py, append), classes.method_descriptor);
             assert_eq!(type_of_bits(py, length), classes.wrapper_descriptor);
             let list_ptr = alloc_list(py, &[]);
             let list = MoltObject::from_ptr(list_ptr).bits();
-            let bound_append = descriptor_bind(py, append, Some(classes.list), Some(list)).unwrap();
-            let bound_length = descriptor_bind(py, length, Some(classes.list), Some(list)).unwrap();
+            let bound_append = descriptor_bind(py, append, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
+            let bound_length = descriptor_bind(py, length, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
             assert_eq!(
                 type_of_bits(py, bound_append),
                 classes.builtin_function_or_method
@@ -360,12 +379,18 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                     b"__molt_arg_names__",
                 ] {
                     let name = attr_name_bits_from_bytes(py, name).unwrap();
-                    assert!(attr_lookup_ptr(py, pointer, name).is_none());
+                    assert!(
+                        attr_lookup_ptr(py, pointer, name)
+                            .expect("operation succeeds")
+                            .is_none()
+                    );
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, name);
                 }
                 let name = attr_name_bits_from_bytes(py, b"__qualname__").unwrap();
-                let qualified = attr_lookup_ptr(py, pointer, name).unwrap();
+                let qualified = attr_lookup_ptr(py, pointer, name)
+                    .expect("operation succeeds")
+                    .unwrap();
                 assert!(
                     string_obj_to_owned(obj_from_bits(qualified))
                         .unwrap()
@@ -376,10 +401,13 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             }
             let get = attr_name_bits_from_bytes(py, b"__get__").unwrap();
             assert!(
-                attr_lookup_ptr(py, obj_from_bits(bound_append).as_ptr().unwrap(), get).is_none()
+                attr_lookup_ptr(py, obj_from_bits(bound_append).as_ptr().unwrap(), get)
+                    .expect("operation succeeds")
+                    .is_none()
             );
-            let descriptor_get =
-                attr_lookup_ptr(py, obj_from_bits(append).as_ptr().unwrap(), get).unwrap();
+            let descriptor_get = attr_lookup_ptr(py, obj_from_bits(append).as_ptr().unwrap(), get)
+                .expect("operation succeeds")
+                .unwrap();
             assert_eq!(type_of_bits(py, descriptor_get), classes.method_wrapper);
             dec_ref_bits(py, descriptor_get);
             let dict = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
@@ -398,7 +426,9 @@ fn native_callable_declarations_own_public_identity_and_binding() {
 
             let native =
                 crate::builtins::methods::alloc_builtin_function(py, fn_addr!(molt_len), 1);
-            let unchanged = descriptor_bind(py, native, Some(classes.list), Some(list)).unwrap();
+            let unchanged = descriptor_bind(py, native, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
             assert_eq!(unchanged, native);
             dec_ref_bits(py, unchanged);
             // Managed binding remains MethodType, including explicit wrappers
@@ -412,7 +442,9 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                 extra,
                 list
             ));
-            let method = descriptor_bind(py, managed, Some(classes.list), Some(list)).unwrap();
+            let method = descriptor_bind(py, managed, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
             let explicit = crate::builtins::functions::explicit_bound_method_new(py, native, list);
             assert_eq!(
                 type_of_bits(py, method),
@@ -457,10 +489,15 @@ fn native_bound_callable_module_has_one_independent_traced_edge() {
             let classes = builtin_classes(py);
             let descriptor =
                 crate::builtins::methods::builtin_class_method_bits(py, classes.list, "append")
+                    .expect("method lookup succeeds")
                     .unwrap();
             let list = MoltObject::from_ptr(alloc_list(py, &[])).bits();
-            let first = descriptor_bind(py, descriptor, Some(classes.list), Some(list)).unwrap();
-            let second = descriptor_bind(py, descriptor, Some(classes.list), Some(list)).unwrap();
+            let first = descriptor_bind(py, descriptor, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
+            let second = descriptor_bind(py, descriptor, Some(classes.list), Some(list))
+                .expect("operation succeeds")
+                .unwrap();
             assert_ne!(first, second);
             let value_ptr = alloc_list(py, &[]);
             let value = MoltObject::from_ptr(value_ptr).bits();
@@ -794,7 +831,7 @@ fn function_dictionary_descriptor_vars_generic_reads_and_gc_share_one_owner() {
                 dec_ref_bits(py, observed);
             }
             assert_eq!(
-                dict_get_in_place(py, dictionary_ptr, extra),
+                dict_get_in_place(py, dictionary_ptr, extra).expect("dictionary lookup succeeds"),
                 Some(MoltObject::from_int(17).bits())
             );
 
@@ -822,7 +859,7 @@ fn function_dictionary_descriptor_vars_generic_reads_and_gc_share_one_owner() {
             assert_eq!(forwarded, replacement);
             dec_ref_bits(py, forwarded);
             assert_eq!(
-                dict_get_in_place(py, dictionary_ptr, extra),
+                dict_get_in_place(py, dictionary_ptr, extra).expect("dictionary lookup succeeds"),
                 Some(MoltObject::from_int(17).bits())
             );
             molt_set_attr_name(function_bits, key, receiver_bits);
@@ -995,7 +1032,7 @@ fn function_typed_metadata_survives_public_dictionary_replacement_and_clears_onc
             assert_eq!(observed, defaults_bits);
             dec_ref_bits(py, observed);
             assert_eq!(
-                dict_get_in_place(py, forged, key),
+                dict_get_in_place(py, forged, key).expect("dictionary lookup succeeds"),
                 Some(MoltObject::from_int(999).bits())
             );
             molt_set_attr_name(bits, key, value_bits);
@@ -1100,7 +1137,9 @@ fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
                 .as_ptr()
                 .unwrap();
             let namespace = obj_from_bits(class_dict_bits(metatype)).as_ptr().unwrap();
-            let descriptor = dict_get_in_place(py, namespace, key).unwrap();
+            let descriptor = dict_get_in_place(py, namespace, key)
+                .expect("dictionary lookup succeeds")
+                .unwrap();
             let canonical = GLOBAL_BRIDGE
                 .borrowed_handle_to_new_pyobj(static_class)
                 .cast::<PyTypeObject>();
@@ -1116,12 +1155,14 @@ fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
                 descriptor,
                 static_class,
                 Some(values),
-            );
+            )
+            .expect("operation succeeds");
             assert!(!exception_pending(py));
             assert!(class_is_abstract(static_ptr));
             assert_ne!((*canonical).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
             assert_ne!(alias.tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
-            crate::builtins::types::native_descriptor_mutate(py, descriptor, static_class, None);
+            crate::builtins::types::native_descriptor_mutate(py, descriptor, static_class, None)
+                .expect("operation succeeds");
             assert!(!exception_pending(py));
             assert!(!class_is_abstract(static_ptr));
             assert_eq!((*canonical).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
@@ -1157,7 +1198,10 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
             unsafe {
                 let class = ROOT.load(Ordering::Relaxed);
                 let view = VIEW.load(Ordering::Relaxed) as *mut PyTypeObject;
-                let doc = type_metadata::read(py, class, typeobj::TypeAttributeField::Doc);
+                let doc = match type_metadata::read(py, class, typeobj::TypeAttributeField::Doc) {
+                    Ok(doc) => doc,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if obj_from_bits(doc).as_int() == Some(37)
                     && WATCHES.load(Ordering::Relaxed) == 1
                     && (*view).tp_version_tag == 0
@@ -1166,7 +1210,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                 }
                 dec_ref_bits(py, doc);
                 // Reentry must see and be allowed to replace the committed doc.
-                type_metadata::write(
+                let _ = type_metadata::write(
                     py,
                     class,
                     typeobj::TypeAttributeField::Doc,
@@ -1211,13 +1255,16 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                     WATCHES.store(0, Ordering::Relaxed);
                     let epoch = class_layout_version_bits(class_ptr);
                     if direct {
-                        let descriptor = dict_get_in_place(py, root_namespace, key).unwrap();
+                        let descriptor = dict_get_in_place(py, root_namespace, key)
+                            .expect("dictionary lookup succeeds")
+                            .unwrap();
                         crate::builtins::types::native_descriptor_mutate(
                             py,
                             descriptor,
                             class,
                             Some(value),
-                        );
+                        )
+                        .expect("operation succeeds");
                     } else {
                         molt_set_attr_name(class, key, value);
                     }
@@ -1242,7 +1289,8 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                         class,
                         typeobj::TypeAttributeField::Name,
                         Some(MoltObject::from_int(1).bits()),
-                    );
+                    )
+                    .expect_err("invalid type name is rejected");
                 } else {
                     let key = attr_name_bits_from_bytes(py, b"__name__").unwrap();
                     molt_set_attr_name(class, key, MoltObject::from_int(1).bits());
@@ -1275,7 +1323,8 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                 MoltObject::from_ptr(alloc_function_obj(py, fn_addr!(retired), 1)).bits();
             molt_set_attr_name(finalizer_class, finalizer_key, function);
             let old_doc = crate::molt_object_new_bound(finalizer_class);
-            type_metadata::write(py, class, typeobj::TypeAttributeField::Doc, Some(old_doc));
+            type_metadata::write(py, class, typeobj::TypeAttributeField::Doc, Some(old_doc))
+                .expect("doc assignment succeeds");
             dec_ref_bits(py, old_doc);
             ROOT.store(class, Ordering::Relaxed);
             VIEW.store(tp.addr(), Ordering::Relaxed);
@@ -1287,11 +1336,13 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                 class,
                 typeobj::TypeAttributeField::Doc,
                 Some(MoltObject::from_int(37).bits()),
-            );
+            )
+            .expect("doc replacement succeeds");
             assert!(!exception_pending(py));
             assert_eq!(RETIRED.load(Ordering::Relaxed), 1);
             assert_eq!(
-                type_metadata::read(py, class, typeobj::TypeAttributeField::Doc),
+                type_metadata::read(py, class, typeobj::TypeAttributeField::Doc)
+                    .expect("doc read succeeds"),
                 MoltObject::from_int(73).bits()
             );
             assert_eq!(typeobj::PyType_Unwatch(watcher, view.as_ptr()), 0);
@@ -1380,8 +1431,10 @@ fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
                     (b"BirthDoc".as_slice(), Some("(a, b)")),
                 ] {
                     let current = attr_name_bits_from_bytes(py, current).unwrap();
-                    type_metadata::write(py, class, Field::Name, Some(current));
-                    let result = type_metadata::read(py, class, Field::TextSignature);
+                    type_metadata::write(py, class, Field::Name, Some(current))
+                        .expect("name assignment succeeds");
+                    let result = type_metadata::read(py, class, Field::TextSignature)
+                        .expect("signature read succeeds");
                     assert_eq!(
                         string_obj_to_owned(obj_from_bits(result)).as_deref(),
                         expected

@@ -6,50 +6,6 @@ pub fn resolve_symbol_with(
     runtime_fn_addr: fn(&str, *const ()) -> u64,
 ) -> Option<u64> {
     match symbol {
-        "molt_chainmap_contains" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_contains",
-            crate::collections_ext::molt_chainmap_contains as *const (),
-        )),
-        "molt_chainmap_delitem" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_delitem",
-            crate::collections_ext::molt_chainmap_delitem as *const (),
-        )),
-        "molt_chainmap_drop" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_drop",
-            crate::collections_ext::molt_chainmap_drop as *const (),
-        )),
-        "molt_chainmap_getitem" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_getitem",
-            crate::collections_ext::molt_chainmap_getitem as *const (),
-        )),
-        "molt_chainmap_keys" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_keys",
-            crate::collections_ext::molt_chainmap_keys as *const (),
-        )),
-        "molt_chainmap_len" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_len",
-            crate::collections_ext::molt_chainmap_len as *const (),
-        )),
-        "molt_chainmap_maps" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_maps",
-            crate::collections_ext::molt_chainmap_maps as *const (),
-        )),
-        "molt_chainmap_new" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_new",
-            crate::collections_ext::molt_chainmap_new as *const (),
-        )),
-        "molt_chainmap_new_child" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_new_child",
-            crate::collections_ext::molt_chainmap_new_child as *const (),
-        )),
-        "molt_chainmap_parents" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_parents",
-            crate::collections_ext::molt_chainmap_parents as *const (),
-        )),
-        "molt_chainmap_setitem" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_chainmap_setitem",
-            crate::collections_ext::molt_chainmap_setitem as *const (),
-        )),
         "molt_ordereddict_clear" => Some(runtime_fn_addr(
             "molt_runtime_collections::collections_ext::molt_ordereddict_clear",
             crate::collections_ext::molt_ordereddict_clear as *const (),

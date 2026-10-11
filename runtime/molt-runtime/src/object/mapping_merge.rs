@@ -32,15 +32,14 @@ pub(crate) unsafe fn direct_dict(py: &PyToken<'_>, source: u64) -> Result<Option
     let Some(name) = attr_name_bits_from_bytes(py, b"__iter__") else {
         return Err(());
     };
-    let same = unsafe {
-        class_attr_lookup_raw_mro(py, class_ptr, name)
-            == class_attr_lookup_raw_mro(py, dict_class, name)
-    };
+    let same = (|| unsafe {
+        Ok::<_, ()>(
+            class_attr_lookup_raw_mro(py, class_ptr, name)?
+                == class_attr_lookup_raw_mro(py, dict_class, name)?,
+        )
+    })();
     dec_ref_bits(py, name);
-    if exception_pending(py) {
-        return Err(());
-    }
-    if same {
+    if same? {
         super::ops::dict_backing_bits(py, source)
     } else {
         Ok(None)
@@ -127,7 +126,7 @@ pub(crate) unsafe fn apply(
                 let ok = accept_key(key, Some(hash)) && insert(key, value, Some(hash));
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, value);
-                if !ok || exception_pending(py) {
+                if !ok {
                     return MergeOutcome::Error;
                 }
                 if dict_len(ptr) != length {
@@ -137,20 +136,15 @@ pub(crate) unsafe fn apply(
             }
             return MergeOutcome::Complete;
         }
-        if exception_pending(py) {
-            return MergeOutcome::Error;
-        }
         let Some(name) = attr_name_bits_from_bytes(py, b"keys") else {
             return MergeOutcome::Error;
         };
         let method = attr_lookup_ptr_allow_missing(py, ptr, name);
         dec_ref_bits(py, name);
-        if exception_pending(py) {
-            if let Some(method) = method {
-                dec_ref_bits(py, method);
-            }
-            return MergeOutcome::Error;
-        }
+        let method = match method {
+            Ok(method) => method,
+            Err(()) => return MergeOutcome::Error,
+        };
         let Some(method) = method else {
             return MergeOutcome::NotMapping;
         };
@@ -178,7 +172,7 @@ pub(crate) unsafe fn apply(
             let ok = !exception_pending(py) && insert(key, value, None);
             dec_ref_bits(py, key);
             dec_ref_bits(py, value);
-            if !ok || exception_pending(py) {
+            if !ok {
                 return MergeOutcome::Error;
             }
         }
@@ -195,15 +189,14 @@ pub(crate) unsafe fn keyword_available(
     unsafe {
         // Generic mappings intentionally hash once here and once on insert,
         // including the first key in an initially empty destination.
-        let found = if let Some(hash) = hash {
-            super::ops::dict_find_entry_with_hash(py, target, key, hash).is_some()
+        let found = match if let Some(hash) = hash {
+            super::ops::dict_find_entry_with_hash(py, target, key, hash)
         } else {
-            let result = molt_dict_contains(MoltObject::from_ptr(target).bits(), key);
-            obj_from_bits(result).as_bool() == Some(true)
+            super::ops::dict_find_entry(py, target, key)
+        } {
+            Ok(found) => found.is_some(),
+            Err(()) => return false,
         };
-        if exception_pending(py) {
-            return false;
-        }
         if found {
             let name = crate::object::ops_format::format_obj_str_bytes(py, obj_from_bits(key));
             if !exception_pending(py) {
@@ -230,12 +223,11 @@ pub(crate) unsafe fn insert_dict(
 ) -> bool {
     unsafe {
         if let Some(hash) = hash {
-            super::ops::dict_set_with_hash_in_place(py, target, key, value, hash);
+            super::ops::dict_set_with_hash_in_place(py, target, key, value, hash)
         } else {
-            super::ops::dict_set_in_place(py, target, key, value);
+            super::ops::dict_set_in_place(py, target, key, value)
         }
     }
-    !exception_pending(py)
 }
 
 pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: u64) -> bool {
@@ -297,10 +289,12 @@ mod tests {
                 let dict = alloc_dict_with_pairs(_py, &[truth, first]);
                 assert!(!dict.is_null());
                 assert_eq!(
-                    crate::object::ops::dict_get_in_place(_py, dict, one),
+                    crate::object::ops::dict_get_in_place(_py, dict, one).unwrap(),
                     Some(first)
                 );
-                crate::object::ops::dict_set_inline_int_in_place(_py, dict, one, 1, second);
+                assert!(crate::object::ops::dict_set_inline_int_in_place(
+                    _py, dict, one, 1, second
+                ));
                 assert!(!exception_pending(_py));
                 assert_eq!(
                     dict_live_entries(dict)

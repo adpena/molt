@@ -309,11 +309,7 @@ fn named_dict_value(py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Result<
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let value = unsafe { dict_get_in_place(py, dict_ptr, key_bits) };
     dec_ref_bits(py, key_bits);
-    if exception_pending(py) {
-        Err(())
-    } else {
-        Ok(value)
-    }
+    value
 }
 
 /// Checked insertion into a dictionary no other code observes yet: the staged
@@ -330,14 +326,7 @@ fn checked_dict_insert(py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8], value_b
         return false;
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    unsafe {
-        dict_set_in_place(py, dict_ptr, key_bits, value_bits);
-    }
-    let inserted = if exception_pending(py) {
-        false
-    } else {
-        (unsafe { dict_get_in_place(py, dict_ptr, key_bits) }) == Some(value_bits)
-    };
+    let inserted = unsafe { dict_set_in_place(py, dict_ptr, key_bits, value_bits) };
     dec_ref_bits(py, key_bits);
     if !inserted {
         ensure_registry_memory_error(py, "intrinsic registry dictionary update failed");
@@ -2125,7 +2114,12 @@ mod tests {
 
                 // A non-callable replacement is never returned.
                 unsafe {
-                    dict_set_in_place(_py, registry, canonical_key, MoltObject::from_int(7).bits());
+                    assert!(dict_set_in_place(
+                        _py,
+                        registry,
+                        canonical_key,
+                        MoltObject::from_int(7).bits()
+                    ));
                 }
                 let second = resolve_intrinsic_func(_py, canonical, true).expect("republication");
                 assert_ne!(second, first);
@@ -2135,7 +2129,7 @@ mod tests {
                 // Another executable identity is never admitted under this name.
                 let foreign = resolve_intrinsic_func(_py, "molt_capabilities_trusted", true)
                     .expect("foreign materialization");
-                unsafe { dict_set_in_place(_py, registry, canonical_key, foreign) };
+                unsafe { assert!(dict_set_in_place(_py, registry, canonical_key, foreign)) };
                 let third = resolve_intrinsic_func(_py, alias, true).expect("republication");
                 assert!(third != foreign && third != second);
                 assert_eq!(fn_ptr_of(third), fn_ptr);
@@ -2201,7 +2195,12 @@ mod tests {
                             .as_ptr()
                             .unwrap();
                         let key = string_bits(_py, field);
-                        dict_set_in_place(_py, dictionary, key, MoltObject::from_int(1).bits());
+                        assert!(dict_set_in_place(
+                            _py,
+                            dictionary,
+                            key,
+                            MoltObject::from_int(1).bits()
+                        ));
                         assert_eq!(mutation_version(original), 0, "{field}");
                         let replacement = resolve_intrinsic_func(_py, name, true).unwrap();
                         assert_eq!(replacement, original, "{field}");
@@ -2246,7 +2245,14 @@ mod tests {
                 let mut filler = 0;
                 while spare() >= 2 {
                     let key = string_bits(_py, &format!("registry_filler_{filler}"));
-                    unsafe { dict_set_in_place(_py, registry, key, MoltObject::none().bits()) };
+                    unsafe {
+                        assert!(dict_set_in_place(
+                            _py,
+                            registry,
+                            key,
+                            MoltObject::none().bits()
+                        ))
+                    };
                     dec_ref_bits(_py, key);
                     filler += 1;
                 }

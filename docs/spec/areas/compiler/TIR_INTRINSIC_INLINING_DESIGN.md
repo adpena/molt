@@ -290,7 +290,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_int_from_obj` | 1 | Moderate | `int()` |
 | `molt_complex_from_obj` | 1 | Low | |
 | `molt_format_builtin` | 1 | Low | `format()` |
-| `molt_bigint_from_str` | 1 | Low | Large integer literal parsing |
+| `molt_bigint_from_bytes` | 1 | Low | Canonical signed binary integer literal materialization |
 
 #### Printing and I/O (7 functions)
 

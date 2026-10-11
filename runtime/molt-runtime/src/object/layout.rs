@@ -796,6 +796,12 @@ pub(crate) unsafe fn reversed_target_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
 
+pub(crate) unsafe fn reversed_set_target_bits(ptr: *mut u8, bits: u64) {
+    unsafe {
+        *(ptr as *mut u64) = bits;
+    }
+}
+
 pub(crate) unsafe fn reversed_index(ptr: *mut u8) -> usize {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const usize) }
 }
@@ -1365,12 +1371,16 @@ pub(crate) unsafe fn function_globals_bits(ptr: *mut u8) -> u64 {
 
 /// Store a globals dict on the function object (slot 9).  Takes its own
 /// reference — caller must still dec-ref their copy if they own one.
-pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+pub(crate) unsafe fn function_set_globals_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) -> Result<(), ()> {
     unsafe {
         crate::gil_assert();
         let slot = ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
         let builtins_slot = ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64;
-        let builtins = crate::builtins::frames::frame_effective_builtins_bits(_py, bits);
+        let builtins = crate::builtins::frames::frame_effective_builtins_bits(_py, bits)?;
         inc_ref_bits(_py, bits);
         inc_ref_bits(_py, builtins);
         let old_globals = std::mem::replace(&mut *slot, bits);
@@ -1378,6 +1388,7 @@ pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, 
         dec_ref_bits(_py, old_globals);
         dec_ref_bits(_py, old_builtins);
     }
+    Ok(())
 }
 
 /// Read the callable-shape mutation version stamp (slot 10).

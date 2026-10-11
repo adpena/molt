@@ -321,6 +321,7 @@ fn raw_home_observers_share_the_persistent_binding_identity() {
                     assert_eq!(
                         unsafe {
                             dict_get_in_place(py, obj_from_bits(snapshot).as_ptr().unwrap(), key)
+                                .expect("dictionary lookup succeeds")
                         },
                         Some(held)
                     );
@@ -330,6 +331,7 @@ fn raw_home_observers_share_the_persistent_binding_identity() {
                         assert_eq!(
                             unsafe {
                                 dict_get_in_place(py, obj_from_bits(locals).as_ptr().unwrap(), key)
+                                    .expect("dictionary lookup succeeds")
                             },
                             Some(held)
                         );
@@ -767,6 +769,7 @@ fn a_proxy_writes_cells_retired_frames_and_extra_locals() {
             let snapshot = frame_bindings_snapshot(py, payload).expect("snapshot");
             let lookup = |key: u64| unsafe {
                 dict_get_in_place(py, obj_from_bits(snapshot).as_ptr().unwrap(), key)
+                    .expect("dictionary lookup succeeds")
             };
             assert_eq!(lookup(extra), Some(original));
             assert_eq!(lookup(shared), Some(written));
@@ -850,6 +853,7 @@ fn locals_identity_follows_the_target_version() {
                 let key = string(py, b"dropped");
                 let lookup = |dict: u64| unsafe {
                     dict_get_in_place(py, obj_from_bits(dict).as_ptr().unwrap(), key)
+                        .expect("dictionary lookup succeeds")
                 };
                 if minor == 12 {
                     // One refreshed dict: unbound slots are removed from it.

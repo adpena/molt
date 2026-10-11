@@ -49,7 +49,8 @@ pub extern "C" fn molt_module_setattr(module: u64, name: u64, value: u64) -> u64
         if module_receiver(py, module, "__setattr__").is_none() {
             return MoltObject::none().bits();
         }
-        crate::builtins::attributes::generic_set_attr_name(module, name, value)
+        let _ = crate::builtins::attributes::generic_set_attr_name(module, name, value);
+        MoltObject::none().bits()
     })
 }
 
@@ -59,7 +60,8 @@ pub extern "C" fn molt_module_delattr(module: u64, name: u64) -> u64 {
         if module_receiver(py, module, "__delattr__").is_none() {
             return MoltObject::none().bits();
         }
-        crate::builtins::attributes::generic_del_attr_name(module, name)
+        let _ = crate::builtins::attributes::generic_del_attr_name(module, name);
+        MoltObject::none().bits()
     })
 }
 
@@ -78,6 +80,10 @@ pub extern "C" fn molt_module_dir(module: u64) -> u64 {
         };
         let hook = unsafe { dict_get_in_place(py, dict, name) };
         dec_ref_bits(py, name);
+        let hook = match hook {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
         if let Some(hook) = hook {
             inc_ref_bits(py, hook);
             let result = unsafe { call_callable0(py, hook) };

@@ -382,96 +382,12 @@ fn stdio_isatty(fd: i64) -> bool {
     }
 }
 
-fn open_arg_path(_py: &PyToken<'_>, file_bits: u64) -> Result<(std::path::PathBuf, u64), String> {
-    let obj = obj_from_bits(file_bits);
-    if let Some(text) = string_obj_to_owned(obj) {
-        let name_ptr = alloc_string(_py, text.as_bytes());
-        if name_ptr.is_null() {
-            return Err("open failed".to_string());
-        }
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        return Ok((std::path::PathBuf::from(text), name_bits));
-    }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTES {
-                let len = bytes_len(ptr);
-                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                let name_ptr = alloc_bytes(_py, bytes);
-                if name_ptr.is_null() {
-                    return Err("open failed".to_string());
-                }
-                let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::ffi::OsStringExt;
-                    let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                    return Ok((std::path::PathBuf::from(path), name_bits));
-                }
-                #[cfg(windows)]
-                {
-                    let path = std::str::from_utf8(bytes)
-                        .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                    return Ok((std::path::PathBuf::from(path), name_bits));
-                }
-            }
-            let fspath_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.fspath_name, b"__fspath__");
-            if let Some(call_bits) = attr_lookup_ptr(_py, ptr, fspath_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return Err("open failed".to_string());
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(text) = string_obj_to_owned(res_obj) {
-                    let name_ptr = alloc_string(_py, text.as_bytes());
-                    if name_ptr.is_null() {
-                        return Err("open failed".to_string());
-                    }
-                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                    dec_ref_bits(_py, res_bits);
-                    return Ok((std::path::PathBuf::from(text), name_bits));
-                }
-                if let Some(res_ptr) = res_obj.as_ptr()
-                    && object_type_id(res_ptr) == TYPE_ID_BYTES
-                {
-                    let len = bytes_len(res_ptr);
-                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                    let name_ptr = alloc_bytes(_py, bytes);
-                    if name_ptr.is_null() {
-                        return Err("open failed".to_string());
-                    }
-                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::ffi::OsStringExt;
-                        let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                        dec_ref_bits(_py, res_bits);
-                        return Ok((std::path::PathBuf::from(path), name_bits));
-                    }
-                    #[cfg(windows)]
-                    {
-                        let path = std::str::from_utf8(bytes)
-                            .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                        dec_ref_bits(_py, res_bits);
-                        return Ok((std::path::PathBuf::from(path), name_bits));
-                    }
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                dec_ref_bits(_py, res_bits);
-                let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
-                return Err(format!(
-                    "expected {obj_type}.__fspath__() to return str or bytes, not {res_type}"
-                ));
-            }
-        }
-    }
-    let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
-    Err(format!(
-        "expected str, bytes or os.PathLike object, not {obj_type}"
-    ))
+// open() exposes its fspath result; FileIO exposes the original argument.
+// CPython _iomodule.c resolves before construction, while fileio.c retains nameobj.
+#[derive(Clone, Copy)]
+enum OpenFileName {
+    Resolved,
+    Original,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -485,6 +401,7 @@ fn open_impl(
     newline_bits: u64,
     closefd_bits: u64,
     opener_bits: u64,
+    name_policy: OpenFileName,
 ) -> u64 {
     struct BitsGuard<'a> {
         py: &'a PyToken<'a>,
@@ -612,8 +529,17 @@ fn open_impl(
         path_guard.bits = bits;
         bits
     } else {
-        match open_arg_path(_py, file_bits) {
-            Ok((resolved, name_bits)) => {
+        match path_and_name_from_bits(_py, file_bits) {
+            Ok((resolved, name_bits, _flavor)) => {
+                let name_bits = match name_policy {
+                    OpenFileName::Resolved => name_bits,
+                    OpenFileName::Original => {
+                        inc_ref_bits(_py, file_bits);
+                        dec_ref_bits(_py, name_bits);
+                        file_bits
+                    }
+                };
+                path_guard.bits = name_bits;
                 if !closefd {
                     return raise_exception::<_>(
                         _py,
@@ -622,10 +548,9 @@ fn open_impl(
                     );
                 }
                 path = Some(resolved);
-                path_guard.bits = name_bits;
                 name_bits
             }
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         }
     };
 
@@ -666,7 +591,11 @@ fn open_impl(
             let path_bits = path_name_bits;
             let flags_bits = MoltObject::from_int(flags as i64).bits();
             let fd_bits = unsafe { call_callable2(_py, opener_bits, path_bits, flags_bits) };
-            if exception_pending(_py) {
+            let failed = exception_pending(_py);
+            let _fd_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), fd_bits)
+            };
+            if failed {
                 return MoltObject::none().bits();
             }
             if let Some(fd_val) = to_i64(obj_from_bits(fd_bits)) {
@@ -680,7 +609,6 @@ fn open_impl(
                 let msg = format!("expected opener to return int, got {type_name}");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
-            dec_ref_bits(_py, fd_bits);
         } else {
             // VFS dispatch (Plan B v0.1)
             // If the path resolves through a VFS mount, serve the read
@@ -1300,6 +1228,7 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
             none,
             MoltObject::from_bool(true).bits(),
             none,
+            OpenFileName::Resolved,
         )
     })
 }
@@ -1326,6 +1255,7 @@ pub extern "C" fn molt_file_open_ex(
             newline_bits,
             closefd_bits,
             opener_bits,
+            OpenFileName::Resolved,
         )
     })
 }
@@ -1377,6 +1307,7 @@ pub extern "C" fn molt_file_io_new(
             none,
             closefd_bits,
             opener_bits,
+            OpenFileName::Original,
         );
         dec_ref_bits(_py, mode_bits);
         out
@@ -1416,6 +1347,7 @@ pub extern "C" fn molt_open_builtin(
             newline_bits,
             closefd_bits,
             opener_bits,
+            OpenFileName::Resolved,
         )
     })
 }

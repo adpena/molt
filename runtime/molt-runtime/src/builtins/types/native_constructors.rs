@@ -42,15 +42,16 @@ unsafe fn owner(py: &PyToken<'_>, call: &Arguments<'_, '_>, base: u64) -> Option
 
 /// tuple/float/frozenset tp_new tolerate keywords only when a subtype's custom
 /// tp_init consumes them (CPython clinic wrappers and frozenset_new).
-unsafe fn custom_init(py: &PyToken<'_>, class: u64, base: u64) -> bool {
+unsafe fn custom_init(py: &PyToken<'_>, class: u64, base: u64) -> Result<bool, ()> {
     unsafe {
         if class == base {
-            return false;
+            return Ok(false);
         }
         let name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
         let class = obj_from_bits(class).as_ptr().unwrap();
         let base = obj_from_bits(base).as_ptr().unwrap();
-        class_attr_lookup_raw_mro(py, class, name) != class_attr_lookup_raw_mro(py, base, name)
+        Ok(class_attr_lookup_raw_mro(py, class, name)?
+            != class_attr_lookup_raw_mro(py, base, name)?)
     }
 }
 
@@ -157,9 +158,11 @@ pub(crate) extern "C" fn tuple_new(args: u64, kwargs: u64) -> u64 {
         if unsafe { NativePayload::Tuple.admit(py, class) }.is_none() {
             return MoltObject::none().bits();
         }
-        let Some(value) = call.positional_only(py, "tuple", unsafe {
-            custom_init(py, class, builtin_classes(py).tuple)
-        }) else {
+        let allow_keywords = match unsafe { custom_init(py, class, builtin_classes(py).tuple) } {
+            Ok(allowed) => allowed,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(value) = call.positional_only(py, "tuple", allow_keywords) else {
             return MoltObject::none().bits();
         };
         crate::molt_tuple_new_bound(class, value)
@@ -177,9 +180,12 @@ pub(crate) extern "C" fn frozenset_new(args: u64, kwargs: u64) -> u64 {
         if unsafe { NativePayload::Frozenset.admit(py, class) }.is_none() {
             return MoltObject::none().bits();
         }
-        let Some(value) = call.positional_only(py, "frozenset", unsafe {
-            custom_init(py, class, builtin_classes(py).frozenset)
-        }) else {
+        let allow_keywords = match unsafe { custom_init(py, class, builtin_classes(py).frozenset) }
+        {
+            Ok(allowed) => allowed,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(value) = call.positional_only(py, "frozenset", allow_keywords) else {
             return MoltObject::none().bits();
         };
         let result = if value == missing_bits(py) {
@@ -242,9 +248,11 @@ pub(crate) extern "C" fn float_new(args: u64, kwargs: u64) -> u64 {
         let Some((class, _)) = (unsafe { owner(py, &call, builtin_classes(py).float) }) else {
             return MoltObject::none().bits();
         };
-        let Some(value) = call.positional_only(py, "float", unsafe {
-            custom_init(py, class, builtin_classes(py).float)
-        }) else {
+        let allow_keywords = match unsafe { custom_init(py, class, builtin_classes(py).float) } {
+            Ok(allowed) => allowed,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(value) = call.positional_only(py, "float", allow_keywords) else {
             return MoltObject::none().bits();
         };
         molt_float_new(
@@ -483,10 +491,11 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
         let Some(receiver) = call.receiver(py) else {
             return MoltObject::none().bits();
         };
-        let Some(storage) = obj_from_bits(receiver)
-            .as_ptr()
-            .and_then(|ptr| unsafe { crate::object::ops::dict_like_bits_from_ptr(py, ptr) })
-        else {
+        let storage = match crate::object::ops::dict_backing_bits(py, receiver) {
+            Ok(storage) => storage,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(storage) = storage else {
             return raise_exception::<_>(
                 py,
                 "TypeError",
@@ -499,18 +508,12 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
         inc_ref_bits(py, storage);
         let _storage = PtrDropGuard::new(obj_from_bits(storage).as_ptr().unwrap());
         if let Some(&value) = call.values().first() {
-            unsafe {
-                dict_update_apply(py, storage, dict_update_set_in_place, value);
-            }
-            if exception_pending(py) {
+            if !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, value) } {
                 return MoltObject::none().bits();
             }
         }
         for (key, value) in call.keyword_pairs() {
-            unsafe {
-                dict_update_set_in_place(py, storage, key, value);
-            }
-            if exception_pending(py) {
+            if !unsafe { dict_update_set_in_place(py, storage, key, value) } {
                 return MoltObject::none().bits();
             }
         }

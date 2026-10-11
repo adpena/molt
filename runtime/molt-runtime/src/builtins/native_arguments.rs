@@ -82,14 +82,13 @@ impl<'a> NativeKeywords<'a> {
             }
             Some(dictionary) => {
                 let ptr = obj_from_bits(dictionary).as_ptr()?;
-                unsafe { dict_get_in_place(py, ptr, parameter) }
+                match unsafe { dict_get_in_place(py, ptr, parameter) } {
+                    Ok(value) => value,
+                    Err(()) => return None,
+                }
             }
         };
-        if exception_pending(py) {
-            None
-        } else {
-            Some(value)
-        }
+        Some(value)
     }
 }
 

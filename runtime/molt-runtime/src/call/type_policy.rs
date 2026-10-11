@@ -64,40 +64,34 @@ pub(crate) unsafe fn object_constructor_extra_args_allowed(
     _py: &PyToken<'_>,
     class_bits: u64,
     call: ObjectConstructorCall,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return false;
+            return Ok(false);
         };
         if object_type_id(class_ptr) != crate::TYPE_ID_TYPE {
-            return false;
+            return Ok(false);
         }
 
         let new_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
         let init_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-        let Some(resolved_new) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) else {
-            return false;
+        let Some(resolved_new) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)? else {
+            return Ok(false);
         };
-        if exception_pending(_py) {
-            return false;
-        }
-        let Some(resolved_init) = class_attr_lookup_raw_mro(_py, class_ptr, init_name_bits) else {
-            return false;
+        let Some(resolved_init) = class_attr_lookup_raw_mro(_py, class_ptr, init_name_bits)? else {
+            return Ok(false);
         };
-        if exception_pending(_py) {
-            return false;
-        }
         let new_is_object =
             callable_matches_runtime_symbol(Some(resolved_new), fn_key!(molt_object_new_bound));
         let init_is_object =
             callable_matches_runtime_symbol(Some(resolved_init), fn_key!(molt_object_init));
 
-        match call {
+        Ok(match call {
             ObjectConstructorCall::New => new_is_object && !init_is_object,
             ObjectConstructorCall::Init => init_is_object && !new_is_object,
-        }
+        })
     }
 }
 
@@ -194,8 +188,8 @@ mod tests {
     fn object_builtin_methods_match_runtime_symbols() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = object_method_bits(_py, "__new__");
-            let init_bits = object_method_bits(_py, "__init__");
+            let new_bits = object_method_bits(_py, "__new__").expect("lookup succeeds");
+            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(new_bits, fn_key!(crate::molt_object_new_bound))
             });
@@ -209,7 +203,7 @@ mod tests {
     fn type_call_matches_runtime_symbol() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let call_bits = type_method_bits(_py, "__call__");
+            let call_bits = type_method_bits(_py, "__call__").expect("lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(call_bits, fn_key!(crate::molt_type_call))
             });
@@ -220,8 +214,10 @@ mod tests {
     fn exception_builtin_methods_match_runtime_symbols() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = crate::builtins::exceptions::exception_method_bits(_py, "__new__");
-            let init_bits = crate::builtins::exceptions::exception_method_bits(_py, "__init__");
+            let new_bits = crate::builtins::exceptions::exception_method_bits(_py, "__new__")
+                .expect("method lookup succeeds");
+            let init_bits = crate::builtins::exceptions::exception_method_bits(_py, "__init__")
+                .expect("method lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(
                     new_bits,
@@ -241,8 +237,8 @@ mod tests {
     fn constructor_policy_rejects_args_for_default_object_constructor() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = object_method_bits(_py, "__new__");
-            let init_bits = object_method_bits(_py, "__init__");
+            let new_bits = object_method_bits(_py, "__new__").expect("lookup succeeds");
+            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
             assert_eq!(
                 unsafe { resolved_constructor_init_policy(new_bits, init_bits) },
                 InitArgPolicy::RejectConstructorArgs
@@ -261,7 +257,7 @@ mod tests {
             );
             assert!(!new_ptr.is_null());
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            let init_bits = object_method_bits(_py, "__init__");
+            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
             assert_eq!(
                 unsafe { resolved_constructor_init_policy(Some(new_bits), init_bits) },
                 InitArgPolicy::SkipObjectInit
@@ -327,8 +323,10 @@ mod tests {
                     custom_init_policy_probe as *const (),
                 );
 
-                let allowed =
-                    |class_bits, call| object_constructor_extra_args_allowed(_py, class_bits, call);
+                let allowed = |class_bits, call| {
+                    object_constructor_extra_args_allowed(_py, class_bits, call)
+                        .expect("constructor policy lookup succeeds")
+                };
                 assert!(!allowed(neither, ObjectConstructorCall::New));
                 assert!(!allowed(neither, ObjectConstructorCall::Init));
                 assert!(allowed(init_only, ObjectConstructorCall::New));

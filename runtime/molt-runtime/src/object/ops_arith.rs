@@ -1803,14 +1803,25 @@ unsafe fn power_slot<'a, 'py>(
             return Ok(None);
         };
         inc_ref_bits(py, class);
-        let left = class_attr_lookup_raw_mro(py, class_ptr, forward);
+        let left = match class_attr_lookup_raw_mro(py, class_ptr, forward) {
+            Ok(left) => left,
+            Err(()) => {
+                dec_ref_bits(py, class);
+                return Err(MoltObject::none().bits());
+            }
+        };
         if let Some(left) = left {
             inc_ref_bits(py, left);
         }
-        let right = if exception_pending(py) {
-            None
-        } else {
-            class_attr_lookup_raw_mro(py, class_ptr, reflected)
+        let right = match class_attr_lookup_raw_mro(py, class_ptr, reflected) {
+            Ok(right) => right,
+            Err(()) => {
+                dec_ref_bits(py, class);
+                if let Some(left) = left {
+                    dec_ref_bits(py, left);
+                }
+                return Err(MoltObject::none().bits());
+            }
         };
         let native = match (left, right) {
             (Some(left), Some(right)) => {
@@ -1830,12 +1841,7 @@ unsafe fn power_slot<'a, 'py>(
         {
             dec_ref_bits(py, left);
         }
-        if exception_pending(py) {
-            if let Some((_, left)) = native {
-                dec_ref_bits(py, left);
-            }
-            Err(MoltObject::none().bits())
-        } else if left.is_some() || right.is_some() {
+        if left.is_some() || right.is_some() {
             Ok(Some(PowerSlot { py, native }))
         } else {
             Ok(None)
@@ -2195,7 +2201,10 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
             unsafe {
                 let trunc_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.trunc_name, b"__trunc__");
-                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, trunc_name_bits) {
+                if let Some(call_bits) = match attr_lookup_ptr(_py, ptr, trunc_name_bits) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
                     return res_bits;
@@ -2658,6 +2667,10 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
             unsafe {
                 let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
                 dec_ref_bits(_py, name_bits);
+                let call_bits = match call_bits {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if let Some(call_bits) = call_bits {
                     let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
@@ -2680,14 +2693,15 @@ pub(super) fn unary_subtype_result(
     if builtin_operand(py, value) {
         return None;
     }
-    if let Some(method) =
-        unsafe { crate::builtins::attr::lookup_special_method(py, value.bits(), name) }
-    {
-        let result = unsafe { call_callable0(py, method) };
-        dec_ref_bits(py, method);
-        return Some(result);
+    match unsafe { crate::builtins::attr::lookup_special_method(py, value.bits(), name) } {
+        Ok(Some(method)) => {
+            let result = unsafe { call_callable0(py, method) };
+            dec_ref_bits(py, method);
+            Some(result)
+        }
+        Ok(None) => None,
+        Err(()) => Some(MoltObject::none().bits()),
     }
-    exception_pending(py).then(|| MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]

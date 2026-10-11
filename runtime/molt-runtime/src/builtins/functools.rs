@@ -123,7 +123,12 @@ impl LruOrderState {
         self.heap.clear();
     }
 
-    fn evict_over_limit(&mut self, _py: &PyToken<'_>, cache_ptr: *mut u8, maxsize: usize) {
+    fn evict_over_limit(
+        &mut self,
+        _py: &PyToken<'_>,
+        cache_ptr: *mut u8,
+        maxsize: usize,
+    ) -> Result<(), ()> {
         while self.latest.len() > maxsize {
             let Some(Reverse((stamp, key_bits))) = self.heap.pop() else {
                 break;
@@ -133,13 +138,14 @@ impl LruOrderState {
             }
             self.latest.remove(&key_bits);
             unsafe {
-                let _ = crate::dict_del_in_place(_py, cache_ptr, key_bits);
+                let _ = crate::dict_del_in_place(_py, cache_ptr, key_bits)?;
             }
         }
         // Compact stale heap entries after sufficient churn.
         if self.heap.len() > self.latest.len().saturating_mul(8).saturating_add(32) {
             self.compact_heap();
         }
+        Ok(())
     }
 
     fn compact_heap(&mut self) {
@@ -617,10 +623,10 @@ pub extern "C" fn molt_functools_partial_call(
                     return MoltObject::none().bits();
                 }
                 if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-                    let _ = unsafe {
+                    let completed = unsafe {
                         dict_update_apply(_py, copy_bits, dict_update_set_in_place, kwargs_bits)
                     };
-                    if exception_pending(_py) {
+                    if !completed {
                         dec_ref_bits(_py, copy_bits);
                         return MoltObject::none().bits();
                     }
@@ -1097,13 +1103,25 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
             intern_static_name(_py, &crate::runtime_state(_py).interned.gt_name, b"__gt__");
         let ge_name =
             intern_static_name(_py, &crate::runtime_state(_py).interned.ge_name, b"__ge__");
-        let root = if unsafe { dict_get_in_place(_py, dict_ptr, lt_name).is_some() } {
+        let root = if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
+            Ok(value) => value.is_some(),
+            Err(()) => return MoltObject::none().bits(),
+        } {
             "lt"
-        } else if unsafe { dict_get_in_place(_py, dict_ptr, le_name).is_some() } {
+        } else if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
+            Ok(value) => value.is_some(),
+            Err(()) => return MoltObject::none().bits(),
+        } {
             "le"
-        } else if unsafe { dict_get_in_place(_py, dict_ptr, gt_name).is_some() } {
+        } else if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
+            Ok(value) => value.is_some(),
+            Err(()) => return MoltObject::none().bits(),
+        } {
             "gt"
-        } else if unsafe { dict_get_in_place(_py, dict_ptr, ge_name).is_some() } {
+        } else if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
+            Ok(value) => value.is_some(),
+            Err(()) => return MoltObject::none().bits(),
+        } {
             "ge"
         } else {
             return raise_exception::<_>(
@@ -1116,46 +1134,82 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
         // op_code: 0=lt,1=le,2=gt,3=ge; swap, negate
         match root {
             "lt" => {
-                if unsafe { dict_get_in_place(_py, dict_ptr, gt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__gt__", 0, 1, 0));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, le_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__le__", 0, 1, 1));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, ge_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__ge__", 0, 0, 1));
                 }
             }
             "le" => {
-                if unsafe { dict_get_in_place(_py, dict_ptr, ge_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__ge__", 1, 1, 0));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, lt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__lt__", 1, 1, 1));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, gt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__gt__", 1, 0, 1));
                 }
             }
             "gt" => {
-                if unsafe { dict_get_in_place(_py, dict_ptr, lt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__lt__", 2, 1, 0));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, ge_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__ge__", 2, 1, 1));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, le_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__le__", 2, 0, 1));
                 }
             }
             _ => {
-                if unsafe { dict_get_in_place(_py, dict_ptr, le_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__le__", 3, 1, 0));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, gt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__gt__", 3, 1, 1));
                 }
-                if unsafe { dict_get_in_place(_py, dict_ptr, lt_name).is_none() } {
+                if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
+                    Ok(value) => value.is_none(),
+                    Err(()) => return MoltObject::none().bits(),
+                } {
                     missing.push(("__lt__", 3, 0, 1));
                 }
             }
@@ -1196,8 +1250,12 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 dec_ref_bits(_py, func_bits);
                 continue;
             };
-            unsafe { dict_set_in_place(_py, dict_ptr, name_bits, func_bits) };
+            let published = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, func_bits) };
+            dec_ref_bits(_py, func_bits);
             dec_ref_bits(_py, name_bits);
+            if !published {
+                return MoltObject::none().bits();
+            }
         }
         inc_ref_bits(_py, cls_bits);
         cls_bits
@@ -1554,15 +1612,24 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             dec_ref_bits(_py, key_bits);
             return MoltObject::none().bits();
         }
-        unsafe {
-            dict_set_in_place(_py, cache_ptr, key_bits, result_bits);
+        if !unsafe { dict_set_in_place(_py, cache_ptr, key_bits, result_bits) } {
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, result_bits);
+            return MoltObject::none().bits();
         }
         let order_ptr = unsafe { lru_order_ptr(self_ptr) };
         if !order_ptr.is_null() {
             let order = unsafe { &mut *order_ptr };
             order.touch(key_bits);
             if let Some(maxsize) = maxsize {
-                order.evict_over_limit(_py, cache_ptr, maxsize.max(0) as usize);
+                if order
+                    .evict_over_limit(_py, cache_ptr, maxsize.max(0) as usize)
+                    .is_err()
+                {
+                    dec_ref_bits(_py, key_bits);
+                    dec_ref_bits(_py, result_bits);
+                    return MoltObject::none().bits();
+                }
             }
         }
         dec_ref_bits(_py, key_bits);

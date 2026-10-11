@@ -1032,7 +1032,9 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             OpIR {
                 kind: "const_bigint".into(),
                 out: Some("bigint".into()),
-                s_value: Some(i64::MAX.to_string()),
+                bytes: Some(molt_ir::literal_payload::integer_literal_bytes(i128::from(
+                    i64::MAX,
+                ))),
                 ..OpIR::default()
             },
             OpIR {
@@ -1110,7 +1112,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
         for constructor in [
             "molt_string_from_bytes",
             "molt_bytes_from_bytes",
-            "molt_bigint_from_str",
+            "molt_bigint_from_bytes",
         ] {
             let calls = call_sites_for_import(function, compiled.import_ids[constructor]);
             assert_eq!(calls.len(), 1, "{constructor}: {}", function.display());

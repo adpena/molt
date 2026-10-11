@@ -68,8 +68,11 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     );
     assert_eq!(unsafe { crate::object_class_bits(instance_ptr) }, class);
     assert!(!unsafe { crate::object_is_exact_builtin_dict(_py, instance_ptr) });
-    let storage = unsafe { crate::object::ops::dict_like_bits_from_ptr(_py, instance_ptr) }
-        .expect("dict subclass storage");
+    let storage = unsafe {
+        crate::object::ops::dict_like_bits_from_ptr(_py, instance_ptr)
+            .expect("dictionary storage resolution succeeds")
+    }
+    .expect("dict subclass storage");
     assert_ne!(storage, instance);
     assert_eq!(
         unsafe { object_type_id(obj_from_bits(storage).as_ptr().unwrap()) },
@@ -107,6 +110,7 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
         let package_key = attr_name_bits_from_bytes(_py, b"__package__").unwrap();
         let empty = attr_name_bits_from_bytes(_py, b"").unwrap();
         let storage = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals)
+            .expect("dictionary storage resolution succeeds")
             .expect("dict subclass backing");
         unsafe { dict_set_in_place(_py, storage, package_key, empty) };
         LOOKUP_MODE.store(LOOKUP_VALUE_ERROR, Ordering::SeqCst);
@@ -202,9 +206,12 @@ fn framed_global_store_uses_dict_subclass_storage_without_replacing_identity() {
         );
         assert_eq!(unsafe { crate::object_class_bits(globals_ptr) }, class);
         let storage_ptr = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals)
+            .expect("dictionary storage resolution succeeds")
             .expect("dict subclass globals storage");
         assert_eq!(
-            unsafe { dict_get_in_place(_py, storage_ptr, key) },
+            unsafe {
+                dict_get_in_place(_py, storage_ptr, key).expect("dictionary lookup succeeds")
+            },
             Some(value)
         );
 
@@ -233,9 +240,12 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
         assert!(!exception_pending(_py));
 
         let globals_storage = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals)
+            .expect("dictionary storage resolution succeeds")
             .expect("dict subclass globals storage");
         assert_eq!(
-            unsafe { dict_get_in_place(_py, globals_storage, key) },
+            unsafe {
+                dict_get_in_place(_py, globals_storage, key).expect("dictionary lookup succeeds")
+            },
             None
         );
         let found = molt_module_get_attr(module, key);
@@ -346,14 +356,14 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         inc_ref_bits(_py, builtins);
         crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, builtins, 0);
         for (mode, expected) in [
-            (LOOKUP_HIT, Some(value)),
-            (LOOKUP_KEY_ERROR, None),
-            (LOOKUP_VALUE_ERROR, None),
+            (LOOKUP_HIT, Ok(Some(value))),
+            (LOOKUP_KEY_ERROR, Ok(None)),
+            (LOOKUP_VALUE_ERROR, Err(())),
         ] {
             LOOKUP_MODE.store(mode, Ordering::SeqCst);
             let found = crate::builtins::functions::lookup_builtin_name(_py, "len");
             assert_eq!(found, expected);
-            if let Some(found) = found {
+            if let Ok(Some(found)) = found {
                 assert_eq!(refcount(value), value_before + 1);
                 dec_ref_bits(_py, found);
             }
@@ -378,7 +388,7 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         );
         assert_eq!(
             crate::builtins::functions::lookup_builtin_name(_py, "len"),
-            None
+            Err(())
         );
         assert_and_clear_exception(_py, "TypeError", "not subscriptable");
         crate::builtins::frames::frame_stack_pop(_py);

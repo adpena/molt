@@ -149,7 +149,13 @@ pub(super) unsafe fn call_type_with_arguments(
             // setup inline.  Otherwise dispatch to the user's override.
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-            let new_lookup = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+            let new_lookup = match class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
+                Ok(value) => value,
+                Err(()) => {
+                    dec_ref_bits(_py, kwargs_bits);
+                    return MoltObject::none().bits();
+                }
+            };
             let new_is_default = new_lookup
                 .map(|bits| {
                     let obj = obj_from_bits(bits);
@@ -186,6 +192,7 @@ pub(super) unsafe fn call_type_with_arguments(
             };
 
             if exception_pending(_py) {
+                dec_ref_bits(_py, new_class_bits);
                 dec_ref_bits(_py, kwargs_bits);
                 return MoltObject::none().bits();
             }
@@ -207,7 +214,15 @@ pub(super) unsafe fn call_type_with_arguments(
                 // not dec-ref.
                 let init_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-                if let Some(init_bits) = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
+                let init = match class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        dec_ref_bits(_py, new_class_bits);
+                        dec_ref_bits(_py, kwargs_bits);
+                        return MoltObject::none().bits();
+                    }
+                };
+                if let Some(init_bits) = init {
                     let init_result =
                         match arguments.constructor_child(Some(new_class_bits), pos_args) {
                             Ok(init_arguments) => {

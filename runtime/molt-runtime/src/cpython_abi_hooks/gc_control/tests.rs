@@ -66,12 +66,11 @@ unsafe extern "C" fn native_subtype_traverse(
 }
 
 #[test]
-fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
+fn builtin_gc_slots_share_runtime_edges_and_reject_opaque_native_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         use molt_cpython_abi::abi_types::*;
         for ty in [
-            &raw mut PyList_Type,
             &raw mut PyDict_Type,
             &raw mut PySet_Type,
             &raw mut PyFrozenSet_Type,
@@ -112,11 +111,18 @@ fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
         let subtype = molt_cpython_abi::api::typeobj::PyType_FromSpec(&raw mut spec);
         assert!(!subtype.is_null());
         assert!((*subtype.cast::<PyTypeObject>()).tp_clear.is_some());
-        assert!(
-            molt_cpython_abi::api::typeobj::PyType_GenericAlloc(subtype.cast(), 0).is_null(),
-            "overriding traversal must not admit an inherited managed clear slot"
+        let instance = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::typeobj::PyType_GenericAlloc(subtype.cast(), 0),
         );
-        errors::PyErr_Clear();
+        assert!(!instance.as_ptr().is_null());
+        let address = instance.as_ptr().addr();
+        assert_ne!(memory::PyObject_GC_IsTracked(instance.as_ptr()), 0);
+        assert_eq!(
+            (*subtype.cast::<PyTypeObject>()).tp_clear.unwrap()(instance.as_ptr()),
+            0
+        );
+        drop(instance);
+        assert!(!crate::object::gc::native_gc_is_enrolled(address));
         assert_eq!(molt_cpython_abi::api::typeobj::molt_type_clear(subtype), 0);
         molt_cpython_abi::api::refcount::Py_DECREF(subtype);
 
@@ -172,6 +178,222 @@ fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
         assert_eq!(memory::molt_managed_gc_clear(view), 0);
         dec_ref_bits(&py, source_bits);
         assert!(!crate::exception_pending(&py));
+    });
+}
+
+struct NativeListRetirement {
+    list: *mut PyObject,
+    replacement: *mut PyObject,
+    armed: bool,
+    append_on_retirement: bool,
+    append_status: Option<c_int>,
+    observations: Vec<(usize, isize, *mut PyObject)>,
+}
+
+#[repr(C)]
+struct NativeListRetirementChild {
+    header: PyObject,
+    witness: *mut NativeListRetirement,
+    ordinal: usize,
+}
+
+unsafe extern "C" fn native_list_child_dealloc(object: *mut PyObject) {
+    use molt_cpython_abi::api::sequences;
+    unsafe {
+        let child = object.cast::<NativeListRetirementChild>();
+        let witness = &mut *(*child).witness;
+        if witness.armed {
+            let pending = errors::PyErr_GetRaisedException();
+            errors::PyErr_SetRaisedException(pending);
+            witness.observations.push((
+                (*child).ordinal,
+                sequences::PyList_Size(witness.list),
+                pending,
+            ));
+            if (*child).ordinal == 2 && witness.append_on_retirement {
+                witness.append_status =
+                    Some(sequences::PyList_Append(witness.list, witness.replacement));
+            }
+        }
+        // This is a non-GC static extension type; its C object owns no class edge.
+        memory::PyObject_Free(object.cast());
+    }
+}
+
+#[test]
+fn native_list_clear_and_terminal_retirement_preserve_distinct_callback_phases() {
+    use super::super::native_test_fixture::NativeType;
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::{object, refcount::OwnedPyObject, sequences, typeobj};
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    with_gil(|py| unsafe {
+        for direct_clear in [true, false] {
+            // The borrowed callback context and target owners outlive the list even
+            // if a fixture assertion unwinds before the clear operation.
+            let mut witness = NativeListRetirement {
+                list: std::ptr::null_mut(),
+                replacement: std::ptr::null_mut(),
+                armed: false,
+                append_on_retirement: direct_clear,
+                append_status: None,
+                observations: Vec::with_capacity(2),
+            };
+            let mut child_type = NativeType::<PyTypeObject>::subtype(
+                &raw mut PyBaseObject_Type,
+                c"gc.ListRetirementChild",
+            );
+            child_type.tp_basicsize = std::mem::size_of::<NativeListRetirementChild>() as isize;
+            child_type.tp_dealloc = Some(native_list_child_dealloc);
+            assert_eq!(child_type.ready(), 0);
+            let replacement = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyBaseObject_Type,
+                0,
+            ));
+            assert!(!replacement.as_ptr().is_null());
+            errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast(),
+                c"list clear error owner".as_ptr(),
+            );
+            let prior = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!prior.as_ptr().is_null());
+            let list =
+                OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0));
+            assert!(!list.as_ptr().is_null());
+            assert!(
+                GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(list.as_ptr())
+                    .is_none()
+            );
+            witness.list = list.as_ptr();
+            witness.replacement = replacement.as_ptr();
+            let physical = list.as_ptr().cast::<PyListObject>();
+            // Independent extension storage, including one legitimate construction
+            // NULL slot. No Rust Vec allocation enters the native list allocator.
+            (*physical).ob_item =
+                memory::PyMem_Calloc(4, std::mem::size_of::<*mut PyObject>()).cast();
+            assert!(!(*physical).ob_item.is_null());
+            (*physical).allocated = 4;
+            (*physical).ob_base.ob_size = 3;
+            for ordinal in [0, 2] {
+                let child = typeobj::PyType_GenericAlloc(&raw mut *child_type, 0)
+                    .cast::<NativeListRetirementChild>();
+                assert!(!child.is_null());
+                (*child).witness = &raw mut witness;
+                (*child).ordinal = ordinal;
+                *(*physical).ob_item.add(ordinal) = child.cast();
+            }
+            let mut traversal = TraverseWitness {
+                source: std::ptr::null_mut(),
+                expected: *(*physical).ob_item.add(2),
+                matches: 0,
+                calls: 0,
+                clear_source: false,
+                stop: 73,
+            };
+            assert_eq!(
+                PyList_Type.tp_traverse.unwrap()(
+                    list.as_ptr(),
+                    visit_builtin_edge as *const () as *mut c_void,
+                    (&raw mut traversal).cast()
+                ),
+                73
+            );
+            assert_eq!((traversal.calls, traversal.matches), (1, 1));
+            traversal.stop = 0;
+            traversal.calls = 0;
+            traversal.matches = 0;
+            assert_eq!(
+                PyList_Type.tp_traverse.unwrap()(
+                    list.as_ptr(),
+                    visit_builtin_edge as *const () as *mut c_void,
+                    (&raw mut traversal).cast()
+                ),
+                0
+            );
+            assert_eq!((traversal.calls, traversal.matches), (2, 1));
+            errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+            let address = list.as_ptr().addr();
+            witness.armed = true;
+            if direct_clear {
+                let status = PyList_Type.tp_clear.unwrap()(list.as_ptr());
+                witness.armed = false;
+                assert_eq!(status, 0);
+                assert_eq!(
+                    witness.observations,
+                    [(2, 0, prior.as_ptr()), (0, 1, prior.as_ptr())]
+                );
+                assert_eq!(witness.append_status, Some(0));
+                assert_eq!(sequences::PyList_Size(list.as_ptr()), 1);
+                assert_eq!(
+                    sequences::PyList_GetItem(list.as_ptr(), 0),
+                    replacement.as_ptr()
+                );
+                assert_eq!((*replacement.as_ptr()).ob_refcnt, 2);
+                assert_ne!(memory::PyObject_GC_IsTracked(list.as_ptr()), 0);
+                drop(list);
+            } else {
+                // Terminal list_dealloc retains the dying header through item
+                // retirement; replacing it with public clear changes this phase.
+                drop(list);
+                witness.armed = false;
+                assert_eq!(
+                    witness.observations,
+                    [(2, 3, prior.as_ptr()), (0, 3, prior.as_ptr())]
+                );
+                assert_eq!(witness.append_status, None);
+            }
+            let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(observed.as_ptr(), prior.as_ptr());
+            assert_eq!((*replacement.as_ptr()).ob_refcnt, 1);
+            assert!(!crate::object::gc::native_gc_is_enrolled(address));
+            assert!(!crate::exception_pending(&py));
+        }
+    });
+}
+
+#[test]
+fn native_list_self_and_mixed_cycles_share_runtime_collector_identity() {
+    use molt_cpython_abi::abi_types::PyList_Type;
+    use molt_cpython_abi::api::{refcount, sequences, typeobj};
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    with_gil(|py| unsafe {
+        for mixed in [false, true] {
+            let native = typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0);
+            assert!(!native.is_null());
+            assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(native).is_none());
+            let native_address = native.addr();
+            assert!(crate::object::gc::native_gc_is_enrolled(native_address));
+            let managed = if mixed {
+                sequences::PyList_New(0)
+            } else {
+                std::ptr::null_mut()
+            };
+            if mixed {
+                assert!(!managed.is_null());
+                assert_eq!(sequences::PyList_Append(native, managed), 0);
+                assert_eq!(sequences::PyList_Append(managed, native), 0);
+                refcount::Py_DECREF(managed);
+            } else {
+                // Two independent native C owners of the same child must not
+                // collapse to one traversal edge during cycle deduction.
+                assert_eq!(sequences::PyList_Append(native, native), 0);
+                assert_eq!(sequences::PyList_Append(native, native), 0);
+                assert_eq!((*native).ob_refcnt, 3);
+            }
+            refcount::Py_DECREF(native);
+            assert_eq!(
+                crate::object::gc::collect_cycles(&py).status,
+                crate::object::gc::GcCollectStatus::Completed
+            );
+            assert!(!crate::object::gc::native_gc_is_enrolled(native_address));
+            if mixed {
+                assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(managed).is_none());
+            }
+            assert!(!crate::exception_pending(&py));
+            assert!(errors::PyErr_Occurred().is_null());
+        }
     });
 }
 

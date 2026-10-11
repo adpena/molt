@@ -643,10 +643,11 @@ pub extern "C" fn molt_http_server_send_response(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(
-                _py,
-                obj_from_bits(message_bits),
-            ))
+            let Some(message) = crate::bridge::format_obj_str(_py, obj_from_bits(message_bits))
+            else {
+                return MoltObject::none().bits();
+            };
+            Some(message)
         };
         match http_server_send_response_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -668,10 +669,11 @@ pub extern "C" fn molt_http_server_send_response_only(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(
-                _py,
-                obj_from_bits(message_bits),
-            ))
+            let Some(message) = crate::bridge::format_obj_str(_py, obj_from_bits(message_bits))
+            else {
+                return MoltObject::none().bits();
+            };
+            Some(message)
         };
         match http_server_send_response_only_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -687,8 +689,12 @@ pub extern "C" fn molt_http_server_send_header(
     value_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let keyword = crate::bridge::format_obj_str(_py, obj_from_bits(keyword_bits));
-        let value = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
+        let Some(keyword) = crate::bridge::format_obj_str(_py, obj_from_bits(keyword_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let Some(value) = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits)) else {
+            return MoltObject::none().bits();
+        };
         match http_server_send_header_impl(_py, handler_bits, &keyword, &value) {
             Ok(()) => MoltObject::none().bits(),
             Err(bits) => bits,
@@ -719,10 +725,11 @@ pub extern "C" fn molt_http_server_send_error(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(
-                _py,
-                obj_from_bits(message_bits),
-            ))
+            let Some(message) = crate::bridge::format_obj_str(_py, obj_from_bits(message_bits))
+            else {
+                return MoltObject::none().bits();
+            };
+            Some(message)
         };
         match http_server_send_error_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -737,11 +744,19 @@ pub extern "C" fn molt_http_server_version_string(
     sys_version_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let server_version = crate::bridge::format_obj_str(_py, obj_from_bits(server_version_bits));
+        let Some(server_version) =
+            crate::bridge::format_obj_str(_py, obj_from_bits(server_version_bits))
+        else {
+            return MoltObject::none().bits();
+        };
         let sys_version = if obj_from_bits(sys_version_bits).is_none() {
             String::new()
         } else {
-            crate::bridge::format_obj_str(_py, obj_from_bits(sys_version_bits))
+            let Some(version) = crate::bridge::format_obj_str(_py, obj_from_bits(sys_version_bits))
+            else {
+                return MoltObject::none().bits();
+            };
+            version
         };
         let out = http_server_version_string_impl(&server_version, &sys_version);
         let Some(bits) = alloc_string_bits(_py, &out) else {

@@ -74,11 +74,12 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         return MoltObject::none().bits();
     }
     let Some(slot) = slot else {
-        let mapping =
-            unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__getitem__") };
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
+        let mapping = match unsafe {
+            crate::builtins::attr::has_special_method(py, receiver, b"__getitem__")
+        } {
+            Ok(present) => present,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let name = class_name_for_error(type_of_bits(py, receiver));
         let message = if mapping {
             format!("{name} is not a sequence")
@@ -91,10 +92,11 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         // Normalize exactly once, after sq_item admission. An inherited native
         // item slot still observes an overridden heap-class length slot.
         let has_length = matches!(slot, SequenceReadSlot::Builtin)
-            || unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__len__") };
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
+            || match unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__len__") }
+            {
+                Ok(present) => present,
+                Err(()) => return MoltObject::none().bits(),
+            };
         if has_length {
             let length_bits = molt_len(receiver);
             let _length_owner = obj_from_bits(length_bits).as_ptr().map(PtrDropGuard::new);
@@ -124,12 +126,12 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
             crate::object::ops::molt_sequence_item_builtin(receiver, index_bits)
         }
         SequenceReadSlot::Special => {
-            let method = unsafe {
+            let method = match unsafe {
                 crate::builtins::attr::lookup_special_method(py, receiver, b"__getitem__")
+            } {
+                Ok(method) => method,
+                Err(()) => return MoltObject::none().bits(),
             };
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
             let Some(method) = method else {
                 let name = class_name_for_error(type_of_bits(py, receiver));
                 return raise_exception::<_>(

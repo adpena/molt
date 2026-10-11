@@ -1222,30 +1222,37 @@ pub unsafe extern "C" fn PyLong_IsZero(op: *mut PyObject) -> c_int {
 
 /// CPython ``PyLong_AsDouble`` (Objects/longobject.c): converts any Python
 /// int — including heap bignums — to ``double``, raising OverflowError only
-/// past f64 range and TypeError "an integer is required" for a non-int; -1.0
-/// is returned only with an exception set. Wide values round directly from
-/// physical digits with the same ties-to-even rule as CPython.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
+/// past f64 range and TypeError "an integer is required" for a non-int. The
+/// public ABI lowers failure to -1.0; the integer -1 is also a valid result.
+/// Wide values round directly from physical digits with CPython's ties-to-even
+/// rule. Internal consumers retain explicit success/failure until ABI lowering.
+pub(crate) unsafe fn long_as_double(
+    op: *mut PyObject,
+) -> Result<c_double, crate::ErrorIndicatorSet> {
     match py_long_value(op) {
-        Ok(LongValue::Signed(v)) => v as c_double,
-        Ok(LongValue::Big(v)) => v as c_double,
+        Ok(LongValue::Signed(v)) => Ok(v as c_double),
+        Ok(LongValue::Big(v)) => Ok(v as c_double),
         Err(LongError::NotInt) => {
             set_long_type_error();
-            -1.0
+            Err(crate::ErrorIndicatorSet)
         }
         Ok(LongValue::Wide { .. }) => {
             // py_long_value admitted this physical integer storage.
             let tag = unsafe { layout_long_tag(op) }.expect("admitted integer layout");
             let value = unsafe { layout_long_to_f64_rounded(op, tag) };
             if value.is_finite() {
-                return value;
+                return Ok(value);
             }
             set_long_overflow_msg(c"int too large to convert to float");
-            -1.0
+            Err(crate::ErrorIndicatorSet)
         }
-        Err(LongError::Raised) => -1.0,
+        Err(LongError::Raised) => Err(crate::ErrorIndicatorSet),
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
+    unsafe { long_as_double(op) }.unwrap_or(-1.0)
 }
 
 unsafe fn layout_long_to_f64_rounded(op: *mut PyObject, tag: usize) -> f64 {
@@ -1990,17 +1997,16 @@ pub unsafe extern "C" fn PyFloat_FromString(v: *mut PyObject) -> *mut PyObject {
 /// Existing float payloads bypass __float__; all other managed operands use
 /// the runtime's numeric-only conversion. Foreign callbacks share one slot
 /// transaction with PyNumber_Float and preserve every callback error verbatim.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
+pub unsafe fn float_as_double(op: *mut PyObject) -> Result<c_double, crate::ErrorIndicatorSet> {
     if op.is_null() {
         unsafe { crate::api::errors::PyErr_BadArgument() };
-        return -1.0;
+        return Err(crate::ErrorIndicatorSet);
     }
     if !crate::bridge::admit_reference(op) {
-        return -1.0;
+        return Err(crate::ErrorIndicatorSet);
     }
     if let Some(value) = unsafe { layout_float_value(op) } {
-        return value;
+        return Ok(value);
     }
     let physical_type = unsafe { (*op).ob_type };
     if std::ptr::eq(physical_type, &raw const crate::abi_types::PyLong_Type)
@@ -2010,29 +2016,33 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         // Integer subtypes may override __float__ and must reach conversion.
         let semantic = unsafe { crate::bridge::semantic_type(op) };
         if semantic.is_null() {
-            return -1.0;
+            return Err(crate::ErrorIndicatorSet);
         }
         if std::ptr::eq(semantic, &raw const crate::abi_types::PyLong_Type)
             || std::ptr::eq(semantic, &raw const crate::abi_types::PyBool_Type)
         {
-            return unsafe { PyLong_AsDouble(op) };
+            return unsafe { long_as_double(op) };
         }
     }
 
-    let Some(observed) = crate::bridge::observe_pyobject(op) else {
-        return -1.0;
-    };
+    let observed = crate::bridge::observe_pyobject(op).ok_or(crate::ErrorIndicatorSet)?;
     let converted = match observed {
         ResolvedPyObject::ManagedMolt(handle) => unsafe {
             let result = (hooks_or_stubs().number_unary_op)(
                 crate::hooks::NumberUnaryOp::FloatAsDouble as u32,
                 handle.bits(),
             );
-            crate::bridge::GLOBAL_BRIDGE.owned_result_to_pyobj(result)
+            crate::api::refcount::OwnedPyObject::from_owned(
+                crate::bridge::GLOBAL_BRIDGE.owned_result_to_pyobj(result),
+            )
         },
         ResolvedPyObject::Foreign => {
-            match unsafe { crate::api::abstract_number::foreign_float_conversion(op) } {
-                Some(result) => result,
+            use crate::api::abstract_number::ForeignFloatResult;
+            match unsafe { crate::api::abstract_number::foreign_float_result(op) }? {
+                Some(ForeignFloatResult::Float { owner, .. }) => owner,
+                Some(ForeignFloatResult::Index(owner)) => {
+                    return unsafe { long_as_double(owner.as_ptr()) };
+                }
                 None => {
                     let message = format!("must be real number, not {}", unsafe {
                         crate::api::object::type_name_lossy(op)
@@ -2043,22 +2053,26 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
                             message.as_bytes(),
                         )
                     };
-                    return -1.0;
+                    return Err(crate::ErrorIndicatorSet);
                 }
             }
         }
     };
-    if converted.is_null() {
-        return -1.0;
+    if converted.as_ptr().is_null() {
+        return Err(crate::ErrorIndicatorSet);
     }
-    let value = unsafe { layout_float_value(converted) };
+    let value = unsafe { layout_float_value(converted.as_ptr()) };
     if value.is_none() {
         unsafe {
             crate::bridge::ensure_result_error(c"float conversion returned no float payload")
         };
     }
-    unsafe { crate::api::refcount::Py_DECREF(converted) };
-    value.unwrap_or(-1.0)
+    value.ok_or(crate::ErrorIndicatorSet)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
+    unsafe { float_as_double(op) }.unwrap_or(-1.0)
 }
 
 unsafe extern "C" {

@@ -14,8 +14,14 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
         inc_ref_bits(_py, active_bits);
         crate::builtins::frames::frame_stack_push_owned(_py, 0, active_bits, 0, 0);
         assert!(obj_from_bits(molt_module_del_global(lexical_bits, key)).is_none());
-        assert_eq!(unsafe { dict_get_in_place(_py, active, key) }, None);
-        assert_eq!(unsafe { dict_get_in_place(_py, lexical, key) }, Some(value));
+        assert_eq!(
+            unsafe { dict_get_in_place(_py, active, key).expect("dictionary lookup succeeds") },
+            None
+        );
+        assert_eq!(
+            unsafe { dict_get_in_place(_py, lexical, key).expect("dictionary lookup succeeds") },
+            Some(value)
+        );
         assert!(obj_from_bits(molt_module_del_global_if_present(lexical_bits, key)).is_none());
         assert!(!exception_pending(_py));
         molt_module_del_global(lexical_bits, key);
@@ -98,7 +104,10 @@ fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
             unsafe { (*crate::header_from_obj_ptr(dict)).ref_count_snapshot() },
             before
         );
-        assert_eq!(unsafe { dict_get_in_place(_py, dict, key) }, None);
+        assert_eq!(
+            unsafe { dict_get_in_place(_py, dict, key).expect("dictionary lookup succeeds") },
+            None
+        );
         assert!(!exception_pending(_py));
         let _ = molt_namespace_del(namespace, key);
         let error = molt_exception_last_pending();

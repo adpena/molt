@@ -51,9 +51,9 @@ pub extern "C" fn molt_re_match_group(
         let group_spans = unsafe { seq_snapshot(groups_ptr) };
 
         // Helper: resolve a group index from an int or string selector.
-        let resolve_group = |sel_bits: u64| -> Option<usize> {
+        let resolve_group = |sel_bits: u64| -> Result<Option<usize>, ()> {
             if let Some(idx) = to_i64(obj_from_bits(sel_bits)) {
-                return Some(idx as usize);
+                return Ok(Some(idx as usize));
             }
             // Try as string name.
             if let Some(name) = string_obj_to_owned(obj_from_bits(sel_bits))
@@ -62,18 +62,15 @@ pub extern "C" fn molt_re_match_group(
                 let gn_ty = unsafe { object_type_id(gn_ptr) };
                 if gn_ty == TYPE_ID_DICT {
                     // Look up name in the dict.
-                    if let Some(name_key_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) {
-                        if let Some(val_bits) =
-                            unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) }
-                        {
-                            dec_ref_bits(_py, name_key_bits);
-                            return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
-                        }
-                        dec_ref_bits(_py, name_key_bits);
+                    let name_key_bits = attr_name_bits_from_bytes(_py, name.as_bytes()).ok_or(())?;
+                    let value = unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) };
+                    dec_ref_bits(_py, name_key_bits);
+                    if let Some(val_bits) = value? {
+                        return Ok(to_i64(obj_from_bits(val_bits)).map(|v| v as usize));
                     }
                 }
             }
-            None
+            Ok(None)
         };
 
         // Helper: extract group text for index i (0 = whole match).
@@ -145,8 +142,10 @@ pub extern "C" fn molt_re_match_group(
 
         if indices.len() == 1 {
             // Single index → return the group directly (not wrapped in tuple).
-            let Some(idx) = resolve_group(indices[0]) else {
-                return raise_exception::<_>(_py, "IndexError", "no such group");
+            let idx = match resolve_group(indices[0]) {
+                Ok(Some(idx)) => idx,
+                Ok(None) => return raise_exception::<_>(_py, "IndexError", "no such group"),
+                Err(()) => return MoltObject::none().bits(),
             };
             return group_text_bits(idx);
         }
@@ -154,11 +153,18 @@ pub extern "C" fn molt_re_match_group(
         // Multiple indices → return a tuple.
         let mut result: Vec<u64> = Vec::with_capacity(indices.len());
         for &sel_bits in indices.iter() {
-            let Some(idx) = resolve_group(sel_bits) else {
-                for bits in &result {
-                    dec_ref_bits(_py, *bits);
+            let idx = match resolve_group(sel_bits) {
+                Ok(Some(idx)) => idx,
+                outcome => {
+                    for bits in &result {
+                        dec_ref_bits(_py, *bits);
+                    }
+                    return match outcome {
+                        Ok(None) => raise_exception::<_>(_py, "IndexError", "no such group"),
+                        Err(()) => MoltObject::none().bits(),
+                        Ok(Some(_)) => unreachable!(),
+                    };
                 }
-                return raise_exception::<_>(_py, "IndexError", "no such group");
             };
             result.push(group_text_bits(idx));
         }
@@ -315,6 +321,9 @@ pub extern "C" fn molt_re_match_groupdict(
             return MoltObject::none().bits();
         }
 
+        let result = unsafe {
+            OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(result_ptr).bits())
+        };
         for pair in order.chunks(2) {
             if pair.len() != 2 {
                 continue;
@@ -326,6 +335,7 @@ pub extern "C" fn molt_re_match_groupdict(
             };
 
             // Get the group text for this index.
+            let mut value_owner = None;
             let val_bits = if let Some(groups_ptr) = groups_ptr_opt {
                 let group_spans = unsafe { seq_snapshot(groups_ptr) };
                 let span_idx = (idx as usize).wrapping_sub(1);
@@ -340,11 +350,13 @@ pub extern "C" fn molt_re_match_groupdict(
                                 let s: String =
                                     text_chars[gs as usize..ge as usize].iter().collect();
                                 let ptr = alloc_string(_py, s.as_bytes());
-                                if !ptr.is_null() {
-                                    MoltObject::from_ptr(ptr).bits()
-                                } else {
-                                    default_bits
+                                if ptr.is_null() {
+                                    return MoltObject::none().bits();
                                 }
+                                let bits = MoltObject::from_ptr(ptr).bits();
+                                value_owner =
+                                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
+                                bits
                             } else {
                                 default_bits
                             }
@@ -361,11 +373,12 @@ pub extern "C" fn molt_re_match_groupdict(
                 default_bits
             };
 
-            unsafe {
-                dict_set_in_place(_py, result_ptr, name_key_bits, val_bits);
+            if !unsafe { dict_set_in_place(_py, result_ptr, name_key_bits, val_bits) } {
+                return MoltObject::none().bits();
             }
+            drop(value_owner);
         }
 
-        MoltObject::from_ptr(result_ptr).bits()
+        result.into_bits()
     })
 }

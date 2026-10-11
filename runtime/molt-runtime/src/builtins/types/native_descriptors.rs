@@ -46,9 +46,9 @@ fn insert_class_attr(py: &PyToken<'_>, dict: *mut u8, name: &[u8], value: u64) -
     let Some(name) = attr_name_bits_from_bytes(py, name) else {
         return false;
     };
-    unsafe { dict_set_in_place(py, dict, name, value) };
+    let stored = unsafe { dict_set_in_place(py, dict, name, value) };
     dec_ref_bits(py, name);
-    !exception_pending(py)
+    stored
 }
 
 fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name: &str) -> u64 {
@@ -309,7 +309,7 @@ fn descriptor_ptr(
         );
     };
     let expected_class = native_descriptor_class(py, flavor);
-    if expected_class == 0 || exception_pending(py) {
+    if expected_class == 0 {
         return None;
     }
     if unsafe { object_class_bits(ptr) } != expected_class {
@@ -429,21 +429,21 @@ unsafe fn managed_slot_missing(py: &PyToken<'_>, descriptor: *mut u8, instance: 
     )
 }
 
-unsafe fn managed_slot_get(py: &PyToken<'_>, descriptor: *mut u8, instance: u64) -> u64 {
+unsafe fn managed_slot_get(
+    py: &PyToken<'_>,
+    descriptor: *mut u8,
+    instance: u64,
+) -> Result<u64, ()> {
     unsafe {
-        let Some((object, offset)) = managed_slot_location(py, descriptor, instance) else {
-            return MoltObject::none().bits();
-        };
-        let value = crate::object_field_get_ptr_raw(py, object, offset);
-        if exception_pending(py) {
-            dec_ref_bits(py, value);
-            return MoltObject::none().bits();
-        }
+        let (object, offset) = managed_slot_location(py, descriptor, instance).ok_or(())?;
+        let value = crate::object_field_get_ptr_raw(py, object, offset)?;
         if crate::is_missing_bits(py, value) {
             dec_ref_bits(py, value);
-            return managed_slot_missing(py, descriptor, instance);
+            managed_slot_missing(py, descriptor, instance);
+            Err(())
+        } else {
+            Ok(value)
         }
-        value
     }
 }
 
@@ -452,19 +452,16 @@ unsafe fn managed_slot_mutate(
     descriptor: *mut u8,
     instance: u64,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
-        let Some((object, offset)) = managed_slot_location(py, descriptor, instance) else {
-            return MoltObject::none().bits();
-        };
+        let (object, offset) = managed_slot_location(py, descriptor, instance).ok_or(())?;
         if let Some(value) = value {
             crate::object_field_set_ptr_raw(py, object, offset, value)
-        } else if crate::object::accessors::object_field_delete_ptr_raw(py, object, offset)
-            || exception_pending(py)
-        {
-            MoltObject::none().bits()
+        } else if crate::object::accessors::object_field_delete_ptr_raw(py, object, offset)? {
+            Ok(())
         } else {
-            managed_slot_missing(py, descriptor, instance)
+            managed_slot_missing(py, descriptor, instance);
+            Err(())
         }
     }
 }
@@ -492,34 +489,32 @@ pub(crate) unsafe fn native_descriptor_get(
     descriptor: u64,
     instance: Option<u64>,
     owner: Option<u64>,
-) -> u64 {
-    let Some((ptr, flavor)) = descriptor_ptr(py, descriptor, "__get__") else {
-        return MoltObject::none().bits();
-    };
+) -> Result<u64, ()> {
+    let (ptr, flavor) = descriptor_ptr(py, descriptor, "__get__").ok_or(())?;
     let Some(instance) = instance else {
         if owner.is_none() {
-            return raise_exception::<_>(py, "TypeError", "__get__(None, None) is invalid");
+            raise_exception::<()>(py, "TypeError", "__get__(None, None) is invalid");
+            return Err(());
         }
         inc_ref_bits(py, descriptor);
-        return descriptor;
+        return Ok(descriptor);
     };
     if flavor == NativeDescriptorFlavor::ManagedSlot {
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
         return unsafe { managed_slot_get(py, ptr, instance) };
     }
     if !unsafe { validate_receiver(py, ptr, instance) } {
-        return MoltObject::none().bits();
+        return Err(());
     }
     if flavor == NativeDescriptorFlavor::InstanceDictionary {
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            return raise_exception::<_>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return Err(());
         };
-        let Some(value) = (unsafe { crate::object::field_storage::materialize(py, object) }) else {
-            return MoltObject::none().bits();
-        };
+        let value = unsafe { crate::object::field_storage::materialize(py, object) }.ok_or(())?;
         inc_ref_bits(py, value);
-        return value;
+        return Ok(value);
     }
     if flavor == NativeDescriptorFlavor::CallableMetadata {
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
@@ -528,18 +523,21 @@ pub(crate) unsafe fn native_descriptor_get(
         )
         .unwrap();
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 "callable metadata requires a heap receiver",
             );
+            return Err(());
         };
         return match unsafe {
             crate::builtins::attributes::callable_metadata::read(py, object, field)
-        } {
-            Some(value) => value,
-            None if exception_pending(py) => MoltObject::none().bits(),
-            None => raise_exception::<_>(py, "AttributeError", field.name()),
+        }? {
+            Some(value) => Ok(value),
+            None => {
+                raise_exception::<()>(py, "AttributeError", field.name());
+                Err(())
+            }
         };
     }
     if flavor == NativeDescriptorFlavor::RootMetadata {
@@ -548,16 +546,24 @@ pub(crate) unsafe fn native_descriptor_get(
         let Some(field) =
             molt_cpython_abi::api::typeobj::TypeAttributeField::from_operation(operation)
         else {
-            return raise_exception::<_>(py, "SystemError", "invalid root metadata operation");
+            raise_exception::<()>(py, "SystemError", "invalid root metadata operation");
+            return Err(());
         };
         return unsafe { crate::builtins::attributes::type_metadata::read(py, instance, field) };
     }
     let getter = unsafe { native_descriptor_getter_bits(ptr) };
     if obj_from_bits(getter).is_none() {
-        return unsafe { missing_accessor(py, ptr, flavor, true) };
+        unsafe { missing_accessor(py, ptr, flavor, true) };
+        return Err(());
     }
     let _inputs = DescriptorInputs::new(py, [descriptor, instance, getter]);
-    unsafe { call_callable2(py, getter, descriptor, instance) }
+    let value = unsafe { call_callable2(py, getter, descriptor, instance) };
+    if exception_pending(py) {
+        dec_ref_bits(py, value);
+        Err(())
+    } else {
+        Ok(value)
+    }
 }
 
 pub(crate) unsafe fn native_descriptor_mutate(
@@ -565,15 +571,13 @@ pub(crate) unsafe fn native_descriptor_mutate(
     descriptor: u64,
     instance: u64,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     let method = if value.is_some() {
         "__set__"
     } else {
         "__delete__"
     };
-    let Some((ptr, flavor)) = descriptor_ptr(py, descriptor, method) else {
-        return MoltObject::none().bits();
-    };
+    let (ptr, flavor) = descriptor_ptr(py, descriptor, method).ok_or(())?;
     if flavor == NativeDescriptorFlavor::ManagedSlot {
         let _inputs = DescriptorInputs::new(
             py,
@@ -586,7 +590,7 @@ pub(crate) unsafe fn native_descriptor_mutate(
         return unsafe { managed_slot_mutate(py, ptr, instance, value) };
     }
     if !unsafe { validate_receiver(py, ptr, instance) } {
-        return MoltObject::none().bits();
+        return Err(());
     }
     if flavor == NativeDescriptorFlavor::InstanceDictionary {
         let _inputs = DescriptorInputs::new(
@@ -598,15 +602,14 @@ pub(crate) unsafe fn native_descriptor_mutate(
             ],
         );
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            return raise_exception::<_>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            return Err(());
         };
         if unsafe { object_type_id(object) } == TYPE_ID_MODULE {
-            return raise_exception::<_>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            return Err(());
         }
-        unsafe {
-            crate::object::field_storage::replace_dictionary(py, object, value);
-        }
-        return MoltObject::none().bits();
+        return unsafe { crate::object::field_storage::replace_dictionary(py, object, value) };
     }
     if flavor == NativeDescriptorFlavor::CallableMetadata {
         let _inputs = DescriptorInputs::new(
@@ -622,11 +625,12 @@ pub(crate) unsafe fn native_descriptor_mutate(
         )
         .unwrap();
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 "callable metadata requires a heap receiver",
             );
+            return Err(());
         };
         return unsafe {
             crate::builtins::attributes::callable_metadata::write(py, object, field, value)
@@ -645,7 +649,8 @@ pub(crate) unsafe fn native_descriptor_mutate(
         let Some(field) =
             molt_cpython_abi::api::typeobj::TypeAttributeField::from_operation(operation)
         else {
-            return raise_exception::<_>(py, "SystemError", "invalid root metadata operation");
+            raise_exception::<()>(py, "SystemError", "invalid root metadata operation");
+            return Err(());
         };
         return unsafe {
             crate::builtins::attributes::type_metadata::write(py, instance, field, value)
@@ -657,17 +662,26 @@ pub(crate) unsafe fn native_descriptor_mutate(
         unsafe { native_descriptor_deleter_bits(ptr) }
     };
     if obj_from_bits(callback).is_none() {
-        return unsafe { missing_accessor(py, ptr, flavor, false) };
+        unsafe { missing_accessor(py, ptr, flavor, false) };
+        return Err(());
     }
+    let _inputs = DescriptorInputs::new(
+        py,
+        [
+            descriptor,
+            instance,
+            value.unwrap_or(MoltObject::none().bits()),
+            callback,
+        ],
+    );
     let result = if let Some(value) = value {
-        let _inputs = DescriptorInputs::new(py, [descriptor, instance, value, callback]);
         unsafe { call_callable3(py, callback, descriptor, instance, value) }
     } else {
-        let _inputs = DescriptorInputs::new(py, [descriptor, instance, callback]);
         unsafe { call_callable2(py, callback, descriptor, instance) }
     };
+    let failed = exception_pending(py);
     crate::call::discard_owned_call_result(py, result);
-    MoltObject::none().bits()
+    if failed { Err(()) } else { Ok(()) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -706,20 +720,25 @@ pub(crate) unsafe fn native_descriptor_metadata(
     py: &PyToken<'_>,
     descriptor: u64,
     field: NativeDescriptorMetadata,
-) -> u64 {
+) -> Result<u64, ()> {
     let Some((ptr, _)) = descriptor_ptr(py, descriptor, "metadata") else {
-        return MoltObject::none().bits();
+        return Err(());
     };
     let value = match field {
         NativeDescriptorMetadata::Name => unsafe { native_descriptor_name_bits(ptr) },
         NativeDescriptorMetadata::Qualname => {
-            return unsafe { native_descriptor_qualname_from_ptr(py, ptr) };
+            let value = unsafe { native_descriptor_qualname_from_ptr(py, ptr) };
+            return if obj_from_bits(value).is_none() {
+                Err(())
+            } else {
+                Ok(value)
+            };
         }
         NativeDescriptorMetadata::Owner => unsafe { native_descriptor_owner_bits(ptr) },
         NativeDescriptorMetadata::Doc => unsafe { native_descriptor_doc_bits(ptr) },
     };
     inc_ref_bits(py, value);
-    value
+    Ok(value)
 }
 
 /// CPython-style stable representation of member and getset descriptors.
@@ -757,11 +776,10 @@ pub(crate) unsafe fn native_descriptor_reduce(py: &PyToken<'_>, descriptor: u64)
     let owner = unsafe { native_descriptor_owner_bits(ptr) };
     let name = unsafe { native_descriptor_name_bits(ptr) };
     let _inputs = DescriptorInputs::new(py, [descriptor, owner, name]);
-    let Some(getattr) = crate::builtins::functions::lookup_builtin_name(py, "getattr") else {
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        return raise_exception::<_>(py, "AttributeError", "getattr");
+    let getattr = match crate::builtins::functions::lookup_builtin_name(py, "getattr") {
+        Ok(Some(value)) => value,
+        Ok(None) => return raise_exception::<_>(py, "AttributeError", "getattr"),
+        Err(()) => return MoltObject::none().bits(),
     };
     let args_ptr = alloc_tuple(py, &[owner, name]);
     if args_ptr.is_null() {
@@ -863,12 +881,15 @@ fn native_descriptor_method(
                     .copied()
                     .filter(|value| !obj_from_bits(*value).is_none());
                 native_descriptor_get(py, receiver, instance, owner)
+                    .unwrap_or_else(|()| MoltObject::none().bits())
             }
             NativeDescriptorOperation::Set => {
-                native_descriptor_mutate(py, receiver, args[0], Some(args[1]))
+                let _ = native_descriptor_mutate(py, receiver, args[0], Some(args[1]));
+                MoltObject::none().bits()
             }
             NativeDescriptorOperation::Delete => {
-                native_descriptor_mutate(py, receiver, args[0], None)
+                let _ = native_descriptor_mutate(py, receiver, args[0], None);
+                MoltObject::none().bits()
             }
             NativeDescriptorOperation::New => unreachable!(),
         }
@@ -1074,7 +1095,9 @@ mod tests {
                 let invalid = make_descriptor(owner);
                 let valid_ptr = obj_from_bits(valid).as_ptr().unwrap();
                 let invalid_ptr = obj_from_bits(invalid).as_ptr().unwrap();
-                let callable = object_method_bits(py, "__repr__").unwrap();
+                let callable = object_method_bits(py, "__repr__")
+                    .expect("method lookup succeeds")
+                    .unwrap();
                 inc_ref_bits(py, callable);
 
                 let mut class: PyTypeObject = std::mem::zeroed();
@@ -1285,11 +1308,13 @@ mod tests {
             assert_eq!(unsafe { native_descriptor_name_bits(ptr) }, name);
             let metadata_owner = unsafe {
                 native_descriptor_metadata(py, descriptor, NativeDescriptorMetadata::Owner)
+                    .expect("lookup succeeds")
             };
             assert_eq!(metadata_owner, owner);
             dec_ref_bits(py, metadata_owner);
             let qualname = unsafe {
                 native_descriptor_metadata(py, descriptor, NativeDescriptorMetadata::Qualname)
+                    .expect("lookup succeeds")
             };
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(qualname)).as_deref(),
@@ -1298,10 +1323,14 @@ mod tests {
             dec_ref_bits(py, qualname);
             let returned = unsafe {
                 native_descriptor_get(py, descriptor, Some(MoltObject::from_int(17).bits()), None)
+                    .expect("descriptor read succeeds")
             };
             assert_eq!(returned, MoltObject::from_int(17).bits());
             dec_ref_bits(py, returned);
-            let class_value = unsafe { native_descriptor_get(py, descriptor, None, Some(owner)) };
+            let class_value = unsafe {
+                native_descriptor_get(py, descriptor, None, Some(owner))
+                    .expect("class read succeeds")
+            };
             assert_eq!(class_value, descriptor);
             dec_ref_bits(py, class_value);
             let repr = unsafe { native_descriptor_repr(py, descriptor) };
@@ -1320,6 +1349,7 @@ mod tests {
             .expect("immutable reduce tuple");
             assert_eq!(reduced_items.len(), 2);
             let getattr = crate::builtins::functions::lookup_builtin_name(py, "getattr")
+                .expect("operation succeeds")
                 .expect("builtin getattr");
             assert_eq!(reduced_items[0], getattr);
             dec_ref_bits(py, getattr);
@@ -1367,6 +1397,7 @@ mod tests {
             dec_ref_bits(py, reduced);
             let declared_owner = unsafe {
                 native_descriptor_metadata(py, descriptor, NativeDescriptorMetadata::Owner)
+                    .expect("lookup succeeds")
             };
             assert_eq!(
                 declared_owner, owner,
@@ -1374,7 +1405,8 @@ mod tests {
             );
             dec_ref_bits(py, declared_owner);
             unsafe {
-                crate::dict_del_in_place(py, captured_ptr, getattr_name);
+                crate::dict_del_in_place(py, captured_ptr, getattr_name)
+                    .expect("operation succeeds");
             }
             let missing = unsafe { native_descriptor_reduce(py, descriptor) };
             assert!(exception_pending(py));
@@ -1411,7 +1443,7 @@ mod tests {
                     Some(none),
                 )
             };
-            dec_ref_bits(py, readonly);
+            assert!(readonly.is_err());
             assert!(exception_pending(py));
             clear_exception(py);
 
@@ -1445,7 +1477,7 @@ mod tests {
             let wrong_receiver = string_bits(py, b"not-an-int");
             let result =
                 unsafe { native_descriptor_get(py, descriptor, Some(wrong_receiver), None) };
-            dec_ref_bits(py, result);
+            assert!(result.is_err());
             assert!(exception_pending(py));
             clear_exception(py);
 
@@ -1468,7 +1500,7 @@ mod tests {
             let result = unsafe {
                 native_descriptor_get(py, corrupt, Some(MoltObject::from_int(1).bits()), None)
             };
-            dec_ref_bits(py, result);
+            assert!(result.is_err());
             assert!(exception_pending(py));
             clear_exception(py);
 

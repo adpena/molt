@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import integer_literal_bytes, integer_literal_value
+
 from typing import Any, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -501,7 +503,9 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if op is not None:
                 if op.kind in {"CONST", "CONST_BIGINT"} and op.args:
                     raw = op.args[0]
-                    if isinstance(raw, int) and not isinstance(raw, bool):
+                    if op.kind == "CONST_BIGINT":
+                        resolved = integer_literal_value(raw)
+                    elif isinstance(raw, int) and not isinstance(raw, bool):
                         resolved = raw
                 elif op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
                     lhs = op.args[0]
@@ -1413,7 +1417,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         if not (_INLINE_INT_MIN <= folded <= _INLINE_INT_MAX):
                             canonical_op = MoltOp(
                                 kind="CONST_BIGINT",
-                                args=[str(folded)],
+                                args=[integer_literal_bytes(folded)],
                                 result=canonical_op.result,
                                 source_line=canonical_op.source_line,
                                 col_offset=canonical_op.col_offset,
@@ -1481,7 +1485,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 ):
                                     canonical_op = MoltOp(
                                         kind="CONST_BIGINT",
-                                        args=[str(folded_bw)],
+                                        args=[integer_literal_bytes(folded_bw)],
                                         result=canonical_op.result,
                                         source_line=canonical_op.source_line,
                                         col_offset=canonical_op.col_offset,

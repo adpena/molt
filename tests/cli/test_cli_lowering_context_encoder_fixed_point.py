@@ -40,6 +40,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import sys
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -49,7 +50,10 @@ MoltValue = importlib.import_module("molt.frontend").MoltValue
 def _enc(value: object) -> str:
     """Encode exactly as the frontend caches do (sorted, compact, IR default)."""
     return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), default=CK._json_ir_default
+        CK._cache_json_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=CK._json_ir_default,
     )
 
 
@@ -73,6 +77,7 @@ _FIXED_POINT_CASES: dict[str, object] = {
     "ast": _NODE,
     "set": {3, 1, 2},
     "frozenset": frozenset({"b", "a", "c"}),
+    "mixed_set": {1, "1", b"1", (1, "x"), frozenset({2, "y"})},
     "molt_value": MoltValue(name="v", type_hint="int"),
     "tuple_of_ast": (_NODE, "s"),
     "set_in_tuple": (frozenset({1, 2}), 3),
@@ -149,6 +154,8 @@ def test_encoder_is_injective_for_distinct_values() -> None:
         (ast.parse("a", mode="eval").body, ast.parse("b", mode="eval").body),
         (MoltValue(name="v", type_hint="int"), MoltValue(name="v", type_hint="str")),
         ({1, 2}, (1, 2)),  # a set and a tuple of the same members are NOT the same
+        ((1, 2), [1, 2]),
+        ({1, 2}, frozenset({1, 2})),
     ]
     for left, right in distinct_pairs:
         assert _enc(left) != _enc(right), (
@@ -156,3 +163,34 @@ def test_encoder_is_injective_for_distinct_values() -> None:
         )
         # And the collapse must not appear after a round-trip either.
         assert _enc(_round_trip(left)) != _enc(_round_trip(right))
+
+
+def test_binary_integer_cache_carriers_preserve_keys_tags_and_mixed_sets() -> None:
+    previous = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(640)
+        huge = 1 << 20000
+        value = {
+            huge: -huge,
+            "__integer_bytes__": [1],
+            "__dict__": [["user", "data"]],
+            "nested": {"__bytes__": [65]},
+            "mixed": {huge, "1", b"1", (2, "x"), frozenset({3, "y"})},
+        }
+        restored = _round_trip(value)
+        assert restored == value
+        assert list(restored) == list(value)
+        assert type(next(key for key in restored if not isinstance(key, str))) is int
+        assert _enc(restored) == _enc(value)
+        assert _enc(value) != _enc(dict(reversed(list(value.items()))))
+        names = {"__integer_bytes__": [1], "other": "metadata"}
+        assert _enc(names) == _enc(dict(reversed(list(names.items()))))
+        for tag in ("__integer_bytes__", "__tuple__", "__set__", "__dict__"):
+            literal = {tag: [1]}
+            assert _round_trip(literal) == literal
+        assert _enc(huge) != _enc({"__integer_bytes__": [1] + [0] * 2500})
+        assert _enc(1) != _enc({"__integer_bytes__": [1]})
+        assert _enc({huge: 1}) != _enc({-huge: 1})
+        assert _enc({1, "2"}) != _enc({"1", "2"})
+    finally:
+        sys.set_int_max_str_digits(previous)

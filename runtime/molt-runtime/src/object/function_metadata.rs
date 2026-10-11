@@ -187,7 +187,7 @@ pub(crate) unsafe fn write_public(
     function: *mut u8,
     field: FunctionMetadataField,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     use FunctionMetadataField as Field;
     unsafe {
         let bits = value.unwrap_or(MoltObject::none().bits());
@@ -197,11 +197,14 @@ pub(crate) unsafe fn write_public(
                     .as_ptr()
                     .is_none_or(|p| object_type_id(p) != TYPE_ID_STRING)
                 {
-                    return raise_exception::<_>(
-                        py,
-                        "TypeError",
-                        &format!("{} must be set to a string object", field.name()),
-                    );
+                    return {
+                        raise_exception::<()>(
+                            py,
+                            "TypeError",
+                            &format!("{} must be set to a string object", field.name()),
+                        );
+                        Err(())
+                    };
                 }
             }
             Field::Defaults | Field::KeywordDefaults => {
@@ -220,15 +223,23 @@ pub(crate) unsafe fn write_public(
                     } else {
                         "dict"
                     };
-                    return raise_exception::<_>(
-                        py,
-                        "TypeError",
-                        &format!("{} must be set to a {} object", field.name(), label),
-                    );
+                    return {
+                        raise_exception::<()>(
+                            py,
+                            "TypeError",
+                            &format!("{} must be set to a {} object", field.name(), label),
+                        );
+                        Err(())
+                    };
                 }
             }
             Field::Doc | Field::Module => {}
-            _ => return raise_exception::<_>(py, "AttributeError", "readonly attribute"),
+            _ => {
+                return {
+                    raise_exception::<()>(py, "AttributeError", "readonly attribute");
+                    Err(())
+                };
+            }
         }
         let retirement = field.replace_deferred(py, function, bits);
         crate::call::function::commit_function_metadata_change(
@@ -238,6 +249,6 @@ pub(crate) unsafe fn write_public(
             true,
         );
         drop(retirement);
-        MoltObject::none().bits()
+        Ok(())
     }
 }

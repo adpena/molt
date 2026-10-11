@@ -490,8 +490,8 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 if node.args:
                     idx = self.visit(node.args[0])
                 else:
-                    idx = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=idx))
+                    idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[-1], result=idx))
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="LIST_POP", args=[receiver, idx], result=res))
                 return res

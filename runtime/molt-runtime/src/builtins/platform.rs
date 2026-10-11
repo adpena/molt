@@ -37,6 +37,9 @@ pub(crate) const IO_EVENT_ERROR: u32 = 1 << 2;
 pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let msg = format_obj_str(_py, obj_from_bits(msg_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         eprintln!("Molt bridge unavailable: {msg}");
         std::process::exit(1);
     })
@@ -578,10 +581,10 @@ fn importlib_find_spec_via_path_hooks(
                 }
                 if obj_from_bits(finder_bits).is_none() {
                     if let Some(cache_ptr) = path_importer_cache_ptr {
-                        unsafe {
+                        let stored = unsafe {
                             dict_set_in_place(_py, cache_ptr, entry_bits, MoltObject::none().bits())
                         };
-                        if exception_pending(_py) {
+                        if !stored {
                             dec_ref_bits(_py, entry_bits);
                             for hook_bits in hooks {
                                 dec_ref_bits(_py, hook_bits);
@@ -800,10 +803,8 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
         ),
     ];
     for (key_bits, value_bits) in entries {
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-        }
-        if exception_pending(_py) {
+        let completed = unsafe { dict_set_in_place(_py, dict_ptr, key_bits, value_bits) };
+        if !completed {
             for (_, bits) in entries {
                 if !obj_from_bits(bits).is_none() {
                     dec_ref_bits(_py, bits);
@@ -1559,9 +1560,12 @@ fn importlib_dict_get_string_key_bits(
     key_bits: u64,
 ) -> Result<Option<u64>, u64> {
     let value_bits = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let value_bits = match value_bits {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(MoltObject::none().bits());
+        }
+    };
     Ok(value_bits.filter(|bits| !obj_from_bits(*bits).is_none()))
 }
 
@@ -1595,10 +1599,8 @@ fn importlib_dict_set_string_key(
     key_bits: u64,
     value_bits: u64,
 ) -> Result<(), u64> {
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-    }
-    if exception_pending(_py) {
+    let completed = unsafe { dict_set_in_place(_py, dict_ptr, key_bits, value_bits) };
+    if !completed {
         return Err(MoltObject::none().bits());
     }
     Ok(())
@@ -1814,17 +1816,18 @@ fn importlib_runtime_state_view_bits(
         let path_hooks_key = intern_runtime_static_name(_py, b"path_hooks");
         let path_importer_cache_key = intern_runtime_static_name(_py, b"path_importer_cache");
         let modules_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, modules_key) }
+            .map_err(|()| MoltObject::none().bits())?
             .unwrap_or(MoltObject::none().bits());
         let meta_path_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, meta_path_key) }
+            .map_err(|()| MoltObject::none().bits())?
             .unwrap_or(MoltObject::none().bits());
         let path_hooks_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, path_hooks_key) }
+            .map_err(|()| MoltObject::none().bits())?
             .unwrap_or(MoltObject::none().bits());
         let path_importer_cache_bits =
             unsafe { dict_get_in_place(_py, runtime_state_ptr, path_importer_cache_key) }
+                .map_err(|()| MoltObject::none().bits())?
                 .unwrap_or(MoltObject::none().bits());
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
 
         let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
             return Err(importlib_modules_runtime_error(_py));
@@ -2627,10 +2630,13 @@ fn importlib_module_support_bits(
 ) -> Result<u64, u64> {
     let key_bits = alloc_str_bits(_py, module_name)?;
     let cached_bits = unsafe { dict_get_in_place(_py, modules_ptr, key_bits) };
-    if exception_pending(_py) {
-        dec_ref_bits(_py, key_bits);
-        return Err(MoltObject::none().bits());
-    }
+    let cached_bits = match cached_bits {
+        Ok(value) => value,
+        Err(()) => {
+            dec_ref_bits(_py, key_bits);
+            return Err(MoltObject::none().bits());
+        }
+    };
     if let Some(cached_bits) = cached_bits {
         dec_ref_bits(_py, key_bits);
         if obj_from_bits(cached_bits).is_none() {

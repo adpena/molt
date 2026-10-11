@@ -199,6 +199,24 @@ impl<const N: usize> CallbackOperands<N> {
     /// Completion consumes that reference on failure and lends it on success.
     pub unsafe fn complete_result(&self, result: *mut PyObject, operation: &str) -> *mut PyObject {
         let result = unsafe { errors::check_native_result(result, operation) };
+        unsafe { self.synchronize_result(result) }
+    }
+
+    /// Complete an actual Python callable, whose successful pointer must have
+    /// no error, then publish the same captured mutable operands.
+    ///
+    /// # Safety
+    /// `result` is null or an owned Python reference returned by the callable.
+    pub unsafe fn complete_callable_result(
+        &self,
+        result: *mut PyObject,
+        operation: &str,
+    ) -> *mut PyObject {
+        let result = unsafe { errors::check_callable_result(result, operation) };
+        unsafe { self.synchronize_result(result) }
+    }
+
+    unsafe fn synchronize_result(&self, result: *mut PyObject) -> *mut PyObject {
         if self.synchronize() {
             result
         } else {

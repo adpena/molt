@@ -363,13 +363,14 @@ pub extern "C" fn __molt_http_dict_get_in_place(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -487,8 +488,15 @@ pub extern "C" fn __molt_http_format_obj_str(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let s = crate::format_obj_str(_py, obj);
-        let bytes = s.into_bytes().into_boxed_slice();
+        let bytes = match crate::object::ops_format::format_obj_str_output(_py, obj)
+            .into_bytes_result(_py)
+        {
+            Ok(bytes) => bytes.into_boxed_slice(),
+            Err(error) => {
+                error.raise::<()>(_py);
+                return 0;
+            }
+        };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }

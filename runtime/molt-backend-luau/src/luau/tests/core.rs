@@ -4973,7 +4973,9 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 },
                 OpIR {
                     kind: "const_bigint".to_string(),
-                    s_value: Some((1_u64 << 53).to_string()),
+                    bytes: Some(molt_ir::literal_payload::integer_literal_bytes(
+                        1_i128 << 53,
+                    )),
                     out: Some("decimal".to_string()),
                     ..OpIR::default()
                 },
@@ -4988,7 +4990,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
     assert!(source.contains("local typed: number = -9007199254740992"));
     assert!(source.contains("local decimal: number = 9007199254740992"));
 
-    for payload in ["9007199254740993", "-9007199254740993"] {
+    for payload in [9_007_199_254_740_993_i128, -9_007_199_254_740_993] {
         let overflow_ir = SimpleIR {
             functions: vec![FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -5002,7 +5004,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "const_bigint".to_string(),
-                    s_value: Some(payload.to_string()),
+                    bytes: Some(molt_ir::literal_payload::integer_literal_bytes(payload)),
                     out: Some("overflow".to_string()),
                     ..OpIR::default()
                 }],

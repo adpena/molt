@@ -887,7 +887,7 @@ pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
 // --- Integer string conversion length limitation ---
 
 const DEFAULT_INT_MAX_STR_DIGITS: i64 = 4300;
-const INT_STR_DIGITS_CHECK_THRESHOLD: i64 = 640;
+use molt_runtime_core::integer_decimal::INT_STR_DIGITS_CHECK_THRESHOLD;
 
 pub(crate) fn current_int_max_str_digits(_py: &PyToken<'_>) -> usize {
     sys_state(_py)
@@ -1474,9 +1474,11 @@ mod tests {
             let flags = crate::molt_sys_flags_payload();
             assert!(!exception_pending(py));
             let key = str_bits(py, "optimize");
-            let value =
-                unsafe { dict_get_in_place(py, obj_from_bits(flags).as_ptr().unwrap(), key) }
-                    .unwrap();
+            let value = unsafe {
+                dict_get_in_place(py, obj_from_bits(flags).as_ptr().unwrap(), key)
+                    .expect("dictionary lookup succeeds")
+            }
+            .unwrap();
             assert_eq!(to_i64(obj_from_bits(value)), Some(i64::MAX));
             assert_eq!(ref_count(obj_from_bits(value).as_ptr().unwrap()), 1);
             dec_ref_bits(py, key);

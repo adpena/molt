@@ -12,6 +12,7 @@ admits it on the values the loop reads. Recognizers emit nothing.
 from __future__ import annotations
 
 import ast
+from molt.opcode_literal_payloads import literal_ast_dump
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import MoltValue
@@ -265,7 +266,7 @@ class AnalysisPatternMixin(GeneratorMixinBase):
         ):
             return None
         dict_name = target.value.id
-        key_dump = ast.dump(target_key, include_attributes=False)
+        key_dump = literal_ast_dump(target_key)
         get = node.value.left
         if not isinstance(get, ast.Call) or get.keywords:
             return None
@@ -276,7 +277,7 @@ class AnalysisPatternMixin(GeneratorMixinBase):
         if len(get.args) != 2:
             return None
         key_expr, default_expr = get.args
-        if ast.dump(key_expr, include_attributes=False) != key_dump:
+        if literal_ast_dump(key_expr) != key_dump:
             return None
         if not (
             isinstance(default_expr, ast.Constant)

@@ -340,6 +340,7 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
         let _provider = crate::test_support::NativeProviderTestNamespace::new(&py, "builtins");
         // A genuine runtime builtin has no PyMethodDef/native C callback.
         let bits = crate::builtins::functions::lookup_builtin_name(&py, "len")
+            .expect("builtin lookup succeeds")
             .expect("canonical len builtin");
         assert_eq!(hook_classify_heap(bits), MoltTypeTag::RuntimeCallable as u8);
         let callable = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);

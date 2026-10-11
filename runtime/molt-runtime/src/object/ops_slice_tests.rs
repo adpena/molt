@@ -68,14 +68,15 @@ fn dataclass_payload_stays_private_until_class_finalization_publishes_once() {
             let namespace = unsafe { crate::object::layout::class_dict_bits(class_ptr) };
             let namespace_ptr = obj_from_bits(namespace).as_ptr().expect("class namespace");
             assert_eq!(
-                unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) },
+                unsafe { dict_get_in_place(_py, namespace_ptr, dict_name).unwrap() },
                 None
             );
             if sealed {
                 unsafe { crate::object::class_finish_definition(_py, class_ptr) }
                     .expect("seal class");
             }
-            let before_descriptor = unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) };
+            let before_descriptor =
+                unsafe { dict_get_in_place(_py, namespace_ptr, dict_name).unwrap() };
             assert_eq!(before_descriptor.is_some(), sealed);
             let class_owners = heap_refcount(class_bits);
             assert_eq!(
@@ -85,7 +86,7 @@ fn dataclass_payload_stays_private_until_class_finalization_publishes_once() {
             assert!(!exception_pending(_py));
             assert!(header.gc_is_published());
             assert_eq!(unsafe { object_class_bits(instance_ptr) }, class_bits);
-            let descriptor = unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) }
+            let descriptor = unsafe { dict_get_in_place(_py, namespace_ptr, dict_name).unwrap() }
                 .expect("sealed instance dictionary descriptor");
             let descriptor_ptr = obj_from_bits(descriptor)
                 .as_ptr()
@@ -270,13 +271,20 @@ fn dataclass_dictionary_is_the_only_ordinary_field_owner_after_exposure() {
         let field = attr_name_bits_from_bytes(_py, b"field").unwrap();
         let dict_name = attr_name_bits_from_bytes(_py, b"__dict__").unwrap();
         let dict = unsafe {
-            crate::builtins::attr::dataclass_attr_lookup_raw(_py, ptr, dict_name).unwrap()
+            crate::builtins::attr::dataclass_attr_lookup_raw(_py, ptr, dict_name)
+                .unwrap()
+                .unwrap()
         };
         let dictionary = obj_from_bits(dict).as_ptr().unwrap();
         unsafe {
             assert!(is_missing_bits(_py, (&*dataclass_fields_ptr(ptr))[0]));
             assert_eq!(heap_refcount(value), 2, "one field owner, no mirror");
-            dict_set_in_place(_py, dictionary, field, MoltObject::from_int(9).bits());
+            assert!(dict_set_in_place(
+                _py,
+                dictionary,
+                field,
+                MoltObject::from_int(9).bits()
+            ));
             assert_eq!(heap_refcount(value), 1);
         }
         assert_eq!(
@@ -285,15 +293,19 @@ fn dataclass_dictionary_is_the_only_ordinary_field_owner_after_exposure() {
         );
         molt_dataclass_set(object, MoltObject::from_int(0).bits(), value);
         assert_eq!(
-            unsafe { dict_get_in_place(_py, dictionary, field) },
+            unsafe { dict_get_in_place(_py, dictionary, field).unwrap() },
             Some(value)
         );
         let state = crate::object::ops_builtins::molt_object_getstate(object);
         assert_eq!(state, dict, "getstate consumes the same backing authority");
         dec_ref_bits(_py, state);
         unsafe {
-            assert!(dict_del_in_place(_py, dictionary, field));
-            assert!(crate::builtins::attr::dataclass_attr_lookup_raw(_py, ptr, field).is_none());
+            assert!(dict_del_in_place(_py, dictionary, field).unwrap());
+            assert!(
+                crate::builtins::attr::dataclass_attr_lookup_raw(_py, ptr, field)
+                    .unwrap()
+                    .is_none()
+            );
             assert!(is_missing_bits(_py, (&*dataclass_fields_ptr(ptr))[0]));
         }
         assert_eq!(heap_refcount(value), 1);
@@ -312,7 +324,9 @@ fn dataclass_dictionary_is_the_only_ordinary_field_owner_after_exposure() {
         assert!(!exception_pending(_py));
         assert_eq!(unsafe { instance_dict_bits(ptr) }, 0);
         assert_eq!(
-            unsafe { dict_get_in_place(_py, obj_from_bits(replacement).as_ptr().unwrap(), field) },
+            unsafe {
+                dict_get_in_place(_py, obj_from_bits(replacement).as_ptr().unwrap(), field).unwrap()
+            },
             Some(MoltObject::from_int(41).bits())
         );
         for bits in [dict, replacement, object, class, field, dict_name, value] {
@@ -343,7 +357,7 @@ extern "C" fn dataclass_reentrant_replacement(_weak: u64) -> u64 {
         let owner = DATACLASS_CALLBACK_OWNER.load(Ordering::SeqCst);
         let ptr = obj_from_bits(owner).as_ptr().unwrap();
         unsafe {
-            let seen = crate::object::accessors::object_field_get_ptr_raw(_py, ptr, 0);
+            let seen = crate::object::accessors::object_field_get_ptr_raw(_py, ptr, 0).unwrap();
             DATACLASS_CALLBACK_SEEN.store(seen, Ordering::SeqCst);
             dec_ref_bits(_py, seen);
             crate::object::field_storage::materialize(_py, ptr).expect("callback dictionary");
@@ -452,12 +466,12 @@ fn dataclass_declared_slot_and_same_name_dictionary_key_remain_independent() {
         assert!(!exception_pending(_py));
         let dict = unsafe { crate::object::field_storage::materialize(_py, ptr).unwrap() };
         unsafe {
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 _py,
                 obj_from_bits(dict).as_ptr().unwrap(),
                 field,
                 MoltObject::from_int(99).bits(),
-            );
+            ));
             assert_eq!(
                 (&*dataclass_fields_ptr(ptr))[0],
                 MoltObject::from_int(5).bits()
@@ -468,14 +482,16 @@ fn dataclass_declared_slot_and_same_name_dictionary_key_remain_independent() {
             MoltObject::from_int(5).bits()
         );
         unsafe {
-            crate::object::accessors::object_field_delete_ptr_raw(_py, ptr, 0);
+            crate::object::accessors::object_field_delete_ptr_raw(_py, ptr, 0).unwrap();
         }
         assert_eq!(
-            unsafe { dict_get_in_place(_py, obj_from_bits(dict).as_ptr().unwrap(), field) },
+            unsafe {
+                dict_get_in_place(_py, obj_from_bits(dict).as_ptr().unwrap(), field).unwrap()
+            },
             Some(MoltObject::from_int(99).bits())
         );
         unsafe {
-            crate::object::field_storage::replace_dictionary(_py, ptr, None);
+            crate::object::field_storage::replace_dictionary(_py, ptr, None).unwrap();
         }
         for bits in [
             object,
@@ -833,7 +849,10 @@ fn slot_state_uses_sequential_attribute_protocol_and_propagates_errors() {
                     .unwrap()
                 };
                 assert_eq!(
-                    unsafe { dict_get_in_place(py, obj_from_bits(slots).as_ptr().unwrap(), field) },
+                    unsafe {
+                        dict_get_in_place(py, obj_from_bits(slots).as_ptr().unwrap(), field)
+                            .unwrap()
+                    },
                     Some(MoltObject::from_int(2).bits())
                 );
             } else {

@@ -677,6 +677,21 @@ pub struct RuntimeHooks {
         item_bits: u64,
         item_ptr: *mut crate::abi_types::PyObject,
     ) -> std::os::raw::c_int,
+    /// Reserve additional list capacity through the runtime backing owner.
+    /// Does not change length or element identity; returns 0 or -1 with an error.
+    pub list_reserve_additional:
+        unsafe extern "C" fn(list_bits: u64, additional: usize) -> std::os::raw::c_int,
+    /// Publish a fixed indexed replacement, or delete strictly increasing
+    /// indices when replacement is NULL. The non-NULL replacement has count
+    /// borrowed handles. Future pointers describe the exact complete C view.
+    pub list_mutate_indices: unsafe extern "C" fn(
+        list_bits: u64,
+        indices: *const usize,
+        count: usize,
+        replacement: *const u64,
+        future_pointers: *const *mut crate::abi_types::PyObject,
+        future_len: usize,
+    ) -> std::os::raw::c_int,
     /// Return the number of items in a list.
     pub list_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return a borrowed item, or `Missing` if out of range.
@@ -1312,6 +1327,18 @@ pub struct RuntimeHooks {
     /// Remove a native node from candidate traversal while retaining its
     /// runtime-owned allocation identity until deallocation.
     pub native_gc_untrack: unsafe extern "C" fn(addr: usize),
+    /// Link an existing native GC identity into the current thread's deferred
+    /// destruction chain without allocation, callbacks, or identity retirement.
+    /// Untracks it and records whether resume must restore its tracked state.
+    /// Returns 0, or -1 for invalid custody (a fatal caller invariant).
+    pub native_gc_defer: unsafe extern "C" fn(
+        addr: usize,
+        next: usize,
+        restore_tracking: bool,
+    ) -> std::os::raw::c_int,
+    /// Remove a queued identity's link and restore its saved tracking state.
+    /// Returns the next address; invalid custody is fatal. No callbacks run.
+    pub native_gc_resume: unsafe extern "C" fn(addr: usize) -> usize,
     /// Retire the native node identity immediately before its allocator frees
     /// the address, preventing address-reuse/embedded-reinit ABA.
     pub native_gc_deallocate: unsafe extern "C" fn(addr: usize),
@@ -1914,6 +1941,23 @@ unsafe extern "C" fn stub_list_append(
 ) -> std::os::raw::c_int {
     -1
 }
+unsafe extern "C" fn stub_list_reserve_additional(
+    _bits: u64,
+    _additional: usize,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_list_mutate_indices(
+    _list: u64,
+    _indices: *const usize,
+    _count: usize,
+    _replacement: *const u64,
+    _future: *const *mut crate::abi_types::PyObject,
+    _len: usize,
+) -> std::os::raw::c_int {
+    -1
+}
+
 unsafe extern "C" fn stub_list_len(_bits: u64) -> usize {
     0
 }
@@ -2542,6 +2586,17 @@ unsafe extern "C" fn stub_managed_gc_clear(_bits: u64) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_native_gc_untrack(_addr: usize) {}
+unsafe extern "C" fn stub_native_gc_defer(
+    _addr: usize,
+    _next: usize,
+    _restore_tracking: bool,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_native_gc_resume(_addr: usize) -> usize {
+    std::process::abort()
+}
+
 unsafe extern "C" fn stub_native_gc_deallocate(_addr: usize) {}
 unsafe extern "C" fn stub_native_gc_is_tracked(_addr: usize) -> std::os::raw::c_int {
     0
@@ -2655,6 +2710,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_list: stub_alloc_list,
     alloc_list_presized: stub_alloc_list_presized,
     list_append: stub_list_append,
+    list_reserve_additional: stub_list_reserve_additional,
+    list_mutate_indices: stub_list_mutate_indices,
     list_len: stub_list_len,
     list_item: stub_list_item,
     list_set: stub_list_set,
@@ -2770,6 +2827,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     managed_gc_clear: stub_managed_gc_clear,
     native_gc_track: stub_native_gc_track,
     native_gc_untrack: stub_native_gc_untrack,
+    native_gc_defer: stub_native_gc_defer,
+    native_gc_resume: stub_native_gc_resume,
     native_gc_deallocate: stub_native_gc_deallocate,
     native_gc_is_tracked: stub_native_gc_is_tracked,
     native_gc_is_finalized: stub_native_gc_is_finalized,

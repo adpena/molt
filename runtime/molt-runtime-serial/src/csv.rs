@@ -543,27 +543,27 @@ fn render_float_field(value: f64) -> String {
 }
 
 /// Convert a MoltObject to its CSV text representation.
-fn render_field_text(_py: &PyToken, bits: u64) -> String {
+fn render_field_text(_py: &PyToken, bits: u64) -> Option<String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
-        return String::new();
+        return Some(String::new());
     }
     // Boolean before integer: bool is an int subtype in Python.
     if let Some(b) = obj.as_bool() {
-        return if b {
+        return Some(if b {
             "True".to_string()
         } else {
             "False".to_string()
-        };
+        });
     }
     if let Some(s) = string_obj_to_owned(obj) {
-        return s;
+        return Some(s);
     }
-    if let Some(i) = to_i64(obj) {
-        return i.to_string();
+    if let Some(i) = obj.as_int() {
+        return Some(i.to_string());
     }
-    if let Some(f) = to_f64(obj) {
-        return render_float_field(f);
+    if let Some(f) = obj.as_float() {
+        return Some(render_float_field(f));
     }
     // Delegate to runtime `str()` semantics for all other objects.
     format_obj_str(_py, obj)
@@ -714,7 +714,7 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
     let mut parts: Vec<String> = Vec::with_capacity(items_copy.len());
     for item_bits in items_copy.iter().copied() {
         let (is_none, is_number) = obj_kind(item_bits);
-        let text = render_field_text(_py, item_bits);
+        let text = render_field_text(_py, item_bits).ok_or_else(|| MoltObject::none().bits())?;
         let encoded = match encode_field(&text, dialect, is_none, is_number) {
             Ok(s) => s,
             Err(CsvError::NeedEscapechar) => {
@@ -1672,36 +1672,38 @@ pub extern "C" fn molt_csv_dict_project(
             return raise_exception::<u64>(_py, "MemoryError", "out of memory");
         }
 
+        let dict = unsafe {
+            OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(dict_ptr).bits())
+        };
         let field_len = fieldnames.len();
         let row_len = row.len();
         let shared_len = field_len.min(row_len);
         for idx in 0..shared_len {
-            unsafe {
-                dict_set_in_place(_py, dict_ptr, fieldnames[idx], row[idx]);
+            if !unsafe { dict_set_in_place(_py, dict_ptr, fieldnames[idx], row[idx]) } {
+                return MoltObject::none().bits();
             }
         }
 
         if field_len < row_len {
             let extras_ptr = alloc_list(_py, &row[field_len..]);
             if extras_ptr.is_null() {
-                let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-                dec_ref_bits(_py, dict_bits);
                 return raise_exception::<u64>(_py, "MemoryError", "out of memory");
             }
             let extras_bits = MoltObject::from_ptr(extras_ptr).bits();
-            unsafe {
-                dict_set_in_place(_py, dict_ptr, restkey_bits, extras_bits);
-            }
+            let completed = unsafe { dict_set_in_place(_py, dict_ptr, restkey_bits, extras_bits) };
             dec_ref_bits(_py, extras_bits);
+            if !completed {
+                return MoltObject::none().bits();
+            }
         } else if field_len > row_len {
             for key in fieldnames.iter().skip(row_len) {
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, *key, restval_bits);
+                if !unsafe { dict_set_in_place(_py, dict_ptr, *key, restval_bits) } {
+                    return MoltObject::none().bits();
                 }
             }
         }
 
-        MoltObject::from_ptr(dict_ptr).bits()
+        dict.into_bits()
     })
 }
 

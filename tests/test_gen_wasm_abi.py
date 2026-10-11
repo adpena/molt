@@ -2825,8 +2825,8 @@ def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
     assert policies["const_bytes"]["lir_fast"] == "materialize"
-    assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
-    assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
+    assert policies["const_bigint"]["materializer_import"] == "bigint_from_bytes"
+    assert policies["const_bigint"]["literal_payload"] == "bigint_bytes"
     assert policies["const_bigint"]["lir_fast"] == "materialize"
     assert all("parse_scalar_literal" not in policy for policy in policies.values())
 
@@ -2835,7 +2835,7 @@ def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
     assert "WasmConstScalarPayload::Int" in rendered_rs
     assert "required_tir_scalar_value" in rendered_rs
-    assert "Some(OwnedLiteralPayloadKind::BigintDecimal)" in rendered_rs
+    assert "Some(OwnedLiteralPayloadKind::BigintBytes)" in rendered_rs
     assert "enum WasmConstLiteralPayload" not in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
     assert "wasm_const_op_policy_for_opcode" in rendered_rs

@@ -12,9 +12,9 @@ use crate::builtins::numbers::{
     index_i64_from_obj as _index_i64_from_obj, to_bigint as _to_bigint, to_f64 as _to_f64,
 };
 use crate::builtins::type_ops::type_of_bits as _type_of_bits;
-use crate::object::ops::{
-    format_obj as _format_obj, format_obj_str as _format_obj_str,
-    string_obj_to_owned as _string_obj_to_owned, type_name as _type_name,
+use crate::object::ops::{string_obj_to_owned as _string_obj_to_owned, type_name as _type_name};
+use crate::object::ops_format::{
+    format_obj_output as _format_obj, format_obj_str_output as _format_obj_str,
 };
 use crate::*;
 use num_bigint::{BigInt, Sign};
@@ -516,14 +516,6 @@ extern "C" fn bridge_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64
     })
 }
 
-extern "C" fn bridge_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let bits: u64 =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
-        bits
-    })
-}
-
 fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
     let key = String::from_utf8_lossy(key);
     raise_exception::<u64>(
@@ -574,8 +566,13 @@ extern "C" fn bridge_molt_is_callable(bits: u64) -> i32 {
 extern "C" fn bridge_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let s = _format_obj(_py, obj);
-        let bytes = s.into_bytes().into_boxed_slice();
+        let bytes = match _format_obj(_py, obj).into_bytes_result(_py) {
+            Ok(bytes) => bytes.into_boxed_slice(),
+            Err(error) => {
+                error.raise::<()>(_py);
+                return 0;
+            }
+        };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
@@ -587,8 +584,13 @@ extern "C" fn bridge_format_obj_str(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let s = _format_obj_str(_py, obj);
-        let bytes = s.into_bytes().into_boxed_slice();
+        let bytes = match _format_obj_str(_py, obj).into_bytes_result(_py) {
+            Ok(bytes) => bytes.into_boxed_slice(),
+            Err(error) => {
+                error.raise::<()>(_py);
+                return 0;
+            }
+        };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
@@ -609,21 +611,21 @@ extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
 extern "C" fn bridge_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
 
 extern "C" fn bridge_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
-        1
+        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
     })
 }
 
@@ -868,7 +870,6 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     index_bigint_from_obj: bridge_index_bigint_from_obj,
     call_callable0: bridge_call_callable0,
     call_callable2: bridge_call_callable2,
-    attr_lookup_ptr_allow_missing: bridge_attr_lookup_ptr_allow_missing,
     intern_static_name: bridge_intern_static_name,
     bytearray_vec: bridge_bytearray_vec,
     dict_get_in_place: bridge_dict_get_in_place,

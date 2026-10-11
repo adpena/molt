@@ -8,6 +8,8 @@ detection shared by import, call, class, expression, and pattern visitors.
 
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import integer_literal_bytes
+
 import ast
 import sys
 from typing import Sequence
@@ -68,7 +70,13 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="CONST", args=[value], result=res))
             else:
                 res = MoltValue(self.next_var(), type_hint="bigint")
-                self.emit(MoltOp(kind="CONST_BIGINT", args=[str(value)], result=res))
+                self.emit(
+                    MoltOp(
+                        kind="CONST_BIGINT",
+                        args=[integer_literal_bytes(value)],
+                        result=res,
+                    )
+                )
             return res
         if isinstance(value, float):
             res = MoltValue(self.next_var(), type_hint="float")

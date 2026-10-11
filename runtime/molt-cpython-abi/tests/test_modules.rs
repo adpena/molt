@@ -621,6 +621,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_list: fake_alloc_list,
     alloc_list_presized: fake_alloc_list_presized,
     list_append: fake_list_append,
+    list_reserve_additional: molt_cpython_abi::hooks::STUB_HOOKS.list_reserve_additional,
     list_len: fake_list_len,
     list_item: fake_list_item,
     list_set: fake_list_set,

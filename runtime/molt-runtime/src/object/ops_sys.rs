@@ -1143,7 +1143,10 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                     if type_id == TYPE_ID_TUPLE {
                         return MoltObject::from_int(tuple_len(ptr) as i64).bits();
                     }
-                    if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                    if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                        Ok(storage) => storage,
+                        Err(()) => return MoltObject::none().bits(),
+                    }) {
                         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                             return MoltObject::none().bits();
                         };
@@ -1178,13 +1181,10 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                 }
                 if !builtin_only {
                     let call_bits =
-                        crate::builtins::attr::lookup_special_method(_py, val, b"__len__");
-                    if exception_pending(_py) {
-                        if let Some(bits) = call_bits {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
+                        match crate::builtins::attr::lookup_special_method(_py, val, b"__len__") {
+                            Ok(call_bits) => call_bits,
+                            Err(()) => return MoltObject::none().bits(),
+                        };
                     if let Some(call_bits) = call_bits {
                         exception_stack_push();
                         let res_bits = call_callable0(_py, call_bits);
@@ -1258,7 +1258,10 @@ pub extern "C" fn molt_len_dict(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if crate::object::iterable::builtin_receiver(_py, ptr)
-                    && let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr)
+                    && let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                        Ok(storage) => storage,
+                        Err(()) => return MoltObject::none().bits(),
+                    })
                 {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
@@ -1312,7 +1315,7 @@ pub extern "C" fn molt_len_set(bits: u64) -> u64 {
 pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let hash = hash_bits_signed(_py, val);
-        if exception_pending(_py) {
+        if hash == -1 {
             return MoltObject::none().bits();
         }
         int_bits_from_i64(_py, hash)

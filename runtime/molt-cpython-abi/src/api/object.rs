@@ -43,9 +43,6 @@ pub(crate) unsafe fn require_attribute_name(name: *mut PyObject) -> bool {
     if unsafe { crate::api::strings::PyUnicode_Check(name) } != 0 {
         return true;
     }
-    if exception_already_pending() {
-        return false;
-    }
     let tp = unsafe { crate::bridge::semantic_type(name) };
     if tp.is_null() {
         if !exception_already_pending() {
@@ -69,14 +66,10 @@ pub(crate) unsafe fn require_attribute_name(name: *mut PyObject) -> bool {
     false
 }
 
-unsafe fn bridge_get_attr_from_name_bits(o: *mut PyObject, name_bits: u64) -> *mut PyObject {
-    let obj_bits = resolved_molt_handle(o);
-    let Some(obj_bits) = obj_bits else {
-        return ptr::null_mut();
-    };
+unsafe fn bridge_get_attr_from_name_bits(obj_bits: u64, name_bits: u64) -> *mut PyObject {
     let result = unsafe {
         (hooks_or_stubs().object_get_attr)(
-            obj_bits.bits(),
+            obj_bits,
             name_bits,
             AttributeAccess::Normal,
             ptr::null(),
@@ -98,14 +91,10 @@ pub unsafe extern "C" fn PyObject_GetAttr(
     if !unsafe { require_attribute_name(attr_name) } {
         return ptr::null_mut();
     }
-    let name_bits = resolved_molt_handle(attr_name);
-    if let Some(name_bits) = name_bits {
-        let result = unsafe { bridge_get_attr_from_name_bits(o, name_bits.bits()) };
-        if !result.is_null() || exception_already_pending() {
-            return unsafe {
-                crate::api::errors::check_native_result(result, "managed attribute lookup")
-            };
-        }
+    if let (Some(obj_bits), Some(name_bits)) =
+        (resolved_molt_handle(o), resolved_molt_handle(attr_name))
+    {
+        return unsafe { bridge_get_attr_from_name_bits(obj_bits.bits(), name_bits.bits()) };
     }
     unsafe { native_get_attr(o, attr_name) }
 }
@@ -139,11 +128,8 @@ pub(crate) unsafe fn native_get_attr(o: *mut PyObject, attr_name: *mut PyObject)
 }
 
 /// Set `AttributeError` for a missing attribute named by a `str` object,
-/// No-op when an exception is already pending.
+/// Called only after a successful lookup has established a genuine miss.
 unsafe fn attribute_error_missing_obj(o: *mut PyObject, attr_name: *mut PyObject) {
-    if exception_already_pending() {
-        return;
-    }
     let Some(attr) = (unsafe { crate::api::strings::unicode_bytes(attr_name) }) else {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return;
@@ -260,12 +246,8 @@ pub unsafe extern "C" fn PyObject_SetAttr(
 /// Set the CPython-shaped `TypeError` for `setattr`/`delattr` on an object whose
 /// type exposes no assignment slot (`Objects/object.c PyObject_SetAttr`):
 /// `'X' object has {no,only read-only} attributes ({assign to,del} .name)`.
-/// No-op when an exception is already pending.
 unsafe fn setattr_no_slot_type_error(o: *mut PyObject, attr_name: *mut PyObject, v: *mut PyObject) {
     crate::capi_trace::record_silent_failure("PyObject_SetAttr", None);
-    if exception_already_pending() {
-        return;
-    }
     let tp = unsafe { crate::bridge::semantic_type(o) };
     let has_read = !tp.is_null()
         && (unsafe { (*tp).tp_getattro }.is_some() || unsafe { (*tp).tp_getattr }.is_some());
@@ -512,13 +494,9 @@ unsafe fn lookup_type_special_descriptor(
         return Err(crate::ErrorIndicatorSet);
     }
     let owner = unsafe { OwnedPyObject::from_borrowed(tp.cast()) };
-    let descriptor = unsafe { crate::api::typeobj::_PyType_Lookup(tp, name) };
+    let descriptor = unsafe { crate::api::typeobj::type_lookup_borrowed(tp, name) }?;
     if descriptor.is_null() {
-        return if exception_already_pending() {
-            Err(crate::ErrorIndicatorSet)
-        } else {
-            Ok(None)
-        };
+        return Ok(None);
     }
     let descriptor = unsafe { OwnedPyObject::from_borrowed(descriptor) };
     Ok(Some(TypeSpecialDescriptor {
@@ -668,10 +646,10 @@ unsafe fn generic_getattr_with_optional_dict(
         return ptr::null_mut();
     }
     let _type_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast()) };
-    let descr = unsafe { crate::api::typeobj::_PyType_Lookup(tp, name) };
-    if exception_already_pending() {
-        return ptr::null_mut();
-    }
+    let descr = match unsafe { crate::api::typeobj::type_lookup_borrowed(tp, name) } {
+        Ok(descr) => descr,
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+    };
     let descr_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(descr) };
     let descr = descr_owner.as_ptr();
     let is_data = match unsafe { crate::api::descriptor::is_data(descr) } {
@@ -1199,10 +1177,10 @@ unsafe fn foreign_generic_setattr(
     }
     // A data descriptor (one whose type defines `tp_descr_set`) takes priority.
     let _type_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast()) };
-    let descr = unsafe { crate::api::typeobj::_PyType_Lookup(tp, name) };
-    if exception_already_pending() {
-        return -1;
-    }
+    let descr = match unsafe { crate::api::typeobj::type_lookup_borrowed(tp, name) } {
+        Ok(descr) => descr,
+        Err(crate::ErrorIndicatorSet) => return -1,
+    };
     let descr_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(descr) };
     let descr = descr_owner.as_ptr();
     if let Some(result) = unsafe { crate::api::descriptor::set(descr, o, value) } {
@@ -1252,30 +1230,29 @@ unsafe fn foreign_generic_setattr(
     // "has no attribute" (nothing found) or "attribute is read-only" (a non-data
     // descriptor exists but there is nowhere to store the value).
     crate::capi_trace::record_silent_failure("PyObject_GenericSetAttr", None);
-    if !exception_already_pending() {
-        let type_name = unsafe { type_name_lossy(o) };
-        let Some(attr) = (unsafe { crate::api::strings::unicode_bytes(name) }) else {
-            unsafe { crate::api::errors::PyErr_BadArgument() };
-            return -1;
-        };
-        let mut message = if descr.is_null() {
-            format!("'{type_name}' object has no attribute '").into_bytes()
-        } else {
-            format!("'{type_name}' object attribute '").into_bytes()
-        };
-        message.extend_from_slice(attr);
-        message.extend_from_slice(if descr.is_null() {
-            b"'"
-        } else {
-            b"' is read-only"
-        });
-        unsafe {
-            crate::api::errors::set_python_error_bytes(
-                (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
-                &message,
-            )
-        };
-    }
+    let type_name = unsafe { type_name_lossy(o) };
+    let Some(attr) = (unsafe { crate::api::strings::unicode_bytes(name) }) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return -1;
+    };
+    let mut message = if descr.is_null() {
+        format!("'{type_name}' object has no attribute '").into_bytes()
+    } else {
+        format!("'{type_name}' object attribute '").into_bytes()
+    };
+    message.extend_from_slice(attr);
+    message.extend_from_slice(if descr.is_null() {
+        b"'"
+    } else {
+        b"' is read-only"
+    });
+    unsafe {
+        crate::api::errors::set_python_error_bytes(
+            (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+            &message,
+        )
+    };
+
     -1
 }
 
@@ -1671,7 +1648,7 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     let result = unsafe { PyObject_CallNoArgs(method) };
     unsafe { crate::api::refcount::Py_DECREF(method) };
     if result.is_null() {
-        unsafe { errors::check_native_result(result, "length hint call") };
+        unsafe { errors::check_callable_result(result, "length hint call") };
         if unsafe {
             errors::PyErr_ExceptionMatches((&raw mut crate::abi_types::PyExc_TypeError).cast())
         } != 0
@@ -2545,7 +2522,7 @@ pub unsafe extern "C" fn PyObject_Call(
             return ptr::null_mut();
         };
         let result = unsafe { call(callable, args, kwargs) };
-        return unsafe { operands.complete_result(result, "native callable") };
+        return unsafe { operands.complete_callable_result(result, "native callable") };
     }
     // No physical tp_call slot: a foreign/raw C object is not callable through
     // this path. A static runtime class binding alone never licenses bypassing
@@ -2700,7 +2677,8 @@ unsafe fn call_bridged_callable(
     let h = hooks_or_stubs();
     let result_bits = unsafe { (h.object_call)(callable_bits, args_bits, kwargs_bits) };
     drop(owned_args);
-    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result_bits) }
+    let result = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result_bits) };
+    unsafe { crate::api::errors::check_callable_result(result, "managed callable") }
 }
 
 /// Marshal a C-layout tuple (`PyTupleObject` minted by the shim's
@@ -3048,7 +3026,7 @@ unsafe fn invoke_native_vectorcall(
         || crate::api::typeobj::method_descriptor_completes_vectorcall(func)
     {
         let result = unsafe { func(callable, args, nargsf, kwnames) };
-        return unsafe { crate::api::errors::check_native_result(result, "native callable") };
+        return unsafe { crate::api::errors::check_callable_result(result, "native callable") };
     }
     let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
         return ptr::null_mut();
@@ -3058,7 +3036,7 @@ unsafe fn invoke_native_vectorcall(
         return ptr::null_mut();
     };
     let result = unsafe { func(callable, args, nargsf, kwnames) };
-    unsafe { operands.complete_result(result, "native callable") }
+    unsafe { operands.complete_callable_result(result, "native callable") }
 }
 
 /// Own the flattened dict values across reentry: the callee may clear or mutate
@@ -3227,7 +3205,7 @@ unsafe fn vectorcall_tpcall_fallback(
         return ptr::null_mut();
     };
     let result = unsafe { PyObject_Call(callable, packed.tuple, packed.dict) };
-    unsafe { crate::api::errors::check_native_result(result, "native callable") }
+    unsafe { crate::api::errors::check_callable_result(result, "native callable") }
 }
 
 #[unsafe(no_mangle)]
@@ -3536,7 +3514,7 @@ pub unsafe extern "C" fn molt_cfunction_call(
             || cfunction_name(cfunc),
         )
     };
-    unsafe { operands.complete_result(result, "native callable") }
+    unsafe { operands.complete_callable_result(result, "native callable") }
 }
 
 /// The vectorcall tail of a runtime function or bound-method carrier. The native call
@@ -3620,7 +3598,8 @@ pub(crate) unsafe extern "C" fn molt_runtime_vectorcall(
         )
     };
     drop(owners);
-    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
+    let result = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+    unsafe { crate::api::errors::check_callable_result(result, "managed vectorcall") }
 }
 
 pub unsafe extern "C" fn molt_cfunction_vectorcall(
@@ -3682,7 +3661,7 @@ pub unsafe extern "C" fn molt_cfunction_vectorcall(
             || cfunction_name(cfunc),
         )
     };
-    unsafe { operands.complete_result(result, "native callable") }
+    unsafe { operands.complete_callable_result(result, "native callable") }
 }
 
 /// Best-effort `__name__` of a `PyCFunctionObject` for error messages.
@@ -4166,6 +4145,7 @@ struct ThreadStateRecord {
     attached: bool,
     state_dict: *mut PyObject,
     current_error: Option<OwnedCError>,
+    native_deallocation: crate::api::refcount::NativeDeallocationState,
     tearing_down: bool,
 }
 
@@ -4249,6 +4229,7 @@ impl ThreadStateRecord {
             attached: false,
             state_dict: ptr::null_mut(),
             current_error: None,
+            native_deallocation: crate::api::refcount::NativeDeallocationState::default(),
             tearing_down: false,
         });
         record.state.exc_info = &raw mut record.state.exc_state;
@@ -4272,6 +4253,7 @@ impl ThreadStateRecord {
 
 impl Drop for ThreadStateRecord {
     fn drop(&mut self) {
+        self.native_deallocation.assert_idle();
         assert!(!self.attached, "dropping an attached PyThreadState");
         assert!(!self.tearing_down, "dropping a draining PyThreadState");
         assert!(
@@ -4605,6 +4587,20 @@ fn ensure_current_thread_state() -> *mut PyThreadState {
     })
 }
 
+/// Borrow only queue bookkeeping; callers must release this borrow before
+/// native GC transitions, destructor callbacks, or any runtime reentry.
+pub(crate) fn with_native_deallocation_state<R>(
+    action: impl FnOnce(&mut crate::api::refcount::NativeDeallocationState) -> R,
+) -> R {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot
+            .as_deref_mut()
+            .expect("native deallocation requires the current runtime thread state");
+        action(&mut record.native_deallocation)
+    })
+}
+
 fn existing_current_thread_state() -> Option<*mut PyThreadState> {
     MOLT_THREAD_STATE.with(|slot| {
         slot.borrow_mut()
@@ -4675,6 +4671,7 @@ pub(crate) struct AbiTestThreadStateTransaction;
 struct AbiTestNativeGcState {
     tracked: bool,
     finalized: bool,
+    deferred: Option<(usize, bool)>,
 }
 
 #[cfg(test)]
@@ -4715,6 +4712,9 @@ unsafe extern "C" fn abi_test_native_gc_track(addr: usize) -> c_int {
         let Some(node) = nodes.get_mut(&addr) else {
             return -1;
         };
+        if node.deferred.is_some() {
+            return -1;
+        }
         node.tracked = true;
         0
     })
@@ -4732,8 +4732,46 @@ unsafe extern "C" fn abi_test_native_gc_untrack(addr: usize) {
 #[cfg(test)]
 unsafe extern "C" fn abi_test_native_gc_deallocate(addr: usize) {
     ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
-        nodes.borrow_mut().remove(&addr);
+        if let Some(node) = nodes.borrow_mut().remove(&addr) {
+            assert!(node.deferred.is_none(), "freeing a queued native test node");
+        }
     });
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_defer(
+    addr: usize,
+    next: usize,
+    restore_tracking: bool,
+) -> c_int {
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let Some(node) = nodes.get_mut(&addr) else {
+            return -1;
+        };
+        if node.deferred.is_some() {
+            return -1;
+        }
+        node.deferred = Some((next, restore_tracking && node.tracked));
+        node.tracked = false;
+        0
+    })
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_native_gc_resume(addr: usize) -> usize {
+    ABI_TEST_NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let node = nodes
+            .get_mut(&addr)
+            .expect("unknown queued native test node");
+        let (next, tracked) = node
+            .deferred
+            .take()
+            .expect("native test node was not queued");
+        node.tracked = tracked;
+        next
+    })
 }
 
 #[cfg(test)]
@@ -4777,6 +4815,8 @@ fn install_abi_unit_test_native_gc_hooks() {
         hooks.native_gc_track = abi_test_native_gc_track;
         hooks.native_gc_untrack = abi_test_native_gc_untrack;
         hooks.native_gc_deallocate = abi_test_native_gc_deallocate;
+        hooks.native_gc_defer = abi_test_native_gc_defer;
+        hooks.native_gc_resume = abi_test_native_gc_resume;
         hooks.native_gc_is_tracked = abi_test_native_gc_is_tracked;
         hooks.native_gc_is_finalized = abi_test_native_gc_is_finalized;
         hooks.native_gc_claim_finalizer = abi_test_native_gc_claim_finalizer;

@@ -219,3 +219,58 @@ fn independent_completed_view_survives_outer_failure() {
         PyObjRelease::ManagedViewRetired
     );
 }
+
+#[test]
+fn type_namespace_observation_failure_never_becomes_native_missing() {
+    let _state = crate::api::object::AbiTestThreadStateTransaction::new();
+    init_tag_table();
+    let bridge = ObjectBridge::new();
+    let bits = MoltObject::from_int(71_901).bits();
+    let (pointer, guard) = install(&bridge, bits, true);
+    unsafe {
+        // A physical fallback would report a successful miss, without needing
+        // any native readiness or dictionary operation.
+        (*pointer.cast::<PyTypeObject>()).tp_flags |= crate::abi_types::Py_TPFLAGS_READY;
+    }
+    struct AbortingObservation<'a> {
+        bridge: &'a ObjectBridge,
+        bits: AbiHandle,
+    }
+    impl Drop for AbortingObservation<'_> {
+        fn drop(&mut self) {
+            PUBLICATION_BUILD_STACK.with(|stack| {
+                let mut stack = stack.borrow_mut();
+                let index = stack.find(self.bridge, self.bits).unwrap();
+                stack.frames[index].aborting = false;
+            });
+        }
+    }
+    PUBLICATION_BUILD_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let index = stack.find(&bridge, bits).unwrap();
+        stack.frames[index].aborting = true;
+    });
+    let observation = AbortingObservation {
+        bridge: &bridge,
+        bits,
+    };
+    let result = unsafe {
+        crate::api::typeobj::type_namespace_lookup_with_bridge(
+            &bridge,
+            pointer.cast(),
+            (&raw mut crate::abi_types::Py_None).cast(),
+        )
+    };
+    assert!(
+        result.is_err(),
+        "failed observation must not become physical successful missing"
+    );
+    assert!(unsafe { (*pointer.cast::<PyTypeObject>()).tp_dict }.is_null());
+    drop(observation);
+    assert!(guard.finish());
+    assert_eq!(
+        bridge.release_pyobj(pointer),
+        PyObjRelease::ManagedViewRetired
+    );
+    unsafe { crate::api::errors::PyErr_Clear() };
+}

@@ -26,6 +26,9 @@ static ABI_TEST_LOCK: Mutex<()> = Mutex::new(());
 struct NativeGcState {
     tracked: bool,
     finalized: bool,
+    queued: bool,
+    next: usize,
+    restore_tracking: bool,
 }
 
 thread_local! {
@@ -77,6 +80,9 @@ unsafe extern "C" fn native_gc_track(addr: usize) -> std::os::raw::c_int {
         let Some(node) = nodes.get_mut(&addr) else {
             return -1;
         };
+        if node.queued {
+            return -1;
+        }
         node.tracked = true;
         0
     })
@@ -90,12 +96,49 @@ unsafe extern "C" fn native_gc_untrack(addr: usize) {
     });
 }
 
+unsafe extern "C" fn native_gc_defer(
+    addr: usize,
+    next: usize,
+    restore_tracking: bool,
+) -> std::os::raw::c_int {
+    NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let Some(node) = nodes.get_mut(&addr) else {
+            return -1;
+        };
+        if node.queued {
+            return -1;
+        }
+        node.queued = true;
+        node.next = next;
+        node.restore_tracking = restore_tracking && node.tracked;
+        node.tracked = false;
+        0
+    })
+}
+
+unsafe extern "C" fn native_gc_resume(addr: usize) -> usize {
+    NATIVE_GC_NODES.with(|nodes| {
+        let mut nodes = nodes.borrow_mut();
+        let Some(node) = nodes.get_mut(&addr) else {
+            std::process::abort();
+        };
+        if !node.queued {
+            std::process::abort();
+        }
+        node.queued = false;
+        node.tracked = std::mem::take(&mut node.restore_tracking);
+        std::mem::take(&mut node.next)
+    })
+}
+
 unsafe extern "C" fn native_gc_deallocate(addr: usize) {
     NATIVE_GC_NODES.with(|nodes| {
-        assert!(
-            nodes.borrow_mut().remove(&addr).is_some(),
-            "ABI integration test deallocated an unknown native GC identity"
-        );
+        let mut nodes = nodes.borrow_mut();
+        if nodes.get(&addr).is_none_or(|node| node.queued) {
+            std::process::abort();
+        }
+        nodes.remove(&addr);
     });
 }
 
@@ -186,6 +229,8 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             alloc_list,
             alloc_list_presized,
             list_append,
+            list_reserve_additional,
+            list_mutate_indices,
             list_len,
             list_item,
             list_set,
@@ -295,6 +340,8 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             managed_gc_clear,
             native_gc_track,
             native_gc_untrack,
+            native_gc_defer,
+            native_gc_resume,
             native_gc_deallocate,
             native_gc_is_tracked,
             native_gc_is_finalized,
@@ -376,6 +423,8 @@ impl AbiTestThreadStateTransaction {
         hooks.native_gc_allocate = Some(native_gc_allocate);
         hooks.native_gc_track = native_gc_track;
         hooks.native_gc_untrack = native_gc_untrack;
+        hooks.native_gc_defer = native_gc_defer;
+        hooks.native_gc_resume = native_gc_resume;
         hooks.native_gc_deallocate = native_gc_deallocate;
         hooks.native_gc_is_tracked = native_gc_is_tracked;
         hooks.native_gc_is_finalized = native_gc_is_finalized;

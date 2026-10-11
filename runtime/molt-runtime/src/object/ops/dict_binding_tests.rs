@@ -33,17 +33,15 @@ extern "C" fn same_hash_key_eq(_self_bits: u64, _other_bits: u64) -> u64 {
                 unsafe {
                     // Shift every later entry, then bind a key the transition
                     // already probed as absent.
-                    assert!(dict_del_in_place(
-                        py,
-                        dict,
-                        PROBE_DELETE.load(Ordering::SeqCst)
-                    ));
-                    dict_set_in_place(
+                    assert!(
+                        dict_del_in_place(py, dict, PROBE_DELETE.load(Ordering::SeqCst)).unwrap()
+                    );
+                    assert!(dict_set_in_place(
                         py,
                         dict,
                         PROBE_INSERT.load(Ordering::SeqCst),
                         MoltObject::from_int(40).bits(),
-                    );
+                    ));
                 }
                 MoltObject::from_bool(false).bits()
             }
@@ -149,13 +147,13 @@ unsafe fn dict_with_same_hash_key(
     assert!(!dict.is_null());
     PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
     unsafe {
-        dict_set_with_hash_in_place(
+        assert!(dict_set_with_hash_in_place(
             py,
             dict,
             probe,
             MoltObject::from_int(7).bits(),
             hash_string_bytes(py, name) as u64,
-        );
+        ));
     }
     assert!(!exception_pending(py));
     dict
@@ -213,7 +211,7 @@ fn string_binding_commits_every_key_as_one_transition() {
             drop(displaced);
             assert_eq!(owners(old), old_owners - 1);
             for key in [alpha, alpha_again, beta, gamma] {
-                assert_eq!(dict_get_in_place(py, dict, key), Some(value));
+                assert_eq!(dict_get_in_place(py, dict, key).unwrap(), Some(value));
             }
             for bits in [
                 MoltObject::from_ptr(dict).bits(),
@@ -247,12 +245,12 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             // Exhaust entry storage: binding two new keys must grow it.
             let mut filler = 0;
             while dict_entries(dict).capacity() - dict_entries(dict).len() >= 2 {
-                dict_set_in_place(
+                assert!(dict_set_in_place(
                     py,
                     dict,
                     MoltObject::from_int(filler).bits(),
                     MoltObject::none().bits(),
-                );
+                ));
                 filler += 1;
             }
             let order = dict_live_entries(dict)
@@ -285,7 +283,7 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             // The identical transition commits once storage may grow.
             drop(dict_bind_string_entries(py, dict, &entries).expect("binding commits"));
             for key in [present, first, second] {
-                assert_eq!(dict_get_in_place(py, dict, key), Some(value));
+                assert_eq!(dict_get_in_place(py, dict, key).unwrap(), Some(value));
             }
             for bits in [
                 MoltObject::from_ptr(dict).bits(),
@@ -551,15 +549,15 @@ fn exact_string_reads_preserve_key_identity_borrowing_and_pending_error() {
             assert!(!dict.is_null());
             assert_ne!(stored, query);
             let before = (owners(stored), owners(query), owners(value));
-            assert_eq!(dict_find_entry(py, dict, query), Some(0));
-            assert_eq!(dict_get_in_place(py, dict, query), Some(value));
+            assert_eq!(dict_find_entry(py, dict, query).unwrap(), Some(0));
+            assert_eq!(dict_get_in_place(py, dict, query).unwrap(), Some(value));
             assert_eq!(
-                dict_find_entry_kv_in_place(py, dict, query),
+                dict_find_entry_kv_in_place(py, dict, query).unwrap(),
                 Some((stored, value))
             );
-            assert_eq!(dict_get_in_place(py, dict, absent), None);
-            assert_eq!(dict_find_entry_kv_in_place(py, dict, absent), None);
-            assert_eq!(dict_find_entry(py, dict, absent), None);
+            assert_eq!(dict_get_in_place(py, dict, absent).unwrap(), None);
+            assert_eq!(dict_find_entry_kv_in_place(py, dict, absent).unwrap(), None);
+            assert_eq!(dict_find_entry(py, dict, absent).unwrap(), None);
             assert_eq!(
                 crate::object::ops_dict::molt_dict_getitem_borrowed(
                     MoltObject::from_ptr(dict).bits(),
@@ -569,18 +567,23 @@ fn exact_string_reads_preserve_key_identity_borrowing_and_pending_error() {
             );
             assert_eq!((owners(stored), owners(query), owners(value)), before);
 
-            // All projections retain the established pending-error admission: a
-            // lookup must not clear or replace the caller's pending exception.
+            // Exact storage reads succeed under an admitted prior error, as
+            // PyDict_GetItemWithError does; no callback or indicator inference
+            // changes the lookup result or the caller's selected exception.
             raise_exception::<u64>(py, "RuntimeError", "preexisting read error");
             let pending = exception_last_bits_noinc(py);
-            assert_eq!(dict_find_entry(py, dict, query), None);
-            assert_eq!(dict_get_in_place(py, dict, query), None);
-            assert_eq!(dict_find_entry_kv_in_place(py, dict, query), None);
+            assert_eq!(dict_find_entry(py, dict, query).unwrap(), Some(0));
+            assert_eq!(dict_get_in_place(py, dict, query).unwrap(), Some(value));
+            assert_eq!(
+                dict_find_entry_kv_in_place(py, dict, query).unwrap(),
+                Some((stored, value))
+            );
+            assert_eq!(dict_get_in_place(py, dict, absent).unwrap(), None);
             assert_eq!(exception_last_bits_noinc(py), pending);
             take_pending_error(py, "RuntimeError");
-            assert!(dict_del_in_place(py, dict, stored));
-            assert_eq!(dict_get_in_place(py, dict, query), None);
-            assert_eq!(dict_find_entry_kv_in_place(py, dict, query), None);
+            assert!(dict_del_in_place(py, dict, stored).unwrap());
+            assert_eq!(dict_get_in_place(py, dict, query).unwrap(), None);
+            assert_eq!(dict_find_entry_kv_in_place(py, dict, query).unwrap(), None);
             for bits in [
                 MoltObject::from_ptr(dict).bits(),
                 stored,
@@ -605,7 +608,7 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
             let stored = string_key(py, b"selected");
             let value = MoltObject::from_int(42).bits();
             let dict = dict_with_same_hash_key(py, &[], probe, b"selected");
-            dict_set_in_place(py, dict, stored, value);
+            assert!(dict_set_in_place(py, dict, stored, value));
             assert!(!exception_pending(py));
             for projection in 0..3 {
                 for (mode, expected) in [
@@ -616,24 +619,30 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                     PROBE_CALLS.store(0, Ordering::SeqCst);
                     if projection == 0 {
                         assert_eq!(
-                            dict_find_entry(py, dict, query),
+                            dict_find_entry(py, dict, query).unwrap(),
                             Some(if mode == PROBE_EQUAL { 0 } else { 1 })
                         );
                     } else if projection == 1 {
-                        assert_eq!(dict_find_entry_kv_in_place(py, dict, query), Some(expected));
+                        assert_eq!(
+                            dict_find_entry_kv_in_place(py, dict, query).unwrap(),
+                            Some(expected)
+                        );
                     } else {
-                        assert_eq!(dict_get_in_place(py, dict, query), Some(expected.1));
+                        assert_eq!(
+                            dict_get_in_place(py, dict, query).unwrap(),
+                            Some(expected.1)
+                        );
                     }
                     assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                 }
                 PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
                 PROBE_CALLS.store(0, Ordering::SeqCst);
                 if projection == 0 {
-                    assert_eq!(dict_find_entry(py, dict, query), None);
+                    assert_eq!(dict_find_entry(py, dict, query), Err(()));
                 } else if projection == 1 {
-                    assert_eq!(dict_find_entry_kv_in_place(py, dict, query), None);
+                    assert_eq!(dict_find_entry_kv_in_place(py, dict, query), Err(()));
                 } else {
-                    assert_eq!(dict_get_in_place(py, dict, query), None);
+                    assert_eq!(dict_get_in_place(py, dict, query), Err(()));
                 }
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                 take_pending_error(py, "RuntimeError");
@@ -720,15 +729,15 @@ fn exact_string_reads_reacquire_entries_after_equality_mutates_the_table() {
                 PROBE_CALLS.store(0, Ordering::SeqCst);
                 PROBE_MODE.store(PROBE_RESTRUCTURE, Ordering::SeqCst);
                 if projection == 0 {
-                    assert_eq!(dict_find_entry(py, dict, query), Some(1));
+                    assert_eq!(dict_find_entry(py, dict, query).unwrap(), Some(1));
                 } else if projection == 1 {
                     assert_eq!(
-                        dict_find_entry_kv_in_place(py, dict, query),
+                        dict_find_entry_kv_in_place(py, dict, query).unwrap(),
                         Some((inserted, MoltObject::from_int(40).bits()))
                     );
                 } else {
                     assert_eq!(
-                        dict_get_in_place(py, dict, query),
+                        dict_get_in_place(py, dict, query).unwrap(),
                         Some(MoltObject::from_int(40).bits())
                     );
                 }
@@ -1003,8 +1012,8 @@ fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
                 max_allocations: Some(0),
                 ..Default::default()
             })));
-            assert!(dict_del_in_place(py, dict, int(1)));
-            assert!(dict_del_in_place(py, dict, int(3)));
+            assert!(dict_del_in_place(py, dict, int(1)).unwrap());
+            assert!(dict_del_in_place(py, dict, int(3)).unwrap());
             assert!(!exception_pending(py));
             drop(reset);
             assert_eq!(dict_len(dict), 2);
@@ -1023,7 +1032,7 @@ fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
             );
             // Insertion crosses the holes >= live compaction boundary. The live
             // order is the CPython oracle; physical row addresses are internal.
-            dict_set_in_place(py, dict, int(1), int(21));
+            assert!(dict_set_in_place(py, dict, int(1), int(21)));
             assert_eq!(
                 dict_live_entries(dict)
                     .flat_map(|row| [row.key, row.value])
@@ -1032,7 +1041,7 @@ fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
             );
             assert_eq!(dict_entries_ptr(dict), entries_owner);
             assert_eq!(dict_table_ptr(dict), table_owner);
-            assert_eq!(dict_get_in_place(py, dict, int(1)), Some(int(21)));
+            assert_eq!(dict_get_in_place(py, dict, int(1)).unwrap(), Some(int(21)));
             dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
         }
     });
@@ -1047,7 +1056,7 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
             let value = mortal_value(py);
             let dict = alloc_dict_with_pairs(py, &[]);
             let before = (owners(key), owners(value), dict_structural_epoch(dict));
-            dict_set_with_hash_in_place(py, dict, key, value, u64::MAX);
+            assert!(!dict_set_with_hash_in_place(py, dict, key, value, u64::MAX));
             assert!(exception_pending(py));
             crate::molt_exception_clear();
             assert_eq!(
@@ -1056,7 +1065,7 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
             );
             assert_eq!(dict_len(dict), 0);
             assert!(dict_entries(dict).is_empty());
-            assert!(dict_del_with_hash_deferred(py, dict, key, u64::MAX).is_none());
+            assert!(dict_del_with_hash_deferred(py, dict, key, u64::MAX).is_err());
             assert!(exception_pending(py));
             crate::molt_exception_clear();
             assert_eq!(

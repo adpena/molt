@@ -116,25 +116,31 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
-            let has_user_init =
-                unsafe { dict_get_in_place(_py, body_ptr, init_name_bits) }.is_some();
+            let has_user_init = unsafe { dict_get_in_place(_py, body_ptr, init_name_bits) };
             dec_ref_bits(_py, init_name_bits);
+            let has_user_init = match has_user_init {
+                Ok(value) => value.is_some(),
+                Err(()) => {
+                    result_bits = MoltObject::none().bits();
+                    break 'compute;
+                }
+            };
             let Some(user_init_marker_bits) =
                 attr_name_bits_from_bytes(_py, b"__molt_dataclass_user_init__")
             else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
-            unsafe {
+            let completed = unsafe {
                 dict_set_in_place(
                     _py,
                     body_ptr,
                     user_init_marker_bits,
                     MoltObject::from_bool(has_user_init).bits(),
-                );
-            }
+                )
+            };
             dec_ref_bits(_py, user_init_marker_bits);
-            if exception_pending(_py) {
+            if !completed {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             }
@@ -144,16 +150,16 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
-            unsafe {
+            let completed = unsafe {
                 dict_set_in_place(
                     _py,
                     body_ptr,
                     make_dataclass_marker_bits,
                     MoltObject::from_bool(true).bits(),
-                );
-            }
+                )
+            };
             dec_ref_bits(_py, make_dataclass_marker_bits);
-            if exception_pending(_py) {
+            if !completed {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             }
@@ -166,6 +172,13 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
             let existing_annotations_bits =
                 unsafe { dict_get_in_place(_py, body_ptr, annotations_name_bits) };
             dec_ref_bits(_py, annotations_name_bits);
+            let existing_annotations_bits = match existing_annotations_bits {
+                Ok(value) => value,
+                Err(()) => {
+                    result_bits = MoltObject::none().bits();
+                    break 'compute;
+                }
+            };
             annotations_bits = if let Some(bits) = existing_annotations_bits {
                 let Some(existing_ptr) = obj_from_bits(bits).as_ptr() else {
                     result_bits =
@@ -309,19 +322,17 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                     break 'compute;
                 }
                 let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                unsafe {
-                    dict_set_in_place(_py, annotations_ptr, key_bits, field_type_bits);
-                }
-                if exception_pending(_py) {
+                let completed =
+                    unsafe { dict_set_in_place(_py, annotations_ptr, key_bits, field_type_bits) };
+                if !completed {
                     dec_ref_bits(_py, key_bits);
                     result_bits = MoltObject::none().bits();
                     break 'compute;
                 }
                 if has_default_value {
-                    unsafe {
-                        dict_set_in_place(_py, body_ptr, key_bits, default_value_bits);
-                    }
-                    if exception_pending(_py) {
+                    let completed =
+                        unsafe { dict_set_in_place(_py, body_ptr, key_bits, default_value_bits) };
+                    if !completed {
                         dec_ref_bits(_py, key_bits);
                         result_bits = MoltObject::none().bits();
                         break 'compute;
@@ -338,11 +349,10 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
-            unsafe {
-                dict_set_in_place(_py, body_ptr, annotations_key_bits, annotations_bits);
-            }
+            let completed =
+                unsafe { dict_set_in_place(_py, body_ptr, annotations_key_bits, annotations_bits) };
             dec_ref_bits(_py, annotations_key_bits);
-            if exception_pending(_py) {
+            if !completed {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             }
@@ -351,15 +361,15 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
-            let has_module =
-                unsafe { dict_get_in_place(_py, body_ptr, module_name_bits) }.is_some();
-            if !has_module {
-                unsafe {
-                    dict_set_in_place(_py, body_ptr, module_name_bits, module_bits);
-                }
-            }
+            let completed = match unsafe { dict_get_in_place(_py, body_ptr, module_name_bits) } {
+                Ok(Some(_)) => true,
+                Ok(None) => unsafe {
+                    dict_set_in_place(_py, body_ptr, module_name_bits, module_bits)
+                },
+                Err(()) => false,
+            };
             dec_ref_bits(_py, module_name_bits);
-            if exception_pending(_py) {
+            if !completed {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             }

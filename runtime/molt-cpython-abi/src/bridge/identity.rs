@@ -150,7 +150,7 @@ pub(crate) struct RuntimeValue {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum RuntimeValueAccess {
+pub(crate) enum RuntimeValueAccess {
     Observe,
     RetainEdge,
 }
@@ -366,7 +366,7 @@ impl ObjectBridge {
     /// Typed semantic ingress. Numeric adoption failure is not a membership
     /// miss and can never license foreign wrapping. Pure membership stays
     /// nonallocating for refcount/GC/layout checks.
-    pub(super) fn semantic_handle_for_pyobj(
+    pub(crate) fn semantic_handle_for_pyobj(
         &self,
         pointer: *mut PyObject,
     ) -> Result<Option<MoltValueHandle>, ()> {
@@ -493,7 +493,7 @@ impl ObjectBridge {
         self.prepare_runtime_value(value, RuntimeValueAccess::Observe)
     }
 
-    pub(super) fn prepare_runtime_value(
+    pub(crate) fn prepare_runtime_value(
         &self,
         value: MoltValueHandle,
         access: RuntimeValueAccess,

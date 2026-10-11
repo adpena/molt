@@ -41,3 +41,41 @@ try:
 except ExceptionGroup as eg3:
     m3, r3 = eg3.split(ValueError)
     print("match has traceback:", m3.__traceback__ is not None)
+
+
+# Metadata copying distinguishes an absent notes attribute from a failed lookup,
+# and preserves failure from the derived group's actual setter.
+failure = RuntimeError("notes callback failure")
+
+
+class FailingNotes(ExceptionGroup):
+    @property
+    def __notes__(self):
+        raise failure
+
+
+class RefusingNotes(ExceptionGroup):
+    def __setattr__(self, name, value):
+        if name == "__notes__":
+            raise failure
+        super().__setattr__(name, value)
+
+
+class DerivedNotes(ExceptionGroup):
+    def derive(self, exceptions):
+        return RefusingNotes(self.message, exceptions)
+
+
+for label, group in (
+    ("get", FailingNotes("source", [ValueError("a"), TypeError("b")])),
+    ("set", DerivedNotes("source", [ValueError("a"), TypeError("b")])),
+):
+    if label == "set":
+        group.add_note("preserve me")
+    try:
+        group.split(ValueError)
+    except RuntimeError as exc:
+        assert exc is failure
+        print("notes callback failure", label, exc is failure)
+    else:
+        raise AssertionError("notes callback failure was swallowed")

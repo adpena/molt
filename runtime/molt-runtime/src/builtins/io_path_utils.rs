@@ -22,79 +22,46 @@ pub(crate) enum PathFlavor {
     Bytes,
 }
 
-pub(crate) fn path_from_bits_with_flavor(
-    _py: &PyToken<'_>,
-    file_bits: u64,
-) -> Result<(std::path::PathBuf, PathFlavor), String> {
-    let obj = obj_from_bits(file_bits);
-    if let Some(text) = string_obj_to_owned(obj) {
-        return Ok((std::path::PathBuf::from(text), PathFlavor::Str));
-    }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTES {
-                let len = bytes_len(ptr);
-                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::ffi::OsStringExt;
-                    let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                    return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                }
-                #[cfg(windows)]
-                {
-                    let path = std::str::from_utf8(bytes)
-                        .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                    return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                }
-            }
-            let fspath_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.fspath_name, b"__fspath__");
-            if let Some(call_bits) = attr_lookup_ptr(_py, ptr, fspath_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return Err("open failed".to_string());
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(text) = string_obj_to_owned(res_obj) {
-                    dec_ref_bits(_py, res_bits);
-                    return Ok((std::path::PathBuf::from(text), PathFlavor::Str));
-                }
-                if let Some(res_ptr) = res_obj.as_ptr()
-                    && object_type_id(res_ptr) == TYPE_ID_BYTES
-                {
-                    let len = bytes_len(res_ptr);
-                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::ffi::OsStringExt;
-                        let path = std::ffi::OsString::from_vec(bytes.to_vec());
-                        dec_ref_bits(_py, res_bits);
-                        return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                    }
-                    #[cfg(windows)]
-                    {
-                        let path = std::str::from_utf8(bytes)
-                            .map_err(|_| "open path bytes must be utf-8".to_string())?;
-                        dec_ref_bits(_py, res_bits);
-                        return Ok((std::path::PathBuf::from(path), PathFlavor::Bytes));
-                    }
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                dec_ref_bits(_py, res_bits);
-                let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
-                return Err(format!(
-                    "expected {obj_type}.__fspath__() to return str or bytes, not {res_type}"
-                ));
-            }
+/// Resolve the path protocol once and retain its original result for file.name.
+/// Conversion failures retire that owned result with the selected error visible.
+pub(crate) fn path_and_name_from_bits(
+    py: &PyToken<'_>,
+    file: u64,
+) -> Result<(std::path::PathBuf, u64, PathFlavor), u64> {
+    let (value, flavor) = fspath_bits_with_flavor(py, file)?;
+    let owner =
+        unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), value) };
+    let pointer = obj_from_bits(value)
+        .as_ptr()
+        .expect("fspath owns str or bytes storage");
+    let path = if flavor == PathFlavor::Str {
+        let text = string_obj_to_owned(obj_from_bits(value)).expect("fspath string storage");
+        std::path::PathBuf::from(text)
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
         }
-    }
-    let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
-    Err(format!(
-        "expected str, bytes or os.PathLike object, not {obj_type}"
-    ))
+        #[cfg(not(unix))]
+        {
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                raise_exception::<u64>(py, "TypeError", "open path bytes must be utf-8")
+            })?;
+            std::path::PathBuf::from(text)
+        }
+    };
+    Ok((path, owner.into_bits(), flavor))
+}
+
+pub(crate) fn path_from_bits_with_flavor(
+    py: &PyToken<'_>,
+    file: u64,
+) -> Result<(std::path::PathBuf, PathFlavor), u64> {
+    let (path, name, flavor) = path_and_name_from_bits(py, file)?;
+    dec_ref_bits(py, name);
+    Ok((path, flavor))
 }
 
 pub(crate) fn fspath_bits_with_flavor(
@@ -118,12 +85,28 @@ pub(crate) fn fspath_bits_with_flavor(
             inc_ref_bits(_py, file_bits);
             return Ok((file_bits, PathFlavor::Bytes));
         }
-        let fspath_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.fspath_name, b"__fspath__");
-        if let Some(call_bits) = attr_lookup_ptr(_py, ptr, fspath_name_bits) {
+        // PyOS_FSPath deliberately replaces a failed special-method lookup
+        // with its operand TypeError. Python 3.13 also treats __fspath__ = None
+        // as absence; 3.12 reaches ordinary non-callable validation.
+        let method =
+            match crate::builtins::attr::lookup_special_method(_py, file_bits, b"__fspath__") {
+                Ok(method) => method,
+                Err(()) => None,
+            };
+        if let Some(call_bits) = method {
+            if obj_from_bits(call_bits).is_none()
+                && crate::object::ops_sys::runtime_target_at_least(_py, 3, 13)
+            {
+                dec_ref_bits(_py, call_bits);
+                let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
+                let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
+                return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+            }
             let res_bits = call_callable0(_py, call_bits);
+            let failed = exception_pending(_py);
             dec_ref_bits(_py, call_bits);
-            if exception_pending(_py) {
+            if failed {
+                dec_ref_bits(_py, res_bits);
                 return Err(MoltObject::none().bits());
             }
             let res_obj = obj_from_bits(res_bits);
@@ -137,11 +120,12 @@ pub(crate) fn fspath_bits_with_flavor(
                 }
             }
             let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-            dec_ref_bits(_py, res_bits);
             let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
             let msg =
                 format!("expected {obj_type}.__fspath__() to return str or bytes, not {res_type}");
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            let error = raise_exception::<u64>(_py, "TypeError", &msg);
+            dec_ref_bits(_py, res_bits);
+            return Err(error);
         }
     }
 
@@ -150,10 +134,7 @@ pub(crate) fn fspath_bits_with_flavor(
     Err(raise_exception::<_>(_py, "TypeError", &msg))
 }
 
-pub(crate) fn path_from_bits(
-    _py: &PyToken<'_>,
-    file_bits: u64,
-) -> Result<std::path::PathBuf, String> {
+pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::path::PathBuf, u64> {
     path_from_bits_with_flavor(_py, file_bits).map(|(path, _flavor)| path)
 }
 
@@ -219,7 +200,7 @@ pub(crate) fn path_string_with_flavor_from_bits(
 ) -> Result<(String, PathFlavor), u64> {
     match path_from_bits_with_flavor(_py, bits) {
         Ok((path, flavor)) => Ok((path_text_with_flavor(path.as_path(), flavor), flavor)),
-        Err(msg) => Err(raise_exception::<_>(_py, "TypeError", &msg)),
+        Err(error) => Err(error),
     }
 }
 

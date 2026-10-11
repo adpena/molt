@@ -13,9 +13,9 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_TYPE,
     builtin_classes_if_initialized, class_layout_version_bits, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
-    is_missing_bits, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
-    object_mark_has_ptrs, object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
+    dict_set_in_place, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, is_missing_bits,
+    obj_from_bits, object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs,
+    object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -87,10 +87,10 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     offset: usize,
-) -> u64 {
+) -> Result<u64, ()> {
     unsafe {
         let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
-            return MoltObject::none().bits();
+            return Err(());
         };
         let bits = match field_storage::resolve(_py, obj_ptr, offset, slot) {
             Some(FieldStorage::Inline(slot)) => *slot,
@@ -107,15 +107,18 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
                     obj_ptr,
                     dictionary,
                     Some(name),
-                    found,
+                    found.as_ref().ok().copied().flatten(),
                 );
-                let bits = found.unwrap_or_else(|| crate::missing_bits(_py));
-                inc_ref_bits(_py, bits);
+                let result = found.map(|found| {
+                    let bits = found.unwrap_or_else(|| crate::missing_bits(_py));
+                    inc_ref_bits(_py, bits);
+                    Ok(bits)
+                });
                 dec_ref_bits(_py, name);
                 dec_ref_bits(_py, dictionary);
-                return bits;
+                return result;
             }
-            None => return MoltObject::none().bits(),
+            None => return Err(()),
         };
         if field_storage::debug::field_enabled(_py, obj_ptr, offset) {
             eprintln!(
@@ -124,21 +127,22 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
             );
         }
         inc_ref_bits(_py, bits);
-        bits
+        Ok(bits)
     }
 }
 
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[must_use]
 pub(crate) unsafe fn object_field_set_ptr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     offset: usize,
     val_bits: u64,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
-            return MoltObject::none().bits();
+            return Err(());
         };
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         match field_storage::resolve(_py, obj_ptr, offset, slot) {
@@ -154,12 +158,17 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
                     Some(name),
                     Some(val_bits),
                 );
-                dict_set_in_place(
+                let completed = dict_set_in_place(
                     _py,
                     obj_from_bits(dictionary).as_ptr().unwrap(),
                     name,
                     val_bits,
                 );
+                if !completed {
+                    dec_ref_bits(_py, name);
+                    dec_ref_bits(_py, dictionary);
+                    return Err(());
+                }
                 field_storage::debug::dictionary(
                     _py,
                     "field_set_after",
@@ -170,9 +179,9 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
                 );
                 dec_ref_bits(_py, name);
                 dec_ref_bits(_py, dictionary);
-                return MoltObject::none().bits();
+                return Ok(());
             }
-            None => return MoltObject::none().bits(),
+            None => return Err(()),
         }
         let old_bits = *slot;
         if field_storage::debug::field_enabled(_py, obj_ptr, offset) {
@@ -200,7 +209,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         if changed && old_is_ptr {
             dec_ref_bits(_py, old_bits);
         }
-        MoltObject::none().bits()
+        Ok(())
     }
 }
 
@@ -209,19 +218,20 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
 /// The slot must not own a mortal heap value or belong to an observed object.
 /// Fresh class fields contain the immortal missing singleton, never float zero.
 /// The field retains an incoming heap value just like ordinary assignment.
+#[must_use]
 pub(crate) unsafe fn object_field_init_ptr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     offset: usize,
     val_bits: u64,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         if !obj_ptr.is_null() && object_class_bits(obj_ptr) != 0 && instance_dict_bits(obj_ptr) != 0
         {
             return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
         }
         let Some(slot) = object_field_slot_ptr(_py, obj_ptr, offset) else {
-            return MoltObject::none().bits();
+            return Err(());
         };
         let old_bits = *slot;
         debug_assert!(
@@ -239,7 +249,7 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
                 obj_ptr as usize, slot as usize
             );
         }
-        MoltObject::none().bits()
+        Ok(())
     }
 }
 
@@ -251,7 +261,7 @@ pub(crate) unsafe fn instance_attribute_lookup(
     object: *mut u8,
     name: u64,
     offset: Option<usize>,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe { instance_attribute_lookup_with_policy(py, object, name, offset, false) }
 }
 
@@ -261,21 +271,28 @@ pub(crate) unsafe fn instance_attribute_lookup_with_policy(
     name: u64,
     offset: Option<usize>,
     suppress: bool,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         field_storage::debug::lookup(py, object, name, offset);
         if let Some(offset) = offset {
-            let bits = object_field_get_ptr_raw(py, object, offset);
-            if is_missing_bits(py, bits) || exception_pending(py) {
-                dec_ref_bits(py, bits);
-                if suppress {
-                    crate::builtins::attr::clear_attribute_error_if_pending(py);
+            let result = object_field_get_ptr_raw(py, object, offset);
+            return match result {
+                Ok(bits) if is_missing_bits(py, bits) => {
+                    dec_ref_bits(py, bits);
+                    Ok(None)
                 }
-                return None;
-            }
-            return Some(bits);
+                Ok(bits) => Ok(Some(bits)),
+                Err(())
+                    if suppress && crate::builtins::attr::clear_attribute_error_if_pending(py) =>
+                {
+                    Ok(None)
+                }
+                Err(()) => Err(()),
+            };
         }
-        let dictionary = field_storage::current_dictionary(py, object).ok()??;
+        let Some(dictionary) = field_storage::current_dictionary(py, object)? else {
+            return Ok(None);
+        };
         field_storage::debug::dictionary(py, "instance_get", object, dictionary, Some(name), None);
         attribute_dictionary_lookup(py, dictionary, name, suppress)
     }
@@ -289,14 +306,14 @@ pub(crate) unsafe fn attribute_dictionary_lookup(
     dictionary: u64,
     name: u64,
     suppress: bool,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         let Some(pointer) = obj_from_bits(dictionary)
             .as_ptr()
             .filter(|pointer| object_type_id(*pointer) == TYPE_ID_DICT)
         else {
             raise_exception::<u64>(py, "SystemError", "bad argument to internal function");
-            return None;
+            return Err(());
         };
         inc_ref_bits(py, dictionary);
         let value = dict_get_in_place(py, pointer, name);
@@ -306,22 +323,18 @@ pub(crate) unsafe fn attribute_dictionary_lookup(
             std::ptr::null_mut(),
             dictionary,
             Some(name),
-            value,
+            value.as_ref().ok().copied().flatten(),
         );
-        if let Some(value) = value {
+        if let Ok(Some(value)) = value {
             inc_ref_bits(py, value);
         }
         dec_ref_bits(py, dictionary);
-        if exception_pending(py) {
-            if let Some(value) = value {
-                dec_ref_bits(py, value);
+        match value {
+            Err(()) if suppress && crate::builtins::attr::clear_attribute_error_if_pending(py) => {
+                Ok(None)
             }
-            if suppress {
-                crate::builtins::attr::clear_attribute_error_if_pending(py);
-            }
-            return None;
+            result => result,
         }
-        value
     }
 }
 
@@ -329,10 +342,10 @@ pub(crate) unsafe fn instance_attribute_delete(
     py: &PyToken<'_>,
     object: *mut u8,
     name: u64,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
-        let Ok(Some(dictionary)) = field_storage::current_dictionary(py, object) else {
-            return false;
+        let Some(dictionary) = field_storage::current_dictionary(py, object)? else {
+            return Ok(false);
         };
         inc_ref_bits(py, dictionary);
         field_storage::debug::dictionary(
@@ -367,14 +380,14 @@ unsafe fn object_field_load_ptr_raw(py: &PyToken<'_>, object: *mut u8, offset: u
             dec_ref_bits(py, field.name);
             return value;
         }
-        let value = object_field_get_ptr_raw(py, object, offset);
+        let value = match object_field_get_ptr_raw(py, object, offset) {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
         if !is_missing_bits(py, value) {
             return value;
         }
         dec_ref_bits(py, value);
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
         if let Some(field) = field_storage::field_at_offset(py, object, offset) {
             inc_ref_bits(py, field.name);
             let value = crate::molt_get_attr_name(MoltObject::from_ptr(object).bits(), field.name);
@@ -391,10 +404,10 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
     py: &PyToken<'_>,
     object: *mut u8,
     offset: usize,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
         let Some(slot) = object_field_slot_ptr(py, object, offset) else {
-            return false;
+            return Err(());
         };
         match field_storage::resolve(py, object, offset, slot) {
             Some(FieldStorage::Inline(slot)) => {
@@ -406,14 +419,14 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
                     );
                 }
                 if is_missing_bits(py, old) {
-                    return false;
+                    return Ok(false);
                 }
                 let missing = crate::missing_bits(py);
                 inc_ref_bits(py, missing);
                 object_mark_has_ptrs(py, object);
                 *slot = missing;
                 dec_ref_bits(py, old);
-                true
+                Ok(true)
             }
             Some(FieldStorage::Dictionary { dictionary, name }) => {
                 inc_ref_bits(py, dictionary);
@@ -432,7 +445,7 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
                 dec_ref_bits(py, dictionary);
                 deleted
             }
-            None => false,
+            None => Err(()),
         }
     }
 }
@@ -468,7 +481,9 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
             };
-            object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits)
+            // Terminal statement ABI: errors remain pending; both statuses return None.
+            let _completed = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+            MoltObject::none().bits()
         })
     }
 }
@@ -489,7 +504,9 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
             };
-            object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
+            // Terminal statement ABI: errors remain pending; both statuses return None.
+            let _completed = object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
+            MoltObject::none().bits()
         })
     }
 }
@@ -628,7 +645,10 @@ pub unsafe extern "C" fn molt_guarded_field_get(
                 if instance_dict_bits(obj_ptr) != 0 {
                     return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
                 }
-                let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
+                let bits = match object_field_get_ptr_raw(_py, obj_ptr, offset) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if is_missing_bits(_py, bits) {
                     dec_ref_bits(_py, bits);
                     return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
@@ -668,7 +688,8 @@ pub unsafe extern "C" fn molt_guarded_field_set(
             if let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
                 && guard_layout_match(_py, obj_ptr, class_bits, expected_version)
             {
-                return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+                let _completed = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+                return MoltObject::none().bits();
             }
             crate::molt_set_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits, val_bits)
         })
@@ -701,7 +722,8 @@ pub unsafe extern "C" fn molt_guarded_field_init_ptr(
                 return MoltObject::none().bits();
             };
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
-                return object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
+                let _completed = object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
+                return MoltObject::none().bits();
             }
             crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits)
         })
@@ -741,7 +763,9 @@ pub unsafe extern "C" fn molt_object_field_set(
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
             };
-            object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits)
+            // Terminal statement ABI: errors remain pending; both statuses return None.
+            let _completed = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+            MoltObject::none().bits()
         })
     }
 }
@@ -763,7 +787,9 @@ pub unsafe extern "C" fn molt_object_field_init(
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
             };
-            object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
+            // Terminal statement ABI: errors remain pending; both statuses return None.
+            let _completed = object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
+            MoltObject::none().bits()
         })
     }
 }

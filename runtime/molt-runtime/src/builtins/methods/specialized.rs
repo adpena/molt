@@ -119,18 +119,17 @@ macro_rules! suspension_methods {
         $( $name:literal => ($kind:ident, $symbol:path, $arity:tt) ),+ $(,)?
     }) => {
         const $names: &[&str] = &[$($name),+];
-        pub(crate) fn $lookup(py: &PyToken<'_>, name: &str) -> Option<u64> {
-            super::method_dispatch(py, || match name {
+        pub(crate) fn $lookup(py: &PyToken<'_>, name: &str) -> Result<Option<u64>, ()> {
+            super::method_dispatch(py, || Ok(match name {
                 $( $name => Some(suspension_methods!(@bind py,
                     NativeCallableSpec::declared(NativeCallableKind::$kind, builtin_classes(py).$owner, $name),
                     $symbol, $arity)), )+
                 _ => None,
-            })
+            }))
         }
         pub(crate) fn $publish(py: &PyToken<'_>) -> bool {
             for name in $names {
-                let _ = $lookup(py, name);
-                if exception_pending(py) { return false; }
+                if $lookup(py, name).is_err() { return false; }
             }
             true
         }
@@ -447,4 +446,15 @@ crate::builtins::methods::native_method_table!(set_iterator_method_bits, publish
     "__length_hint__" => Some(builtin_func_bits(py,
         NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).set_iterator, "__length_hint__"),
         fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+
+crate::builtins::methods::native_method_table!(list_iterator_method_bits, publish_list_iterator_methods, py, name, [], {}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).list_iterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::list_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(list_reverseiterator_method_bits, publish_list_reverseiterator_methods, py, name, [], {}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).list_reverseiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::list_iterator_length_hint), 1)),
 });

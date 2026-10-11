@@ -15,7 +15,7 @@ fn literal_guard_tag(op: &OpIR) -> Option<(i64, bool)> {
         SimpleLiteral::Int(value) => {
             Some((1, !crate::tir::IntRange::point(value).fits_inline_int47()))
         }
-        SimpleLiteral::Owned(OwnedLiteralPayloadKind::BigintDecimal, _) => Some((1, true)),
+        SimpleLiteral::Owned(OwnedLiteralPayloadKind::BigintBytes, _) => Some((1, true)),
         SimpleLiteral::Float(_) => Some((2, false)),
         SimpleLiteral::Bool(_) => Some((3, false)),
         SimpleLiteral::None => Some((4, false)),

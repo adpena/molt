@@ -32,7 +32,12 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
             );
         }
     }
-    let method = unsafe { crate::builtins::attr::lookup_special_method(py, value, b"__round__") };
+    let method = unsafe {
+        (match crate::builtins::attr::lookup_special_method(py, value, b"__round__") {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        })
+    };
     if let Some(method) = method {
         // The lookup returned an owned bound callable; the caller retains all
         // argument carriers for this invocation, and py holds the runtime token.
@@ -45,9 +50,6 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
         };
         dec_ref_bits(py, method);
         return result;
-    }
-    if exception_pending(py) {
-        return MoltObject::none().bits();
     }
     let name = type_name(py, obj);
     let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(100)]);

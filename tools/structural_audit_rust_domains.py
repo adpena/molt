@@ -103,7 +103,7 @@ def _literal_shapes(generated: str, literal: str) -> dict[str, str] | None:
             r"Some\(LiteralPayloadKind::(?P<value>Int|Float|Bool|None),?\)", rhs
         )
         owned = re.fullmatch(
-            r"Some\(LiteralPayloadKind::Owned\(OwnedLiteralPayloadKind::(?P<value>String|Bytes|BigintDecimal),?\),?\)",
+            r"Some\(LiteralPayloadKind::Owned\(OwnedLiteralPayloadKind::(?P<value>String|Bytes|BigintBytes),?\),?\)",
             rhs,
         )
         if scalar is not None:

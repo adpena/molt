@@ -271,7 +271,10 @@ pub(crate) unsafe fn object_init_frame_context_unpublished(
     }
     unsafe {
         let globals_valid = globals_bits == 0
-            || crate::builtins::frames::globals_namespace_storage_bits(py, globals_bits).is_some();
+            || match crate::builtins::frames::globals_namespace_storage_bits(py, globals_bits) {
+                Ok(storage) => storage.is_some(),
+                Err(()) => return false,
+            };
         if !globals_valid && crate::exception_pending(py) {
             return false;
         }

@@ -550,15 +550,14 @@ pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
         if let Some(value) = to_i64(value_obj) {
             return value as f64;
         }
+        match crate::builtins::numbers::float_storage_value(_py, value_bits) {
+            Ok(Some(value)) => return value,
+            Ok(None) => {}
+            Err(()) => return -1.0,
+        }
         if !exception_pending(_py) {
-            if let Some(value) = crate::builtins::numbers::float_storage_value(_py, value_bits) {
-                return value;
-            }
-            if !exception_pending(_py) {
-                if let Some(value) = crate::builtins::numbers::integer_storage_i64(_py, value_bits)
-                {
-                    return value as f64;
-                }
+            if let Some(value) = crate::builtins::numbers::integer_storage_i64(_py, value_bits) {
+                return value as f64;
             }
         }
         raise_type_error_unless_pending(_py, "float-compatible object expected");

@@ -132,8 +132,8 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_bigint",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some(WasmRuntimeImport::BigintFromStr),
-        literal_payload: Some(OwnedLiteralPayloadKind::BigintDecimal),
+        materializer_import: Some(WasmRuntimeImport::BigintFromBytes),
+        literal_payload: Some(OwnedLiteralPayloadKind::BigintBytes),
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,

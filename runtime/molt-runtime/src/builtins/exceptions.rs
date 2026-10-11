@@ -195,7 +195,7 @@ use state::{
 crate::builtins::methods::native_method_table!(exception_method_bits, publish_exception_methods, _py, name, [], {
 
 }, {
-        "__init__" => exception_method_bits_for_owner(_py, builtin_classes(_py).base_exception, "__init__"),
+        "__init__" => exception_method_bits_for_owner(_py, builtin_classes(_py).base_exception, "__init__")?,
         "__new__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::constructor(builtin_classes(_py).base_exception).with_text_signature("($type, *args, **kwargs)"),
@@ -224,12 +224,14 @@ pub(crate) fn exception_method_bits_for_owner(
     _py: &PyToken<'_>,
     owner_bits: u64,
     name: &str,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     crate::builtins::methods::method_dispatch(_py, || {
         if name != "__init__" {
             return exception_method_bits(_py, name);
         }
-        let owner_ptr = obj_from_bits(owner_bits).as_ptr()?;
+        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
+            return Ok(None);
+        };
         let root = if owner_bits == builtin_classes(_py).base_exception {
             ExceptionLayoutRoot::Base
         } else {
@@ -237,7 +239,7 @@ pub(crate) fn exception_method_bits_for_owner(
             if root == ExceptionLayoutRoot::Base
                 || owner_bits != exception_type_bits_from_name(_py, root.owner_name())
             {
-                return None;
+                return Ok(None);
             }
             root
         };
@@ -246,7 +248,7 @@ pub(crate) fn exception_method_bits_for_owner(
             owner_bits,
             "__init__",
         );
-        Some(crate::builtins::methods::init_native_callable(
+        Ok(Some(crate::builtins::methods::init_native_callable(
             _py,
             spec,
             || {
@@ -296,14 +298,14 @@ pub(crate) fn exception_method_bits_for_owner(
                 }
                 bits
             },
-        ))
+        )))
     })
 }
 
 crate::builtins::methods::native_method_table!(exception_group_method_bits, publish_exception_group_methods, _py, name, [], {
 
 }, {
-        "__init__" => exception_method_bits_for_owner(_py, builtin_classes(_py).base_exception_group, "__init__"),
+        "__init__" => exception_method_bits_for_owner(_py, builtin_classes(_py).base_exception_group, "__init__")?,
         "__new__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::constructor(builtin_classes(_py).base_exception_group).with_text_signature("($type, *args, **kwargs)"),
@@ -2936,39 +2938,43 @@ pub(crate) fn clear_exception(_py: &PyToken<'_>) {
     }
 }
 
-fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    let module_bits = {
-        let cache = module_cache(_py);
-        let guard = cache.lock().unwrap();
-        guard.get("builtins").copied()
-    }?;
-    let module_ptr = obj_from_bits(module_bits).as_ptr()?;
+fn exception_type_bits_from_builtins(py: &PyToken<'_>, name: &str) -> Result<Option<u64>, ()> {
+    let module = module_cache(py).lock().unwrap().get("builtins").copied();
+    let Some(module) = module else {
+        return Ok(None);
+    };
+    let Some(pointer) = obj_from_bits(module).as_ptr() else {
+        return Ok(None);
+    };
     unsafe {
-        if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            return None;
+        if object_type_id(pointer) != TYPE_ID_MODULE {
+            return Ok(None);
         }
-        let dict_bits = module_dict_bits(module_ptr);
-        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
+        let Some(dictionary) = obj_from_bits(module_dict_bits(pointer)).as_ptr() else {
+            return Ok(None);
+        };
+        if object_type_id(dictionary) != TYPE_ID_DICT {
+            return Ok(None);
         }
-        let name_ptr = alloc_string(_py, name.as_bytes());
-        if name_ptr.is_null() {
-            return None;
+        let name_pointer = alloc_string(py, name.as_bytes());
+        if name_pointer.is_null() {
+            return Err(());
         }
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let value_bits = dict_get_in_place(_py, dict_ptr, name_bits);
-        dec_ref_bits(_py, name_bits);
-        let value_bits = value_bits?;
-        let value_ptr = obj_from_bits(value_bits).as_ptr()?;
-        if object_type_id(value_ptr) != TYPE_ID_TYPE {
-            return None;
+        let name_bits = MoltObject::from_ptr(name_pointer).bits();
+        let found = dict_get_in_place(py, dictionary, name_bits);
+        dec_ref_bits(py, name_bits);
+        let Some(bits) = found? else {
+            return Ok(None);
+        };
+        let Some(value) = obj_from_bits(bits).as_ptr() else {
+            return Ok(None);
+        };
+        if object_type_id(value) != TYPE_ID_TYPE
+            || !issubclass_bits(bits, builtin_classes(py).base_exception)
+        {
+            return Ok(None);
         }
-        let builtins = builtin_classes(_py);
-        if !issubclass_bits(value_bits, builtins.base_exception) {
-            return None;
-        }
-        Some(value_bits)
+        Ok(Some(bits))
     }
 }
 
@@ -2997,16 +3003,20 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
     if let Some(bits) = exception_type_cache(_py).lock().unwrap().get(name).copied() {
         return bits;
     }
-    if spec.is_none()
-        && let Some(bits) = exception_type_bits_from_builtins(_py, name)
-    {
-        let mut cache = exception_type_cache(_py).lock().unwrap();
-        if let Some(existing) = cache.get(name).copied() {
-            return existing;
+    if spec.is_none() {
+        let found = match exception_type_bits_from_builtins(_py, name) {
+            Ok(value) => value,
+            Err(()) => return 0,
+        };
+        if let Some(bits) = found {
+            let mut cache = exception_type_cache(_py).lock().unwrap();
+            if let Some(existing) = cache.get(name).copied() {
+                return existing;
+            }
+            inc_ref_bits(_py, bits);
+            cache.insert(name.to_string(), bits);
+            return bits;
         }
-        inc_ref_bits(_py, bits);
-        cache.insert(name.to_string(), bits);
-        return bits;
     }
     // Class admission may allocate and fail even when the caller is replacing
     // an already raised exception. Reuse the canonical owned state transfer so
@@ -3058,8 +3068,12 @@ fn construct_exception_type(
                 }
                 let class_bits = MoltObject::from_ptr(class_ptr).bits();
                 let _ = molt_class_set_base(class_bits, tuple_bits);
-                set_exception_text_signature_none(_py, class_bits);
+                let stored = set_exception_text_signature_none(_py, class_bits);
                 dec_ref_bits(_py, tuple_bits);
+                if !stored {
+                    dec_ref_bits(_py, class_bits);
+                    return 0;
+                }
                 return cache_exception_type(_py, name, class_bits);
             }
         }
@@ -3078,7 +3092,10 @@ fn construct_exception_type(
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let _ = molt_class_set_base(class_bits, base_bits);
-    set_exception_text_signature_none(_py, class_bits);
+    if !set_exception_text_signature_none(_py, class_bits) {
+        dec_ref_bits(_py, class_bits);
+        return 0;
+    }
     cache_exception_type(_py, name, class_bits)
 }
 
@@ -3156,31 +3173,30 @@ fn alloc_class_obj_from_name(_py: &PyToken<'_>, name: &str) -> *mut u8 {
     class_ptr
 }
 
-fn set_exception_text_signature_none(_py: &PyToken<'_>, class_bits: u64) {
+fn set_exception_text_signature_none(_py: &PyToken<'_>, class_bits: u64) -> bool {
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
+        return false;
     };
     unsafe {
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return;
+            return false;
         }
     }
     let dict_bits = unsafe { class_dict_bits(class_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
+        return false;
     };
     unsafe {
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
+            return false;
         }
     }
     let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__text_signature__") else {
-        return;
+        return false;
     };
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits());
-    }
+    let stored = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits()) };
     dec_ref_bits(_py, name_bits);
+    stored
 }
 
 fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
@@ -3213,15 +3229,16 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
         }
         let module_bits = MoltObject::from_ptr(module).bits();
         let module_name = attr_name_bits_from_bytes(_py, b"__module__");
+        let mut stored = false;
         if let Some(module_name) = module_name {
             let dict = obj_from_bits(unsafe { class_dict_bits(ptr) })
                 .as_ptr()
                 .unwrap();
-            unsafe { dict_set_in_place(_py, dict, module_name, module_bits) };
+            stored = unsafe { dict_set_in_place(_py, dict, module_name, module_bits) };
             dec_ref_bits(_py, module_name);
         }
         dec_ref_bits(_py, module_bits);
-        if module_name.is_none() || exception_pending(_py) {
+        if !stored {
             dec_ref_bits(_py, class_bits);
             return 0;
         }
@@ -4511,11 +4528,13 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
         let Some(name) = attr_name_bits_from_bytes(_py, b"__notes__") else {
             return MoltObject::none().bits();
         };
-        let existing = unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, name) };
-        if exception_pending(_py) {
-            dec_ref_bits(_py, name);
-            return MoltObject::none().bits();
-        }
+        let existing = match unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, name) } {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(_py, name);
+                return MoltObject::none().bits();
+            }
+        };
         let list_bits = match existing {
             Some(bits) => bits,
             None => {
@@ -4527,9 +4546,14 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
                 let bits = MoltObject::from_ptr(list_ptr).bits();
                 // Publish the empty list before append, as the attribute setter
                 // can observe it, reject it, or retain a different value.
-                let result = crate::molt_set_attr_name(self_bits, name, bits);
-                dec_ref_bits(_py, result);
-                if exception_pending(_py) {
+                let result = crate::builtins::attributes::mutate_attr_name(
+                    _py,
+                    self_bits,
+                    name,
+                    crate::builtins::attr::DescriptorMutation::Set(bits),
+                    molt_cpython_abi::hooks::AttributeMutation::Normal,
+                );
+                if result.is_err() {
                     dec_ref_bits(_py, bits);
                     dec_ref_bits(_py, name);
                     return MoltObject::none().bits();
@@ -4848,7 +4872,10 @@ mod tests {
             let dictionary = unsafe { super::exception_dict_bits(exception) };
             let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dictionary_ptr, name) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dictionary_ptr, name)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(notes)
             );
             let reserved_ptr = crate::alloc_list(_py, &[]);
@@ -4884,7 +4911,10 @@ mod tests {
             assert!(!exception_pending(_py));
             dec_ref_bits(_py, result);
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dictionary_ptr, name) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dictionary_ptr, name)
+                        .expect("dictionary lookup succeeds")
+                },
                 None
             );
             assert_eq!(unsafe { super::exception_notes_bits(exception) }, reserved);
@@ -4965,22 +4995,37 @@ mod tests {
             // identity is independent of target-specific namespace visibility.
             for spec in molt_obj_model::builtin_exception_specs() {
                 let key = crate::attr_name_bits_from_bytes(_py, spec.name().as_bytes()).unwrap();
-                assert_eq!(unsafe { crate::dict_get_in_place(_py, dict, key) }, None);
+                assert_eq!(
+                    unsafe {
+                        crate::dict_get_in_place(_py, dict, key)
+                            .expect("dictionary lookup succeeds")
+                    },
+                    None
+                );
                 let canonical = super::exception_type_bits_from_name(_py, spec.name());
                 assert_eq!(
-                    unsafe { crate::dict_get_in_place(_py, dict, key) },
+                    unsafe {
+                        crate::dict_get_in_place(_py, dict, key)
+                            .expect("dictionary lookup succeeds")
+                    },
                     None,
                     "identity lookup must not publish {}",
                     spec.name()
                 );
                 unsafe { crate::dict_set_in_place(_py, dict, key, canonical) };
                 assert!(!exception_pending(_py));
-                assert!(unsafe { crate::object::ops::dict_del_in_place(_py, dict, key) });
+                assert!(unsafe {
+                    crate::object::ops::dict_del_in_place(_py, dict, key)
+                        .expect("dictionary deletion succeeds")
+                });
                 let owned = super::builtin_exception_type_bits_from_name(_py, spec.name()).unwrap();
                 assert_eq!(owned, canonical);
                 dec_ref_bits(_py, owned);
                 assert_eq!(
-                    unsafe { crate::dict_get_in_place(_py, dict, key) },
+                    unsafe {
+                        crate::dict_get_in_place(_py, dict, key)
+                            .expect("dictionary lookup succeeds")
+                    },
                     None,
                     "identity lookup must not resurrect {}",
                     spec.name()
@@ -5032,7 +5077,9 @@ mod tests {
                 "cold lookup must not adopt a Python binding"
             );
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dict, key) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dict, key).expect("dictionary lookup succeeds")
+                },
                 Some(user_bits)
             );
             let canonical_ptr = obj_from_bits(canonical).as_ptr().unwrap();
@@ -5050,7 +5097,9 @@ mod tests {
                 canonical
             );
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dict, key) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dict, key).expect("dictionary lookup succeeds")
+                },
                 Some(replacement)
             );
             let root_key = crate::attr_name_bits_from_bytes(_py, b"Exception").unwrap();
@@ -5060,7 +5109,10 @@ mod tests {
                 crate::builtin_classes(_py).exception
             );
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dict, root_key) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dict, root_key)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(replacement)
             );
             let alias_key = crate::attr_name_bits_from_bytes(_py, b"IOError").unwrap();
@@ -5070,7 +5122,10 @@ mod tests {
                 super::exception_type_bits_from_name(_py, "OSError")
             );
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, dict, alias_key) },
+                unsafe {
+                    crate::dict_get_in_place(_py, dict, alias_key)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(user_bits)
             );
             assert!(!exception_pending(_py));
@@ -5214,7 +5269,10 @@ mod tests {
             );
             assert!(!unsafe { crate::object::class_is_immutable(_py, user) });
             assert_eq!(
-                unsafe { crate::dict_get_in_place(_py, namespace, marker) },
+                unsafe {
+                    crate::dict_get_in_place(_py, namespace, marker)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(MoltObject::from_int(91).bits())
             );
             {
@@ -5485,14 +5543,15 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let import_bits = super::exception_type_bits_from_name(_py, "ImportError");
             let module_bits = super::exception_type_bits_from_name(_py, "ModuleNotFoundError");
-            let import_init = super::exception_method_bits_for_owner(_py, import_bits, "__init__");
+            let import_init = super::exception_method_bits_for_owner(_py, import_bits, "__init__")
+                .expect("method lookup succeeds");
             assert!(
                 import_init.is_some(),
                 "the declaring layout root owns __init__"
             );
             assert_eq!(
                 super::exception_method_bits_for_owner(_py, module_bits, "__init__"),
-                None,
+                Ok(None),
                 "typed descendants inherit the root descriptor through MRO"
             );
         });
@@ -5828,12 +5887,13 @@ mod tests {
                     .load(Ordering::Acquire),
                 0
             );
-            let traceback_method =
-                exception_method_bits(_py, "with_traceback").expect("with_traceback method");
+            let traceback_method = exception_method_bits(_py, "with_traceback")
+                .expect("method lookup succeeds")
+                .expect("with_traceback method");
             assert_ne!(traceback_method, 0);
             assert_eq!(
                 exception_method_bits(_py, "with_traceback"),
-                Some(traceback_method),
+                Ok(Some(traceback_method)),
                 "native method publication owns one canonical callable"
             );
 

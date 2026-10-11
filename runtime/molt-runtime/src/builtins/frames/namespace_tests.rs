@@ -114,15 +114,18 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 assert_eq!(first == second, aliases, "3.{minor}, module={module}");
                 unsafe {
                     assert_eq!(
-                        crate::dict_get_in_place(py, obj_from_bits(first).as_ptr().unwrap(), key),
+                        crate::dict_get_in_place(py, obj_from_bits(first).as_ptr().unwrap(), key)
+                            .expect("dictionary lookup succeeds"),
                         Some(MoltObject::from_int(if aliases { 2 } else { 1 }).bits())
                     );
                     assert_eq!(
-                        crate::dict_get_in_place(py, obj_from_bits(second).as_ptr().unwrap(), key),
+                        crate::dict_get_in_place(py, obj_from_bits(second).as_ptr().unwrap(), key)
+                            .expect("dictionary lookup succeeds"),
                         Some(MoltObject::from_int(2).bits())
                     );
                     assert_eq!(
-                        crate::dict_get_in_place(py, namespace_ptr, key),
+                        crate::dict_get_in_place(py, namespace_ptr, key)
+                            .expect("dictionary lookup succeeds"),
                         Some(MoltObject::from_int(if module { 2 } else { 90 }).bits()),
                         "optimized locals must not replace the globals namespace",
                     );
@@ -348,7 +351,7 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let function = crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
         unsafe {
             assert!(function_set_code_bits(py, function, code));
-            function_set_globals_bits(py, function, rebound);
+            function_set_globals_bits(py, function, rebound).expect("globals publication succeeds");
         }
         let callable = MoltObject::from_ptr(function).bits();
         for dispatch in 0..4 {
@@ -388,7 +391,7 @@ fn function_type_code_slot_and_invocation_preserve_dict_subclass_identity() {
         let (globals, globals_class) = dict_subclass_instance(py);
         let builtins = dict(py);
         let builtins_name = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
-        let globals_storage = globals_namespace_storage_ptr(py, globals).unwrap();
+        let globals_storage = globals_namespace_storage_ptr(py, globals).unwrap().unwrap();
         unsafe { dict_set_in_place(py, globals_storage, builtins_name, builtins) };
 
         let target = namespace_probe as *const () as usize as u64;
@@ -451,7 +454,8 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             let globals = dict(py);
             let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
             unsafe { dict_set_in_place(py, globals_ptr, builtins_name, captured_value) };
-            let captured = frame_effective_builtins_bits(py, globals);
+            let captured = frame_effective_builtins_bits(py, globals)
+                .expect("builtins namespace lookup succeeds");
             assert_eq!(captured, captured_value);
 
             let task =
@@ -510,7 +514,10 @@ fn captured_builtins_module_normalizes_to_its_namespace() {
         let module_namespace = unsafe { module_dict_bits(module_ptr) };
         unsafe { dict_set_in_place(py, globals_ptr, builtins_name, module) };
 
-        assert_eq!(frame_effective_builtins_bits(py, globals), module_namespace);
+        assert_eq!(
+            frame_effective_builtins_bits(py, globals).expect("builtins namespace lookup succeeds"),
+            module_namespace
+        );
         assert_ne!(module_namespace, module);
 
         for bits in [module, module_name, builtins_name, globals] {

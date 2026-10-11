@@ -393,7 +393,7 @@ impl MaterializedPointers {
         self.pointers.len()
     }
 
-    fn take(&mut self, index: usize) -> *mut PyObject {
+    pub(crate) fn take(&mut self, index: usize) -> *mut PyObject {
         std::mem::replace(&mut self.pointers[index], ptr::null_mut())
     }
 
@@ -1199,71 +1199,89 @@ pub unsafe extern "C" fn _PyList_Extend(
     list: *mut PyObject,
     iterable: *mut PyObject,
 ) -> *mut PyObject {
+    if unsafe { extend_list(list, iterable) } < 0 {
+        ptr::null_mut()
+    } else {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    }
+}
+
+pub(crate) unsafe fn extend_list(list: *mut PyObject, iterable: *mut PyObject) -> c_int {
     if list.is_null() || iterable.is_null() {
         unsafe { set_null_error() };
-        return ptr::null_mut();
+        return -1;
     }
-    let list_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(list);
-    let Some(list_bits) = list_bits else {
-        unsafe { set_type_error("_PyList_Extend requires a list".to_string()) };
-        return ptr::null_mut();
+    let Some(read) = (unsafe { crate::api::sequences::ListRead::acquire(list) }) else {
+        return -1;
     };
-    if !GLOBAL_BRIDGE.commit_list_view(list_bits.bits()) {
-        return ptr::null_mut();
-    }
-    if let Some(iterable_bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(iterable)
-        && unsafe { hooks_or_stubs().classify_heap(iterable_bits.bits()) }
-            == crate::abi_types::MoltTypeTag::List as u8
-        && !GLOBAL_BRIDGE.commit_list_view(iterable_bits.bits())
-    {
-        return ptr::null_mut();
-    }
     if list == iterable
         || unsafe { crate::api::sequences::PyList_CheckExact(iterable) } != 0
         || unsafe { crate::api::sequences::PyTuple_CheckExact(iterable) } != 0
     {
-        // Self-extension copies physical storage even for a list subtype;
-        // unrelated subtype sources still use their actual iterator below.
+        // Self-extension uses physical storage even for a subtype. Other
+        // subtype sources use their actual iterator below.
         let items = if list == iterable {
             unsafe { MaterializedPointers::from_list_storage(list) }
         } else {
             unsafe { materialize_iterable_pointers(iterable, None, SequenceMaterialization::List) }
         };
         let Some(items) = items else {
-            return ptr::null_mut();
+            return -1;
         };
-        for &item in &items.pointers {
-            if unsafe { crate::api::sequences::PyList_Append(list, item) } != 0 {
-                return ptr::null_mut();
+        if items.len() != 0 {
+            let len = unsafe { read.len() } as Py_ssize_t;
+            // Native empty lists use CPython's exact preallocation rule.
+            // The managed slice transaction already reserves its Rust backing
+            // after preparing every fallible projection and before publication.
+            if read.native_pointer().is_some() && !unsafe { read.reserve_additional(items.len()) } {
+                return -1;
+            }
+            if unsafe { crate::api::sequences::set_list_slice(&read, len, len, Some(&items)) } < 0 {
+                return -1;
             }
         }
     } else {
-        // General iterators are consumed incrementally. If iteration or append
-        // fails, the already-appended prefix remains visible exactly as in
-        // CPython; eager draining changes generator observation and failures.
         let iter = unsafe { crate::api::object::PyObject_GetIter(iterable) };
         if iter.is_null() {
-            return ptr::null_mut();
+            return -1;
+        }
+        let _iterator_owner = unsafe { crate::api::refcount::OwnedPyObject::from_owned(iter) };
+        // The hint belongs to the original iterable and runs after __iter__.
+        // A failing iterator leaves the prefix already appended. A lying hint
+        // that overflows the current size is ignored, as in CPython.
+        let hint = unsafe { crate::api::object::PyObject_LengthHint(iterable, 8) };
+        if hint < 0 {
+            return -1;
+        }
+        // __iter__ and __length_hint__ may have changed managed storage.
+        let Some(read) = (unsafe { crate::api::sequences::ListRead::acquire(list) }) else {
+            return -1;
+        };
+        let current_len = unsafe { read.len() };
+        if current_len
+            .checked_add(hint as usize)
+            .is_some_and(|size| size <= Py_ssize_t::MAX as usize)
+            && !unsafe { read.reserve_additional(hint as usize) }
+        {
+            return -1;
         }
         loop {
             let item = unsafe { crate::api::object::PyIter_Next(iter) };
             if item.is_null() {
-                let failed = !unsafe { crate::api::errors::PyErr_Occurred() }.is_null();
-                unsafe { crate::api::refcount::Py_DECREF(iter) };
-                if failed {
-                    return ptr::null_mut();
+                if crate::api::errors::raised_error_pending() {
+                    return -1;
                 }
                 break;
             }
-            let rc = unsafe { crate::api::sequences::PyList_Append(list, item) };
-            unsafe { crate::api::refcount::Py_DECREF(item) };
-            if rc != 0 {
-                unsafe { crate::api::refcount::Py_DECREF(iter) };
-                return ptr::null_mut();
+            if !unsafe { read.append_owned(item) } {
+                return -1;
             }
         }
+        if !unsafe { read.finish_extend() } {
+            return -1;
+        }
     }
-    unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    0
 }
 
 #[unsafe(no_mangle)]

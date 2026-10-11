@@ -188,11 +188,13 @@ pub unsafe fn attr_lookup_ptr_allow_missing(
     _py: &CoreGilToken,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
-    let ok =
-        unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) } {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        _ => Err(()),
+    }
 }
 
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
@@ -272,11 +274,8 @@ pub fn index_i64_with_overflow(
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_collections_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64)
-    -> i32;
     fn __molt_collections_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64)
     -> i32;
-    fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32;
     fn __molt_collections_dict_like_bits_from_ptr(obj_ptr: *mut u8, out: *mut u64) -> i32;
     fn __molt_collections_seq_snapshot(
         ptr: *mut u8,
@@ -294,46 +293,32 @@ unsafe extern "C" {
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
-pub unsafe fn dict_get_in_place(
-    _py: &CoreGilToken,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-) -> Option<u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe { __molt_collections_dict_get_in_place(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
-}
-
-/// # Safety
-///
-/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
-/// this call.
+#[must_use]
 pub unsafe fn dict_set_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
-) {
-    unsafe {
-        __molt_collections_dict_set_in_place(dict_ptr, key_bits, val_bits);
+) -> bool {
+    match unsafe { __molt_collections_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
+        1 => true,
+        0 => false,
+        _ => unreachable!("invalid dictionary mutation status"),
     }
 }
 
 /// # Safety
 ///
-/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
-/// this call.
-pub unsafe fn dict_del_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> bool {
-    unsafe { __molt_collections_dict_del_in_place(dict_ptr, key_bits) != 0 }
-}
-
-/// # Safety
-///
 /// `ptr` must refer to a live Molt object for the duration of this call.
-pub unsafe fn dict_like_bits_from_ptr(_py: &CoreGilToken, ptr: *mut u8) -> Option<u64> {
+pub unsafe fn dict_like_bits_from_ptr(_py: &CoreGilToken, ptr: *mut u8) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_collections_dict_like_bits_from_ptr(ptr, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary storage status"),
+    }
 }
 
 /// # Safety

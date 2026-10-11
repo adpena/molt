@@ -518,7 +518,11 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let final_refcount = Cell::new(None);
     exercise_native_namespaces(false, &final_refcount);
-    assert_eq!(final_refcount.get(), Some(1), "normal completion retires the C owner");
+    assert_eq!(
+        final_refcount.get(),
+        Some(1),
+        "normal completion retires the C owner"
+    );
 }
 
 #[test]
@@ -1003,7 +1007,8 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
             &py,
             MoltObject::from_bits(bits).as_ptr().unwrap(),
             Some(dictionary_bits),
-        );
+        )
+        .unwrap();
         for kind in ["AttributeError", "RuntimeError"] {
             let failure = pending_error(&py, kind);
             FAILURE.with(|slot| slot.set(failure));
@@ -1305,6 +1310,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     ),
                     take_bits(object::PyObject_GetAttr(c_receiver, c_name)),
                     crate::builtins::attr::attr_lookup_ptr_allow_missing(py, pointer, name)
+                        .unwrap()
                         .unwrap(),
                 ] {
                     assert_eq!(result, MoltObject::from_int(701).bits());
@@ -1321,6 +1327,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 // Implicit protocols use the shared lookup authority in every tier.
                 let special =
                     crate::builtins::attr::lookup_special_method_bits(py, receiver, index)
+                        .expect("special lookup succeeds")
                         .expect("present __index__ protocol");
                 let result =
                     crate::call::bind::call_bind_borrowed(py, special, None, &[], &[], &[]);
@@ -1355,7 +1362,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 member(py, class, b"__index__", MoltObject::from_float(0.0).bits());
                 assert_eq!(
                     crate::builtins::attr::lookup_special_method_bits(py, receiver, index),
-                    Some(0),
+                    Ok(Some(0)),
                     "a present zero-bit protocol value is not a miss"
                 );
                 // The optional math satellite projects the same zero-valued fact.
@@ -1531,7 +1538,8 @@ fn managed_generic_dictionary_mutation_retains_initial_class_value_and_miss() {
                             &py,
                             MoltObject::from_bits(receiver).as_ptr().unwrap(),
                             Some(dictionary),
-                        );
+                        )
+                        .unwrap();
                     }
                     SNAPSHOT_MUTATION.with(|context| context.set([class, receiver, 0, new]));
                     let result = generic_read_variant(&py, receiver, name, dictionary, variant);
@@ -1609,7 +1617,8 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
                     &py,
                     MoltObject::from_bits(receiver).as_ptr().unwrap(),
                     Some(dictionary),
-                );
+                )
+                .unwrap();
             }
             let name = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
             SNAPSHOT_MUTATION.with(|context| {
@@ -1696,3 +1705,270 @@ mod mutation_consumers;
 mod mutation_name_identity;
 
 mod mutation_native_slots;
+
+thread_local! {
+    // Borrowed fixture roots: class view, exact failure, exact traceback.
+    static LOOKUP_RETIREMENT: Cell<[usize; 3]> = const { Cell::new([0; 3]) };
+    static LOOKUP_PHASE: Cell<usize> = const { Cell::new(0) };
+    static LOOKUP_OBSERVED: Cell<[usize; 2]> = const { Cell::new([0; 2]) };
+    static PUBLICATION_PROBE: Cell<[u64; 3]> = const { Cell::new([0; 3]) };
+}
+
+unsafe extern "C" fn remove_getattribute_and_fail(
+    _callable: *mut PyObject,
+    _args: *mut PyObject,
+    _kwargs: *mut PyObject,
+) -> *mut PyObject {
+    let [class, failure, _] = LOOKUP_RETIREMENT.with(Cell::get);
+    LOOKUP_PHASE.with(|phase| phase.set(1));
+    unsafe {
+        if object::PyObject_DelAttrString(class as *mut PyObject, c"__getattribute__".as_ptr()) < 0
+        {
+            return std::ptr::null_mut();
+        }
+        refcount::Py_INCREF(failure as *mut PyObject);
+        errors::PyErr_SetRaisedException(failure as *mut PyObject);
+    }
+    std::ptr::null_mut()
+}
+
+unsafe extern "C" fn observe_getattribute_retirement(callable: *mut PyObject) {
+    unsafe {
+        let error = errors::PyErr_GetRaisedException();
+        let traceback = if error.is_null() {
+            std::ptr::null_mut()
+        } else {
+            errors::PyException_GetTraceback(error)
+        };
+        LOOKUP_OBSERVED.with(|seen| seen.set([error.addr(), traceback.addr()]));
+        LOOKUP_PHASE.with(|phase| phase.set(if phase.get() == 1 { 2 } else { usize::MAX }));
+        refcount::Py_XDECREF(traceback);
+        errors::PyErr_SetRaisedException(error);
+        molt_cpython_abi::api::memory::PyObject_Free(callable.cast());
+    }
+}
+
+extern "C" fn after_getattribute_retirement(_receiver: u64, _name: u64) -> u64 {
+    LOOKUP_PHASE.with(|phase| phase.set(if phase.get() == 2 { 3 } else { usize::MAX }));
+    MoltObject::from_int(71).bits()
+}
+
+#[test]
+fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
+    use super::native_test_fixture::NativeType;
+    use crate::builtins::exceptions::ExceptionValue;
+    use molt_cpython_abi::api::typeobj;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut kind = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"SelectedGetattributeCallable",
+            );
+            kind.tp_call = Some(remove_getattribute_and_fail);
+            kind.tp_dealloc = Some(observe_getattribute_retirement);
+            assert_eq!(kind.ready(), 0);
+            let class = ExceptionValue::adopt(py, snapshot_class(py, b"RetiringGetattribute"));
+            method(
+                py,
+                class.bits(),
+                b"__getattr__",
+                after_getattribute_retirement as *const (),
+                2,
+            );
+            let class_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class.bits()),
+            );
+            assert!(!class_view.as_ptr().is_null());
+            let error_ptr =
+                crate::builtins::exceptions::alloc_exception(py, "AttributeError", "lookup body");
+            assert!(!error_ptr.is_null());
+            let error = ExceptionValue::adopt(py, MoltObject::from_ptr(error_ptr).bits());
+            let error_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(error.bits()),
+            );
+            assert!(!error_view.as_ptr().is_null());
+            let trace_class = obj_from_bits(crate::builtin_classes(py).traceback)
+                .as_ptr()
+                .unwrap();
+            let trace = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE
+                    .owned_handle_to_pyobj(crate::alloc_instance_for_class(py, trace_class)),
+            );
+            assert!(!trace.as_ptr().is_null());
+            assert_eq!(
+                errors::PyException_SetTraceback(error_view.as_ptr(), trace.as_ptr()),
+                0
+            );
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    LOOKUP_RETIREMENT.with(|state| state.set([0; 3]));
+                    LOOKUP_PHASE.with(|phase| phase.set(0));
+                    LOOKUP_OBSERVED.with(|seen| seen.set([0; 2]));
+                }
+            }
+            let _reset = Reset;
+            LOOKUP_RETIREMENT.with(|state| {
+                state.set([
+                    class_view.as_ptr().addr(),
+                    error_view.as_ptr().addr(),
+                    trace.as_ptr().addr(),
+                ])
+            });
+            let callable = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *kind,
+                0,
+            ));
+            assert!(!callable.as_ptr().is_null());
+            let value = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(callable.as_ptr())
+                    .unwrap(),
+            );
+            member(py, class.bits(), b"__getattribute__", value.bits());
+            drop(value);
+            drop(callable); // Only the actual namespace and operation may retain it.
+            let receiver = ExceptionValue::adopt(py, snapshot_receiver(py, class.bits(), false));
+            let name = ExceptionValue::adopt(
+                py,
+                crate::attr_name_bits_from_bytes(py, b"missing").unwrap(),
+            );
+            let result =
+                ExceptionValue::adopt(py, crate::molt_get_attr_name(receiver.bits(), name.bits()));
+            assert_eq!(result.bits(), MoltObject::from_int(71).bits());
+            assert_eq!(LOOKUP_PHASE.with(Cell::get), 3);
+            assert_eq!(
+                LOOKUP_OBSERVED.with(Cell::get),
+                [error_view.as_ptr().addr(), trace.as_ptr().addr()]
+            );
+            assert!(!crate::exception_pending(py));
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    });
+}
+
+extern "C" fn publication_key_hash(_receiver: u64) -> u64 {
+    crate::molt_hash_builtin(PUBLICATION_PROBE.with(Cell::get)[0])
+}
+
+extern "C" fn publication_key_equal(_receiver: u64, _other: u64) -> u64 {
+    let [_, failure, armed] = PUBLICATION_PROBE.with(Cell::get);
+    if armed != 0 {
+        crate::molt_raise(failure)
+    } else {
+        MoltObject::from_bool(false).bits()
+    }
+}
+
+#[test]
+fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure() {
+    use crate::builtins::exceptions::ExceptionValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let class = ExceptionValue::adopt(py, snapshot_class(py, b"FalliblePublication"));
+            let class_ptr = obj_from_bits(class.bits()).as_ptr().unwrap();
+            let name = ExceptionValue::adopt(
+                py,
+                crate::attr_name_bits_from_bytes(py, b"__call__").unwrap(),
+            );
+            let failure_ptr = crate::builtins::exceptions::alloc_exception(
+                py,
+                "RuntimeError",
+                "slot publication equality",
+            );
+            let prior_ptr = crate::builtins::exceptions::alloc_exception(
+                py,
+                "LookupError",
+                "incoming publication error",
+            );
+            assert!(!failure_ptr.is_null() && !prior_ptr.is_null());
+            let failure = ExceptionValue::adopt(py, MoltObject::from_ptr(failure_ptr).bits());
+            let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    PUBLICATION_PROBE.with(|state| state.set([0; 3]));
+                }
+            }
+            let _reset = Reset;
+            PUBLICATION_PROBE.with(|state| state.set([name.bits(), failure.bits(), 0]));
+            let key_class = ExceptionValue::adopt(py, snapshot_class(py, b"PublicationCollision"));
+            method(
+                py,
+                key_class.bits(),
+                b"__hash__",
+                publication_key_hash as *const (),
+                1,
+            );
+            method(
+                py,
+                key_class.bits(),
+                b"__eq__",
+                publication_key_equal as *const (),
+                2,
+            );
+            let key = ExceptionValue::adopt(py, snapshot_receiver(py, key_class.bits(), false));
+            let child_name = ExceptionValue::adopt(
+                py,
+                crate::attr_name_bits_from_bytes(py, b"PublicationDescendant").unwrap(),
+            );
+            let child = ExceptionValue::adopt(py, crate::molt_class_new(child_name.bits()));
+            let base_result =
+                ExceptionValue::adopt(py, crate::molt_class_set_base(child.bits(), class.bits()));
+            drop(base_result);
+            let child_ptr = obj_from_bits(child.bits()).as_ptr().unwrap();
+            crate::object::class_finish_definition(py, child_ptr).unwrap();
+            let namespace = obj_from_bits(crate::class_dict_bits(child_ptr))
+                .as_ptr()
+                .unwrap();
+            assert!(crate::dict_set_in_place(
+                py,
+                namespace,
+                key.bits(),
+                MoltObject::none().bits()
+            ));
+            let class_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class.bits()),
+            );
+            let child_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(child.bits()),
+            );
+            assert!(!class_view.as_ptr().is_null() && !child_view.as_ptr().is_null());
+            let failure_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(failure.bits()),
+            );
+            let prior_view = refcount::OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(prior.bits()),
+            );
+            assert!(!failure_view.as_ptr().is_null() && !prior_view.as_ptr().is_null());
+            for fails in [false, true] {
+                PUBLICATION_PROBE.with(|state| state.set([name.bits(), failure.bits(), 0]));
+                let mut publication =
+                    crate::builtins::attributes::TypeMutation::prepare(py, class_ptr, name.bits())
+                        .unwrap();
+                crate::record_exception(py, prior_ptr);
+                PUBLICATION_PROBE
+                    .with(|state| state.set([name.bits(), failure.bits(), u64::from(fails)]));
+                assert_eq!(publication.publish(), !fails);
+                drop(publication);
+                let raised =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(
+                    raised.as_ptr(),
+                    if fails {
+                        failure_view.as_ptr()
+                    } else {
+                        prior_view.as_ptr()
+                    }
+                );
+                PUBLICATION_PROBE.with(|state| state.set([name.bits(), failure.bits(), 0]));
+            }
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    });
+}

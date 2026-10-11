@@ -35,7 +35,7 @@ extern "C" fn cache_eviction_removes_selected_method(_: u64) -> u64 {
 }
 
 #[test]
-fn method_resolution_owns_selection_through_reentrant_cache_eviction_and_consumer_pin() {
+fn descriptor_lookup_owns_selection_through_reentrant_cache_eviction_and_consumer_pin() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         clear_attr_tls_caches(py);
@@ -65,36 +65,42 @@ fn method_resolution_owns_selection_through_reentrant_cache_eviction_and_consume
         EVICTION_TARGET_CLASS.store(owner, Ordering::SeqCst);
         EVICTION_TARGET_NAME.store(name, Ordering::SeqCst);
         EVICTION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
-        descriptor_cache_store(py, retiring_class, name, 1, None, Some(retiring));
+        descriptor_cache_store(
+            py,
+            retiring_class,
+            name,
+            1,
+            crate::object::global_type_version(),
+            None,
+            Some(retiring),
+        );
         dec_ref_bits(py, retiring);
 
         let selected = unsafe {
-            object_method_ic_resolve(
-                py,
-                obj_from_bits(receiver).as_ptr().unwrap(),
-                name,
-                |info| {
-                    assert_eq!(EVICTION_CALLBACK_COUNT.load(Ordering::SeqCst), 1);
-                    assert_eq!(
-                        class_attr_lookup_raw_mro(py, obj_from_bits(owner).as_ptr().unwrap(), name),
-                        None,
-                        "retirement must remove the class's method owner"
-                    );
-                    assert_eq!(info.func_bits, method);
-                    assert_eq!(
-                        object_type_id(obj_from_bits(info.func_bits).as_ptr().unwrap()),
-                        TYPE_ID_FUNCTION
-                    );
-                    assert_eq!(
-                        heap_refcount(info.func_bits),
-                        1,
-                        "only the snapshot owns selection"
-                    );
-                    // This is the same ownership handoff as the fused-call consumer.
-                    inc_ref_bits(py, info.func_bits);
-                    info.func_bits
-                },
-            )
+            with_class_descriptor_snapshot(py, owner, name, |snapshot| {
+                let selected = snapshot
+                    .and_then(|snapshot| snapshot.class_attr_bits)
+                    .expect("selected method");
+                assert_eq!(EVICTION_CALLBACK_COUNT.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    class_attr_lookup_raw_mro(py, obj_from_bits(owner).as_ptr().unwrap(), name)
+                        .expect("operation succeeds"),
+                    None,
+                    "retirement must remove the class's method owner"
+                );
+                assert_eq!(selected, method);
+                assert_eq!(
+                    object_type_id(obj_from_bits(selected).as_ptr().unwrap()),
+                    TYPE_ID_FUNCTION
+                );
+                assert_eq!(
+                    heap_refcount(selected),
+                    1,
+                    "only the snapshot owns selection"
+                );
+                inc_ref_bits(py, selected);
+                Ok(selected)
+            })
         }
         .expect("the original selected method survives reentrant removal");
         assert!(!exception_pending(py));
@@ -281,7 +287,9 @@ fn descriptor_function_receiver_uses_declared_wrapper_identity() {
         let owner = builtin_classes(_py).int;
         let scalar = MoltObject::from_int(7).bits();
         for name in ["__getattribute__", "__setattr__", "__delattr__"] {
-            let function = crate::builtins::methods::object_method_bits(_py, name).unwrap();
+            let function = crate::builtins::methods::object_method_bits(_py, name)
+                .expect("method lookup succeeds")
+                .unwrap();
             let pointer = obj_from_bits(function).as_ptr().unwrap();
             unsafe {
                 assert!(matches!(
@@ -294,15 +302,18 @@ fn descriptor_function_receiver_uses_declared_wrapper_identity() {
                             .expect("descriptor receiver admission")
                             .expect("bound descriptor receiver");
                     assert_eq!(admitted.bits(), receiver);
-                    let bound =
-                        descriptor_bind(_py, function, Some(owner), Some(receiver)).unwrap();
+                    let bound = descriptor_bind(_py, function, Some(owner), Some(receiver))
+                        .expect("operation succeeds")
+                        .unwrap();
                     assert_eq!(
                         crate::bound_method_self_bits(obj_from_bits(bound).as_ptr().unwrap()),
                         receiver
                     );
                     dec_ref_bits(_py, bound);
                 }
-                let unbound = descriptor_bind(_py, function, Some(owner), None).unwrap();
+                let unbound = descriptor_bind(_py, function, Some(owner), None)
+                    .expect("operation succeeds")
+                    .unwrap();
                 assert_eq!(unbound, function);
                 dec_ref_bits(_py, unbound);
             }
@@ -356,6 +367,7 @@ fn descriptor_bind_preserves_exact_scalar_receiver_bits_for_functions_and_proper
                     Some(MoltObject::from_ptr(owner_ptr).bits()),
                     Some(receiver_bits),
                 )
+                .expect("operation succeeds")
             }
             .unwrap_or_else(|| panic!("function descriptor must bind {label}"));
             let function_result = unsafe { call_callable0(_py, bound_bits) };
@@ -377,6 +389,7 @@ fn descriptor_bind_preserves_exact_scalar_receiver_bits_for_functions_and_proper
                     Some(MoltObject::from_ptr(owner_ptr).bits()),
                     Some(receiver_bits),
                 )
+                .expect("operation succeeds")
             }
             .unwrap_or_else(|| panic!("property descriptor must bind {label}"));
             assert!(
@@ -423,6 +436,7 @@ fn descriptor_bind_distinguishes_missing_instance_from_python_none() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 None,
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         assert_eq!(unbound_function, function_bits);
@@ -435,6 +449,7 @@ fn descriptor_bind_distinguishes_missing_instance_from_python_none() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(none_bits),
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         assert_ne!(bound_to_none, function_bits);
@@ -451,6 +466,7 @@ fn descriptor_bind_distinguishes_missing_instance_from_python_none() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 None,
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         assert_eq!(unbound_property, property_bits);
@@ -463,6 +479,7 @@ fn descriptor_bind_distinguishes_missing_instance_from_python_none() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(none_bits),
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         assert!(!exception_pending(_py));
@@ -505,6 +522,7 @@ fn descriptor_bind_classmethod_uses_owner_and_staticmethod_remains_unbound() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(receiver_bits),
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         let classmethod_result = unsafe { call_callable0(_py, bound_classmethod) };
@@ -520,6 +538,7 @@ fn descriptor_bind_classmethod_uses_owner_and_staticmethod_remains_unbound() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(receiver_bits),
             )
+            .expect("operation succeeds")
         }
         .unwrap();
         assert_eq!(unbound_staticmethod, function_bits);
@@ -574,6 +593,7 @@ fn descriptor_bind_custom_get_preserves_arguments_across_owner_mutation() {
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(instance_bits),
             )
+            .expect("operation succeeds")
         }
         .expect("custom descriptor must bind");
         assert!(!exception_pending(_py));
@@ -616,6 +636,7 @@ fn descriptor_bind_returns_plain_class_values_unchanged() {
                     Some(MoltObject::from_ptr(owner_ptr).bits()),
                     Some(receiver_bits),
                 )
+                .expect("operation succeeds")
             }
             .unwrap_or_else(|| panic!("plain {label} must be returned"));
             assert!(!exception_pending(_py));
@@ -711,7 +732,7 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
                 Some(receiver_bits),
             )
         };
-        assert_eq!(failed_attribute_lookup, Some(none_bits));
+        assert!(failed_attribute_lookup.is_err());
         assert!(exception_pending(_py));
         let attribute_error = crate::builtins::exceptions::molt_exception_last_pending();
         assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -733,7 +754,7 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
                 none_bits,
             )
         };
-        assert_eq!(failed_call, Some(none_bits));
+        assert!(failed_call.is_err());
         assert!(exception_pending(_py));
         let invocation_error = crate::builtins::exceptions::molt_exception_last_pending();
         assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -752,7 +773,7 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
                 Some(receiver_bits),
             )
         };
-        assert_eq!(failed, Some(none_bits));
+        assert!(failed.is_err());
         assert!(exception_pending(_py));
         let error_bits = crate::builtins::exceptions::molt_exception_last_pending();
         assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -772,7 +793,7 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
                 MoltObject::from_int(23).bits(),
             )
         };
-        assert_eq!(call_failed, Some(none_bits));
+        assert!(call_failed.is_err());
         assert!(exception_pending(_py));
         let call_error_bits = crate::builtins::exceptions::molt_exception_last_pending();
         assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -823,6 +844,7 @@ fn descriptor_call1_exact_function_matches_bind_then_call_for_immediate_and_heap
                     Some(MoltObject::from_ptr(owner_ptr).bits()),
                     Some(receiver_bits),
                 )
+                .expect("operation succeeds")
             }
             .unwrap_or_else(|| panic!("function must bind for {label} receiver"));
             let bound_result = unsafe { call_callable1(_py, bound_bits, argument_bits) };
@@ -841,6 +863,7 @@ fn descriptor_call1_exact_function_matches_bind_then_call_for_immediate_and_heap
                     Some(receiver_bits),
                     argument_bits,
                 )
+                .expect("operation succeeds")
             }
             .unwrap_or_else(|| panic!("direct descriptor call must succeed for {label}"));
             assert!(!exception_pending(_py));
@@ -919,6 +942,7 @@ fn descriptor_call1_pins_generic_get_method_across_self_replacement() {
                 Some(receiver_bits),
                 argument_bits,
             )
+            .expect("operation succeeds")
         }
         .expect("generic descriptor call must produce a result");
         assert!(!exception_pending(_py));
@@ -930,8 +954,10 @@ fn descriptor_call1_pins_generic_get_method_across_self_replacement() {
         assert_eq!(MUTATING_GET_OWNER_BITS.load(Ordering::SeqCst), owner_bits);
 
         let get_name_bits = string_bits(_py, b"__get__");
-        let replacement =
-            unsafe { class_attr_lookup_raw_mro(_py, descriptor_class_ptr, get_name_bits) };
+        let replacement = unsafe {
+            class_attr_lookup_raw_mro(_py, descriptor_class_ptr, get_name_bits)
+                .expect("operation succeeds")
+        };
         assert_eq!(replacement, Some(MoltObject::none().bits()));
         dec_ref_bits(_py, get_name_bits);
 

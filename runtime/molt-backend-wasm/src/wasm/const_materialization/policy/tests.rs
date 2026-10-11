@@ -88,8 +88,8 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
         ),
         (
             "const_bigint",
-            OwnedLiteralPayloadKind::BigintDecimal,
-            WasmRuntimeImport::BigintFromStr,
+            OwnedLiteralPayloadKind::BigintBytes,
+            WasmRuntimeImport::BigintFromBytes,
             WasmConstLirFastPolicy::Materialize,
         ),
         (

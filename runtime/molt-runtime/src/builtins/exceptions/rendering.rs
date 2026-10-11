@@ -42,24 +42,29 @@ pub(crate) fn exception_render_method_bits(
     py: &PyToken<'_>,
     owner: u64,
     name: &str,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     crate::builtins::methods::method_dispatch(py, || {
-        let declaration = declaring_spec(py, owner)?;
+        let Some(declaration) = declaring_spec(py, owner) else {
+            return Ok(None);
+        };
         let (name, address) = match name {
             "__str__" => (
                 "__str__",
-                string_slot_address(declaration.declared_str_slot()?),
+                string_slot_address(match declaration.declared_str_slot() {
+                    Some(slot) => slot,
+                    None => return Ok(None),
+                }),
             ),
             "__repr__" if declaration.declares_repr() => ("__repr__", fn_addr!(exception_repr)),
-            _ => return None,
+            _ => return Ok(None),
         };
-        Some(builtin_func_bits(
+        Ok(Some(builtin_func_bits(
             py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, name)
                 .with_text_signature("($self, /)"),
             address,
             1,
-        ))
+        )))
     })
 }
 
@@ -67,8 +72,7 @@ pub(crate) fn publish_exception_render_methods(py: &PyToken<'_>, owner: u64) -> 
     // Declarations come from the same schema path used by direct lookup. A
     // subclass inherits a descriptor; it does not acquire its own dictionary row.
     for name in ["__str__", "__repr__"] {
-        let _ = exception_render_method_bits(py, owner, name);
-        if exception_pending(py) {
+        if exception_render_method_bits(py, owner, name).is_err() {
             return false;
         }
     }

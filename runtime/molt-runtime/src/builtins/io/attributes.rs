@@ -259,8 +259,8 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
                 if exception_pending(py) {
                     return false;
                 }
-                dict_set_in_place(py, staged, name, descriptor);
-                if exception_pending(py) {
+                let completed = dict_set_in_place(py, staged, name, descriptor);
+                if !completed {
                     return false;
                 }
             }
@@ -454,8 +454,9 @@ pub(super) unsafe fn io_initialize_dictionary_members(py: &PyToken<'_>, object: 
             let Some(dictionary) = crate::object::field_storage::materialize(py, object) else {
                 return false;
             };
-            dict_set_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), name, value);
-            if exception_pending(py) {
+            let completed =
+                dict_set_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), name, value);
+            if !completed {
                 return false;
             }
         }

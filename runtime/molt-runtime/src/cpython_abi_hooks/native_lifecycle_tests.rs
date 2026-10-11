@@ -968,7 +968,6 @@ fn spec_offsets_are_checked_and_negative_dict_owners_are_collected() {
         slots[0].slot = 0;
         spec.slots = slots.as_mut_ptr();
         for base in [
-            &raw mut PyList_Type,
             &raw mut PyDict_Type,
             &raw mut PySet_Type,
             &raw mut PyModule_Type,
@@ -1113,6 +1112,101 @@ fn native_numeric_tuple_and_bytearray_subclasses_use_their_own_allocator() {
         assert_eq!(OBJECT_FREES.load(Ordering::SeqCst), 5);
         assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 5);
         assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn native_list_subclass_resurrection_and_terminal_free_follow_target_python() {
+    use molt_cpython_abi::api::sequences;
+
+    struct ResurrectionCleanup;
+    impl Drop for ResurrectionCleanup {
+        fn drop(&mut self) {
+            REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+            let retained = RESURRECTED.swap(ptr::null_mut(), Ordering::SeqCst);
+            unsafe { refcount::Py_XDECREF(retained) };
+        }
+    }
+
+    let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    with_gil(|py| unsafe {
+        // Pinned CPython list_dealloc calls the type's free slot in 3.12/3.13;
+        // 3.14 selects PyObject_GC_Del directly. The oracle is versioned source,
+        // independent of the runtime callback's current target selection.
+        for (minor, expected_custom_frees) in [(12, 1), (13, 1), (14, 0)] {
+            transaction.with_target_python_minor(&py, minor, || {
+                OBJECT_FREES.store(0, Ordering::SeqCst);
+                FINALIZER_CALLS.store(0, Ordering::SeqCst);
+                RESURRECTED.store(ptr::null_mut(), Ordering::SeqCst);
+                let mut slots = [
+                    PyType_Slot {
+                        slot: molt_cpython_abi::type_slots::Py_tp_finalize,
+                        pfunc: change_type_and_resurrect as *const () as *mut c_void,
+                    },
+                    PyType_Slot {
+                        slot: molt_cpython_abi::type_slots::Py_tp_free,
+                        pfunc: observe_object_free as *const () as *mut c_void,
+                    },
+                    PyType_Slot {
+                        slot: 0,
+                        pfunc: ptr::null_mut(),
+                    },
+                ];
+                let mut spec = PyType_Spec {
+                    name: c"lifecycle.NativeListDerived".as_ptr(),
+                    basicsize: 0,
+                    itemsize: 0,
+                    flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
+                    slots: slots.as_mut_ptr(),
+                };
+                let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
+                    &raw mut spec,
+                    (&raw mut PyList_Type).cast(),
+                ));
+                assert!(!class.as_ptr().is_null());
+                let type_refs = (*class.as_ptr()).ob_refcnt;
+                REPLACEMENT_TYPE.store(class.as_ptr().cast(), Ordering::SeqCst);
+                let _cleanup = ResurrectionCleanup;
+                let instance = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                    class.as_ptr().cast(),
+                    0,
+                ));
+                let child = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                    &raw mut PyBaseObject_Type,
+                    0,
+                ));
+                assert!(!instance.as_ptr().is_null() && !child.as_ptr().is_null());
+                let address = instance.as_ptr().addr();
+                assert_eq!(
+                    sequences::PyList_Append(instance.as_ptr(), child.as_ptr()),
+                    0
+                );
+                assert_eq!((*child.as_ptr()).ob_refcnt, 2);
+                drop(instance);
+                let resurrected = refcount::OwnedPyObject::from_owned(
+                    RESURRECTED.swap(ptr::null_mut(), Ordering::SeqCst),
+                );
+                assert!(!resurrected.as_ptr().is_null());
+                assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(OBJECT_FREES.load(Ordering::SeqCst), 0);
+                assert_ne!(memory::PyObject_GC_IsTracked(resurrected.as_ptr()), 0);
+                assert_ne!(memory::PyObject_GC_IsFinalized(resurrected.as_ptr()), 0);
+                assert_eq!(
+                    sequences::PyList_GetItem(resurrected.as_ptr(), 0),
+                    child.as_ptr()
+                );
+                drop(resurrected);
+                REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+                assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(OBJECT_FREES.load(Ordering::SeqCst), expected_custom_frees);
+                assert_eq!((*child.as_ptr()).ob_refcnt, 1);
+                assert_eq!((*class.as_ptr()).ob_refcnt, type_refs);
+                assert!(!crate::object::gc::native_gc_is_enrolled(address));
+                assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
+            });
+        }
+        assert!(!crate::exception_pending(&py));
+        assert!(errors::PyErr_Occurred().is_null());
     });
 }
 

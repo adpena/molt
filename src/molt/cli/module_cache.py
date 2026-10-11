@@ -23,7 +23,8 @@ from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
 )
-from molt.cli.cache_keys import _json_ir_default
+from molt.cli.cache_keys import _cache_json_value, _json_ir_default
+from molt.opcode_literal_payloads import integer_literal_value
 from molt.cli.function_references import (
     format_function_reference_edges,
     missing_local_function_references,
@@ -740,10 +741,10 @@ def _module_lowering_execution_view(
     )
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 9
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 10
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 3
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 4
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -928,10 +929,13 @@ def _validate_persisted_module_analysis_payload(
         or "imports" in payload
     ):
         return None
-    raw_defaults = payload.get("func_defaults")
+    try:
+        raw_defaults = _decode_cached_json_value(payload.get("func_defaults"))
+        raw_kinds = _decode_cached_json_value(payload.get("func_kinds"))
+    except ValueError:
+        return None
     if not isinstance(raw_defaults, dict):
         return None
-    raw_kinds = payload.get("func_kinds")
     if not isinstance(raw_kinds, dict) or not all(
         isinstance(name, str)
         and isinstance(kind, str)
@@ -958,13 +962,9 @@ def _validate_persisted_module_analysis_payload(
     for func_name, func_payload in raw_defaults.items():
         if not isinstance(func_name, str) or not isinstance(func_payload, dict):
             return None
-        decoded_payload = cast(
-            dict[str, Any],
-            _decode_cached_json_value(func_payload),
-        )
-        if not _validate_module_func_default_payload(decoded_payload):
+        if not _validate_module_func_default_payload(func_payload):
             return None
-        normalized[func_name] = decoded_payload
+        normalized[func_name] = func_payload
     return normalized, dict(cast(dict[str, str], raw_kinds))
 
 
@@ -1071,7 +1071,9 @@ def _write_persisted_module_analysis(
         "func_kinds": func_kinds,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
+    _write_artifact_sync_payload(
+        cache_path, _cache_json_value(payload), default=_json_ir_default
+    )
     # Publish the completed session-local entry to the shared, content-addressed
     # tier so the next fresh session hydrates it instead of re-parsing. Best-effort
     # byte copy (exFAT-safe): a publish failure never fails the build.
@@ -1114,6 +1116,30 @@ def _decode_cached_json_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_decode_cached_json_value(item) for item in value]
     if isinstance(value, dict):
+        if "__dict__" in value and len(value) == 1:
+            entries = value["__dict__"]
+            if not isinstance(entries, list) or not all(
+                isinstance(entry, list) and len(entry) == 2 for entry in entries
+            ):
+                raise ValueError("invalid cached dictionary entries")
+            result = {}
+            for raw_key, raw_value in entries:
+                key = _decode_cached_json_value(raw_key)
+                child = _decode_cached_json_value(raw_value)
+                try:
+                    if key in result:
+                        raise ValueError("duplicate cached dictionary key")
+                    result[key] = child
+                except TypeError as exc:
+                    raise ValueError("unhashable cached dictionary key") from exc
+            return result
+        if "__integer_bytes__" in value and len(value) == 1:
+            raw = value["__integer_bytes__"]
+            if not isinstance(raw, list) or not all(
+                type(item) is int and 0 <= item <= 255 for item in raw
+            ):
+                raise ValueError("invalid cached integer byte payload")
+            return integer_literal_value(bytes(raw))
         if value.get("__ellipsis__") is True and len(value) == 1:
             return Ellipsis
         if "__bytes__" in value and isinstance(value["__bytes__"], list):
@@ -1130,6 +1156,10 @@ def _decode_cached_json_value(value: Any) -> Any:
             return value["__ast__"]
         if "__set__" in value and isinstance(value["__set__"], list):
             return set(_decode_cached_json_value(item) for item in value["__set__"])
+        if "__frozenset__" in value and isinstance(value["__frozenset__"], list):
+            return frozenset(
+                _decode_cached_json_value(item) for item in value["__frozenset__"]
+            )
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")
@@ -1508,7 +1538,7 @@ def _module_lowering_context_payload(
 def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
     try:
         encoded = json.dumps(
-            payload,
+            _cache_json_value(payload),
             sort_keys=True,
             separators=(",", ":"),
             default=_json_ir_default,
@@ -1540,13 +1570,13 @@ def _trace_lowering_context_digest(payload: dict[str, Any], digest: str) -> None
         for key, value in payload.items():
             try:
                 blob = json.dumps(
-                    value,
+                    _cache_json_value(value),
                     sort_keys=True,
                     separators=(",", ":"),
                     default=_json_ir_default,
                 ).encode("utf-8")
             except (TypeError, ValueError):
-                blob = repr(value).encode("utf-8", "replace")
+                blob = repr(_cache_json_value(value)).encode("utf-8", "replace")
             field_digests[key] = hashlib.sha256(blob).hexdigest()[:16]
         line = json.dumps(
             {
@@ -1696,7 +1726,12 @@ def _validate_persisted_module_lowering_payload(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    result = cast(dict[str, Any], _decode_cached_json_value(raw_result))
+    try:
+        result = _decode_cached_json_value(raw_result)
+    except ValueError:
+        return None
+    if not isinstance(result, dict):
+        return None
     raw_functions = result.get("functions")
     if isinstance(raw_functions, list):
         result["functions"] = _normalize_backend_ir_functions(
@@ -1799,7 +1834,9 @@ def _write_persisted_module_lowering(
         "result": result,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_cached_json_object(cache_path, payload, default=_json_ir_default)
+    _write_cached_json_object(
+        cache_path, _cache_json_value(payload), default=_json_ir_default
+    )
     # Publish the completed session-local entry to the shared, content-addressed
     # tier (slot name embeds the context_digest) so the next fresh session
     # hydrates it instead of re-lowering. Best-effort byte copy (exFAT-safe).

@@ -87,9 +87,7 @@ feature = "stdlib_math"
 [stdlib.cmath]
 prefixes = ["cmath_"]
 feature = "stdlib_math"
-[stdlib.colorsys]
-prefixes = ["colorsys_"]
-feature = "stdlib_math"
+
 [stdlib.fractions]
 prefixes = ["fraction_"]
 feature = "stdlib_math"
@@ -125,7 +123,6 @@ prefixes = [
     "ordereddict_",
     "defaultdict_",
     "deque_",
-    "chainmap_",
 ]
 feature = "stdlib_collections"
 [stdlib.subprocess]

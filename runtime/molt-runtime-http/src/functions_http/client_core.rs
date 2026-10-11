@@ -802,20 +802,21 @@ pub(super) fn http_cookies_parse_pairs(cookie_header: &str) -> Vec<(String, Stri
 pub(super) fn http_cookies_attr_text(
     _py: &molt_runtime_core::CoreGilToken,
     value_bits: u64,
-) -> Option<String> {
+) -> Result<Option<String>, u64> {
     if obj_from_bits(value_bits).is_none() {
-        return None;
+        return Ok(None);
     }
-    let text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
-    if text.is_empty() { None } else { Some(text) }
+    let text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits))
+        .ok_or_else(|| MoltObject::none().bits())?;
+    Ok(if text.is_empty() { None } else { Some(text) })
 }
 
 pub(super) fn http_cookies_expires_text(
     _py: &molt_runtime_core::CoreGilToken,
     expires_bits: u64,
-) -> Option<String> {
+) -> Result<Option<String>, u64> {
     if obj_from_bits(expires_bits).is_none() {
-        return None;
+        return Ok(None);
     }
     if let Some(offset_seconds) = to_i64(obj_from_bits(expires_bits)) {
         let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -823,7 +824,7 @@ pub(super) fn http_cookies_expires_text(
             Err(_) => 0,
         };
         let absolute = now.saturating_add(offset_seconds);
-        return Some(http_server_format_gmt_timestamp(absolute));
+        return Ok(Some(http_server_format_gmt_timestamp(absolute)));
     }
     http_cookies_attr_text(_py, expires_bits)
 }
@@ -841,12 +842,14 @@ pub(super) struct HttpCookieMorselInput {
 pub(super) fn http_cookies_render_morsel_impl(
     _py: &molt_runtime_core::CoreGilToken,
     input: HttpCookieMorselInput,
-) -> String {
-    let name = crate::bridge::format_obj_str(_py, obj_from_bits(input.name_bits));
-    let value = crate::bridge::format_obj_str(_py, obj_from_bits(input.value_bits));
+) -> Result<String, u64> {
+    let name = crate::bridge::format_obj_str(_py, obj_from_bits(input.name_bits))
+        .ok_or_else(|| MoltObject::none().bits())?;
+    let value = crate::bridge::format_obj_str(_py, obj_from_bits(input.value_bits))
+        .ok_or_else(|| MoltObject::none().bits())?;
     let mut segments: Vec<String> = vec![format!("{name}={value}")];
 
-    if let Some(expires_value) = http_cookies_expires_text(_py, input.expires_bits) {
+    if let Some(expires_value) = http_cookies_expires_text(_py, input.expires_bits)? {
         segments.push(format!("expires={expires_value}"));
     }
 
@@ -859,12 +862,12 @@ pub(super) fn http_cookies_render_morsel_impl(
     if !obj_from_bits(input.max_age_bits).is_none() {
         if let Some(max_age_int) = to_i64(obj_from_bits(input.max_age_bits)) {
             segments.push(format!("Max-Age={max_age_int}"));
-        } else if let Some(max_age_text) = http_cookies_attr_text(_py, input.max_age_bits) {
+        } else if let Some(max_age_text) = http_cookies_attr_text(_py, input.max_age_bits)? {
             segments.push(format!("Max-Age={max_age_text}"));
         }
     }
 
-    if let Some(path_value) = http_cookies_attr_text(_py, input.path_bits) {
+    if let Some(path_value) = http_cookies_attr_text(_py, input.path_bits)? {
         segments.push(format!("Path={path_value}"));
     }
 
@@ -874,7 +877,7 @@ pub(super) fn http_cookies_render_morsel_impl(
         segments.push("Secure".to_string());
     }
 
-    segments.join("; ")
+    Ok(segments.join("; "))
 }
 
 pub(super) struct HttpClientExecuteInput {
@@ -961,11 +964,15 @@ pub(super) fn urllib_http_extract_headers_mapping(
                 "headers mapping items must be pairs",
             ));
         }
-        out.push((
-            crate::bridge::format_obj_str(_py, obj_from_bits(fields[0])),
-            crate::bridge::format_obj_str(_py, obj_from_bits(fields[1])),
-        ));
+        let formatted: Result<_, u64> = (|| {
+            let name = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            let value = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            Ok((name, value))
+        })();
         dec_ref_bits(_py, item_bits);
+        out.push(formatted?);
     }
     Ok(out)
 }
@@ -1294,7 +1301,7 @@ pub(super) fn http_client_extract_headers(
         };
         let value = crate::bridge::format_obj_str(_py, obj_from_bits(pair[1]));
         dec_ref_bits(_py, item_bits);
-        out.push((name, value));
+        out.push((name, value.ok_or_else(|| MoltObject::none().bits())?));
     }
     Ok(out)
 }
@@ -1480,11 +1487,15 @@ pub(super) fn urllib_http_extract_request_headers(
                 "headers mapping items must be pairs",
             ));
         }
-        out.push((
-            crate::bridge::format_obj_str(_py, obj_from_bits(fields[0])),
-            crate::bridge::format_obj_str(_py, obj_from_bits(fields[1])),
-        ));
+        let formatted: Result<_, u64> = (|| {
+            let name = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            let value = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            Ok((name, value))
+        })();
         dec_ref_bits(_py, item_bits);
+        out.push(formatted?);
     }
     Ok(out)
 }
@@ -1526,7 +1537,7 @@ pub(super) fn urllib_http_extract_method_and_body(
         Some(bits) if !obj_from_bits(bits).is_none() => {
             let value = crate::bridge::format_obj_str(_py, obj_from_bits(bits));
             dec_ref_bits(_py, bits);
-            value
+            value.ok_or_else(|| MoltObject::none().bits())?
         }
         Some(bits) => {
             dec_ref_bits(_py, bits);
@@ -1605,8 +1616,9 @@ pub(super) fn urllib_http_find_proxy_for_scheme(
             return Err(MoltObject::none().bits());
         }
         if !obj_from_bits(out_bits).is_none() {
-            proxy = Some(crate::bridge::format_obj_str(_py, obj_from_bits(out_bits)));
+            let text = crate::bridge::format_obj_str(_py, obj_from_bits(out_bits));
             dec_ref_bits(_py, out_bits);
+            proxy = Some(text.ok_or_else(|| MoltObject::none().bits())?);
             break;
         }
         dec_ref_bits(_py, out_bits);
@@ -1765,10 +1777,15 @@ pub(super) fn urllib_proxy_find_basic_credentials(
             dec_ref_bits(_py, creds_bits);
             continue;
         }
-        let user = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]));
-        let pass = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]));
+        let formatted: Result<_, u64> = (|| {
+            let user = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            let pass = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            Ok((user, pass))
+        })();
         dec_ref_bits(_py, creds_bits);
-        return Ok(Some((user, pass)));
+        return formatted.map(Some);
     }
     Ok(None)
 }

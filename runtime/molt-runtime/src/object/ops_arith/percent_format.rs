@@ -70,7 +70,7 @@ impl PercentInteger {
         if exception_pending(py) {
             return None;
         }
-        let value = crate::builtins::numbers::integer_storage_bigint(py, bits)?;
+        let value = crate::builtins::numbers::integer_storage_bigint(py, bits).ok()??;
         Some(Self {
             value,
             _owner: owner,
@@ -143,9 +143,9 @@ struct PercentFormatFlags {
     alternate: bool,
 }
 
-fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> bool {
+fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> Result<bool, ()> {
     let Some(ptr) = rhs.as_ptr() else {
-        return false;
+        return Ok(false);
     };
     unsafe {
         let type_id = object_type_id(ptr);
@@ -154,7 +154,7 @@ fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> bo
             || percent_native(rhs.bits())
                 .is_some_and(|native| strings::PyUnicode_Check(native) != 0)
         {
-            return false;
+            return Ok(false);
         }
     }
     crate::object::ops::value_supports_mp_subscript(_py, rhs.bits())
@@ -421,10 +421,7 @@ fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<Per
     // admission authority without binding or executing descriptors.
     let mut numeric = false;
     for name in [b"__index__".as_slice(), b"__int__", b"__float__"] {
-        numeric = unsafe { crate::builtins::attr::has_special_method(py, bits, name) };
-        if exception_pending(py) {
-            return None;
-        }
+        numeric = unsafe { crate::builtins::attr::has_special_method(py, bits, name) }.ok()?;
         if numeric {
             break;
         }
@@ -494,7 +491,9 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
     }
     if let Some(result) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
         let owner = obj_from_bits(result).as_ptr().map(PtrDropGuard::new);
-        let value = crate::builtins::numbers::integer_storage_bigint(py, result);
+        let value = crate::builtins::numbers::integer_storage_bigint(py, result)
+            .ok()
+            .flatten();
         drop(owner);
         return percent_char_from_bigint(py, value?).map(Into::into);
     }
@@ -556,7 +555,12 @@ fn percent_format_decimal(
     })?;
     percent_integer_precision_admit(_py, precision)?;
     let negative = value.value.is_negative();
-    let mut body = value.value.abs().to_string();
+    let mut body =
+        match crate::object::ops_format::format_bigint_decimal_magnitude(_py, &value.value) {
+            Ok(body) => body,
+            // Select the output error before retiring the converted integer owner.
+            Err(error) => return error.raise(_py),
+        };
     body = percent_integer_precision(_py, body, precision)?;
     drop(value);
     let mut prefix = String::new();
@@ -595,7 +599,7 @@ fn percent_format_radix(
     let mut body = match conv {
         b'o' => value.value.abs().to_str_radix(8),
         b'x' | b'X' => value.value.abs().to_str_radix(16),
-        _ => value.value.abs().to_string(),
+        _ => unreachable!("radix conversion admitted only o/x/X"),
     };
     if conv == b'X' {
         body = body.to_uppercase();
@@ -742,13 +746,16 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         if rhs_type == TYPE_ID_DICT {
-            if let Some(bits) = dict_get_in_place(_py, rhs_ptr, key_bits) {
+            let found = match dict_get_in_place(_py, rhs_ptr, key_bits) {
+                Ok(found) => found,
+                Err(()) => {
+                    dec_ref_bits(_py, key_bits);
+                    return None;
+                }
+            };
+            if let Some(bits) = found {
                 dec_ref_bits(_py, key_bits);
                 return Some((bits, false));
-            }
-            if exception_pending(_py) {
-                dec_ref_bits(_py, key_bits);
-                return None;
             }
             raise_key_error_with_key::<()>(_py, key_bits);
             dec_ref_bits(_py, key_bits);
@@ -843,10 +850,7 @@ pub(super) fn string_percent_format_impl(
         Some(tuple) => tuple.len()?,
         None => 0,
     };
-    let mapping = percent_rhs_allows_unused_non_tuple(_py, rhs_obj);
-    if exception_pending(_py) {
-        return None;
-    }
+    let mapping = percent_rhs_allows_unused_non_tuple(_py, rhs_obj).ok()?;
     let mut arguments = PercentArguments {
         source: rhs_bits,
         current: rhs_bits,

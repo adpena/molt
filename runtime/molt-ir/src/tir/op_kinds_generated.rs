@@ -7696,7 +7696,7 @@ pub struct GvnValueKeySpec {
 }
 
 const GVN_VALUE_KEY_ATTRS_CONST_INT: &[&str] = &["value"];
-const GVN_VALUE_KEY_ATTRS_CONST_BIG_INT: &[&str] = &["s_value"];
+const GVN_VALUE_KEY_ATTRS_CONST_BIG_INT: &[&str] = &["bytes"];
 const GVN_VALUE_KEY_ATTRS_CONST_BOOL: &[&str] = &["value"];
 const GVN_VALUE_KEY_ATTRS_CONST_NONE: &[&str] = &[];
 const GVN_VALUE_KEY_ATTRS_CONST_FLOAT: &[&str] = &["f_value", "value"];
@@ -7805,7 +7805,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
             attrs: GVN_VALUE_KEY_ATTRS_CONST_INT,
         }),
         OpCode::ConstBigInt => Some(GvnValueKeySpec {
-            kind: GvnValueKeyKind::StrAttr,
+            kind: GvnValueKeyKind::BytesAttr,
             attrs: GVN_VALUE_KEY_ATTRS_CONST_BIG_INT,
         }),
         OpCode::ConstFloat => Some(GvnValueKeySpec {
@@ -12530,7 +12530,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
 pub enum OwnedLiteralPayloadKind {
     String,
     Bytes,
-    BigintDecimal,
+    BigintBytes,
 }
 
 /// Literal payload kind consumers may record for an opcode.
@@ -12636,7 +12636,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::StateBlockEnd => None,
         OpCode::ConstInt => Some(LiteralPayloadKind::Int),
         OpCode::ConstBigInt => Some(LiteralPayloadKind::Owned(
-            OwnedLiteralPayloadKind::BigintDecimal,
+            OwnedLiteralPayloadKind::BigintBytes,
         )),
         OpCode::ConstFloat => Some(LiteralPayloadKind::Float),
         OpCode::ConstStr => Some(LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::String)),

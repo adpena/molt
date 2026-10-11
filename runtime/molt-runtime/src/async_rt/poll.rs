@@ -970,7 +970,8 @@ mod tests {
                             code_attr,
                         )
                     }
-                    .unwrap();
+                    .expect("frame attribute lookup succeeds")
+                    .expect("frame attribute exists");
                     assert_eq!(viewed_code, code_bits);
                     dec_ref_bits(py, viewed_code);
                     dec_ref_bits(py, code_attr);
@@ -982,7 +983,8 @@ mod tests {
                             attr,
                         )
                     }
-                    .unwrap();
+                    .expect("frame attribute lookup succeeds")
+                    .expect("frame attribute exists");
                     assert_eq!(
                         unsafe {
                             crate::object_class_bits(crate::obj_from_bits(frame).as_ptr().unwrap())
@@ -1005,7 +1007,8 @@ mod tests {
                                 name,
                             )
                         }
-                        .unwrap();
+                        .expect("frame attribute lookup succeeds")
+                        .expect("frame attribute exists");
                         assert_eq!(value, expected);
                         dec_ref_bits(py, value);
                         dec_ref_bits(py, name);

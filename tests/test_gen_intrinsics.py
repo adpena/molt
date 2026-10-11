@@ -351,14 +351,12 @@ def test_collections_categories_are_toml_owned() -> None:
         "molt_ordereddict_",
         "molt_defaultdict_",
         "molt_deque_",
-        "molt_chainmap_",
     ]
     for prefix in (
         "molt_namedtuple_",
         "molt_ordereddict_",
         "molt_defaultdict_",
         "molt_deque_",
-        "molt_chainmap_",
     ):
         assert all(prefix != extra[0] for extra in module._EXTRA_PREFIX_MODULES)
 

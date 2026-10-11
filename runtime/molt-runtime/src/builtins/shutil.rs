@@ -62,7 +62,7 @@ fn audit_src_dst_arg(src_bits: u64, dst_bits: u64) -> AuditArgs {
 fn require_path_local(_py: &PyToken<'_>, bits: u64, _label: &str) -> Result<PathBuf, u64> {
     match path_from_bits(_py, bits) {
         Ok(p) => Ok(p),
-        Err(msg) => Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+        Err(error) => Err(error),
     }
 }
 
@@ -784,7 +784,7 @@ pub extern "C" fn molt_shutil_make_archive(
         } else {
             match path_from_bits(_py, root_dir_bits) {
                 Ok(p) => p,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(error) => return error,
             }
         };
 
@@ -930,14 +930,14 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         }
         let filename = match path_from_bits(_py, filename_bits) {
             Ok(p) => p,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let extract_dir = if obj_from_bits(extract_dir_bits).is_none() {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         } else {
             match path_from_bits(_py, extract_dir_bits) {
                 Ok(p) => p,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(error) => return error,
             }
         };
 

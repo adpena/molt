@@ -23,11 +23,16 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
                 kind: kind.into(),
                 out: Some(format!("{kind}_{index}")),
                 s_value: match kind {
-                    "const_bigint" => Some(i64::MAX.to_string()),
                     "const_str" => Some("non-interned literal".into()),
                     _ => None,
                 },
-                bytes: (kind == "const_bytes").then(|| vec![0, 255, 128]),
+                bytes: match kind {
+                    // Independent signed-byte oracle for i64::MAX: the boxed
+                    // scalar aliases below must share this literal's anchor.
+                    "const_bigint" => Some(vec![0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+                    "const_bytes" => Some(vec![0, 255, 128]),
+                    _ => None,
+                },
                 value: matches!(kind, "const" | "const_int" | "load_const").then_some(i64::MAX),
                 ..OpIR::default()
             });
@@ -88,7 +93,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         for runtime_func in [
             "molt_string_from_bytes",
             "molt_bytes_from_bytes",
-            "molt_bigint_from_str",
+            "molt_bigint_from_bytes",
         ] {
             assert!(
                 !backend.import_ids.contains_key(runtime_func),
@@ -111,7 +116,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         materializers = [
             "molt_string_from_bytes",
             "molt_bytes_from_bytes",
-            "molt_bigint_from_str",
+            "molt_bigint_from_bytes",
         ]
         .map(|name| backend.import_ids[name].0);
         for (index, op) in input.ops.iter().enumerate() {
@@ -289,7 +294,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
             verify_function(function, &settings::Flags::new(settings::builder()))
                 .unwrap_or_else(|errors| panic!("{kind}: {errors}\n{}", function.display()));
             assert!(
-                !backend.import_ids.contains_key("molt_bigint_from_str"),
+                !backend.import_ids.contains_key("molt_bigint_from_bytes"),
                 "raw literals and discarded outputs need no boxed-literal constructor: {kind}"
             );
             assert!(

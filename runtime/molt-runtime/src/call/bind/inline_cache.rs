@@ -705,50 +705,47 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     trace_call_bind_ic_bypass("type_call", "builtin_class");
                     return None;
                 }
-                // The first layout lookup may publish the class's lazy internal
-                // layout-size memo and therefore advance the global type epoch.
-                // Warm that memo before opening the optimistic MRO-resolution
-                // transaction, then read it again inside the sampled epoch. The
-                // second read is the cheap memoized path; any genuine concurrent
-                // mutation during it or the following descriptor lookups still
-                // makes the final epoch check reject publication.
-                let _ = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
                 let type_version = crate::object::global_type_version();
-                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr)?;
+                let layout_size = crate::object::layout::class_cached_layout_size(call_ptr)?;
                 trace_call_bind_ic_epoch_stage(type_version, "layout_memo_read");
                 // Cache installation must use the same metaclass-call policy as
                 // the slow path. A custom metaclass __call__ owns construction
                 // semantics and must never be bypassed by TYPE_CALL after the
                 // first miss. Inspect the raw MRO descriptor without binding it:
-                // cache classification is observationally pure.
+                // the exact-string cache probe declines callback-bearing namespaces.
                 let metaclass_bits = object_class_bits(call_ptr);
                 let metaclass_ptr = obj_from_bits(metaclass_bits).as_ptr()?;
                 if object_type_id(metaclass_ptr) != TYPE_ID_TYPE {
                     trace_call_bind_ic_bypass("type_call", "metaclass_not_type");
                     return None;
                 }
-                let call_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
-                let metaclass_call_bits =
-                    class_attr_lookup_raw_mro(_py, metaclass_ptr, call_name_bits)?;
+                let metaclass_call_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
+                    _py,
+                    metaclass_ptr,
+                    b"__call__",
+                    None,
+                )??;
                 trace_call_bind_ic_epoch_stage(type_version, "metaclass_call_lookup");
                 if !is_default_type_call(_py, metaclass_call_bits) {
                     trace_call_bind_ic_bypass("type_call", "custom_metaclass_call");
                     return None;
                 }
                 // Only cacheable when __new__ is the default object.__new__.
-                let new_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-                let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                let new_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
+                    _py, call_ptr, b"__new__", None,
+                )?;
                 trace_call_bind_ic_epoch_stage(type_version, "new_lookup");
                 if !resolved_new_is_default_object_new(new_bits) {
                     trace_call_bind_ic_bypass("type_call", "custom_new");
                     return None;
                 }
                 // Resolve __init__ and ensure it is a simple direct-callable function.
-                let init_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-                let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)?;
+                let init_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
+                    _py,
+                    call_ptr,
+                    b"__init__",
+                    None,
+                )??;
                 trace_call_bind_ic_epoch_stage(type_version, "init_lookup");
                 let init_ptr = obj_from_bits(init_bits).as_ptr()?;
                 if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
@@ -799,9 +796,12 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
                     return None;
                 }
-                let call_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
-                let func_bits = class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits)?;
+                let func_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
+                    _py,
+                    class_ptr,
+                    b"__call__",
+                    None,
+                )??;
                 let func_ptr = obj_from_bits(func_bits).as_ptr()?;
                 if object_type_id(func_ptr) != TYPE_ID_FUNCTION
                     || function_requires_full_binding(_py, func_ptr)
@@ -1330,151 +1330,157 @@ unsafe fn call_method_ic_dispatch(
         const DIRECT_ARGV_MAX: usize = 16;
 
         let recv_obj = obj_from_bits(recv_bits);
-        if let Some(recv_ptr) = recv_obj.as_ptr() {
-            // ALLOCATION-FREE FAST PATH: invoke the resolved class function with
-            // `[self, args..., <trailing positional defaults>]`, padded to the
-            // method's fixed arity so the compiled trampoline runs its own fast
-            // (no-rebind) prologue. `self` and `args` stay borrowed; trailing
-            // defaults are read LIVE from `func.__defaults__` (so a runtime
-            // `Class.method.__defaults__ = (...)` reassignment is honoured — the
-            // cached `n_pos_defaults` is only a fast-path GATE, never the source
-            // of the values) and are likewise borrowed: `call_function_obj_vec`
-            // reads `argv` without consuming. Returns `None` when the call needs
-            // more defaults than the live tuple supplies (stale gate) so the
-            // binder can raise the correct error.
-            //
-            // `fixed_arity` includes `self`; `n_pos_defaults` is the cached
-            // `len(__defaults__)`. Caller guarantees (via `direct_ok`)
-            // `fixed_arity - n_pos_defaults <= args.len() + 1 <= fixed_arity`
-            // and `fixed_arity <= DIRECT_ARGV_MAX`.
-            let call_direct = |_py: &PyToken<'_>, func_bits: u64, fixed_arity: u8| -> Option<u64> {
-                let fixed_arity = fixed_arity as usize;
-                let supplied = args.len() + 1; // including self
-                let mut argv = [0u64; DIRECT_ARGV_MAX];
-                // Call-time task metadata can invoke Python and replace the
-                // defaults tuple. Keep the owner alive through the callee, not
-                // only while copying its borrowed elements into argv.
-                let defaults_owner;
-                argv[0] = recv_bits;
-                for (idx, a) in args.iter().copied().enumerate() {
-                    argv[idx + 1] = a;
-                }
-                if supplied < fixed_arity {
-                    // Pad the trailing positionals from the LIVE __defaults__.
-                    let func_ptr = obj_from_bits(func_bits).as_ptr()?;
-                    let defaults_bits = function_binding_meta(
-                        _py,
-                        func_ptr,
-                        crate::call::function::FunctionBindingField::Defaults,
-                    );
-                    let def_ptr = obj_from_bits(defaults_bits).as_ptr()?;
-                    if object_type_id(def_ptr) != TYPE_ID_TUPLE {
-                        return None;
-                    }
-                    defaults_owner = crate::object::seq_access::pin_tuple(_py, def_ptr)?;
-                    let def_elems = &defaults_owner;
-                    let missing = fixed_arity - supplied;
-                    if missing > def_elems.len() {
-                        // Live defaults cannot cover the gap (e.g. a shrunk
-                        // __defaults__ after the gate was cached) — defer.
-                        return None;
-                    }
-                    // The defaults align to the END of the parameter list, so
-                    // the missing trailing params take the LAST `missing`
-                    // default values.
-                    let start = def_elems.len() - missing;
-                    argv[supplied..supplied + missing]
-                        .copy_from_slice(&def_elems[start..start + missing]);
-                }
-                if let Some(inputs) = adopted.take() {
-                    if function_bits_adopt_arguments(func_bits) {
-                        // The frame takes the instruction's receiver and
-                        // arguments over; padded defaults are the function's
-                        // own and gain frame references of their own.
-                        for &bits in &argv[supplied..fixed_arity] {
-                            inc_ref_bits(_py, bits);
+        let method_bits = 'method_selection: {
+            if let Some(recv_ptr) = recv_obj.as_ptr() {
+                // ALLOCATION-FREE FAST PATH: invoke the resolved class function with
+                // `[self, args..., <trailing positional defaults>]`, padded to the
+                // method's fixed arity so the compiled trampoline runs its own fast
+                // (no-rebind) prologue. `self` and `args` stay borrowed; trailing
+                // defaults are read LIVE from `func.__defaults__` (so a runtime
+                // `Class.method.__defaults__ = (...)` reassignment is honoured — the
+                // cached `n_pos_defaults` is only a fast-path GATE, never the source
+                // of the values) and are likewise borrowed: `call_function_obj_vec`
+                // reads `argv` without consuming. Returns `None` when the call needs
+                // more defaults than the live tuple supplies (stale gate) so the
+                // binder can raise the correct error.
+                //
+                // `fixed_arity` includes `self`; `n_pos_defaults` is the cached
+                // `len(__defaults__)`. Caller guarantees (via `direct_ok`)
+                // `fixed_arity - n_pos_defaults <= args.len() + 1 <= fixed_arity`
+                // and `fixed_arity <= DIRECT_ARGV_MAX`.
+                let call_direct =
+                    |_py: &PyToken<'_>, func_bits: u64, fixed_arity: u8| -> Option<u64> {
+                        let fixed_arity = fixed_arity as usize;
+                        let supplied = args.len() + 1; // including self
+                        let mut argv = [0u64; DIRECT_ARGV_MAX];
+                        // Call-time task metadata can invoke Python and replace the
+                        // defaults tuple. Keep the owner alive through the callee, not
+                        // only while copying its borrowed elements into argv.
+                        let defaults_owner;
+                        argv[0] = recv_bits;
+                        for (idx, a) in args.iter().copied().enumerate() {
+                            argv[idx + 1] = a;
                         }
-                        inputs.take();
-                        return Some(call_function_obj_moved(
+                        if supplied < fixed_arity {
+                            // Pad the trailing positionals from the LIVE __defaults__.
+                            let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+                            let defaults_bits = function_binding_meta(
+                                _py,
+                                func_ptr,
+                                crate::call::function::FunctionBindingField::Defaults,
+                            );
+                            let def_ptr = obj_from_bits(defaults_bits).as_ptr()?;
+                            if object_type_id(def_ptr) != TYPE_ID_TUPLE {
+                                return None;
+                            }
+                            defaults_owner = crate::object::seq_access::pin_tuple(_py, def_ptr)?;
+                            let def_elems = &defaults_owner;
+                            let missing = fixed_arity - supplied;
+                            if missing > def_elems.len() {
+                                // Live defaults cannot cover the gap (e.g. a shrunk
+                                // __defaults__ after the gate was cached) — defer.
+                                return None;
+                            }
+                            // The defaults align to the END of the parameter list, so
+                            // the missing trailing params take the LAST `missing`
+                            // default values.
+                            let start = def_elems.len() - missing;
+                            argv[supplied..supplied + missing]
+                                .copy_from_slice(&def_elems[start..start + missing]);
+                        }
+                        if let Some(inputs) = adopted.take() {
+                            if function_bits_adopt_arguments(func_bits) {
+                                // The frame takes the instruction's receiver and
+                                // arguments over; padded defaults are the function's
+                                // own and gain frame references of their own.
+                                for &bits in &argv[supplied..fixed_arity] {
+                                    inc_ref_bits(_py, bits);
+                                }
+                                inputs.take();
+                                return Some(call_function_obj_moved(
+                                    _py,
+                                    func_bits,
+                                    &argv[..fixed_arity],
+                                ));
+                            }
+                            // A borrowing entry (a generator function) borrows the
+                            // inputs, which end once it returns.
+                            let result =
+                                call_function_obj_bound_vec(_py, func_bits, &argv[..fixed_arity]);
+                            drop(inputs);
+                            return Some(result);
+                        }
+                        Some(call_function_obj_bound_vec(
                             _py,
                             func_bits,
                             &argv[..fixed_arity],
-                        ));
-                    }
-                    // A borrowing entry (a generator function) borrows the
-                    // inputs, which end once it returns.
-                    let result = call_function_obj_bound_vec(_py, func_bits, &argv[..fixed_arity]);
-                    drop(inputs);
-                    return Some(result);
-                }
-                Some(call_function_obj_bound_vec(
-                    _py,
-                    func_bits,
-                    &argv[..fixed_arity],
-                ))
-            };
-
-            // The direct path is sound iff the method needs no full binder (no
-            // kw-only params/defaults, `*args`, `**kwargs`, or builtin bind-kind)
-            // AND the supplied positional count (including `self`) lands in the
-            // range the method's positional defaults can pad to its fixed arity:
-            // `[fixed_arity - n_pos_defaults, fixed_arity]`. A too-short call
-            // (even with all defaults) or a too-long call must take the binder so
-            // it raises the correct `call arity mismatch` (e.g. `runner.run(coro)`
-            // against `def run(self, coro, *, context=None)` is kw-only → binder).
-            let direct_ok = |fixed_arity: u8, n_pos_defaults: u8, needs_binder: bool| -> bool {
-                if needs_binder {
-                    return false;
-                }
-                let fixed_arity = fixed_arity as usize;
-                if fixed_arity > DIRECT_ARGV_MAX {
-                    return false;
-                }
-                let supplied = args.len() + 1; // including self
-                let min_supplied = fixed_arity.saturating_sub(n_pos_defaults as usize);
-                supplied >= min_supplied && supplied <= fixed_arity
-            };
-
-            // CACHED-BIND PATH: when the resolved method is already proven
-            // class-side (so the IC entry / `info` is authoritative) but the
-            // allocation-free direct path does NOT apply (kw-only/`*args`/
-            // `**kwargs`, or a positional-count outside the paddable range), bind
-            // the cached `func_bits` to `self` and route through the full binder
-            // — WITHOUT re-walking the MRO, re-interning the name, or
-            // re-resolving the descriptor. `alloc_bound_method_obj` produces the
-            // exact object `descriptor_bind` would have for a plain function
-            // (`molt_bound_method_new(func, self)`), inc-ref'ing both `func_bits`
-            // and `recv_bits` into the new bound method; that reference is
-            // balanced when the bound method is dropped below. The cached
-            // `func_bits`/`attr_bits` are reused read-only here (no extra
-            // inc/dec on either), so IC ownership is untouched.
-            let cached_bind = |_py: &PyToken<'_>, func_bits: u64| -> u64 {
-                if let Some(inputs) = adopted.take() {
-                    // The receiver binds as `self`: it moves with the
-                    // arguments instead of living in a bound method.
-                    let (receiver, args) = inputs.take();
-                    return match CallArguments::moved(_py, receiver, args) {
-                        Ok(arguments) => {
-                            call_bind_ic_with_arguments(_py, site_bits, func_bits, arguments)
-                        }
-                        Err(err) => err,
+                        ))
                     };
-                }
-                let method_ptr =
-                    crate::object::builders::alloc_bound_method_obj(_py, func_bits, recv_bits);
-                if method_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let method_bits = MoltObject::from_ptr(method_ptr).bits();
-                slow_bind_via_method(_py, site_bits, method_bits, args)
-            };
 
-            // Take the direct path when the gate allows it, but if the live
-            // default-pad cannot complete (stale gate vs a shrunk __defaults__),
-            // transparently fall back to the binder so the correct error/result
-            // is produced.
-            let dispatch =
-                |_py: &PyToken<'_>, func_bits: u64, version: u64, plan: MethodIcCallPlan| -> u64 {
+                // The direct path is sound iff the method needs no full binder (no
+                // kw-only params/defaults, `*args`, `**kwargs`, or builtin bind-kind)
+                // AND the supplied positional count (including `self`) lands in the
+                // range the method's positional defaults can pad to its fixed arity:
+                // `[fixed_arity - n_pos_defaults, fixed_arity]`. A too-short call
+                // (even with all defaults) or a too-long call must take the binder so
+                // it raises the correct `call arity mismatch` (e.g. `runner.run(coro)`
+                // against `def run(self, coro, *, context=None)` is kw-only → binder).
+                let direct_ok = |fixed_arity: u8, n_pos_defaults: u8, needs_binder: bool| -> bool {
+                    if needs_binder {
+                        return false;
+                    }
+                    let fixed_arity = fixed_arity as usize;
+                    if fixed_arity > DIRECT_ARGV_MAX {
+                        return false;
+                    }
+                    let supplied = args.len() + 1; // including self
+                    let min_supplied = fixed_arity.saturating_sub(n_pos_defaults as usize);
+                    supplied >= min_supplied && supplied <= fixed_arity
+                };
+
+                // CACHED-BIND PATH: when the resolved method is already proven
+                // class-side (so the IC entry / `info` is authoritative) but the
+                // allocation-free direct path does NOT apply (kw-only/`*args`/
+                // `**kwargs`, or a positional-count outside the paddable range), bind
+                // the cached `func_bits` to `self` and route through the full binder
+                // — WITHOUT re-walking the MRO, re-interning the name, or
+                // re-resolving the descriptor. `alloc_bound_method_obj` produces the
+                // exact object `descriptor_bind` would have for a plain function
+                // (`molt_bound_method_new(func, self)`), inc-ref'ing both `func_bits`
+                // and `recv_bits` into the new bound method; that reference is
+                // balanced when the bound method is dropped below. The cached
+                // `func_bits`/`attr_bits` are reused read-only here (no extra
+                // inc/dec on either), so IC ownership is untouched.
+                let cached_bind = |_py: &PyToken<'_>, func_bits: u64| -> u64 {
+                    if let Some(inputs) = adopted.take() {
+                        // The receiver binds as `self`: it moves with the
+                        // arguments instead of living in a bound method.
+                        let (receiver, args) = inputs.take();
+                        return match CallArguments::moved(_py, receiver, args) {
+                            Ok(arguments) => {
+                                call_bind_ic_with_arguments(_py, site_bits, func_bits, arguments)
+                            }
+                            Err(err) => err,
+                        };
+                    }
+                    let method_ptr =
+                        crate::object::builders::alloc_bound_method_obj(_py, func_bits, recv_bits);
+                    if method_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let method_bits = MoltObject::from_ptr(method_ptr).bits();
+                    slow_bind_via_method(_py, site_bits, method_bits, args)
+                };
+
+                // Take the direct path when the gate allows it, but if the live
+                // default-pad cannot complete (stale gate vs a shrunk __defaults__),
+                // transparently fall back to the binder so the correct error/result
+                // is produced.
+                let dispatch = |_py: &PyToken<'_>,
+                                func_bits: u64,
+                                version: u64,
+                                plan: MethodIcCallPlan|
+                 -> u64 {
                     if cached_function_version_matches(func_bits, version)
                         && direct_ok(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder)
                         && obj_from_bits(func_bits)
@@ -1487,36 +1493,39 @@ unsafe fn call_method_ic_dispatch(
                     cached_bind(_py, func_bits)
                 };
 
-            // Per-site IC: on a hit, validate the receiver class + layout
-            // version, run the (cheap) shadow check only when the class permits
-            // shadowing, and dispatch — no name interning, no MRO walk. A
-            // class/version-valid, non-shadowed entry is a HIT regardless of the
-            // call shape: positional-default methods take the allocation-free
-            // direct path (padding defaults inline); kw-only/`*args`/`**kwargs`
-            // methods take `cached_bind`, which still reuses the cached
-            // resolution (no re-resolve). A class/function-version mismatch, or
-            // an instance that shadows the method, falls through to the genuine
-            // resolve+insert below — preserving invalidation and stale-shape
-            // semantics exactly.
-            if let Some(site_id) = ic_site_from_bits(site_bits)
-                && let Some(selected) = method_ic_lookup(_py, site_id)
-            {
-                let entry = selected.entry;
-                if entry.matches_receiver(recv_ptr)
-                    && cached_attr_matches_bytes(entry.attr_bits, name)
-                    && let Some(class_ptr) = obj_from_bits(entry.class_bits).as_ptr()
+                // Per-site IC: on a hit, validate the receiver class + layout
+                // version, run the (cheap) shadow check only when the class permits
+                // shadowing, and dispatch — no name interning, no MRO walk. A
+                // class/version-valid, non-shadowed entry is a HIT regardless of the
+                // call shape: positional-default methods take the allocation-free
+                // direct path (padding defaults inline); kw-only/`*args`/`**kwargs`
+                // methods take `cached_bind`, which still reuses the cached
+                // resolution (no re-resolve). A class/function-version mismatch, or
+                // an instance that shadows the method, falls through to the genuine
+                // resolve+insert below — preserving invalidation and stale-shape
+                // semantics exactly.
+                if let Some(site_id) = ic_site_from_bits(site_bits)
+                    && let Some(selected) = method_ic_lookup(_py, site_id)
                 {
-                    let shadowed = entry.can_shadow
-                        && crate::builtins::attr::object_instance_shadows(
-                            _py,
-                            recv_ptr,
-                            class_ptr,
-                            entry.attr_bits,
-                        );
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if !shadowed && entry.matches_receiver(recv_ptr) {
+                    let entry = selected.entry;
+                    if entry.matches_receiver(recv_ptr)
+                        && cached_attr_matches_bytes(entry.attr_bits, name)
+                        && let Some(class_ptr) = obj_from_bits(entry.class_bits).as_ptr()
+                    {
+                        if entry.can_shadow {
+                            match crate::builtins::attr::object_instance_attribute(
+                                _py,
+                                recv_ptr,
+                                class_ptr,
+                                entry.attr_bits,
+                            ) {
+                                Ok(Some(value)) => break 'method_selection value,
+                                Ok(None) => {}
+                                Err(()) => return MoltObject::none().bits(),
+                            }
+                        }
+                        // Equality may mutate the namespace or detach the cache.
+                        // This operation still owns its original method selection.
                         return dispatch(
                             _py,
                             entry.func_bits,
@@ -1528,102 +1537,104 @@ unsafe fn call_method_ic_dispatch(
                             },
                         );
                     }
-                    // A shadow or callback-mutated authority invalidates this
-                    // selection. Resolve again while the snapshot stays pinned.
                 }
-            }
 
-            // IC miss: resolve the method class-side, install the IC, dispatch.
-            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) {
-                let type_version = crate::object::global_type_version();
-                let selection = crate::builtins::attr::object_method_ic_resolve(
-                    _py,
-                    recv_ptr,
-                    attr_bits,
-                    |info| {
-                        // Acquire the call owner inside the descriptor snapshot;
-                        // cache eviction may run code before resolution returns.
-                        let plan =
-                            method_ic_call_plan(_py, info.func_bits).unwrap_or(MethodIcCallPlan {
-                                fixed_arity: 0,
-                                n_pos_defaults: 0,
-                                needs_binder: true,
-                            });
-                        let function_version = obj_from_bits(info.func_bits)
-                            .as_ptr()
-                            .filter(|ptr| object_type_id(*ptr) == TYPE_ID_FUNCTION)
-                            .map_or(0, |ptr| function_mutation_version(ptr));
-                        let selected = MethodIcEntry {
-                            class_bits: info.class_bits,
-                            class_version: info.class_version,
-                            type_version,
-                            func_bits: info.func_bits,
-                            function_version,
-                            attr_bits,
-                            can_shadow: info.can_shadow,
-                            fixed_arity: plan.fixed_arity,
-                            n_pos_defaults: plan.n_pos_defaults,
-                            needs_binder: plan.needs_binder,
-                            valid: true,
+                // IC miss: resolve the method class-side, install the IC, dispatch.
+                if let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) {
+                    let type_version = crate::object::global_type_version();
+                    let selection = crate::builtins::attr::object_method_ic_resolve(
+                        _py,
+                        recv_ptr,
+                        attr_bits,
+                        |info| {
+                            // Acquire the call owner inside the descriptor snapshot;
+                            // cache eviction may run code before resolution returns.
+                            let plan = method_ic_call_plan(_py, info.func_bits).unwrap_or(
+                                MethodIcCallPlan {
+                                    fixed_arity: 0,
+                                    n_pos_defaults: 0,
+                                    needs_binder: true,
+                                },
+                            );
+                            let function_version = obj_from_bits(info.func_bits)
+                                .as_ptr()
+                                .filter(|ptr| object_type_id(*ptr) == TYPE_ID_FUNCTION)
+                                .map_or(0, |ptr| function_mutation_version(ptr));
+                            let selected = MethodIcEntry {
+                                class_bits: info.class_bits,
+                                class_version: info.class_version,
+                                type_version,
+                                func_bits: info.func_bits,
+                                function_version,
+                                attr_bits,
+                                can_shadow: info.can_shadow,
+                                fixed_arity: plan.fixed_arity,
+                                n_pos_defaults: plan.n_pos_defaults,
+                                needs_binder: plan.needs_binder,
+                                valid: true,
+                            }
+                            .pin(_py);
+                            (selected, plan)
+                        },
+                    );
+                    let selection = match selection {
+                        Ok(selection) => selection,
+                        Err(()) => {
+                            dec_ref_bits(_py, attr_bits);
+                            return MoltObject::none().bits();
                         }
-                        .pin(_py);
-                        (selected, plan)
-                    },
-                );
-                if let Some((selected, plan)) = selection {
-                    let info = selected.entry;
-                    let function_version = info.function_version;
-                    // Snapshot retirement can change the receiver's class.
-                    // Prove it is still live before passing recorded metadata
-                    // to the instance-tier lookup, then recheck after callbacks.
-                    let shadowed = !selected.entry.matches_receiver(recv_ptr)
-                        || (info.can_shadow
-                            && crate::builtins::attr::object_instance_shadows(
+                    };
+                    if let Some((selected, plan)) = selection {
+                        let info = selected.entry;
+                        let function_version = info.function_version;
+                        if info.can_shadow {
+                            match crate::builtins::attr::object_instance_attribute(
                                 _py,
                                 recv_ptr,
                                 obj_from_bits(info.class_bits)
                                     .as_ptr()
-                                    .unwrap_or(std::ptr::null_mut()),
+                                    .expect("selected class"),
                                 attr_bits,
-                            ));
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, attr_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if !shadowed && selected.entry.matches_receiver(recv_ptr) {
-                        if let Some(site_id) = ic_site_from_bits(site_bits) {
-                            // Transfer the owned `attr_bits` ref into the IC; it
-                            // is released by `method_ic_insert`/`clear` on reuse.
-                            // Replacing an owned cache entry can run a finalizer
-                            // that mutates this function or removes its class edge.
+                            ) {
+                                Ok(Some(value)) => {
+                                    dec_ref_bits(_py, attr_bits);
+                                    break 'method_selection value;
+                                }
+                                Ok(None) => {}
+                                Err(()) => {
+                                    dec_ref_bits(_py, attr_bits);
+                                    return MoltObject::none().bits();
+                                }
+                            }
+                        }
+                        // Cache eligibility may change during the instance lookup;
+                        // semantic selection does not. Decline insertion, then call
+                        // the already-pinned method without a second lookup.
+                        if selected.entry.matches_receiver(recv_ptr)
+                            && let Some(site_id) = ic_site_from_bits(site_bits)
+                        {
                             method_ic_insert(_py, site_id, selected.entry);
-                            // `attr_bits` ownership was transferred to the IC; do
-                            // NOT dec-ref it here.
                             return dispatch(_py, info.func_bits, function_version, plan);
                         }
-                        // No stable site id — cannot cache; dispatch then release
-                        // the name ref we own (it was never cached).
                         let res = dispatch(_py, info.func_bits, function_version, plan);
                         dec_ref_bits(_py, attr_bits);
                         return res;
                     } else {
                         dec_ref_bits(_py, attr_bits);
                     }
-                } else {
-                    dec_ref_bits(_py, attr_bits);
                 }
             }
-        }
 
-        // SLOW PATH: byte-identical to the legacy `get_attr_generic_ptr` +
-        // `call_bind` lowering.  `molt_get_attr_generic` materialises the bound
-        // method (or raises); the shared `slow_bind_via_method` consumes it via
-        // the CallArgs binder.  Reached only when the receiver is not an OBJECT/
-        // DATACLASS the fused fast path covers, when the attribute is not a
-        // plain method (custom `__getattribute__`, data descriptor, instance
-        // shadow, non-function attr), or when name interning fails.
-        let recv_ptr = recv_obj.as_ptr().unwrap_or(std::ptr::null_mut());
-        let method_bits = crate::molt_get_attr_generic(recv_ptr, name_ptr, name_len as u64);
+            // SLOW PATH: byte-identical to the legacy `get_attr_generic_ptr` +
+            // `call_bind` lowering.  `molt_get_attr_generic` materialises the bound
+            // method (or raises); the shared `slow_bind_via_method` consumes it via
+            // the CallArgs binder.  Reached only when the receiver is not an OBJECT/
+            // DATACLASS the fused fast path covers, when the attribute is not a
+            // plain method (custom `__getattribute__`, data descriptor, instance
+            // shadow, non-function attr), or when name interning fails.
+            let recv_ptr = recv_obj.as_ptr().unwrap_or(std::ptr::null_mut());
+            crate::molt_get_attr_generic(recv_ptr, name_ptr, name_len as u64)
+        };
         if let Some(mut inputs) = adopted.take() {
             // CPython's LOAD_ATTR ends its owner once the attribute resolves,
             // and an ordinary CALL owns the attribute and the arguments: a
@@ -2007,6 +2018,13 @@ unsafe fn call_super_method_ic_dispatch(
                 self_bits,
                 attr_bits,
             );
+            let resolved = match resolved {
+                Ok(resolved) => resolved,
+                Err(()) => {
+                    dec_ref_bits(_py, attr_bits);
+                    return MoltObject::none().bits();
+                }
+            };
             if let Some(info) = resolved {
                 if type_resolution_epoch_is_stable(type_version) {
                     let selected = SuperIcEntry {
@@ -2034,9 +2052,6 @@ unsafe fn call_super_method_ic_dispatch(
                 dec_ref_bits(_py, info.func_bits);
             }
             dec_ref_bits(_py, attr_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
         }
 
         // SLOW PATH: byte-identical to the legacy lowering.
@@ -2387,16 +2402,8 @@ unsafe fn call_bind_ic_with_arguments(
             );
         }
         let res = call_bind_with_arguments(_py, call_bits, args);
-        // Only populate the inline cache when the call completed WITHOUT a
-        // pending exception. Building an IC entry runs class-attribute lookups
-        // (`__new__`/`__init__` MRO probes in `call_bind_ic_entry_for_call`)
-        // that reset the exception-pending baseline — which would silently
-        // swallow an exception the call just raised (task #60: a full-binding
-        // constructor `__init__` raise reached here, was reported via the
-        // `none` result + pending flag, then the IC-entry probe cleared the
-        // flag before the caller's `check_exception` could observe it). A call
-        // that raised is also not a useful thing to cache. Skip the cache and
-        // hand back the result with the pending exception intact.
+        // Failed calls never populate the cache. Optional preparation itself
+        // uses only callback-free metadata and declines undecidable probes.
         if !exception_pending(_py)
             && let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits)
         {
@@ -2741,6 +2748,12 @@ mod super_cache_tests {
                     SHADOW_ARMED.store(true, Ordering::SeqCst);
                     let result = call();
                     assert_eq!(SHADOW_CALLS.load(Ordering::SeqCst), 1);
+                    assert_eq!(obj_from_bits(result).as_int(), Some(1));
+                    assert!(!exception_pending(py));
+                    dec_ref_bits(py, result);
+                    assert!(method_ic_lookup(py, 822).is_none());
+                    // Only the following operation sees the deleted method.
+                    let result = call();
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
                     assert!(crate::builtins::exceptions::exception_matches_builtin_name(
                         py,

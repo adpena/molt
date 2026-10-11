@@ -658,9 +658,12 @@ pub(super) fn importlib_dict_get_raw_key_bits(
     key_bits: u64,
 ) -> Result<Option<u64>, u64> {
     let value_bits = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let value_bits = match value_bits {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(MoltObject::none().bits());
+        }
+    };
     Ok(value_bits)
 }
 
@@ -789,12 +792,9 @@ pub(super) fn importlib_transaction_package_from_globals(
             "'__name__' not in globals",
         ));
     }
-    let Some(globals_ptr) =
-        crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
-    else {
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    let globals = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
+        .map_err(|()| MoltObject::none().bits())?;
+    let Some(globals_ptr) = globals else {
         return Err(raise_exception::<_>(
             _py,
             "TypeError",
@@ -803,10 +803,9 @@ pub(super) fn importlib_transaction_package_from_globals(
     };
 
     let package_name = intern_runtime_static_name(_py, b"__package__");
-    if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) } {
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) }
+        .map_err(|()| MoltObject::none().bits())?
+    {
         if !obj_from_bits(package_bits).is_none() {
             let Some(package) = string_obj_to_owned(obj_from_bits(package_bits)) else {
                 return Err(raise_exception::<_>(
@@ -820,15 +819,12 @@ pub(super) fn importlib_transaction_package_from_globals(
             }
             return Ok(None);
         }
-    } else if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
     }
 
     let spec_name = intern_runtime_static_name(_py, b"__spec__");
-    if let Some(spec_bits) = unsafe { dict_get_in_place(_py, globals_ptr, spec_name) } {
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    if let Some(spec_bits) = unsafe { dict_get_in_place(_py, globals_ptr, spec_name) }
+        .map_err(|()| MoltObject::none().bits())?
+    {
         if !obj_from_bits(spec_bits).is_none() {
             let parent_name = intern_runtime_static_name(_py, b"parent");
             let parent_bits = crate::molt_object_getattribute(spec_bits, parent_name);
@@ -853,24 +849,18 @@ pub(super) fn importlib_transaction_package_from_globals(
             }
             return Ok(None);
         }
-    } else if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
     }
 
     let name_key = intern_runtime_static_name(_py, b"__name__");
-    let Some(name_bits) = (unsafe { dict_get_in_place(_py, globals_ptr, name_key) }) else {
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    let Some(name_bits) = (unsafe { dict_get_in_place(_py, globals_ptr, name_key) }
+        .map_err(|()| MoltObject::none().bits())?)
+    else {
         return Err(raise_exception::<_>(
             _py,
             "KeyError",
             "'__name__' not in globals",
         ));
     };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
     let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
         return Err(raise_exception::<_>(
             _py,
@@ -884,9 +874,12 @@ pub(super) fn importlib_transaction_package_from_globals(
 
     let path_name = intern_runtime_static_name(_py, b"__path__");
     let path_bits = unsafe { dict_get_in_place(_py, globals_ptr, path_name) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let path_bits = match path_bits {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(MoltObject::none().bits());
+        }
+    };
     if path_bits.is_some_and(|bits| !obj_from_bits(bits).is_none()) {
         return Ok(Some(name));
     }
@@ -1146,15 +1139,15 @@ pub(super) fn importlib_transaction_module_all_items(
         ));
     }
     let all_name_bits = intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
+    if all_name_bits == 0 {
+        return Err(MoltObject::none().bits());
+    }
     let all_bits = unsafe {
         crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, module_ptr, all_name_bits)
-    };
+    }
+    .map_err(|()| MoltObject::none().bits())?;
     let Some(all_bits) = all_bits else {
-        return if exception_pending(_py) {
-            Err(MoltObject::none().bits())
-        } else {
-            Ok(None)
-        };
+        return Ok(None);
     };
     let module_name = unsafe { string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr))) }
         .unwrap_or_default();

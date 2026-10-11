@@ -197,8 +197,10 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
                     crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key)
                 };
                 dec_ref_bits(_py, name_key);
-                if val.is_some() {
-                    return MoltObject::from_bool(true).bits();
+                match val {
+                    Ok(Some(_)) => return MoltObject::from_bool(true).bits(),
+                    Ok(None) => {}
+                    Err(()) => return MoltObject::none().bits(),
                 }
             }
         }
@@ -225,6 +227,10 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
         let val =
             unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
         dec_ref_bits(_py, name_key);
+        let val = match val {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let Some(val_bits) = val else {
             return MoltObject::from_bool(false).bits();
         };
@@ -361,8 +367,11 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         if let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") {
             let cls_dict_bits = unsafe { class_dict_bits(cls_ptr) };
             if let Some(dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() {
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits);
+                if !unsafe { dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits) } {
+                    dec_ref_bits(_py, attr_key);
+                    dec_ref_bits(_py, members_dict_bits);
+                    dec_ref_bits(_py, cls_bits);
+                    return MoltObject::none().bits();
                 }
             }
             dec_ref_bits(_py, attr_key);

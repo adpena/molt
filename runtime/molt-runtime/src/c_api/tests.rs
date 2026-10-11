@@ -1646,7 +1646,8 @@ fn owned_list_builder_drop_runs_remaining_element_finalizer() {
         let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(builder_bits) };
         assert!(!obj_from_bits(list_bits).is_none());
 
-        let popped_bits = crate::object::ops_list::molt_list_pop(list_bits, none_bits());
+        let popped_bits =
+            crate::object::ops_list::molt_list_pop(list_bits, MoltObject::from_int(-1).bits());
         assert_eq!(popped_bits, second_bits);
         dec_ref_bits(_py, popped_bits);
         assert_eq!(

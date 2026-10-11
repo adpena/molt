@@ -9,6 +9,10 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
         ("const_str", vec![0xed, 0xbf, 0xbf, b'f']),
         ("const_bytes", vec![]),
         ("const_bytes", vec![0, 0xff, 0x80]),
+        (
+            "const_bigint",
+            vec![0xff, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        ),
     ];
     let mut cases: Vec<OpIR> = byte_cases
         .into_iter()
@@ -20,18 +24,14 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
         })
         .collect();
     cases.extend(
-        [
-            ("const_str", ""),
-            ("const_str", "a\0é"),
-            ("const_bigint", "-9223372036854775809"),
-        ]
-        .into_iter()
-        .map(|(kind, text)| OpIR {
-            kind: kind.into(),
-            s_value: Some(text.into()),
-            out: Some("v0".into()),
-            ..OpIR::default()
-        }),
+        [("const_str", ""), ("const_str", "a\0é")]
+            .into_iter()
+            .map(|(kind, text)| OpIR {
+                kind: kind.into(),
+                s_value: Some(text.into()),
+                out: Some("v0".into()),
+                ..OpIR::default()
+            }),
     );
     for literal in cases {
         let mut function = FunctionIR {

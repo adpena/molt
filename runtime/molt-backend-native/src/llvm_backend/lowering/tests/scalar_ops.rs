@@ -235,8 +235,10 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         (
             OpCode::ConstBigInt,
             TirType::DynBox,
-            "molt_bigint_from_str",
-            AttrValue::Str("123456789012345678901234567890".into()),
+            "molt_bigint_from_bytes",
+            AttrValue::Bytes(vec![
+                0x01, 0x8e, 0xe9, 0x0f, 0xf6, 0xc3, 0x73, 0xe0, 0xee, 0x4e, 0x3f, 0x0a, 0xd2,
+            ]),
         ),
     ] {
         let ctx = Context::create();
@@ -256,12 +258,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         backend.builder.position_at_end(entry);
         let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
         let mut attrs = AttrDict::new();
-        let payload_key = if opcode == OpCode::ConstBigInt {
-            "s_value"
-        } else {
-            "bytes"
-        };
-        attrs.insert(payload_key.into(), payload);
+        attrs.insert("bytes".into(), payload);
         for result in [ValueId(0), ValueId(1)] {
             lowering.lower_op(
                 func.entry_block,

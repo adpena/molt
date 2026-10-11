@@ -3991,18 +3991,21 @@ mod tests {
                     crate::builtin_classes(py).property,
                     "__init__",
                 )
+                .expect("method lookup succeeds")
                 .unwrap();
                 let get = crate::builtins::methods::builtin_class_method_bits(
                     py,
                     crate::builtin_classes(py).property,
                     "__get__",
                 )
+                .expect("method lookup succeeds")
                 .unwrap();
                 let set_name = crate::builtins::methods::builtin_class_method_bits(
                     py,
                     crate::builtin_classes(py).property,
                     "__set_name__",
                 )
+                .expect("method lookup succeeds")
                 .unwrap();
 
                 // Two visible arguments happen to equal the native packed ABI
@@ -4032,6 +4035,7 @@ mod tests {
                     Some(crate::builtin_classes(py).property),
                     Some(property),
                 )
+                .expect("operation succeeds")
                 .unwrap();
                 let name = string_bits("field");
                 let result = crate::call::bind::call_bind_borrowed(
@@ -4068,17 +4072,21 @@ mod tests {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         init();
         crate::with_gil_entry_nopanic!(_py, {
-            let type_new_bits =
-                crate::builtins::methods::type_method_bits(_py, "__new__").expect("type.__new__");
-            let type_init_bits =
-                crate::builtins::methods::type_method_bits(_py, "__init__").expect("type.__init__");
+            let type_new_bits = crate::builtins::methods::type_method_bits(_py, "__new__")
+                .expect("operation succeeds")
+                .expect("type.__new__");
+            let type_init_bits = crate::builtins::methods::type_method_bits(_py, "__init__")
+                .expect("operation succeeds")
+                .expect("type.__init__");
 
             for func_bits in [type_new_bits, type_init_bits] {
                 let func_ptr = obj_from_bits(func_bits).as_ptr().expect("function object");
                 let bind_kind_name = intern_metadata_name(_py, b"__molt_bind_kind__");
-                let bind_kind_bits =
-                    unsafe { crate::function_attr_bits(_py, func_ptr, bind_kind_name) }
-                        .expect("constructor builtin bind kind");
+                let bind_kind_bits = unsafe {
+                    crate::function_attr_bits(_py, func_ptr, bind_kind_name)
+                        .expect("operation succeeds")
+                }
+                .expect("constructor builtin bind kind");
                 dec_ref_bits(_py, bind_kind_name);
                 assert_eq!(
                     obj_from_bits(bind_kind_bits).as_int(),

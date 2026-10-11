@@ -348,8 +348,8 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
-                    dict_set_in_place(_py, new_ptr, copied_key, copied_val);
-                    if exception_pending(_py) {
+                    let completed = dict_set_in_place(_py, new_ptr, copied_key, copied_val);
+                    if !completed {
                         return MoltObject::none().bits();
                     }
                     i += 2;

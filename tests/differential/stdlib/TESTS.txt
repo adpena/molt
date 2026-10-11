@@ -122,6 +122,7 @@ tests/differential/stdlib/asyncio_streams_eof_errors.py
 tests/differential/stdlib/asyncio_streams_flow_control.py
 tests/differential/stdlib/asyncio_subprocess_cancel_io.py
 tests/differential/stdlib/asyncio_subprocess_exec_shell.py
+tests/differential/stdlib/asyncio_subprocess_fspath_failure.py
 tests/differential/stdlib/asyncio_subprocess_stderr_stdout.py
 tests/differential/stdlib/asyncio_subprocess_stdio_fd.py
 tests/differential/stdlib/asyncio_subprocess_stdio_notimplemented_guard.py
@@ -180,6 +181,7 @@ tests/differential/stdlib/cached_runtime_class_mutability.py
 tests/differential/stdlib/cmath_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
+tests/differential/stdlib/codec_registered_encode_callback.py
 tests/differential/stdlib/codecs_basic.py
 tests/differential/stdlib/codecs_charmap_generic.py
 tests/differential/stdlib/codecs_error_handlers_basic.py
@@ -190,6 +192,7 @@ tests/differential/stdlib/collections_abc_async_buffer.py
 tests/differential/stdlib/collections_abc_basic.py
 tests/differential/stdlib/collections_abc_import.py
 tests/differential/stdlib/collections_basic.py
+tests/differential/stdlib/collections_chainmap_protocol.py
 tests/differential/stdlib/collections_count_elements_custody.py
 tests/differential/stdlib/collections_counter.py
 tests/differential/stdlib/collections_counter_basic.py
@@ -1015,6 +1018,7 @@ tests/differential/stdlib/decimal_to_integral_value_vs_exact.py
 tests/differential/stdlib/decimal_traps_signals.py
 tests/differential/stdlib/decimal_tuple_normalize.py
 tests/differential/stdlib/deque_cross_thread_visibility.py
+tests/differential/stdlib/dictionary_callback_failure_propagation.py
 tests/differential/stdlib/difflib_basic.py
 tests/differential/stdlib/dis_basic.py
 tests/differential/stdlib/dis_edge_cases.py
@@ -1448,6 +1452,7 @@ tests/differential/stdlib/math_ldexp_frexp_roundtrip.py
 tests/differential/stdlib/math_log_zero_pow_overflow.py
 tests/differential/stdlib/math_modf.py
 tests/differential/stdlib/math_negative_zero_rounding.py
+tests/differential/stdlib/math_numeric_protocol.py
 tests/differential/stdlib/math_predicates_basic.py
 tests/differential/stdlib/math_remaining_intrinsics_basic.py
 tests/differential/stdlib/math_trig_hyperbolic_basic.py
@@ -1789,6 +1794,7 @@ tests/differential/stdlib/stdlib_import_smoke_profiler.py
 tests/differential/stdlib/stdlib_import_smoke_runtime.py
 tests/differential/stdlib/stdlib_json_basic.py
 tests/differential/stdlib/stdlib_json_extended.py
+tests/differential/stdlib/stream_writer_protocol.py
 tests/differential/stdlib/string_basic.py
 tests/differential/stdlib/string_format_errors.py
 tests/differential/stdlib/string_format_method.py
@@ -1880,6 +1886,7 @@ tests/differential/stdlib/threading_rlock_local.py
 tests/differential/stdlib/threading_rlock_reentrancy.py
 tests/differential/stdlib/threading_semaphore_bounded.py
 tests/differential/stdlib/threading_settrace_setprofile.py
+tests/differential/stdlib/threading_shared_call_identity.py
 tests/differential/stdlib/threading_stack_size_basic.py
 tests/differential/stdlib/threading_stack_size_intrinsic_set_get.py
 tests/differential/stdlib/threading_thread_context_param.py

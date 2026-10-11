@@ -74,6 +74,7 @@ fn set_field(py: &PyToken<'_>, error: u64, field: ExceptionTypedField, value: u6
 fn call_declared(py: &PyToken<'_>, owner: &str, name: &str, error: u64) -> u64 {
     let descriptor =
         exception_render_method_bits(py, exception_type_bits_from_name(py, owner), name)
+            .expect("method lookup succeeds")
             .expect("declaring descriptor must exist before C publication");
     unsafe { call_callable1(py, descriptor, error) }
 }
@@ -279,11 +280,15 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     ] {
         let class = exception_type_bits_from_name(py, name);
         assert!(
-            exception_render_method_bits(py, class, "__str__").is_none(),
+            exception_render_method_bits(py, class, "__str__")
+                .expect("renderer lookup succeeds")
+                .is_none(),
             "{name} inherits str"
         );
         assert!(
-            exception_render_method_bits(py, class, "__repr__").is_none(),
+            exception_render_method_bits(py, class, "__repr__")
+                .expect("renderer lookup succeeds")
+                .is_none(),
             "{name} inherits repr"
         );
     }
@@ -305,7 +310,11 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
                 .as_ptr()
                 .unwrap();
         assert!(
-            unsafe { dict_get_in_place(py, dictionary, name_bits.bits()) }.is_some(),
+            unsafe {
+                dict_get_in_place(py, dictionary, name_bits.bits())
+                    .expect("dictionary lookup succeeds")
+            }
+            .is_some(),
             "own namespace {name}.__str__"
         );
     }

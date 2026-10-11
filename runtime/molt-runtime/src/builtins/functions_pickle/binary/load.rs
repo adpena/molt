@@ -49,7 +49,7 @@ fn pickle_apply_dict_state(
             "pickle.loads: instance __dict__ must be dict",
         ));
     };
-    unsafe {
+    let completed = unsafe {
         crate::dict_update_apply(
             _py,
             dictionary,
@@ -58,7 +58,7 @@ fn pickle_apply_dict_state(
         )
     };
     dec_ref_bits(_py, dictionary);
-    if exception_pending(_py) {
+    if !completed {
         return Err(MoltObject::none().bits());
     }
     Ok(())
@@ -177,10 +177,13 @@ pub(crate) fn pickle_lookup_extension_bits(
     }
     let code_bits = MoltObject::from_int(code).bits();
     let entry_bits = unsafe { dict_get_in_place(_py, dict_ptr, code_bits) };
-    if exception_pending(_py) {
-        dec_ref_bits(_py, copyreg_bits);
-        return Err(MoltObject::none().bits());
-    }
+    let entry_bits = match entry_bits {
+        Ok(value) => value,
+        Err(()) => {
+            dec_ref_bits(_py, copyreg_bits);
+            return Err(MoltObject::none().bits());
+        }
+    };
     let Some(entry_bits) = entry_bits else {
         dec_ref_bits(_py, copyreg_bits);
         return Err(pickle_raise(_py, "pickle.loads: unknown extension code"));

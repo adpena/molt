@@ -269,7 +269,7 @@ pub(crate) fn new_variable(py: &PyToken<'_>, name: u64, default: Option<u64>) ->
     let bits = MoltObject::from_ptr(p).bits();
     let mut pin = PtrDropGuard::preserving(p);
     let hash = crate::object::ops_hash::hash_bits_signed(py, name);
-    if exception_pending(py) {
+    if hash == -1 {
         return None;
     }
     let pointer_hash = crate::object::ops_hash::hash_pointer(p as u64);

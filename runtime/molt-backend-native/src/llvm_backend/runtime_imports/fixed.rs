@@ -490,7 +490,7 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
         ATTR_WILLRETURN,
     ),
     custom(
-        "molt_bigint_from_str",
+        "molt_bigint_from_bytes",
         PTR_I64,
         FixedRuntimeReturnAbi::I64,
         ATTR_WILLRETURN,

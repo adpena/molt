@@ -98,15 +98,17 @@ pub(crate) fn alloc_itertools_class(
         &crate::runtime_state(py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
-    if !exception_pending(py) {
-        unsafe {
+    if obj_from_bits(layout_name).as_ptr().is_none()
+        || !unsafe {
             dict_set_in_place(
                 py,
                 dict_ptr,
                 layout_name,
                 MoltObject::from_int(layout_size).bits(),
             )
-        };
+        }
+    {
+        return discard_itertools_class(py, class_bits);
     }
     for (name, callback) in [("__iter__", iter_fn), ("__next__", next_fn)] {
         if crate::builtins::methods::builtin_func_bits(

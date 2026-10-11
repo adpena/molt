@@ -156,12 +156,8 @@ unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u6
         let value_bits = crate::builtins::attributes::attr_lookup_ptr(_py, sys_ptr, attr_bits);
         dec_ref_bits(_py, attr_bits);
         dec_ref_bits(_py, sys_bits);
-        let Some(value_bits) = value_bits else {
-            return if exception_pending(_py) {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(None)
-            };
+        let Some(value_bits) = value_bits.map_err(|()| MoltObject::none().bits())? else {
+            return Ok(None);
         };
         let is_list = obj_from_bits(value_bits)
             .as_ptr()
@@ -379,8 +375,9 @@ pub(super) unsafe fn copy_dict_entries(_py: &PyToken<'_>, src_ptr: *mut u8, dst_
             return;
         };
         for idx in (0..source_order.len()).step_by(2) {
-            dict_set_in_place(_py, dst_ptr, source_order[idx], source_order[idx + 1]);
-            if exception_pending(_py) {
+            let completed =
+                dict_set_in_place(_py, dst_ptr, source_order[idx], source_order[idx + 1]);
+            if !completed {
                 return;
             }
         }
@@ -433,9 +430,9 @@ unsafe fn set_module_dict_name(
             return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+        let completed = dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
         dec_ref_bits(_py, key_bits);
-        if exception_pending(_py) {
+        if !completed {
             Err(MoltObject::none().bits())
         } else {
             Ok(())
@@ -489,18 +486,19 @@ fn begin_sys_modules_swap(
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let previous_bits = unsafe { dict_get_in_place(_py, modules_ptr, key_bits) };
-    if exception_pending(_py) {
-        dec_ref_bits(_py, key_bits);
-        dec_ref_bits(_py, modules_bits);
-        return Err(MoltObject::none().bits());
-    }
+    let previous_bits = match previous_bits {
+        Ok(value) => value,
+        Err(()) => {
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, modules_bits);
+            return Err(MoltObject::none().bits());
+        }
+    };
     if let Some(bits) = previous_bits {
         inc_ref_bits(_py, bits);
     }
-    unsafe {
-        dict_set_in_place(_py, modules_ptr, key_bits, module_bits);
-    }
-    if exception_pending(_py) {
+    let completed = unsafe { dict_set_in_place(_py, modules_ptr, key_bits, module_bits) };
+    if !completed {
         if let Some(bits) = previous_bits {
             dec_ref_bits(_py, bits);
         }

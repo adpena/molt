@@ -42,10 +42,10 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
         bridge::GLOBAL_BRIDGE,
     };
     let has_index = crate::builtins::numbers::index_integral_payload_bits(needle).is_some()
-        || unsafe { crate::builtins::attr::has_special_method(py, needle, b"__index__") };
-    if exception_pending(py) {
-        return MoltObject::none().bits();
-    }
+        || match unsafe { crate::builtins::attr::has_special_method(py, needle, b"__index__") } {
+            Ok(present) => present,
+            Err(()) => return MoltObject::none().bits(),
+        };
     let number = if has_index {
         crate::builtins::numbers::index_ssize_clamped_from_obj(
             py,
@@ -422,7 +422,6 @@ pub extern "C" fn molt_bytearray_insert(
 pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
-        let index_obj = obj_from_bits(index_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
         };
@@ -430,15 +429,7 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
             }
-            let mut idx = if index_obj.is_none() {
-                -1
-            } else {
-                index_i64_from_obj(
-                    _py,
-                    index_bits,
-                    "bytearray indices must be integers or have an __index__ method",
-                )
-            };
+            let mut idx = crate::builtins::numbers::index_ssize_from_obj(_py, index_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1669,10 +1660,7 @@ pub(crate) extern "C" fn bytes_bytes(bits: u64) -> u64 {
 fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
     let integral = crate::builtins::numbers::index_bigint_integral_bits(bits).is_some();
     let index =
-        integral || unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") };
-    if exception_pending(py) {
-        return Err(());
-    }
+        integral || unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") }?;
     if !index {
         return Ok(None);
     }
@@ -1769,7 +1757,10 @@ fn bytes_from_obj_impl(
 ) -> u64 {
     if special && matches!(kind, BytesCtorKind::Bytes) {
         let method =
-            unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__bytes__") };
+            match unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__bytes__") } {
+                Ok(method) => method,
+                Err(()) => return MoltObject::none().bits(),
+            };
         if let Some(method) = method {
             let result = unsafe { call_callable0(py, method) };
             dec_ref_bits(py, method);
@@ -1811,9 +1802,6 @@ fn bytes_from_obj_impl(
             );
             dec_ref_bits(py, result);
             return failure;
-        }
-        if exception_pending(py) {
-            return MoltObject::none().bits();
         }
     }
     if obj_from_bits(bits)

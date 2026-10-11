@@ -124,9 +124,9 @@ pub(crate) fn initialize_module_namespace(
         let Some(key) = attr_name_bits_from_bytes(py, name) else {
             return none;
         };
-        unsafe { dict_set_in_place(py, namespace_ptr, key, value) };
+        let stored = unsafe { dict_set_in_place(py, namespace_ptr, key, value) };
         dec_ref_bits(py, key);
-        if exception_pending(py) {
+        if !stored {
             return none;
         }
     }

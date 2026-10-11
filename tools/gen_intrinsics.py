@@ -79,14 +79,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "symbol_path_prefix": "molt_runtime_math::cmath_mod",
         "function_path_prefix": "crate::cmath_mod",
     },
-    "colorsys": {
-        "output": MATH_LEAF_RESOLVERS_DIR / "colorsys_resolver.rs",
-        "module_index": MATH_LEAF_RESOLVER_INDEX,
-        "crate_path": "molt_runtime_math",
-        "crate_resolver_path": "molt_runtime_math::intrinsics_generated::colorsys_resolver",
-        "symbol_path_prefix": "molt_runtime_math::colorsys",
-        "function_path_prefix": "crate::colorsys",
-    },
     "fractions": {
         "output": MATH_LEAF_RESOLVERS_DIR / "fractions_resolver.rs",
         "module_index": MATH_LEAF_RESOLVER_INDEX,

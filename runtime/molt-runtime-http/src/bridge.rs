@@ -379,10 +379,15 @@ pub unsafe fn dict_get_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
     key_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_http_dict_get_in_place(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary lookup status"),
+    }
 }
 
 pub fn molt_list_insert(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
@@ -494,15 +499,15 @@ unsafe extern "C" {
     fn __molt_http_molt_str_from_obj(bits: u64) -> u64;
 }
 
-pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> String {
+pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_http_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        String::from_utf8_lossy(&boxed).into_owned()
+        Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
-        String::new()
+        None
     }
 }
 

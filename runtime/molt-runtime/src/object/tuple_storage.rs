@@ -213,13 +213,10 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
     }
 
     fn project(&self, bits: u64) -> Option<ProtectedPyObject> {
-        if Self::pending(self.py) {
-            return None;
-        }
         let object = unsafe {
             ProtectedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits))
         };
-        if object.as_ptr().is_null() || Self::pending(self.py) {
+        if object.as_ptr().is_null() {
             crate::cpython_abi_hooks::propagate_native_failure(self.py, "tuple operand projection");
             None
         } else {
@@ -237,7 +234,7 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
         }
     }
 
-    pub(crate) fn getitem(&self, key: u64, normalize_negative: bool) -> u64 {
+    pub(crate) fn getitem(&self, key: u64, normalize_negative: bool) -> Result<u64, ()> {
         let invoke = || -> Option<u64> {
             let tuple = self.project(self.bits)?;
             let key = self.project(key)?;
@@ -250,7 +247,7 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
                         key.as_ptr(),
                         (&raw mut molt_cpython_abi::abi_types::PyExc_IndexError).cast(),
                     );
-                    if Self::pending(self.py) {
+                    if index == -1 && Self::pending(self.py) {
                         return None;
                     }
                     (slots.item)(tuple.as_ptr(), index)
@@ -258,7 +255,7 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
             };
             self.result(result)
         };
-        invoke().unwrap_or_else(|| MoltObject::none().bits())
+        invoke().ok_or(())
     }
 
     pub(crate) fn contains(&self, value: u64) -> u64 {

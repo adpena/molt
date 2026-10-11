@@ -51,10 +51,10 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
 /// The method arms, not a second list of spellings, define each public surface.
 macro_rules! native_method_families {
     ($( $field:ident => $lookup:path, $publish:path; )*) => {
-        fn declared_method(py: &PyToken<'_>, class: u64, name: &str) -> Option<u64> {
+        fn declared_method(py: &PyToken<'_>, class: u64, name: &str) -> Result<Option<u64>, ()> {
             let classes = builtin_classes(py);
             $(if class == classes.$field { return $lookup(py, name); })*
-            None
+            Ok(None)
         }
         fn publish_declared_methods(py: &PyToken<'_>, class: u64) -> bool {
             let classes = builtin_classes(py);
@@ -65,6 +65,8 @@ macro_rules! native_method_families {
 }
 
 native_method_families! {
+    list_iterator => super::specialized::list_iterator_method_bits, super::specialized::publish_list_iterator_methods;
+    list_reverseiterator => super::specialized::list_reverseiterator_method_bits, super::specialized::publish_list_reverseiterator_methods;
     dict_keyiterator => super::specialized::dict_keyiterator_method_bits, super::specialized::publish_dict_keyiterator_methods;
     dict_valueiterator => super::specialized::dict_valueiterator_method_bits, super::specialized::publish_dict_valueiterator_methods;
     dict_itemiterator => super::specialized::dict_itemiterator_method_bits, super::specialized::publish_dict_itemiterator_methods;
@@ -120,19 +122,17 @@ fn io_class(py: &PyToken<'_>, class: u64) -> bool {
     .contains(&class)
 }
 
-pub(crate) fn builtin_class_method_bits(py: &PyToken<'_>, class: u64, name: &str) -> Option<u64> {
-    super::method_dispatch(py, || {
-        if let Some(bits) = builtin_special_method_bits(py, class, name) {
-            return Some(bits);
+pub(crate) fn builtin_class_method_bits(
+    py: &PyToken<'_>,
+    class: u64,
+    name: &str,
+) -> Result<Option<u64>, ()> {
+    {
+        if let Some(bits) = builtin_special_method_bits(py, class, name)? {
+            return Ok(Some(bits));
         }
-        if exception_pending(py) {
-            return None;
-        }
-        if let Some(bits) = declared_method(py, class, name) {
-            return Some(bits);
-        }
-        if exception_pending(py) {
-            return None;
+        if let Some(bits) = declared_method(py, class, name)? {
+            return Ok(Some(bits));
         }
         let b = builtin_classes(py);
         let extra = if class == b.int {
@@ -156,18 +156,15 @@ pub(crate) fn builtin_class_method_bits(py: &PyToken<'_>, class: u64, name: &str
             } else if class == b.base_exception {
                 crate::builtins::exceptions::exception_method_bits(py, name)
             } else {
-                None
+                Ok(None)
             }
         } else if io_class(py, class) {
             super::io::file_method_bits(py, class, name)
         } else {
-            None
+            Ok(None)
         };
-        if extra.is_some() || exception_pending(py) {
-            return extra;
-        }
-        None
-    })
+        extra
+    }
 }
 
 pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> bool {
@@ -205,9 +202,9 @@ pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> boo
             } else {
                 class
             };
-            let _ =
-                crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__");
-            if exception_pending(py) {
+            if crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__")
+                .is_err()
+            {
                 return false;
             }
             if class == b.base_exception {

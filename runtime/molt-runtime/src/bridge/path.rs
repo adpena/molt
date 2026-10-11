@@ -27,7 +27,7 @@ pub fn audit_capability(
     allowed
 }
 
-pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<PathBuf, String> {
+pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<PathBuf, u64> {
     crate::with_gil_entry_nopanic!(py, { crate::path_from_bits(py, bits) })
 }
 

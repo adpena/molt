@@ -813,7 +813,7 @@ pub extern "C" fn molt_importlib_resources_as_file_enter(
         }
         let path = match path_from_bits(_py, traversable_bits) {
             Ok(value) => value,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let path_text = path.to_string_lossy().into_owned();
         let path_bits = match alloc_str_bits(_py, &path_text) {

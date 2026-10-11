@@ -21,16 +21,15 @@ macro_rules! native_method_table {
 
     ($lookup:ident, $publish:ident, $py:ident, $name:ident, [$($extra:ident),*],
      {$($setup:tt)*}, {$($member:literal $(if $guard:expr)? => $body:expr,)*}) => {
-        pub(crate) fn $lookup($py: &crate::PyToken<'_>, $($extra: u64,)* $name: &str) -> Option<u64> {
+        pub(crate) fn $lookup($py: &crate::PyToken<'_>, $($extra: u64,)* $name: &str) -> Result<Option<u64>, ()> {
             crate::builtins::methods::method_dispatch($py, || {
                 $($setup)*
-                match $name { $($member $(if $guard)? => $body,)* _ => None }
+                Ok(match $name { $($member $(if $guard)? => $body,)* _ => None })
             })
         }
         pub(crate) fn $publish($py: &crate::PyToken<'_>, $($extra: u64,)*) -> bool {
             for name in [$($member),*] {
-                let _ = $lookup($py, $($extra,)* name);
-                if crate::exception_pending($py) { return false; }
+                if $lookup($py, $($extra,)* name).is_err() { return false; }
             }
             true
         }
@@ -73,34 +72,26 @@ mod singletons;
 mod specialized;
 
 /// Bridge cached builtin allocation into optional method lookup. A missing name
-/// is None without an exception; a failed allocation is None with its original
-/// exception. Zero is never a callable value, even though it is a scalar bit
+/// is Ok(None); a failed allocation is Err with its original exception. Zero is never a callable value, even though it is a scalar bit
 /// pattern. Cached methods are borrowed, so rejecting a result releases nothing.
 pub(crate) fn method_dispatch(
     py: &crate::PyToken<'_>,
-    lookup: impl FnOnce() -> Option<u64>,
-) -> Option<u64> {
-    if crate::exception_pending(py) {
-        return None;
-    }
-    let result = lookup();
-    if crate::exception_pending(py) {
-        return None;
-    }
-    // A fully published owner may have had this declaration removed through
-    // its admitted C dictionary. None is its authoritative namespace miss.
-    if result == Some(crate::MoltObject::none().bits()) {
-        return None;
-    }
-    if result == Some(0) {
-        crate::raise_exception::<u64>(
-            py,
-            "SystemError",
-            "builtin method lookup returned a null callable without an exception",
-        );
-        None
-    } else {
-        result
+    lookup: impl FnOnce() -> Result<Option<u64>, ()>,
+) -> Result<Option<u64>, ()> {
+    match lookup()? {
+        Some(0) => {
+            if !crate::exception_pending(py) {
+                crate::raise_exception::<u64>(
+                    py,
+                    "SystemError",
+                    "builtin method lookup returned a null callable without an exception",
+                );
+            }
+            Err(())
+        }
+        // A deleted declaration remains absent after namespace publication.
+        Some(bits) if bits == crate::MoltObject::none().bits() => Ok(None),
+        result => Ok(result),
     }
 }
 
@@ -127,7 +118,6 @@ pub(crate) use specialized::{asyncgen_method_bits, generator_method_bits};
 
 #[cfg(test)]
 mod tests {
-    use super::specialized::property_method_bits;
     use super::*;
     use crate::builtins::exceptions::molt_exception_last_pending;
     use crate::*;
@@ -195,9 +185,10 @@ mod tests {
                 let directory = molt_dir_builtin(class);
                 assert!(!exception_pending(py));
                 for name in required {
-                    let first =
-                        builtin_class_method_bits(py, class, name).expect("required method");
-                    assert_eq!(builtin_class_method_bits(py, class, name), Some(first));
+                    let first = builtin_class_method_bits(py, class, name)
+                        .expect("method lookup succeeds")
+                        .expect("required method");
+                    assert_eq!(builtin_class_method_bits(py, class, name), Ok(Some(first)));
                     let name_bits = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
                     let contains = molt_contains(directory, name_bits);
                     assert!(is_truthy(py, obj_from_bits(contains)));
@@ -205,7 +196,7 @@ mod tests {
                     dec_ref_bits(py, name_bits);
                 }
                 for name in absent {
-                    assert_eq!(builtin_class_method_bits(py, class, name), None);
+                    assert_eq!(builtin_class_method_bits(py, class, name), Ok(None));
                     let name_bits = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
                     let contains = molt_contains(directory, name_bits);
                     assert!(!is_truthy(py, obj_from_bits(contains)));
@@ -219,59 +210,34 @@ mod tests {
     }
 
     #[test]
-    fn method_dispatch_distinguishes_missing_from_failed_allocation() {
+    fn method_dispatch_distinguishes_status_from_an_admitted_error() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            assert_eq!(method_dispatch(py, || None), None);
-            assert_eq!(method_dispatch(py, || Some(0)), None);
+            assert_eq!(method_dispatch(py, || Ok(None)), Ok(None));
+            assert_eq!(method_dispatch(py, || Ok(Some(0))), Err(()));
             assert!(exception_pending(py));
             let _ = molt_exception_clear();
-            let cached = object_method_bits(py, "__getattribute__").unwrap();
+            let cached = object_method_bits(py, "__getattribute__").unwrap().unwrap();
             assert_ne!(cached, 0);
-            assert_eq!(method_dispatch(py, || Some(cached)), Some(cached));
+            assert_eq!(method_dispatch(py, || Ok(Some(cached))), Ok(Some(cached)));
 
             let failure = std::cell::Cell::new(0);
             assert_eq!(
                 method_dispatch(py, || {
                     raise_exception::<()>(py, "MemoryError", "method allocation test failure");
                     failure.set(molt_exception_last_pending());
-                    Some(0)
+                    Ok(Some(0))
                 }),
-                None
+                Err(())
             );
             assert!(exception_pending(py));
-
-            // Pending failure must bypass even a populated cache. None remains
-            // a failure, not permission for the next dispatcher to initialize.
-            let entered = std::cell::Cell::new(false);
-            assert_eq!(
-                method_dispatch(py, || {
-                    entered.set(true);
-                    Some(cached)
-                }),
-                None
-            );
-            assert!(!entered.get());
-            assert_eq!(object_method_bits(py, "__getattribute__"), None);
-            assert_eq!(type_method_bits(py, "__call__"), None);
-            assert_eq!(int_method_bits(py, "__new__"), None);
-            assert_eq!(string_method_bits(py, "join"), None);
-            assert_eq!(file_method_bits(py, builtin_classes(py).file, "read"), None);
-            assert_eq!(property_method_bits(py, "__get__"), None);
-            assert_eq!(
-                crate::builtins::containers::dict_method_bits(py, "get"),
-                None
-            );
-            assert_eq!(
-                crate::builtins::exceptions::exception_method_bits(py, "__new__"),
-                None
-            );
+            assert_eq!(object_method_bits(py, "__getattribute__"), Ok(Some(cached)));
+            assert_eq!(object_method_bits(py, "missing_method"), Ok(None));
             let observed = molt_exception_last_pending();
             assert_eq!(observed, failure.get());
             molt_exception_clear();
             dec_ref_bits(py, observed);
             dec_ref_bits(py, failure.get());
-            assert_eq!(object_method_bits(py, "__getattribute__"), Some(cached));
         });
     }
 }

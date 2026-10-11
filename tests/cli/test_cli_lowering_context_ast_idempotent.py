@@ -33,8 +33,11 @@ task #39 pattern):
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import json
+from pathlib import Path
+import sys
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -47,7 +50,9 @@ def _round_trip(payload: dict[str, object]) -> object:
     on write and :func:`_decode_cached_json_value` on read. The decoded object is
     what a warm cross-session build holds in memory for a cache-hydrated module.
     """
-    encoded = json.dumps(payload, sort_keys=True, default=CK._json_ir_default)
+    encoded = json.dumps(
+        CK._cache_json_value(payload), sort_keys=True, default=CK._json_ir_default
+    )
     return MC._decode_cached_json_value(json.loads(encoded))
 
 
@@ -124,3 +129,213 @@ def test_direction2_real_ast_change_still_changes_context_digest() -> None:
     hydrated_a = _digest(_round_trip(_payload_with_ast(node_a)))
     assert hydrated_a == digest_a
     assert hydrated_a != digest_b
+
+
+def test_binary_integer_ast_and_default_metadata_keep_cache_provenance_identity() -> (
+    None
+):
+    previous = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(640)
+        value = (1 << 20000) + 1
+        fresh = _payload_with_ast(ast.parse("0x1" + "0" * 5000, mode="eval"))
+        fresh["known_func_defaults"] = {
+            "pkg.mod": {"f": {"defaults": [{"const": True, "value": value}]}}
+        }
+        hydrated = _round_trip(fresh)
+        assert (
+            hydrated["known_func_defaults"]["pkg.mod"]["f"]["defaults"][0]["value"]
+            == value
+        )
+        assert (
+            type(
+                hydrated["known_func_defaults"]["pkg.mod"]["f"]["defaults"][0]["value"]
+            )
+            is int
+        )
+        assert _digest(fresh) is not None
+        assert _digest(fresh) == _digest(hydrated)
+        hydrated["known_func_defaults"]["pkg.mod"]["f"]["defaults"][0]["value"] += 1
+        assert _digest(fresh) != _digest(hydrated)
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "mod.py"
+    source.write_text("def f(value=0x100):\n    return value\n")
+    source_metadata = {
+        "size": source.stat().st_size,
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    # Independent signed-byte fixture: 1 followed by 256 bytes is 2**2048.
+    valid = {"__integer_bytes__": [1] + [0] * 256}
+    invalid = [
+        {"__integer_bytes__": []},
+        {"__integer_bytes__": [0, 1]},
+        {"__integer_bytes__": [255, 255]},
+        {"__integer_bytes__": [True]},
+        {"__integer_bytes__": [256]},
+        {"__integer_bytes__": "01"},
+    ]
+    previous = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(640)
+        for raw in [valid, *invalid]:
+            analysis = {
+                **source_metadata,
+                "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+                "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
+                "import_scan_mode": "module_init",
+                "func_kinds": {"f": "sync"},
+                "func_defaults": {
+                    "f": {
+                        "kind": "sync",
+                        "has_decorators": False,
+                        "params": 1,
+                        "posonly": 0,
+                        "kwonly": 0,
+                        "defaults": [{"const": True, "value": raw}],
+                    }
+                },
+            }
+            lowering = {
+                **source_metadata,
+                "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+                "context_digest": "context",
+                "result": {"functions": [], "constant_metadata": raw},
+            }
+            # Read actual JSON carriers, as both persisted cache tiers do.
+            analysis_result = MC._validate_persisted_module_analysis_payload(
+                json.loads(json.dumps(analysis)),
+                source,
+                import_scan_mode="module_init",
+                path_stat=source.stat(),
+                capability_config_digest="",
+            )
+            lowering_result = MC._validate_persisted_module_lowering_payload(
+                json.loads(json.dumps(lowering)),
+                source,
+                module_name="mod",
+                context_digest="context",
+                path_stat=source.stat(),
+            )
+            if raw is valid:
+                assert analysis_result is not None
+                assert lowering_result is not None
+                assert analysis_result[0]["f"]["defaults"][0]["value"] == 1 << 2048
+                assert lowering_result["constant_metadata"] == 1 << 2048
+            else:
+                assert analysis_result is None
+                assert lowering_result is None
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.frontend_worker import _module_frontend_payload
+    from molt.frontend import SimpleTIRGenerator
+    from molt.frontend.sema.funcmeta import collect_module_func_kinds
+    from molt.opcode_literal_payloads import integer_literal_value
+
+    huge_hex = "0x1" + "0" * 600
+    ordered = f"{{{huge_hex}: {{'__integer_bytes__': [1]}}, 1: 'last'}}"
+    reversed_order = f"{{1: 'last', {huge_hex}: {{'__integer_bytes__': [1]}}}}"
+    named = "{'__integer_bytes__': [1], 'plain': 2}"
+    reversed_named = "{'plain': 2, '__integer_bytes__': [1]}"
+    text = (
+        f"def __integer_bytes__(value={huge_hex}, "
+        f"mapping={ordered}, members={{{huge_hex}, 'text'}}, "
+        f"named={named}):\n    return value\n"
+        f"class __dict__:\n    mapping = {ordered}\n    named = {named}\n"
+    )
+    source = tmp_path / "mod.py"
+    source.write_text(text)
+    source_metadata = {
+        "size": source.stat().st_size,
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    previous = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(640)
+        tree = ast.parse(text)
+        defaults = MC._collect_func_defaults(tree)
+        kinds = collect_module_func_kinds(tree)
+        specs = defaults["__integer_bytes__"]["defaults"]
+        assert specs == [
+            {"const": True, "value": 1 << 2400},
+            {"const": False},
+            {"const": False},
+            {"const": False},
+        ]
+        analysis = {
+            **source_metadata,
+            "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+            "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
+            "import_scan_mode": "module_init",
+            "func_defaults": defaults,
+            "func_kinds": kinds,
+        }
+        generator = SimpleTIRGenerator()
+        generator.visit(tree)
+        ir = generator.to_json()
+        result = _module_frontend_payload(
+            generator, ir, visit_s=0.0, lower_s=0.0, total_s=0.0
+        )
+        assert "__dict__" in result["local_classes"]
+        assert any(
+            integer_literal_value(bytes(op["bytes"])) == 1 << 2400
+            for function in result["functions"]
+            for op in function["ops"]
+            if op["kind"] == "const_bigint"
+        )
+        lowering = {
+            **source_metadata,
+            "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+            "context_digest": "context",
+            "result": result,
+        }
+
+        def persisted(payload: dict[str, object]) -> object:
+            return json.loads(
+                json.dumps(CK._cache_json_value(payload), default=CK._json_ir_default)
+            )
+
+        analysis_result = MC._validate_persisted_module_analysis_payload(
+            persisted(analysis),
+            source,
+            import_scan_mode="module_init",
+            path_stat=source.stat(),
+            capability_config_digest="",
+        )
+        assert analysis_result == (defaults, kinds)
+        lowering_result = MC._validate_persisted_module_lowering_payload(
+            persisted(lowering),
+            source,
+            module_name="__main__",
+            context_digest="context",
+            path_stat=source.stat(),
+        )
+        assert lowering_result is not None
+        assert lowering_result["local_class_names"] == ["__dict__"]
+        assert "__dict__" in lowering_result["local_classes"]
+        assert lowering_result["functions"] == result["functions"]
+        assert CK._backend_ir_bytes({"functions": lowering_result["functions"]}) == (
+            CK._backend_ir_bytes({"functions": result["functions"]})
+        )
+        assert _digest(result) == _digest(lowering_result)
+        assert _digest(result) is not None
+        changed = dict(lowering_result, local_class_names=["__integer_bytes__"])
+        assert _digest(result) != _digest(changed)
+        for original, reordered in ((ordered, reversed_order), (named, reversed_named)):
+            other = SimpleTIRGenerator()
+            other.visit(ast.parse(text.replace(original, reordered)))
+            other_ir = other.to_json()
+            assert other_ir["functions"] != result["functions"]
+            assert CK._cache_payload_digest(other_ir) != CK._cache_payload_digest(ir)
+    finally:
+        sys.set_int_max_str_digits(previous)

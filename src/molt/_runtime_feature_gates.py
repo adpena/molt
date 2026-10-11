@@ -113,7 +113,6 @@ RUNTIME_BUILTIN_SYMBOLS: frozenset[str] = frozenset(
 RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_math_", "stdlib_math"),
     ("molt_cmath_", "stdlib_math"),
-    ("molt_colorsys_", "stdlib_math"),
     ("molt_fraction_", "stdlib_math"),
     ("molt_random_", "stdlib_math"),
     ("molt_statistics_", "stdlib_math"),
@@ -126,7 +125,6 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_ordereddict_", "stdlib_collections"),
     ("molt_defaultdict_", "stdlib_collections"),
     ("molt_deque_", "stdlib_collections"),
-    ("molt_chainmap_", "stdlib_collections"),
     ("molt_importlib_resources_", "stdlib_importlib_extra"),
     ("molt_importlib_metadata_", "stdlib_importlib_extra"),
     ("molt_stringprep_", "stdlib_stringprep"),

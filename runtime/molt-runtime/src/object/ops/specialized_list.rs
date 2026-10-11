@@ -184,42 +184,47 @@ unsafe fn alloc_list_bool_from_normalized_slice(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 {
     list_int_getitem_impl(list_bits, index_bits, true)
+        .unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 pub(super) fn list_int_getitem_impl(
     list_bits: u64,
     index_bits: u64,
     normalize_negative: bool,
-) -> u64 {
+) -> Result<u64, ()> {
     crate::with_gil_entry_nopanic!(py, {
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return if normalize_negative {
-                molt_index(list_bits, index_bits)
-            } else {
-                molt_sequence_item_builtin(list_bits, index_bits)
-            };
+            return super::subscript::index_impl(
+                list_bits,
+                index_bits,
+                !normalize_negative,
+                normalize_negative,
+            );
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_INT) {
-                if exception_pending(py) {
-                    return MoltObject::none().bits();
+                if object_type_id(ptr) == TYPE_ID_LIST_INT {
+                    return Err(());
                 }
-                return if normalize_negative {
-                    molt_index(list_bits, index_bits)
-                } else {
-                    molt_sequence_item_builtin(list_bits, index_bits)
-                };
+                return super::subscript::index_impl(
+                    list_bits,
+                    index_bits,
+                    !normalize_negative,
+                    normalize_negative,
+                );
             }
             if let Some(slice) = obj_from_bits(index_bits).as_ptr()
                 && object_type_id(slice) == TYPE_ID_SLICE
             {
-                return list_int_slice_to_flat_list(py, ptr, slice);
+                let bits = list_int_slice_to_flat_list(py, ptr, slice);
+                return if obj_from_bits(bits).is_none() {
+                    Err(())
+                } else {
+                    Ok(bits)
+                };
             }
             let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
-                return MoltObject::none().bits();
+                return Err(());
             };
             let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
             let len = storage.len as i64;
@@ -227,10 +232,11 @@ pub(super) fn list_int_getitem_impl(
                 index += len;
             }
             if index < 0 || index >= len {
-                return list_index_out_of_range_error();
+                list_index_out_of_range_error();
+                return Err(());
             }
             let raw = *storage.data.add(index as usize);
-            MoltObject::from_int(raw).bits()
+            Ok(MoltObject::from_int(raw).bits())
         }
     })
 }
@@ -323,42 +329,47 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64 {
     list_bool_getitem_impl(list_bits, index_bits, true)
+        .unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 pub(super) fn list_bool_getitem_impl(
     list_bits: u64,
     index_bits: u64,
     normalize_negative: bool,
-) -> u64 {
+) -> Result<u64, ()> {
     crate::with_gil_entry_nopanic!(py, {
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return if normalize_negative {
-                molt_index(list_bits, index_bits)
-            } else {
-                molt_sequence_item_builtin(list_bits, index_bits)
-            };
+            return super::subscript::index_impl(
+                list_bits,
+                index_bits,
+                !normalize_negative,
+                normalize_negative,
+            );
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_BOOL) {
-                if exception_pending(py) {
-                    return MoltObject::none().bits();
+                if object_type_id(ptr) == TYPE_ID_LIST_BOOL {
+                    return Err(());
                 }
-                return if normalize_negative {
-                    molt_index(list_bits, index_bits)
-                } else {
-                    molt_sequence_item_builtin(list_bits, index_bits)
-                };
+                return super::subscript::index_impl(
+                    list_bits,
+                    index_bits,
+                    !normalize_negative,
+                    normalize_negative,
+                );
             }
             if let Some(slice) = obj_from_bits(index_bits).as_ptr()
                 && object_type_id(slice) == TYPE_ID_SLICE
             {
-                return list_bool_slice_to_flat_list(py, ptr, slice);
+                let bits = list_bool_slice_to_flat_list(py, ptr, slice);
+                return if obj_from_bits(bits).is_none() {
+                    Err(())
+                } else {
+                    Ok(bits)
+                };
             }
             let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
-                return MoltObject::none().bits();
+                return Err(());
             };
             let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
             let len = storage.len as i64;
@@ -366,10 +377,11 @@ pub(super) fn list_bool_getitem_impl(
                 index += len;
             }
             if index < 0 || index >= len {
-                return list_index_out_of_range_error();
+                list_index_out_of_range_error();
+                return Err(());
             }
             let raw = *storage.data.add(index as usize);
-            MoltObject::from_bool(raw != 0).bits()
+            Ok(MoltObject::from_bool(raw != 0).bits())
         }
     })
 }

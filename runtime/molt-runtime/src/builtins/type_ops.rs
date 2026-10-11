@@ -248,12 +248,9 @@ fn classinfo_attribute<'a, 'py>(
         };
     };
     let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name)?);
-    let result = unsafe { attr_lookup_ptr_allow_missing(py, pointer, name.bits()) }
-        .map(|bits| ExceptionValue::adopt(py, bits));
-    if exception_pending(py) {
-        None
-    } else {
-        Some(result)
+    match unsafe { attr_lookup_ptr_allow_missing(py, pointer, name.bits()) } {
+        Ok(result) => Some(result.map(|bits| ExceptionValue::adopt(py, bits))),
+        Err(()) => None,
     }
 }
 
@@ -437,11 +434,10 @@ fn classinfo_match(
         return structural_classinfo_match(py, value, classinfo, protocol);
     }
     let name = classinfo_protocol_name_bits(py, protocol);
-    let method = unsafe { lookup_special_method_bits(py, owner.bits(), name) }
-        .map(|method| ExceptionValue::adopt(py, method));
-    if exception_pending(py) {
-        return None;
-    }
+    let method = match unsafe { lookup_special_method_bits(py, owner.bits(), name) } {
+        Ok(method) => method.map(|method| ExceptionValue::adopt(py, method)),
+        Err(()) => return None,
+    };
     if let Some(method) = method {
         let result = {
             let _recursion = crate::state::recursion::RecursionGuard::enter(py)?;
@@ -655,7 +651,15 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                     let target_obj = obj_from_bits(target_bits);
                     if let Some(target_ptr) = target_obj.as_ptr() {
                         match object_type_id(target_ptr) {
-                            TYPE_ID_LIST => builtins.list_iterator,
+                            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
+                                builtins.list_iterator
+                            }
+                            TYPE_ID_FOREIGN
+                                if crate::object::list_storage::native_list(target_bits)
+                                    .is_some() =>
+                            {
+                                builtins.list_iterator
+                            }
                             TYPE_ID_TUPLE => builtins.tuple_iterator,
                             TYPE_ID_STRING => {
                                 let bytes = std::slice::from_raw_parts(
@@ -704,7 +708,15 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                     let target_obj = obj_from_bits(target_bits);
                     if let Some(target_ptr) = target_obj.as_ptr() {
                         match object_type_id(target_ptr) {
-                            TYPE_ID_LIST => builtins.list_reverseiterator,
+                            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
+                                builtins.list_reverseiterator
+                            }
+                            TYPE_ID_FOREIGN
+                                if crate::object::list_storage::native_list(target_bits)
+                                    .is_some() =>
+                            {
+                                builtins.list_reverseiterator
+                            }
                             TYPE_ID_DICT | TYPE_ID_DICT_KEYS_VIEW => {
                                 builtins.dict_reversekeyiterator
                             }
@@ -811,7 +823,9 @@ mod tests {
                 let dictionary = obj_from_bits(instance_dict_bits(pointer)).as_ptr().unwrap();
                 let failure_name =
                     ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"failure").unwrap());
-                if let Some(failure) = dict_get_in_place(py, dictionary, failure_name.bits()) {
+                if let Some(failure) = dict_get_in_place(py, dictionary, failure_name.bits())
+                    .expect("dictionary lookup succeeds")
+                {
                     return crate::molt_raise(failure);
                 }
                 let field = match string_obj_to_owned(obj_from_bits(name)).as_deref() {
@@ -821,7 +835,9 @@ mod tests {
                 };
                 let field =
                     ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
-                match dict_get_in_place(py, dictionary, field.bits()) {
+                match dict_get_in_place(py, dictionary, field.bits())
+                    .expect("dictionary lookup succeeds")
+                {
                     Some(value) => {
                         inc_ref_bits(py, value);
                         value

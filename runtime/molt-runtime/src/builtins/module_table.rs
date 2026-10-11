@@ -2104,7 +2104,9 @@ mod tests {
             assert_eq!(table.owners[index].load(Ordering::Acquire), 0);
             assert_eq!(legacy_cache_lookup(py, "builtins"), Some(prior_cache));
             assert_eq!(
-                unsafe { crate::dict_get_in_place(py, dict, key) },
+                unsafe {
+                    crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                },
                 Some(user_value)
             );
 
@@ -2132,7 +2134,9 @@ mod tests {
             assert_eq!(table.slots[index].load(Ordering::Acquire), prior_slot);
             assert_eq!(legacy_cache_lookup(py, "builtins"), Some(prior_cache));
             assert_eq!(
-                unsafe { crate::dict_get_in_place(py, dict, key) },
+                unsafe {
+                    crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                },
                 Some(user_value),
                 "restoring a retained namespace must preserve the user's builtin replacement"
             );
@@ -2202,9 +2206,13 @@ mod tests {
                 MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(82).bits()]))
                     .bits();
             unsafe {
-                assert!(crate::dict_get_in_place(py, dict, version_key).is_some());
-                crate::dict_del_in_place(py, dict, version_key);
-                crate::dict_del_in_place(py, dict, stdout_key);
+                assert!(
+                    crate::dict_get_in_place(py, dict, version_key)
+                        .expect("dictionary lookup succeeds")
+                        .is_some()
+                );
+                crate::dict_del_in_place(py, dict, version_key).expect("operation succeeds");
+                crate::dict_del_in_place(py, dict, stdout_key).expect("operation succeeds");
                 crate::dict_set_in_place(py, dict, implementation_key, marker);
                 crate::dict_set_in_place(py, dict, path_key, marker);
             }
@@ -2263,13 +2271,26 @@ mod tests {
             );
             assert!(!exception_pending(py));
             unsafe {
-                assert!(crate::dict_get_in_place(py, dict, version_key).is_none());
-                assert!(crate::dict_get_in_place(py, dict, stdout_key).is_none());
+                assert!(
+                    crate::dict_get_in_place(py, dict, version_key)
+                        .expect("dictionary lookup succeeds")
+                        .is_none()
+                );
+                assert!(
+                    crate::dict_get_in_place(py, dict, stdout_key)
+                        .expect("dictionary lookup succeeds")
+                        .is_none()
+                );
                 assert_eq!(
-                    crate::dict_get_in_place(py, dict, implementation_key),
+                    crate::dict_get_in_place(py, dict, implementation_key)
+                        .expect("dictionary lookup succeeds"),
                     Some(marker)
                 );
-                assert_eq!(crate::dict_get_in_place(py, dict, path_key), Some(marker));
+                assert_eq!(
+                    crate::dict_get_in_place(py, dict, path_key)
+                        .expect("dictionary lookup succeeds"),
+                    Some(marker)
+                );
             }
             for bits in [
                 version,
@@ -2370,12 +2391,18 @@ mod tests {
             let _modules_owner = crate::PtrDropGuard::new(modules);
             let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
             let id = test_registry_id("g4_src");
-            unsafe { crate::object::ops::dict_del_in_place(py, modules, name) };
+            unsafe {
+                crate::object::ops::dict_del_in_place(py, modules, name)
+                    .expect("operation succeeds")
+            };
             module_table_view_tombstone(py, id);
             let table = module_table(py).unwrap();
             table.states[id as usize].store(STATE_UNINIT, Ordering::Release);
             let previous = publish_test_module("g4_src");
-            assert!(unsafe { crate::object::ops::dict_del_in_place(py, modules, name) });
+            assert!(unsafe {
+                crate::object::ops::dict_del_in_place(py, modules, name)
+                    .expect("operation succeeds")
+            });
             let runs = INIT_RUNS.load(Ordering::SeqCst);
             let current = module_ensure(py, id);
             assert!(!exception_pending(py));
@@ -2409,7 +2436,10 @@ mod tests {
             // without invoking child ensure. The subsequent loop observes it.
             for text in ["g4_pkg.sub", "g4_pkg"] {
                 let key = crate::attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
-                unsafe { crate::object::ops::dict_del_in_place(py, modules, key) };
+                unsafe {
+                    crate::object::ops::dict_del_in_place(py, modules, key)
+                        .expect("operation succeeds")
+                };
                 module_table_view_tombstone(py, test_registry_id(text));
                 dec_ref_bits(py, key);
             }
@@ -2465,7 +2495,8 @@ mod tests {
         let module_ptr = obj_from_bits(module_bits).as_ptr().expect("test module");
         let globals_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
         let builtins_bits =
-            crate::builtins::frames::frame_effective_builtins_bits(_py, globals_bits);
+            crate::builtins::frames::frame_effective_builtins_bits(_py, globals_bits)
+                .expect("builtins namespace lookup succeeds");
         inc_ref_bits(_py, globals_bits);
         inc_ref_bits(_py, builtins_bits);
         crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits, 0);
@@ -2494,7 +2525,11 @@ mod tests {
                 .unwrap();
             let property_name = MoltObject::from_ptr(alloc_string(py, b"property")).bits();
             assert!(
-                unsafe { crate::dict_get_in_place(py, dict, property_name) }.is_none(),
+                unsafe {
+                    crate::dict_get_in_place(py, dict, property_name)
+                        .expect("dictionary lookup succeeds")
+                }
+                .is_none(),
                 "a same-named standalone module must not gain bootstrap privilege"
             );
             assert!(!module_initialization_awaits_publication(py, "builtins"));
@@ -2519,7 +2554,9 @@ mod tests {
             for (name, expected) in crate::builtins::classes::public_builtin_classes(py) {
                 let key = MoltObject::from_ptr(alloc_string(py, name.as_bytes())).bits();
                 assert_eq!(
-                    unsafe { crate::dict_get_in_place(py, dict, key) },
+                    unsafe {
+                        crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                    },
                     Some(expected),
                     "{name}"
                 );
@@ -2532,10 +2569,16 @@ mod tests {
                 .as_ptr()
                 .unwrap();
             let open_name = crate::attr_name_bits_from_bytes(py, b"open").unwrap();
-            let provider_open = unsafe { crate::dict_get_in_place(py, io_dict, open_name) };
+            let provider_open = unsafe {
+                crate::dict_get_in_place(py, io_dict, open_name)
+                    .expect("dictionary lookup succeeds")
+            };
             assert!(provider_open.is_some(), "admitted provider publishes open");
             assert_eq!(
-                unsafe { crate::dict_get_in_place(py, dict, open_name) },
+                unsafe {
+                    crate::dict_get_in_place(py, dict, open_name)
+                        .expect("dictionary lookup succeeds")
+                },
                 provider_open
             );
             dec_ref_bits(py, open_name);
@@ -2559,7 +2602,10 @@ mod tests {
             for hidden in ["NoneType", "list_iterator", "GenericAlias"] {
                 let key = MoltObject::from_ptr(alloc_string(py, hidden.as_bytes())).bits();
                 assert!(
-                    unsafe { crate::dict_get_in_place(py, dict, key) }.is_none(),
+                    unsafe {
+                        crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                    }
+                    .is_none(),
                     "{hidden}"
                 );
                 dec_ref_bits(py, key);
@@ -2568,7 +2614,9 @@ mod tests {
             table.owners[idx].store(0, Ordering::Release);
             for builtin in ["property", "len", "ValueError"] {
                 let key = MoltObject::from_ptr(alloc_string(py, builtin.as_bytes())).bits();
-                assert!(unsafe { crate::dict_del_in_place(py, dict, key) });
+                assert!(unsafe {
+                    crate::dict_del_in_place(py, dict, key).expect("operation succeeds")
+                });
                 // Republication is not permission to repair a user mutation.
                 let result = crate::molt_module_cache_set(name, module);
                 if !is_none_bits(result) {
@@ -2577,7 +2625,12 @@ mod tests {
                 let value = crate::molt_module_get_global(unrelated, key);
                 assert!(is_none_bits(value));
                 assert!(pending_exception_text(py, "NameError").contains("NameError"));
-                assert!(unsafe { crate::dict_get_in_place(py, dict, key) }.is_none());
+                assert!(
+                    unsafe {
+                        crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                    }
+                    .is_none()
+                );
                 dec_ref_bits(py, key);
             }
             for bits in [property_name, unrelated, module, name] {
@@ -2675,9 +2728,10 @@ mod tests {
                     assert_eq!(cached, override_bits);
                     assert!(!exception_pending(_py));
                     unsafe {
-                        assert!(crate::object::ops::dict_del_in_place(
-                            _py, dict_ptr, name_bits
-                        ))
+                        assert!(
+                            crate::object::ops::dict_del_in_place(_py, dict_ptr, name_bits)
+                                .expect("operation succeeds")
+                        )
                     };
 
                     for module in [builtins_bits, unrelated_bits] {

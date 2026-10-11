@@ -595,7 +595,8 @@ fn native_alias_of_managed_type_completes_its_own_declarations() {
                 class,
                 typeobj::TypeAttributeField::AbstractMethods,
                 Some(abstract_methods),
-            );
+            )
+            .expect("abstract method publication succeeds");
             assert!(!crate::exception_pending(py));
             assert_eq!(WATCHES.load(std::sync::atomic::Ordering::Relaxed), 2);
             for pointer in [managed.cast::<PyTypeObject>(), alias_pointer] {
@@ -610,7 +611,8 @@ fn native_alias_of_managed_type_completes_its_own_declarations() {
                 class,
                 typeobj::TypeAttributeField::AbstractMethods,
                 None,
-            );
+            )
+            .expect("abstract method deletion succeeds");
             crate::dec_ref_bits(py, abstract_methods);
 
             // The declaration lives in the shared namespace; retire it before its

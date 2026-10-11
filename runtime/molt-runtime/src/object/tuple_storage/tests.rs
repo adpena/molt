@@ -35,7 +35,9 @@ unsafe extern "C" fn overridden_iter(_: *mut PyObject) -> *mut PyObject {
 }
 
 fn descriptor(py: &PyToken<'_>, name: &str, args: &[u64]) -> u64 {
-    let callable = crate::builtins::containers::tuple_method_bits(py, name).unwrap();
+    let callable = crate::builtins::containers::tuple_method_bits(py, name)
+        .unwrap()
+        .unwrap();
     unsafe { crate::call::bind::call_bind_borrowed(py, callable, None, args, &[], &[]) }
 }
 

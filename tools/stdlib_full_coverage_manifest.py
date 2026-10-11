@@ -205,14 +205,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_binascii_crc32",
         "molt_binascii_crc_hqx",
     ),
-    "colorsys": (
-        "molt_colorsys_rgb_to_yiq",
-        "molt_colorsys_yiq_to_rgb",
-        "molt_colorsys_rgb_to_hls",
-        "molt_colorsys_hls_to_rgb",
-        "molt_colorsys_rgb_to_hsv",
-        "molt_colorsys_hsv_to_rgb",
-    ),
+    "colorsys": (),
     "contextlib": (
         "molt_context_null",
         "molt_contextlib_aclosing_enter",

@@ -39,12 +39,6 @@ fn compat_raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken, bits: u64) -> 
     T::from_bits(0)
 }
 
-/// Wraps bridge::molt_is_callable — monolith returns u64 (bool as bits).
-#[inline]
-fn compat_molt_is_callable(_py: &PyToken, bits: u64) -> bool {
-    molt_is_callable(_py, bits)
-}
-
 /// Wraps bridge::molt_sorted_builtin — monolith takes 3 args, bridge takes 2 + _py.
 #[inline]
 fn compat_molt_sorted_builtin(
@@ -86,15 +80,6 @@ fn compat_bigint_bits(_py: &PyToken, value: BigInt) -> u64 {
 #[inline]
 pub(crate) fn compat_string_bytes(ptr: *mut u8) -> &'static [u8] {
     unsafe { string_bytes(ptr) }
-}
-
-#[derive(Debug)]
-enum RealValue {
-    Float(f64),
-    IntExact(i64),
-    BigIntExact(BigInt),
-    IntCoerced(i64),
-    BigIntCoerced(BigInt),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -379,195 +364,82 @@ fn math_ldexp(x: f64, exp: i32) -> f64 {
     libm::ldexp(x, exp)
 }
 
-fn render_float(_py: &PyToken, value: f64) -> String {
+fn render_float(_py: &PyToken, value: f64) -> Option<String> {
     format_obj(_py, MoltObject::from_float(value))
 }
 
-fn log2_bigint(value: &BigInt) -> f64 {
-    let bits = value.bits();
-    let shift = bits.saturating_sub(53);
-    let top = if shift == 0 {
-        value.clone()
-    } else {
-        value >> shift
+// The integer logarithm branch mirrors CPython's PyLong_Check path. Normal
+// integers use the same rounded double conversion as PyLong_AsDouble; only
+// overflow needs the mantissa/exponent decomposition used by _PyLong_Frexp.
+fn log_bigint(value: &BigInt, function: fn(f64) -> f64) -> f64 {
+    if let Some(value) = value.to_f64().filter(|value| value.is_finite()) {
+        return function(value);
+    }
+    let mut exponent = value.bits();
+    let shift = exponent.saturating_sub(55);
+    let mut top = value >> shift;
+    // Retain guard and sticky bits for the u64-to-f64 ties-to-even cast.
+    if value.trailing_zeros().is_some_and(|zeros| zeros < shift) {
+        top |= BigInt::one();
+    }
+    let mut mantissa = math_ldexp(top.to_u64().expect("55-bit integer") as f64, -55);
+    if mantissa == 1.0 {
+        mantissa = 0.5;
+        exponent += 1;
+    }
+    function(mantissa) + function(2.0) * exponent as f64
+}
+
+fn logarithm(_py: &PyToken, bits: u64, function: fn(f64) -> f64) -> u64 {
+    let obj = obj_from_bits(bits);
+    // Tagged int/bool never allocate or traverse the arbitrary-width bridge.
+    if let Some(value) = obj.as_int().or_else(|| obj.as_bool().map(i64::from)) {
+        if value <= 0 {
+            return log_domain_error(_py, None);
+        }
+        return float_result_bits(_py, function(value as f64));
+    }
+    if !obj.is_float() {
+        match integer_storage(_py, bits) {
+            Ok(Some(value)) => {
+                if value.is_negative() || value.is_zero() {
+                    return log_domain_error(_py, None);
+                }
+                return float_result_bits(_py, log_bigint(&value, function));
+            }
+            Ok(None) => {}
+            Err(()) => return MoltObject::none().bits(),
+        }
+    }
+    let Some(value) = float_as_double(_py, bits) else {
+        return MoltObject::none().bits();
     };
-    let top_f = top.to_f64().unwrap_or(0.0);
-    math_log2(top_f) + (shift as f64)
-}
-
-fn log_bigint(value: &BigInt) -> f64 {
-    log2_bigint(value) * std::f64::consts::LN_2
-}
-
-fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
-    let obj = obj_from_bits(val_bits);
-    if let Some(f) = as_float_extended(obj) {
-        return Some(RealValue::Float(f));
+    if value <= 0.0 {
+        return log_domain_error(_py, Some(value));
     }
-    if let Some(i) = to_i64(obj) {
-        return Some(RealValue::IntExact(i));
-    }
-    if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-        return Some(RealValue::BigIntExact(unsafe { bigint_ref(ptr) }.clone()));
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-        let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, float_name_bits) } {
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            if exception_pending(_py) {
-                return None;
-            }
-            let res_obj = obj_from_bits(res_bits);
-            if let Some(f) = as_float_extended(res_obj) {
-                return Some(RealValue::Float(f));
-            }
-            let owner = class_name_for_error(type_of_bits(_py, val_bits));
-            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-            if res_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, res_bits);
-            }
-            let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-        }
-        if exception_pending(_py) {
-            return None;
-        }
-        let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, index_name_bits) } {
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            if exception_pending(_py) {
-                return None;
-            }
-            let res_obj = obj_from_bits(res_bits);
-            if let Some(i) = to_i64(res_obj) {
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                return Some(RealValue::IntCoerced(i));
-            }
-            if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                let big = unsafe { bigint_ref(big_ptr) }.clone();
-                dec_ref_bits(_py, res_bits);
-                return Some(RealValue::BigIntCoerced(big));
-            }
-            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-            if res_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, res_bits);
-            }
-            let msg = format!("__index__ returned non-int (type {res_type})");
-            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-        }
-        if exception_pending(_py) {
-            return None;
-        }
-    }
-    let type_label = type_name(_py, obj);
-    let msg = format!("must be real number, not {type_label}");
-    raise_exception::<Option<RealValue>>(_py, "TypeError", &msg)
-}
-
-fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealValue> {
-    let obj = obj_from_bits(val_bits);
-    if let Some(f) = as_float_extended(obj) {
-        return Some(RealValue::Float(f));
-    }
-    if let Some(i) = to_i64(obj) {
-        return Some(RealValue::IntExact(i));
-    }
-    if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-        return Some(RealValue::BigIntExact(unsafe { bigint_ref(ptr) }.clone()));
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-        let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, float_name_bits) } {
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            if exception_pending(_py) {
-                return None;
-            }
-            let res_obj = obj_from_bits(res_bits);
-            if let Some(f) = as_float_extended(res_obj) {
-                return Some(RealValue::Float(f));
-            }
-            let owner = class_name_for_error(type_of_bits(_py, val_bits));
-            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-            if res_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, res_bits);
-            }
-            let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-        }
-        if exception_pending(_py) {
-            return None;
-        }
-        let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, index_name_bits) } {
-            let res_bits = call_callable0(_py, call_bits);
-            dec_ref_bits(_py, call_bits);
-            if exception_pending(_py) {
-                return None;
-            }
-            let res_obj = obj_from_bits(res_bits);
-            if let Some(i) = to_i64(res_obj) {
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                return Some(RealValue::IntCoerced(i));
-            }
-            if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                let big = unsafe { bigint_ref(big_ptr) }.clone();
-                dec_ref_bits(_py, res_bits);
-                return Some(RealValue::BigIntCoerced(big));
-            }
-            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-            if res_obj.as_ptr().is_some() {
-                dec_ref_bits(_py, res_bits);
-            }
-            let msg = format!("__index__ returned non-int (type {res_type})");
-            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-        }
-        if exception_pending(_py) {
-            return None;
-        }
-    }
-    let type_label = type_name(_py, obj);
-    let msg = format!("{name}() argument must be a real number, not {type_label}");
-    raise_exception::<Option<RealValue>>(_py, "TypeError", &msg)
-}
-
-fn coerce_to_f64(_py: &PyToken, value: RealValue) -> Option<f64> {
-    match value {
-        RealValue::Float(f) => Some(f),
-        RealValue::IntExact(i) | RealValue::IntCoerced(i) => Some(i as f64),
-        RealValue::BigIntExact(big) | RealValue::BigIntCoerced(big) => {
-            if let Some(val) = big.to_f64() {
-                Some(val)
-            } else {
-                raise_exception::<Option<f64>>(
-                    _py,
-                    "OverflowError",
-                    "int too large to convert to float",
-                )
-            }
-        }
-    }
+    float_result_bits(_py, function(value))
 }
 
 fn check_finite_round(_py: &PyToken, value: f64) -> Option<()> {
     if value.is_nan() {
-        raise_exception::<Option<()>>(_py, "ValueError", "math domain error");
+        raise_exception::<Option<()>>(_py, "ValueError", "cannot convert float NaN to integer");
         return None;
     }
     if value.is_infinite() {
-        raise_exception::<Option<()>>(_py, "OverflowError", "math range error");
+        raise_exception::<Option<()>>(
+            _py,
+            "OverflowError",
+            "cannot convert float infinity to integer",
+        );
         return None;
     }
     Some(())
 }
 
 fn int_bits_from_f64_trunc(_py: &PyToken, value: f64) -> u64 {
+    if value >= i64::MIN as f64 && value < -(i64::MIN as f64) {
+        return int_bits_from_i64(_py, value as i64);
+    }
     let big = bigint_from_f64_trunc(value);
     if let Some(i) = compat_bigint_to_inline(_py, &big) {
         MoltObject::from_int(i).bits()
@@ -615,8 +487,13 @@ fn math_domain_error(_py: &PyToken) -> u64 {
 }
 
 fn log_domain_error(_py: &PyToken, got: Option<f64>) -> u64 {
+    if target_minor() < 14 {
+        return raise_exception::<u64>(_py, "ValueError", "math domain error");
+    }
     if let Some(value) = got {
-        let rendered = render_float(_py, value);
+        let Some(rendered) = render_float(_py, value) else {
+            return MoltObject::none().bits();
+        };
         let msg = format!("expected a positive input, got {rendered}");
         return raise_exception::<u64>(_py, "ValueError", &msg);
     }
@@ -624,7 +501,9 @@ fn log_domain_error(_py: &PyToken, got: Option<f64>) -> u64 {
 }
 
 fn log1p_domain_error(_py: &PyToken, value: f64) -> u64 {
-    let rendered = render_float(_py, value);
+    let Some(rendered) = render_float(_py, value) else {
+        return MoltObject::none().bits();
+    };
     let msg = format!("expected argument value > -1, got {rendered}");
     raise_exception::<u64>(_py, "ValueError", &msg)
 }
@@ -663,50 +542,18 @@ fn isqrt_biguint(value: &BigUint) -> BigUint {
 }
 
 fn collect_real_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<f64>> {
-    let iter_obj = compat_molt_iter(_py, iter_bits);
-    if obj_from_bits(iter_obj).is_none() {
-        compat_raise_not_iterable::<Option<Vec<f64>>>(_py, iter_bits);
+    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, molt_iter(_py, iter_bits)) };
+    if exception_pending(_py) {
         return None;
     }
     let mut out = Vec::new();
     loop {
-        let pair_bits = compat_molt_iter_next(_py, iter_obj);
-        if exception_pending(_py) {
-            return None;
-        }
-        let pair_obj = obj_from_bits(pair_bits);
-        let Some(pair_ptr) = pair_obj.as_ptr() else {
-            return raise_exception::<Option<Vec<f64>>>(
-                _py,
-                "TypeError",
-                "object is not an iterator",
-            );
+        let value = match molt_runtime_core::iter_next_owned(_py, &iterator) {
+            Ok(Some(value)) => value,
+            Ok(None) => break,
+            Err(_) => return None,
         };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<Option<Vec<f64>>>(
-                    _py,
-                    "TypeError",
-                    "object is not an iterator",
-                );
-            }
-            let elems = seq_snapshot(pair_ptr);
-            if elems.len() < 2 {
-                return raise_exception::<Option<Vec<f64>>>(
-                    _py,
-                    "TypeError",
-                    "object is not an iterator",
-                );
-            }
-            let val_bits = elems[0];
-            let done_bits = elems[1];
-            if is_truthy(_py, obj_from_bits(done_bits)) {
-                break;
-            }
-            let real = coerce_real(_py, val_bits)?;
-            let f = coerce_to_f64(_py, real)?;
-            out.push(f);
-        }
+        out.push(float_as_double(_py, value.bits())?);
     }
     Some(out)
 }
@@ -1030,178 +877,23 @@ fn normalize_slice_step1_bounds(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        match value {
-            RealValue::Float(f) => {
-                if f.is_nan() {
-                    return float_result_bits(_py, f);
-                }
-                if f.is_infinite() {
-                    if f.is_sign_negative() {
-                        return log_domain_error(_py, Some(f));
-                    }
-                    return float_result_bits(_py, f);
-                }
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log(f))
-            }
-            RealValue::IntExact(i) => {
-                if i <= 0 {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, math_log(i as f64))
-            }
-            RealValue::BigIntExact(big) => {
-                if big.is_negative() || big.is_zero() {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, log_bigint(&big))
-            }
-            RealValue::IntCoerced(i) => {
-                let f = i as f64;
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log(f))
-            }
-            RealValue::BigIntCoerced(big) => {
-                let Some(f) = big.to_f64() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                };
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log(f))
-            }
-        }
-    })
+    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        match value {
-            RealValue::Float(f) => {
-                if f.is_nan() {
-                    return float_result_bits(_py, f);
-                }
-                if f.is_infinite() {
-                    if f.is_sign_negative() {
-                        return log_domain_error(_py, Some(f));
-                    }
-                    return float_result_bits(_py, f);
-                }
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log2(f))
-            }
-            RealValue::IntExact(i) => {
-                if i <= 0 {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, math_log2(i as f64))
-            }
-            RealValue::BigIntExact(big) => {
-                if big.is_negative() || big.is_zero() {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, log2_bigint(&big))
-            }
-            RealValue::IntCoerced(i) => {
-                let f = i as f64;
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log2(f))
-            }
-            RealValue::BigIntCoerced(big) => {
-                let Some(f) = big.to_f64() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "int too large to convert to float",
-                    );
-                };
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log2(f))
-            }
-        }
-    })
+    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log2) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        match value {
-            RealValue::Float(f) => {
-                if f.is_nan() {
-                    return float_result_bits(_py, f);
-                }
-                if f.is_infinite() {
-                    if f.is_sign_negative() {
-                        return log_domain_error(_py, Some(f));
-                    }
-                    return float_result_bits(_py, f);
-                }
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log10(f))
-            }
-            RealValue::IntExact(i) => {
-                if i <= 0 {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, math_log10(i as f64))
-            }
-            RealValue::BigIntExact(big) => {
-                if big.is_negative() || big.is_zero() {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, log_bigint(&big) / std::f64::consts::LN_10)
-            }
-            RealValue::IntCoerced(i) => {
-                let f = i as f64;
-                if f <= 0.0 {
-                    return log_domain_error(_py, Some(f));
-                }
-                float_result_bits(_py, math_log10(f))
-            }
-            RealValue::BigIntCoerced(big) => {
-                if big.is_negative() || big.is_zero() {
-                    return log_domain_error(_py, None);
-                }
-                float_result_bits(_py, log_bigint(&big) / std::f64::consts::LN_10)
-            }
-        }
-    })
+    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log10) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1223,10 +915,7 @@ pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1249,10 +938,7 @@ pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1275,22 +961,13 @@ pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(x_val) = coerce_real(_py, x_bits) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(y_val) = coerce_real(_py, y_bits) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(z_val) = coerce_real(_py, z_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(z) = coerce_to_f64(_py, z_val) else {
+        let Some(z) = float_as_double(_py, z_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_fma(x, y, z))
@@ -1300,17 +977,16 @@ pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1321,17 +997,16 @@ pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1342,17 +1017,16 @@ pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1363,17 +1037,16 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1384,17 +1057,16 @@ pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1405,10 +1077,7 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_atan(f))
@@ -1418,16 +1087,10 @@ pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(y_val) = coerce_real(_py, y_bits) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(x_val) = coerce_real(_py, x_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_atan2(y, x))
@@ -1437,10 +1100,7 @@ pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1457,10 +1117,7 @@ pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1477,10 +1134,7 @@ pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_tanh(f))
@@ -1490,10 +1144,7 @@ pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_asinh(f))
@@ -1503,17 +1154,16 @@ pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
             return float_result_bits(_py, f);
         }
         if f < 1.0 {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a number greater than or equal to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1524,10 +1174,7 @@ pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1543,10 +1190,7 @@ pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1554,14 +1198,18 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                let rendered = render_float(_py, f);
+                let Some(rendered) = render_float(_py, f) else {
+                    return MoltObject::none().bits();
+                };
                 let msg = format!("expected a noninteger or positive integer, got {rendered}");
                 return raise_exception::<_>(_py, "ValueError", &msg);
             }
             return float_result_bits(_py, f);
         }
         if f <= 0.0 && f.fract() == 0.0 {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a noninteger or positive integer, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1576,10 +1224,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_erf(f))
@@ -1589,10 +1234,7 @@ pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, math_erfc(f))
@@ -1602,10 +1244,7 @@ pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1615,7 +1254,9 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
             return float_result_bits(_py, f.abs());
         }
         if f <= 0.0 && f.fract() == 0.0 {
-            let rendered = render_float(_py, f);
+            let Some(rendered) = render_float(_py, f) else {
+                return MoltObject::none().bits();
+            };
             let msg = format!("expected a noninteger or positive integer, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1626,10 +1267,7 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "isfinite") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         MoltObject::from_bool(f.is_finite()).bits()
@@ -1639,10 +1277,7 @@ pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "isinf") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         MoltObject::from_bool(f.is_infinite()).bits()
@@ -1652,10 +1287,7 @@ pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "isnan") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         MoltObject::from_bool(f.is_nan()).bits()
@@ -1665,10 +1297,7 @@ pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "fabs") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, f.abs())
@@ -1678,16 +1307,10 @@ pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(x_val) = coerce_real_named(_py, x_bits, "copysign") else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y_val) = coerce_real_named(_py, y_bits, "copysign") else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
         float_result_bits(_py, x.copysign(y))
@@ -1697,10 +1320,7 @@ pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "sqrt") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1719,175 +1339,71 @@ pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
     })
 }
 
+fn round_number(_py: &PyToken, bits: u64, mode: RoundMode, name: &'static [u8]) -> u64 {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = obj.as_int().or_else(|| obj.as_bool().map(i64::from)) {
+        return int_bits_from_i64(_py, value);
+    }
+    match exact_float_value(_py, bits) {
+        Ok(Some(value)) => {
+            return round_float_bits(_py, value, mode).unwrap_or(MoltObject::none().bits());
+        }
+        Ok(None) => {}
+        Err(()) => return MoltObject::none().bits(),
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(bits) {
+        let name_bits = intern_static_name(_py, name);
+        match unsafe { lookup_special_method(_py, ptr, name_bits) } {
+            Ok(Some(call_bits)) => {
+                let method = unsafe { OwnedRuntimeValue::from_owned_bits(_py, call_bits) };
+                return call_callable0(_py, method.bits());
+            }
+            Ok(None) => {}
+            Err(()) => return MoltObject::none().bits(),
+        }
+    }
+    if matches!(mode, RoundMode::Trunc) {
+        let label = class_name_for_error(type_of_bits(_py, bits));
+        return raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("type {:.100} doesn't define __trunc__ method", label),
+        );
+    }
+    let Some(value) = float_as_double(_py, bits) else {
+        return MoltObject::none().bits();
+    };
+    round_float_bits(_py, value, mode).unwrap_or(MoltObject::none().bits())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let obj = obj_from_bits(val_bits);
-        // A bare heap BigInt is already an exact int; return it unchanged
-        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
-        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
-        // not re-boxed through the truncating inline `from_int`.
-        if bigint_ptr_from_bits(val_bits).is_some() {
-            inc_ref_bits(_py, val_bits);
-            return val_bits;
-        }
-        if let Some(i) = to_i64(obj) {
-            // Full-range boxing — never inline-only `from_int`, which would
-            // silently truncate exact-integer floats or i64 magnitudes
-            // >= 2**46 (mod 2**47).
-            return int_bits_from_i64(_py, i);
-        }
-        if let Some(f) = as_float_extended(obj) {
-            let Some(bits) = round_float_bits(_py, f, RoundMode::Floor) else {
-                return MoltObject::none().bits();
-            };
-            return bits;
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            let floor_name_bits = intern_static_name(_py, b"__floor__");
-            if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, floor_name_bits) } {
-                let callable_ok = compat_molt_is_callable(_py, call_bits);
-                if callable_ok {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-                dec_ref_bits(_py, call_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-        }
-        let Some(value) = coerce_real_named(_py, val_bits, "floor") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
-            return MoltObject::none().bits();
-        };
-        let Some(bits) = round_float_bits(_py, f, RoundMode::Floor) else {
-            return MoltObject::none().bits();
-        };
-        bits
+        round_number(_py, val_bits, RoundMode::Floor, b"__floor__")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let obj = obj_from_bits(val_bits);
-        // A bare heap BigInt is already an exact int; return it unchanged
-        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
-        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
-        // not re-boxed through the truncating inline `from_int`.
-        if bigint_ptr_from_bits(val_bits).is_some() {
-            inc_ref_bits(_py, val_bits);
-            return val_bits;
-        }
-        if let Some(i) = to_i64(obj) {
-            // Full-range boxing — never inline-only `from_int`, which would
-            // silently truncate exact-integer floats or i64 magnitudes
-            // >= 2**46 (mod 2**47).
-            return int_bits_from_i64(_py, i);
-        }
-        if let Some(f) = as_float_extended(obj) {
-            let Some(bits) = round_float_bits(_py, f, RoundMode::Ceil) else {
-                return MoltObject::none().bits();
-            };
-            return bits;
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            let ceil_name_bits = intern_static_name(_py, b"__ceil__");
-            if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, ceil_name_bits) } {
-                let callable_ok = compat_molt_is_callable(_py, call_bits);
-                if callable_ok {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-                dec_ref_bits(_py, call_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-        }
-        let Some(value) = coerce_real_named(_py, val_bits, "ceil") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
-            return MoltObject::none().bits();
-        };
-        let Some(bits) = round_float_bits(_py, f, RoundMode::Ceil) else {
-            return MoltObject::none().bits();
-        };
-        bits
+        round_number(_py, val_bits, RoundMode::Ceil, b"__ceil__")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let obj = obj_from_bits(val_bits);
-        // A bare heap BigInt is already an exact int; return it unchanged
-        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
-        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
-        // not re-boxed through the truncating inline `from_int`.
-        if bigint_ptr_from_bits(val_bits).is_some() {
-            inc_ref_bits(_py, val_bits);
-            return val_bits;
-        }
-        if let Some(i) = to_i64(obj) {
-            // Full-range boxing — never inline-only `from_int`, which would
-            // silently truncate exact-integer floats or i64 magnitudes
-            // >= 2**46 (mod 2**47).
-            return int_bits_from_i64(_py, i);
-        }
-        if let Some(f) = as_float_extended(obj) {
-            let Some(bits) = round_float_bits(_py, f, RoundMode::Trunc) else {
-                return MoltObject::none().bits();
-            };
-            return bits;
-        }
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            let trunc_name_bits = intern_static_name(_py, b"__trunc__");
-            if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, trunc_name_bits) } {
-                let callable_ok = compat_molt_is_callable(_py, call_bits);
-                if callable_ok {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-                dec_ref_bits(_py, call_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-        }
-        let Some(value) = coerce_real_named(_py, val_bits, "trunc") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
-            return MoltObject::none().bits();
-        };
-        let Some(bits) = round_float_bits(_py, f, RoundMode::Trunc) else {
-            return MoltObject::none().bits();
-        };
-        bits
+        round_number(_py, val_bits, RoundMode::Trunc, b"__trunc__")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(x_val) = coerce_real_named(_py, x_bits, "fmod") else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y_val) = coerce_real_named(_py, y_bits, "fmod") else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
         if y == 0.0 {
@@ -1909,10 +1425,7 @@ pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "modf") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -1939,10 +1452,7 @@ pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "frexp") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() || f.is_infinite() || f == 0.0 {
@@ -1960,10 +1470,7 @@ pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "ldexp") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         let exp = index_i64_from_obj(_py, exp_bits, "ldexp() second argument must be an integer");
@@ -1993,33 +1500,21 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(rel_val) = coerce_real_named(_py, rel_bits, "isclose") else {
+        let Some(a) = float_as_double(_py, a_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(abs_val) = coerce_real_named(_py, abs_bits, "isclose") else {
+        let Some(b) = float_as_double(_py, b_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(rel_tol) = coerce_to_f64(_py, rel_val) else {
+        let Some(rel_tol) = float_as_double(_py, rel_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(abs_tol) = coerce_to_f64(_py, abs_val) else {
+        let Some(abs_tol) = float_as_double(_py, abs_bits) else {
             return MoltObject::none().bits();
         };
         if rel_tol < 0.0 || abs_tol < 0.0 {
             return raise_exception::<_>(_py, "ValueError", "tolerances must be non-negative");
         }
-        let Some(a_val) = coerce_real_named(_py, a_bits, "isclose") else {
-            return MoltObject::none().bits();
-        };
-        let Some(b_val) = coerce_real_named(_py, b_bits, "isclose") else {
-            return MoltObject::none().bits();
-        };
-        let Some(a) = coerce_to_f64(_py, a_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(b) = coerce_to_f64(_py, b_val) else {
-            return MoltObject::none().bits();
-        };
         if a == b {
             return MoltObject::from_bool(true).bits();
         }
@@ -2086,66 +1581,47 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let iter_obj = compat_molt_iter(_py, iter_bits);
-        if obj_from_bits(iter_obj).is_none() {
-            return compat_raise_not_iterable::<u64>(_py, iter_bits);
+        let iterator =
+            unsafe { OwnedRuntimeValue::from_owned_bits(_py, molt_iter(_py, iter_bits)) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
         let mut partials: Vec<f64> = Vec::new();
         loop {
-            let pair_bits = compat_molt_iter_next(_py, iter_obj);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let value = match molt_runtime_core::iter_next_owned(_py, &iterator) {
+                Ok(Some(value)) => value,
+                Ok(None) => break,
+                Err(_) => return MoltObject::none().bits(),
             };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let Some(mut x) = float_as_double(_py, value.bits()) else {
+                return MoltObject::none().bits();
+            };
+            let mut j = 0usize;
+            let mut i = 0usize;
+            while i < partials.len() {
+                let mut y = partials[i];
+                i += 1;
+                if x.abs() < y.abs() {
+                    std::mem::swap(&mut x, &mut y);
                 }
-                let elems = seq_snapshot(pair_ptr);
-                if elems.len() < 2 {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let Some(real) = coerce_real_named(_py, val_bits, "fsum") else {
-                    return MoltObject::none().bits();
-                };
-                let Some(mut x) = coerce_to_f64(_py, real) else {
-                    return MoltObject::none().bits();
-                };
-                let mut j = 0usize;
-                let mut i = 0usize;
-                while i < partials.len() {
-                    let mut y = partials[i];
-                    i += 1;
-                    if x.abs() < y.abs() {
-                        std::mem::swap(&mut x, &mut y);
+                let hi = x + y;
+                let lo = y - (hi - x);
+                if lo != 0.0 {
+                    if j < partials.len() {
+                        partials[j] = lo;
+                    } else {
+                        partials.push(lo);
                     }
-                    let hi = x + y;
-                    let lo = y - (hi - x);
-                    if lo != 0.0 {
-                        if j < partials.len() {
-                            partials[j] = lo;
-                        } else {
-                            partials.push(lo);
-                        }
-                        j += 1;
-                    }
-                    x = hi;
-                }
-                if j < partials.len() {
-                    partials[j] = x;
                     j += 1;
-                    partials.truncate(j);
-                } else {
-                    partials.push(x);
                 }
+                x = hi;
+            }
+            if j < partials.len() {
+                partials[j] = x;
+                j += 1;
+                partials.truncate(j);
+            } else {
+                partials.push(x);
             }
         }
         let mut sum = 0.0_f64;
@@ -2376,10 +1852,7 @@ pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "degrees") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         let out = f * (180.0 / std::f64::consts::PI);
@@ -2390,10 +1863,7 @@ pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real_named(_py, val_bits, "radians") else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         let out = f * (std::f64::consts::PI / 180.0);
@@ -2418,10 +1888,7 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         // Pre-extract all f64 values for SIMD processing
         let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
         for &val_bits in elems.iter() {
-            let Some(value) = coerce_real_named(_py, val_bits, "hypot") else {
-                return MoltObject::none().bits();
-            };
-            let Some(f) = coerce_to_f64(_py, value) else {
+            let Some(f) = float_as_double(_py, val_bits) else {
                 return MoltObject::none().bits();
             };
             vals.push(f);
@@ -2634,16 +2101,10 @@ pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(x_val) = coerce_real(_py, x_bits) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(y_val) = coerce_real(_py, y_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
         if x.is_nan() || y.is_nan() {
@@ -2659,10 +2120,7 @@ pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(value) = coerce_real(_py, val_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(f) = coerce_to_f64(_py, value) else {
+        let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
@@ -2679,16 +2137,10 @@ pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(x_val) = coerce_real(_py, x_bits) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(y_val) = coerce_real(_py, y_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_val) else {
-            return MoltObject::none().bits();
-        };
-        let Some(y) = coerce_to_f64(_py, y_val) else {
+        let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
         if x.is_nan() || y.is_nan() {
@@ -2736,8 +2188,7 @@ fn statistics_variance_value(
     let mean = if obj_from_bits(center_bits).is_none() {
         sum_f64_simd(&values) / n as f64
     } else {
-        let value = coerce_real_named(_py, center_bits, opname)?;
-        coerce_to_f64(_py, value)?
+        float_as_double(_py, center_bits)?
     };
     let sum_sq = sum_sq_diff_f64_simd(&values, mean);
     let denominator = if population { n as f64 } else { (n - 1) as f64 };
@@ -2830,15 +2281,13 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     unsafe {
         for &value_bits in &values {
             let current = match dict_get_in_place(_py, counts_ptr, value_bits) {
-                Some(bits) => to_i64(obj_from_bits(bits)).unwrap_or(0),
-                None => {
-                    if exception_pending(_py) {
-                        if maybe_ptr_from_bits(counts_bits).is_some() {
-                            dec_ref_bits(_py, counts_bits);
-                        }
-                        return None;
+                Ok(Some(bits)) => to_i64(obj_from_bits(bits)).unwrap_or(0),
+                Ok(None) => 0,
+                Err(()) => {
+                    if maybe_ptr_from_bits(counts_bits).is_some() {
+                        dec_ref_bits(_py, counts_bits);
                     }
-                    0
+                    return None;
                 }
             };
             let Some(next) = current.checked_add(1) else {
@@ -2847,13 +2296,12 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
                 }
                 return raise_exception::<Option<u64>>(_py, "OverflowError", "mode count overflow");
             };
-            dict_set_in_place(
+            if !dict_set_in_place(
                 _py,
                 counts_ptr,
                 value_bits,
                 MoltObject::from_int(next).bits(),
-            );
-            if exception_pending(_py) {
+            ) {
                 if maybe_ptr_from_bits(counts_bits).is_some() {
                     dec_ref_bits(_py, counts_bits);
                 }
@@ -2889,16 +2337,16 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
         for &value_bits in &values {
             let current_opt = dict_get_in_place(_py, counts_ptr, value_bits);
             let current = match current_opt {
-                Some(bits) => to_i64(obj_from_bits(bits)).unwrap_or(0),
-                None => {
-                    if exception_pending(_py) {
-                        if maybe_ptr_from_bits(counts_bits).is_some() {
-                            dec_ref_bits(_py, counts_bits);
-                        }
-                        return None;
-                    }
+                Ok(Some(bits)) => to_i64(obj_from_bits(bits)).unwrap_or(0),
+                Ok(None) => {
                     first_seen.push(value_bits);
                     0
+                }
+                Err(()) => {
+                    if maybe_ptr_from_bits(counts_bits).is_some() {
+                        dec_ref_bits(_py, counts_bits);
+                    }
+                    return None;
                 }
             };
             let Some(next) = current.checked_add(1) else {
@@ -2911,13 +2359,12 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
                     "multimode count overflow",
                 );
             };
-            dict_set_in_place(
+            if !dict_set_in_place(
                 _py,
                 counts_ptr,
                 value_bits,
                 MoltObject::from_int(next).bits(),
-            );
-            if exception_pending(_py) {
+            ) {
                 if maybe_ptr_from_bits(counts_bits).is_some() {
                     dec_ref_bits(_py, counts_bits);
                 }
@@ -2929,14 +2376,15 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
         }
         let mut out: Vec<u64> = Vec::new();
         for &value_bits in &first_seen {
-            let Some(count_bits) = dict_get_in_place(_py, counts_ptr, value_bits) else {
-                if exception_pending(_py) {
+            let count_bits = match dict_get_in_place(_py, counts_ptr, value_bits) {
+                Ok(Some(bits)) => bits,
+                Ok(None) => continue,
+                Err(()) => {
                     if maybe_ptr_from_bits(counts_bits).is_some() {
                         dec_ref_bits(_py, counts_bits);
                     }
                     return None;
                 }
-                continue;
             };
             if to_i64(obj_from_bits(count_bits)).unwrap_or(0) == max_count {
                 out.push(value_bits);
@@ -3188,16 +2636,8 @@ fn statistics_linear_regression_value(
     Some((slope, intercept))
 }
 
-fn statistics_coerce_elem_fast_f64(_py: &PyToken, val_bits: u64, name: &str) -> Option<f64> {
-    let val = obj_from_bits(val_bits);
-    if let Some(i) = val.as_int() {
-        return Some(i as f64);
-    }
-    if let Some(f) = as_float_extended(val) {
-        return Some(f);
-    }
-    let real = coerce_real_named(_py, val_bits, name)?;
-    coerce_to_f64(_py, real)
+fn statistics_coerce_elem_fast_f64(_py: &PyToken, val_bits: u64, _name: &str) -> Option<f64> {
+    float_as_double(_py, val_bits)
 }
 
 const STATISTICS_RANDOM_N: usize = 624;

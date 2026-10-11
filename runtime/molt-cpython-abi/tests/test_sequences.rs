@@ -6,6 +6,459 @@ mod support;
 
 use std::ptr;
 
+// Real native layouts exercise the public storage boundary independently of
+// the managed list hook provider below. Every item array uses PyMem custody.
+mod native_lists {
+    use super::support;
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::{
+        abstract_sequence, errors, memory, object, refcount, sequences, typeobj,
+    };
+    use refcount::OwnedPyObject;
+    use std::cell::{Cell, RefCell};
+    use std::ffi::{c_int, c_void};
+    use std::ptr;
+
+    #[repr(C)]
+    struct Item {
+        base: PyObject,
+        key: i32,
+        tag: usize,
+    }
+
+    thread_local! {
+        static DROPS: RefCell<Vec<(usize, isize, usize)>> = const { RefCell::new(Vec::new()) };
+        static DESTINATION: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        static REENTER: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        static ERROR: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        static SORT_MODE: Cell<u8> = const { Cell::new(0) };
+        static SORT_CALLS: RefCell<Vec<(usize, usize, c_int, isize)>> = const { RefCell::new(Vec::new()) };
+        static EVENTS: RefCell<Vec<(&'static str, isize)>> = const { RefCell::new(Vec::new()) };
+        static HINT: Cell<isize> = const { Cell::new(0) };
+        static NEXT: Cell<usize> = const { Cell::new(0) };
+        static VALUES: RefCell<Vec<*mut PyObject>> = const { RefCell::new(Vec::new()) };
+        static ITER_ERROR: Cell<bool> = const { Cell::new(false) };
+    }
+
+    unsafe extern "C" fn item_drop(op: *mut PyObject) {
+        unsafe {
+            let selected = errors::PyErr_GetRaisedException();
+            let destination = DESTINATION.with(Cell::get);
+            let len = if destination.is_null() {
+                -1
+            } else {
+                sequences::PyList_Size(destination)
+            };
+            DROPS.with(|events| {
+                events
+                    .borrow_mut()
+                    .push(((*op.cast::<Item>()).tag, len, selected as usize))
+            });
+            errors::PyErr_SetRaisedException(selected);
+            let added = REENTER.with(|value| value.replace(ptr::null_mut()));
+            if !added.is_null() {
+                sequences::PyList_Append(destination, added);
+            }
+            memory::PyObject_Free(op.cast());
+        }
+    }
+
+    unsafe extern "C" fn compare(
+        left: *mut PyObject,
+        right: *mut PyObject,
+        op: c_int,
+    ) -> *mut PyObject {
+        unsafe {
+            let list = DESTINATION.with(Cell::get);
+            let len = sequences::PyList_Size(list);
+            SORT_CALLS.with(|calls| {
+                calls.borrow_mut().push((
+                    (*left.cast::<Item>()).tag,
+                    (*right.cast::<Item>()).tag,
+                    op,
+                    len,
+                ))
+            });
+            let mode = SORT_MODE.with(|mode| mode.replace(0));
+            if mode != 0 {
+                let extra = REENTER.with(|value| value.replace(ptr::null_mut()));
+                if mode == 3 {
+                    let temporary = memory::PyObject_Malloc(size_of::<Item>()).cast::<Item>();
+                    if temporary.is_null() {
+                        return errors::PyErr_NoMemory();
+                    }
+                    temporary.write(Item {
+                        base: PyObject {
+                            ob_refcnt: 1,
+                            ob_type: (*left).ob_type,
+                        },
+                        key: 9,
+                        tag: 9,
+                    });
+                    let status = sequences::PyList_Append(list, temporary.cast());
+                    refcount::Py_DECREF(temporary.cast());
+                    if status < 0 {
+                        return ptr::null_mut();
+                    }
+                } else if !extra.is_null() {
+                    sequences::PyList_Append(list, extra);
+                }
+                if mode == 2 {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(ERROR.with(Cell::get)));
+                    return ptr::null_mut();
+                }
+            }
+            if op != 0 {
+                return object::Py_NewRef(&raw mut Py_NotImplementedSentinel);
+            }
+            object::Py_NewRef(
+                if (*left.cast::<Item>()).key < (*right.cast::<Item>()).key {
+                    (&raw mut _Py_TrueStruct).cast()
+                } else {
+                    (&raw mut _Py_FalseStruct).cast()
+                },
+            )
+        }
+    }
+
+    fn item_type() -> support::StaticType {
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        class.tp_name = c"NativeListItem".as_ptr();
+        class.tp_basicsize = size_of::<Item>() as isize;
+        class.tp_dealloc = Some(item_drop);
+        class.tp_richcompare = Some(compare);
+        class
+    }
+
+    unsafe fn item(class: *mut PyTypeObject, key: i32, tag: usize) -> OwnedPyObject {
+        unsafe {
+            let result = memory::PyObject_Malloc(size_of::<Item>()).cast::<Item>();
+            assert!(!result.is_null());
+            result.write(Item {
+                base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: class,
+                },
+                key,
+                tag,
+            });
+            OwnedPyObject::from_owned(result.cast())
+        }
+    }
+
+    unsafe fn list() -> OwnedPyObject {
+        unsafe {
+            let value = typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0);
+            let owner = OwnedPyObject::from_owned(value);
+            assert!(!value.is_null());
+            assert!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(value)
+                    .is_none()
+            );
+            owner
+        }
+    }
+
+    unsafe fn tags(list: *mut PyObject) -> Vec<usize> {
+        unsafe {
+            (0..sequences::PyList_Size(list))
+                .map(|index| (*sequences::PyList_GetItem(list, index).cast::<Item>()).tag)
+                .collect()
+        }
+    }
+
+    struct CallbackState;
+    impl Drop for CallbackState {
+        fn drop(&mut self) {
+            DESTINATION.with(|v| v.set(ptr::null_mut()));
+            REENTER.with(|v| v.set(ptr::null_mut()));
+            ERROR.with(|v| v.set(ptr::null_mut()));
+            VALUES.with(|v| v.borrow_mut().clear());
+        }
+    }
+
+    fn reset() {
+        DESTINATION.with(|v| v.set(ptr::null_mut()));
+        REENTER.with(|v| v.set(ptr::null_mut()));
+        ERROR.with(|v| v.set(ptr::null_mut()));
+        DROPS.with(|v| v.borrow_mut().clear());
+        SORT_CALLS.with(|v| v.borrow_mut().clear());
+        EVENTS.with(|v| v.borrow_mut().clear());
+        VALUES.with(|v| v.borrow_mut().clear());
+        NEXT.with(|v| v.set(0));
+        ITER_ERROR.with(|v| v.set(false));
+    }
+
+    #[test]
+    fn native_list_mutators_publish_identity_and_honor_stolen_references() {
+        let _test = super::init();
+        reset();
+        unsafe {
+            let class = item_type();
+            let a = item(class.as_ptr(), 3, 1);
+            let b = item(class.as_ptr(), 2, 2);
+            let c = item(class.as_ptr(), 1, 3);
+            let list = list();
+            let _callback_state = CallbackState;
+            assert_eq!(sequences::PyList_Append(list.as_ptr(), a.as_ptr()), 0);
+            assert_eq!((*a.as_ptr()).ob_refcnt, 2);
+            assert_eq!(sequences::PyList_Insert(list.as_ptr(), -99, b.as_ptr()), 0);
+            assert_eq!(sequences::PyList_Insert(list.as_ptr(), 99, c.as_ptr()), 0);
+            assert_eq!(tags(list.as_ptr()), [2, 1, 3]);
+            assert_eq!(sequences::PyList_Reverse(list.as_ptr()), 0);
+            assert_eq!(tags(list.as_ptr()), [3, 1, 2]);
+            assert_eq!(
+                sequences::PyList_SetItem(list.as_ptr(), 1, object::Py_NewRef(c.as_ptr())),
+                0
+            );
+            assert_eq!((*a.as_ptr()).ob_refcnt, 1);
+            assert_eq!(tags(list.as_ptr()), [3, 3, 2]);
+            let previous_refs = (*c.as_ptr()).ob_refcnt;
+            sequences::PyList_SET_ITEM(list.as_ptr(), 1, object::Py_NewRef(a.as_ptr()));
+            assert_eq!(
+                (*c.as_ptr()).ob_refcnt,
+                previous_refs,
+                "construction macro deliberately does not release its displaced edge"
+            );
+            refcount::Py_DECREF(c.as_ptr()); // caller reclaims that deliberately displaced edge
+            assert_eq!(tags(list.as_ptr()), [3, 1, 2]);
+            let doomed = item(class.as_ptr(), 0, 4);
+            DESTINATION.with(|v| v.set(list.as_ptr()));
+            assert_eq!(
+                sequences::PyList_SetItem(list.as_ptr(), 8, doomed.into_ptr()),
+                -1
+            );
+            assert_eq!(
+                DROPS.with(|v| v.borrow().clone()),
+                [(4, 3, 0)],
+                "stolen input retires before IndexError is selected"
+            );
+            assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_IndexError).cast());
+            errors::PyErr_Clear();
+            assert_eq!(tags(list.as_ptr()), [3, 1, 2]);
+            assert_eq!(sequences::PyList_Clear(list.as_ptr()), 0);
+            assert_eq!((*a.as_ptr()).ob_refcnt, 1);
+            assert_eq!((*b.as_ptr()).ob_refcnt, 1);
+            assert_eq!((*c.as_ptr()).ob_refcnt, 1);
+            DESTINATION.with(|v| v.set(ptr::null_mut()));
+        }
+    }
+
+    #[test]
+    fn native_slice_extend_and_repeat_keep_aliases_and_failure_atomicity() {
+        let _test = super::init();
+        reset();
+        unsafe {
+            let class = item_type();
+            let values: Vec<_> = (1..=4)
+                .map(|tag| item(class.as_ptr(), tag as i32, tag))
+                .collect();
+            let list = list();
+            let _callback_state = CallbackState;
+            for value in &values {
+                assert_eq!(sequences::PyList_Append(list.as_ptr(), value.as_ptr()), 0);
+            }
+            assert_eq!(
+                sequences::PyList_SetSlice(list.as_ptr(), 1, 3, list.as_ptr()),
+                0
+            );
+            assert_eq!(tags(list.as_ptr()), [1, 1, 2, 3, 4, 4]);
+            assert_eq!(
+                sequences::PyList_SetSlice(list.as_ptr(), -8, 3, ptr::null_mut()),
+                0
+            );
+            assert_eq!(tags(list.as_ptr()), [3, 4, 4]);
+            assert_eq!(sequences::PyList_Extend(list.as_ptr(), list.as_ptr()), 0);
+            assert_eq!(tags(list.as_ptr()), [3, 4, 4, 3, 4, 4]);
+            let pointer = (*list.as_ptr().cast::<PyListObject>()).ob_item;
+            let capacity = (*list.as_ptr().cast::<PyListObject>()).allocated;
+            assert!(
+                abstract_sequence::PySequence_InPlaceRepeat(list.as_ptr(), isize::MAX).is_null()
+            );
+            assert_eq!(
+                errors::PyErr_Occurred(),
+                (&raw mut PyExc_MemoryError).cast()
+            );
+            errors::PyErr_Clear();
+            assert_eq!((*list.as_ptr().cast::<PyListObject>()).ob_item, pointer);
+            assert_eq!((*list.as_ptr().cast::<PyListObject>()).allocated, capacity);
+            assert_eq!(tags(list.as_ptr()), [3, 4, 4, 3, 4, 4]);
+            let repeated = OwnedPyObject::from_owned(abstract_sequence::PySequence_InPlaceRepeat(
+                list.as_ptr(),
+                2,
+            ));
+            assert_eq!(repeated.as_ptr(), list.as_ptr());
+            assert_eq!(tags(list.as_ptr()), [3, 4, 4, 3, 4, 4, 3, 4, 4, 3, 4, 4]);
+            drop(repeated);
+            assert_eq!(sequences::PyList_Clear(list.as_ptr()), 0);
+            assert!(values.iter().all(|value| (*value.as_ptr()).ob_refcnt == 1));
+        }
+    }
+
+    unsafe extern "C" fn get_iter(op: *mut PyObject) -> *mut PyObject {
+        EVENTS.with(|v| v.borrow_mut().push(("iter", 0)));
+        unsafe { object::Py_NewRef(op) }
+    }
+    unsafe extern "C" fn length(_: *mut PyObject) -> isize {
+        EVENTS.with(|v| v.borrow_mut().push(("hint", 0)));
+        HINT.with(Cell::get)
+    }
+    unsafe extern "C" fn next(_: *mut PyObject) -> *mut PyObject {
+        unsafe {
+            let len = sequences::PyList_Size(DESTINATION.with(Cell::get));
+            EVENTS.with(|v| v.borrow_mut().push(("next", len)));
+            let index = NEXT.with(|v| {
+                let n = v.get();
+                v.set(n + 1);
+                n
+            });
+            let value = VALUES.with(|v| v.borrow().get(index).copied());
+            if let Some(value) = value {
+                return object::Py_NewRef(value);
+            }
+            if ITER_ERROR.with(Cell::get) {
+                errors::PyErr_SetRaisedException(object::Py_NewRef(ERROR.with(Cell::get)));
+            }
+            ptr::null_mut()
+        }
+    }
+
+    #[test]
+    fn native_extend_observes_hint_before_iteration_and_keeps_failing_prefix() {
+        let _test = super::init();
+        reset();
+        unsafe {
+            let items = item_type();
+            let a = item(items.as_ptr(), 1, 1);
+            let b = item(items.as_ptr(), 2, 2);
+            let mut slots: PySequenceMethods = std::mem::zeroed();
+            slots.sq_length = length as *mut c_void;
+            let mut class = support::StaticType::new();
+            class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            class.tp_name = c"NativeListSource".as_ptr();
+            class.tp_iter = Some(get_iter);
+            class.tp_iternext = Some(next);
+            class.tp_as_sequence = (&raw mut slots).cast();
+            let mut iterator = PyObject {
+                ob_refcnt: 1,
+                ob_type: class.as_ptr(),
+            };
+            let list = list();
+            let _callback_state = CallbackState;
+            DESTINATION.with(|v| v.set(list.as_ptr()));
+            VALUES.with(|v| v.borrow_mut().extend([a.as_ptr(), b.as_ptr()]));
+            HINT.with(|v| v.set(isize::MAX));
+            assert_eq!(
+                sequences::PyList_Extend(list.as_ptr(), &raw mut iterator),
+                -1
+            );
+            assert_eq!(
+                errors::PyErr_Occurred(),
+                (&raw mut PyExc_MemoryError).cast()
+            );
+            errors::PyErr_Clear();
+            assert_eq!(
+                EVENTS.with(|v| v.borrow().clone()),
+                [("iter", 0), ("hint", 0)]
+            );
+            assert_eq!(sequences::PyList_Size(list.as_ptr()), 0);
+            assert_eq!(iterator.ob_refcnt, 1);
+            EVENTS.with(|v| v.borrow_mut().clear());
+            HINT.with(|v| v.set(8));
+            errors::PyErr_SetString(
+                (&raw mut PyExc_LookupError).cast(),
+                c"exact iterator failure".as_ptr(),
+            );
+            let failure = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!failure.as_ptr().is_null());
+            ERROR.with(|v| v.set(failure.as_ptr()));
+            ITER_ERROR.with(|v| v.set(true));
+            assert_eq!(
+                sequences::PyList_Extend(list.as_ptr(), &raw mut iterator),
+                -1
+            );
+            let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(selected.as_ptr(), failure.as_ptr());
+            assert_eq!(tags(list.as_ptr()), [1, 2]);
+            assert_eq!(
+                EVENTS.with(|v| v.borrow().clone()),
+                [
+                    ("iter", 0),
+                    ("hint", 0),
+                    ("next", 0),
+                    ("next", 1),
+                    ("next", 2)
+                ]
+            );
+            assert_eq!(iterator.ob_refcnt, 1);
+            DESTINATION.with(|v| v.set(ptr::null_mut()));
+            VALUES.with(|v| v.borrow_mut().clear());
+            ERROR.with(|v| v.set(ptr::null_mut()));
+        }
+    }
+
+    #[test]
+    fn native_sort_uses_less_only_restores_permutation_and_prioritizes_comparison_failure() {
+        let _test = super::init();
+        reset();
+        unsafe {
+            let class = item_type();
+            let values: Vec<_> = [(2, 1), (1, 2), (2, 3), (1, 4)]
+                .into_iter()
+                .map(|(key, tag)| item(class.as_ptr(), key, tag))
+                .collect();
+            let extra = item(class.as_ptr(), 9, 9);
+            let list = list();
+            let _callback_state = CallbackState;
+            DESTINATION.with(|v| v.set(list.as_ptr()));
+            for value in &values {
+                assert_eq!(sequences::PyList_Append(list.as_ptr(), value.as_ptr()), 0);
+            }
+            assert_eq!(sequences::PyList_Sort(list.as_ptr()), 0);
+            assert_eq!(tags(list.as_ptr()), [2, 4, 1, 3]);
+            assert!(SORT_CALLS.with(|v| {
+                v.borrow()
+                    .iter()
+                    .all(|&(_, _, op, len)| op == 0 && len == 0)
+            }));
+            for mode in [1, 2, 3] {
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_LookupError).cast(),
+                    c"sort compare failure".as_ptr(),
+                );
+                let failure = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!failure.as_ptr().is_null());
+                ERROR.with(|v| v.set(failure.as_ptr()));
+                SORT_MODE.with(|v| v.set(mode));
+                REENTER.with(|v| v.set(extra.as_ptr()));
+                assert_eq!(sequences::PyList_Sort(list.as_ptr()), -1);
+                if mode == 2 {
+                    let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(selected.as_ptr(), failure.as_ptr());
+                } else {
+                    assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_ValueError).cast());
+                    let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    if mode == 3 {
+                        assert_eq!(
+                            DROPS.with(|v| v.borrow().last().copied()),
+                            Some((9, 4, selected.as_ptr() as usize)),
+                            "sort restores its original storage before retiring callback additions under ValueError"
+                        );
+                    }
+                }
+                let mut actual = tags(list.as_ptr());
+                actual.sort_unstable();
+                assert_eq!(actual, [1, 2, 3, 4]);
+                assert_eq!((*extra.as_ptr()).ob_refcnt, 1);
+            }
+            DESTINATION.with(|v| v.set(ptr::null_mut()));
+            ERROR.with(|v| v.set(ptr::null_mut()));
+        }
+    }
+}
+
 fn init() -> support::AbiTestThreadStateTransaction {
     support::enter_abi_test(support::stub_runtime_hooks())
 }

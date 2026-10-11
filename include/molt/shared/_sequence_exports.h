@@ -27,6 +27,8 @@ extern PyObject **PySequence_Fast_ITEMS(PyObject *obj);
 
 extern int PyList_Append (PyObject *list, PyObject *item);
 extern PyObject *PyList_AsTuple (PyObject *op);
+extern int PyList_Clear(PyObject *list);
+extern int PyList_Extend(PyObject *list, PyObject *iterable);
 extern int PyList_Check (PyObject *op);
 extern int PyList_CheckExact(PyObject *op);
 extern PyObject *PyList_GetItem (PyObject *op, Py_ssize_t i);
@@ -88,6 +90,8 @@ PyAPI_DATA(PyTypeObject) PyTuple_Type;
 #define PySequence_Fast_ITEMS ((PyObject **(*)(PyObject *))_molt_host_abi_symbol("PySequence_Fast_ITEMS"))
 #define PyList_Append ((int (*)(PyObject *, PyObject *))_molt_host_abi_symbol("PyList_Append"))
 #define PyList_AsTuple ((PyObject * (*)(PyObject *))_molt_host_abi_symbol("PyList_AsTuple"))
+#define PyList_Clear ((int (*)(PyObject *))_molt_host_abi_symbol("PyList_Clear"))
+#define PyList_Extend ((int (*)(PyObject *, PyObject *))_molt_host_abi_symbol("PyList_Extend"))
 #define PyList_Check ((int (*)(PyObject *))_molt_host_abi_symbol("PyList_Check"))
 #define PyList_CheckExact ((int (*)(PyObject *))_molt_host_abi_symbol("PyList_CheckExact"))
 #define PyList_GetItem ((PyObject * (*)(PyObject *, Py_ssize_t))_molt_host_abi_symbol("PyList_GetItem"))

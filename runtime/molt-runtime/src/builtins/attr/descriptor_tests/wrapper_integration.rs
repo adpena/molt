@@ -93,6 +93,7 @@ fn descriptor_invocation_keeps_tagged_owner_without_pointer_roundtrip() {
                     Some(owner),
                     Some(MoltObject::from_int(9).bits()),
                 )
+                .expect("operation succeeds")
             }
             .expect("custom descriptor binding");
             assert!(!exception_pending(py));
@@ -129,8 +130,10 @@ fn wrapper_descriptors_have_real_flavor_identity_and_shared_metadata() {
         ] {
             let name_bits = string_bits(py, name);
             let class_ptr = obj_from_bits(owner).as_ptr().unwrap();
-            let descriptor = unsafe { class_attr_lookup_raw_mro(py, class_ptr, name_bits) }
-                .expect("real descriptor in class namespace");
+            let descriptor = unsafe {
+                class_attr_lookup_raw_mro(py, class_ptr, name_bits).expect("operation succeeds")
+            }
+            .expect("real descriptor in class namespace");
             inc_ref_bits(py, descriptor);
             assert_eq!(type_of_bits(py, descriptor), expected_class);
             for (attribute, expected) in [
@@ -158,6 +161,7 @@ fn wrapper_descriptors_have_real_flavor_identity_and_shared_metadata() {
                     Some(MoltObject::from_ptr(class_ptr).bits()),
                     None,
                 )
+                .expect("operation succeeds")
             }
             .unwrap();
             assert_eq!(class_access, descriptor);
@@ -185,7 +189,9 @@ fn property_member_binding_reads_storage_and_rejects_mutation() {
         let owner = obj_from_bits(builtin_classes(py).property)
             .as_ptr()
             .unwrap();
-        let descriptor = unsafe { class_attr_lookup_raw_mro(py, owner, name) }.unwrap();
+        let descriptor =
+            unsafe { class_attr_lookup_raw_mro(py, owner, name).expect("operation succeeds") }
+                .unwrap();
         let result = crate::molt_get_attr_name(property, name);
         assert!(!exception_pending(py));
         assert_eq!(result, getter);

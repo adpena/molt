@@ -9,6 +9,8 @@ SimpleTIRGenerator MRO via self.<method>.
 
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import integer_literal_bytes
+
 import ast
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
@@ -395,7 +397,11 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 # be unboxed as inline ints in the fast arithmetic path.
                 res = MoltValue(self.next_var(), type_hint="bigint")
                 self.emit(
-                    MoltOp(kind="CONST_BIGINT", args=[str(node.value)], result=res)
+                    MoltOp(
+                        kind="CONST_BIGINT",
+                        args=[integer_literal_bytes(node.value)],
+                        result=res,
+                    )
                 )
             return res
         if isinstance(node.value, bytes):

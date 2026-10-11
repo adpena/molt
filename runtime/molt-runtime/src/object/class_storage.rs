@@ -1143,7 +1143,7 @@ mod tests {
                     assert_eq!(dictionary == namespace, !is_static);
                     let namespace_ptr = crate::obj_from_bits(namespace).as_ptr().unwrap();
                     assert_eq!(
-                        crate::dict_get_in_place(py, namespace_ptr, key),
+                        crate::dict_get_in_place(py, namespace_ptr, key).unwrap(),
                         (!is_static).then_some(value)
                     );
                     let result = crate::molt_object_getattribute(owner, key);

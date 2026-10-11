@@ -274,9 +274,11 @@ pub(crate) unsafe fn construct_exception_from_args(
 
         let new_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-        let (inst_bits, initialized_by_default_new) = if let Some(new_bits) =
-            class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)
-        {
+        let new = match class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let (inst_bits, initialized_by_default_new) = if let Some(new_bits) = new {
             let default_new =
                 callable_matches_runtime_symbol(Some(new_bits), fn_key!(molt_exception_new_bound));
             let result = if default_new {
@@ -300,6 +302,7 @@ pub(crate) unsafe fn construct_exception_from_args(
                 }
             };
             if exception_pending(_py) {
+                dec_ref_bits(_py, result);
                 return MoltObject::none().bits();
             }
             if !isinstance_bits(_py, result, class_bits) {
@@ -325,11 +328,15 @@ pub(crate) unsafe fn construct_exception_from_args(
         };
         let init_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-        let Some(init_bits) =
-            class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
-        else {
-            return inst_bits;
-        };
+        let init_bits =
+            match class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits) {
+                Ok(Some(value)) => value,
+                Ok(None) => return inst_bits,
+                Err(()) => {
+                    dec_ref_bits(_py, inst_bits);
+                    return MoltObject::none().bits();
+                }
+            };
         let tuple_init =
             callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init))
                 || callable_matches_runtime_symbol(
@@ -530,10 +537,10 @@ pub(crate) unsafe fn construct_regular_class(
         let class_bits = MoltObject::from_ptr(class).bits();
         let new_name = intern_static_name(py, &runtime_state(py).interned.new_name, b"__new__");
         let init_name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
-        let new = class_attr_lookup_raw_mro(py, class, new_name);
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
+        let new = match class_attr_lookup_raw_mro(py, class, new_name) {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let _new_owner = new.and_then(|bits| {
             obj_from_bits(bits).as_ptr().map(|ptr| {
                 inc_ref_bits(py, bits);
@@ -548,7 +555,10 @@ pub(crate) unsafe fn construct_regular_class(
                 }
             }
             _ => {
-                let init = class_attr_lookup_raw_mro(py, class, init_name);
+                let init = match class_attr_lookup_raw_mro(py, class, init_name) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if resolved_constructor_init_policy(new, init)
                     == InitArgPolicy::RejectConstructorArgs
                     && (!arguments.positional().is_empty() || arguments.keyword_count() != 0)
@@ -573,15 +583,23 @@ pub(crate) unsafe fn construct_regular_class(
         let actual = obj_from_bits(actual_bits)
             .as_ptr()
             .expect("instance type is a class");
-        let raw_init = class_attr_lookup_raw_mro(py, actual, init_name);
-        if exception_pending(py) {
-            dec_ref_bits(py, instance);
-            return MoltObject::none().bits();
-        }
+        let raw_init = match class_attr_lookup_raw_mro(py, actual, init_name) {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(py, instance);
+                return MoltObject::none().bits();
+            }
+        };
         let Some(raw_init) = raw_init else {
             return instance;
         };
-        let actual_new = class_attr_lookup_raw_mro(py, actual, new_name);
+        let actual_new = match class_attr_lookup_raw_mro(py, actual, new_name) {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(py, instance);
+                return MoltObject::none().bits();
+            }
+        };
         match resolved_constructor_init_policy(actual_new, Some(raw_init)) {
             InitArgPolicy::RejectConstructorArgs
                 if !arguments.positional().is_empty() || arguments.keyword_count() != 0 =>
@@ -601,13 +619,13 @@ pub(crate) unsafe fn construct_regular_class(
         let Some(instance_ptr) = obj_from_bits(instance).as_ptr() else {
             return instance;
         };
-        let Some(init) = class_attr_lookup(py, actual, actual, Some(instance_ptr), init_name)
-        else {
-            if exception_pending(py) {
+        let init = match class_attr_lookup(py, actual, actual, Some(instance_ptr), init_name) {
+            Ok(Some(value)) => value,
+            Ok(None) => return instance,
+            Err(()) => {
                 dec_ref_bits(py, instance);
                 return MoltObject::none().bits();
             }
-            return instance;
         };
         let result = match arguments.constructor_child(None, arguments.positional()) {
             Ok(child) => crate::call::bind::call_bind_with_arguments(py, init, child),
@@ -694,17 +712,22 @@ pub(crate) unsafe fn function_attr_bits(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         if let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr()
             && object_type_id(attr_ptr) == TYPE_ID_STRING
         {
             let name = std::slice::from_raw_parts(string_bytes(attr_ptr), string_len(attr_ptr));
             if crate::object::function_metadata::FunctionMetadataField::from_name(name).is_some() {
-                return crate::object::function_metadata::metadata_bits(func_ptr, name);
+                return Ok(crate::object::function_metadata::metadata_bits(
+                    func_ptr, name,
+                ));
             }
         }
-        let dictionary = crate::object::field_storage::current_dictionary(_py, func_ptr).ok()??;
+        let Some(dictionary) = crate::object::field_storage::current_dictionary(_py, func_ptr)?
+        else {
+            return Ok(None);
+        };
         dict_get_in_place(_py, obj_from_bits(dictionary).as_ptr().unwrap(), attr_bits)
     }
 }
@@ -729,7 +752,7 @@ pub(crate) unsafe fn function_set_attr_bits(
                     false,
                 );
                 drop(publication);
-                !exception_pending(_py)
+                true
             }
             Err(()) => false,
         }
@@ -758,9 +781,6 @@ pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
     val_bits: u64,
 ) -> Result<FunctionMetadataPublication<'a, 'py>, ()> {
     unsafe {
-        if exception_pending(_py) {
-            return Err(());
-        }
         if obj_from_bits(attr_bits)
             .as_ptr()
             .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_STRING)
@@ -796,9 +816,6 @@ pub(crate) unsafe fn function_set_attr_name(
     value: u64,
 ) -> bool {
     unsafe {
-        if exception_pending(py) {
-            return false;
-        }
         let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
             if !exception_pending(py) {
                 raise_exception::<u64>(
@@ -911,7 +928,7 @@ mod tests {
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();
                 let key = attr_name_bits_from_bytes(py, b"corrupt_read").unwrap();
-                assert!(crate::builtins::attributes::attr_lookup_ptr(py, function, key).is_none());
+                assert!(crate::builtins::attributes::attr_lookup_ptr(py, function, key).is_err());
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();

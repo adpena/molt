@@ -157,7 +157,7 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 
 unsafe extern "C" {
     fn __molt_logging_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
-    fn __molt_logging_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64;
+    fn __molt_logging_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64, out: *mut u64) -> i32;
     fn __molt_logging_call_callable1(call_bits: u64, arg0: u64) -> u64;
 }
 
@@ -166,7 +166,7 @@ pub fn intern_static_name(_py: &CoreGilToken, name: &[u8]) -> u64 {
     unsafe { __molt_logging_intern_static_name(name.as_ptr(), name.len()) }
 }
 
-/// Look up an attribute on a pointer-backed object, returning Some(bits) or None.
+/// Look up an attribute, distinguishing an owned hit, absence, and failure.
 ///
 /// # Safety
 ///
@@ -176,9 +176,13 @@ pub unsafe fn attr_lookup_ptr_allow_missing(
     _py: &CoreGilToken,
     ptr: *mut u8,
     name_bits: u64,
-) -> Option<u64> {
-    let result = unsafe { __molt_logging_attr_lookup_ptr_allow_missing(ptr, name_bits) };
-    if result == 0 { None } else { Some(result) }
+) -> Result<Option<u64>, ()> {
+    let mut out = 0;
+    match unsafe { __molt_logging_attr_lookup_ptr_allow_missing(ptr, name_bits, &mut out) } {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        _ => Err(()),
+    }
 }
 
 /// Call a callable with one argument. Returns the result bits.

@@ -289,7 +289,11 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
                         let _ = is_final; // stateless encodings: no pending
                         let ptr = alloc_bytes(_py, &bytes);
                         if ptr.is_null() {
-                            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "failed to allocate bytes",
+                            );
                         }
                         MoltObject::from_ptr(ptr).bits()
                     }
@@ -1039,7 +1043,10 @@ pub extern "C" fn molt_codecs_charmap_decode(
         let mut out = Vec::with_capacity(input_vec.len());
         for (pos, &b) in input_vec.iter().enumerate() {
             let key_bits = MoltObject::from_int(b as i64).bits();
-            let mapped = unsafe { crate::dict_get_in_place(_py, map_ptr, key_bits) };
+            let mapped = match unsafe { crate::dict_get_in_place(_py, map_ptr, key_bits) } {
+                Ok(mapped) => mapped,
+                Err(()) => return MoltObject::none().bits(),
+            };
             match mapped {
                 Some(val) => {
                     let val_obj = obj_from_bits(val);
@@ -1176,7 +1183,9 @@ fn charmap_lookup_encode_char(
     code: u32,
 ) -> Result<bool, u64> {
     let key = MoltObject::from_int(code as i64).bits();
-    let Some(value_bits) = (unsafe { crate::dict_get_in_place(_py, map_ptr, key) }) else {
+    let Some(value_bits) = (unsafe { crate::dict_get_in_place(_py, map_ptr, key) })
+        .map_err(|()| MoltObject::none().bits())?
+    else {
         return Ok(false);
     };
     charmap_append_encode_value(_py, out, value_bits)
@@ -1230,7 +1239,8 @@ pub extern "C" fn molt_codecs_charmap_encode(
                 crate::object::ops_format::with_string_bytes(input_obj, |bytes| {
                     encode_string_with_errors(bytes, "latin-1", Some(&errors)).map(|encoded| {
                         let consumed = crate::object::ops_string::wtf8_from_bytes(bytes)
-                            .code_points().count();
+                            .code_points()
+                            .count();
                         (encoded, consumed)
                     })
                 })

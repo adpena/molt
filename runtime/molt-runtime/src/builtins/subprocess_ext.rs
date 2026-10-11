@@ -139,7 +139,7 @@ fn build_command(
             Ok(p) => {
                 cmd.current_dir(p);
             }
-            Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+            Err(error) => return Err(error),
         }
     }
 

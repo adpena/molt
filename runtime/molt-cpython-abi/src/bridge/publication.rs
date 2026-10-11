@@ -1651,19 +1651,12 @@ impl ObjectBridge {
         result: crate::hooks::OwnedHandleResult,
     ) -> *mut PyObject {
         match result.decode() {
-            crate::hooks::DecodedHandleResult::Ok(bits) => {
-                if crate::api::errors::raised_error_pending() {
-                    unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-                    unsafe {
-                        crate::api::errors::replace_current_with_system_error(
-                            "runtime owned-result hook returned a value with an exception set",
-                        )
-                    };
-                    std::ptr::null_mut()
-                } else {
-                    unsafe { self.owned_handle_to_pyobj(bits) }
-                }
-            }
+            // Completion is explicit in the hook result. A direct operation
+            // may succeed while an admitted error remains visible; callable
+            // entry points apply their stricter result contract themselves.
+            crate::hooks::DecodedHandleResult::Ok(bits) => unsafe {
+                self.owned_handle_to_pyobj(bits)
+            },
             crate::hooks::DecodedHandleResult::Missing => {
                 let _ = crate::api::errors::transfer_runtime_pending_to_current();
                 std::ptr::null_mut()

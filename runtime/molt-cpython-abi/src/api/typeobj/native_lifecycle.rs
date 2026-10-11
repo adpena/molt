@@ -73,7 +73,7 @@ impl NativeDeallocation {
         Some(Self { object })
     }
 
-    /// The caller has published every owned field empty before any release.
+    /// The caller has completed its payload's terminal release protocol.
     /// Retire collector identity even when the extension supplies its own free.
     pub(crate) unsafe fn finish(self) {
         unsafe {
@@ -86,6 +86,20 @@ impl NativeDeallocation {
             } else {
                 memory::PyObject_Free
             });
+            self.finish_with_free(free);
+        }
+    }
+
+    /// Builtins whose versioned ABI selects GC storage release directly still
+    /// retire through the same collector and physical-identity authority.
+    pub(crate) unsafe fn finish_gc(self) {
+        unsafe { self.finish_with_free(memory::PyObject_GC_Del) };
+    }
+
+    unsafe fn finish_with_free(self, free: unsafe extern "C" fn(*mut c_void)) {
+        unsafe {
+            let type_ = (*self.object).ob_type;
+            let gc = (*type_).tp_flags & Py_TPFLAGS_HAVE_GC != 0;
             if !ptr::fn_addr_eq(
                 free,
                 memory::PyObject_GC_Del as unsafe extern "C" fn(*mut c_void),
@@ -180,7 +194,6 @@ pub(crate) unsafe fn gc_uses_managed_storage(type_: *mut PyTypeObject) -> bool {
         if !traversal.is_null()
             && (*traversal).tp_traverse.is_some_and(|slot| {
                 ptr::fn_addr_eq(slot, memory::molt_managed_gc_traverse as Traverse)
-                    || ptr::fn_addr_eq(slot, memory::molt_list_gc_traverse as Traverse)
             })
         {
             return true;

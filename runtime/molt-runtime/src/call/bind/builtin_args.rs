@@ -625,10 +625,10 @@ unsafe fn bind_builtin_object_constructor(
         type_of_bits(py, receiver)
     };
     if args.pos.len() > 1 || !args.kw_names.is_empty() {
-        let allowed = unsafe { object_constructor_extra_args_allowed(py, class, call) };
-        if exception_pending(py) {
-            return None;
-        }
+        let allowed = match unsafe { object_constructor_extra_args_allowed(py, class, call) } {
+            Ok(allowed) => allowed,
+            Err(()) => return None,
+        };
         if !allowed {
             return raise_exception(
                 py,
@@ -675,7 +675,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
         // This handles user-defined functions with keyword default arguments
         // that end up in the builtin bind path (e.g. on WASM when
         // __molt_arg_names__ is not found on the function object).
-        let defaults_bits = function_attr_bits(
+        let defaults_bits = match function_attr_bits(
             _py,
             func_ptr,
             intern_static_name(
@@ -683,7 +683,10 @@ pub(super) unsafe fn bind_positional_builtin_call(
                 &runtime_state(_py).interned.defaults_name,
                 b"__defaults__",
             ),
-        );
+        ) {
+            Ok(value) => value,
+            Err(()) => return None,
+        };
         if let Some(dbits) = defaults_bits
             && !obj_from_bits(dbits).is_none()
             && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
@@ -786,17 +789,16 @@ unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_
         if positional == 1 {
             let other_bits = args.pos[1];
             let dict_obj = obj_from_bits(dict_bits);
-            if let Some(dict_ptr) = dict_obj.as_ptr() {
+            let complete = if let Some(dict_ptr) = dict_obj.as_ptr() {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, other_bits);
+                    dict_update_apply(_py, dict_bits, dict_update_set_in_place, other_bits)
                 } else {
-                    let _ =
-                        dict_update_apply(_py, dict_bits, dict_update_set_via_store, other_bits);
+                    dict_update_apply(_py, dict_bits, dict_update_set_via_store, other_bits)
                 }
             } else {
-                let _ = dict_update_apply(_py, dict_bits, dict_update_set_via_store, other_bits);
-            }
-            if exception_pending(_py) {
+                dict_update_apply(_py, dict_bits, dict_update_set_via_store, other_bits)
+            };
+            if !complete {
                 return MoltObject::none().bits();
             }
         }
@@ -814,8 +816,7 @@ unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_
                 if object_type_id(name_ptr) != TYPE_ID_STRING {
                     return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
                 }
-                dict_update_set_via_store(_py, dict_bits, name_bits, val_bits);
-                if exception_pending(_py) {
+                if !dict_update_set_via_store(_py, dict_bits, name_bits, val_bits) {
                     return MoltObject::none().bits();
                 }
             }
@@ -1396,7 +1397,7 @@ unsafe fn bind_builtin_list_pop(
     }
     let mut out = args.pos.to_vec();
     if out.len() == 1 {
-        out.push(MoltObject::none().bits());
+        out.push(MoltObject::from_int(-1).bits());
     }
     Some(out)
 }

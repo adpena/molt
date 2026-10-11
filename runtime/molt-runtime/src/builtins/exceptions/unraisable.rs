@@ -454,9 +454,9 @@ fn set_class_attr(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, value_bits:
         return false;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    unsafe { dict_set_in_place(_py, dict_ptr, name_bits, value_bits) };
+    let stored = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, value_bits) };
     dec_ref_bits(_py, name_bits);
-    !exception_pending(_py)
+    stored
 }
 
 fn init_class_edge(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) -> bool {
@@ -1094,8 +1094,10 @@ mod tests {
         let name_ptr = alloc_string(_py, name.as_bytes());
         assert!(!name_ptr.is_null(), "attribute name allocation");
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let value = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) }
-            .unwrap_or_else(|| panic!("missing class attribute {name}"));
+        let value = unsafe {
+            dict_get_in_place(_py, dict_ptr, name_bits).expect("dictionary lookup succeeds")
+        }
+        .unwrap_or_else(|| panic!("missing class attribute {name}"));
         dec_ref_bits(_py, name_bits);
         value
     }

@@ -3050,8 +3050,8 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "ConstInt": {"opcode": "ConstInt", "key": "i64_attr", "attrs": ["value"]},
         "ConstBigInt": {
             "opcode": "ConstBigInt",
-            "key": "str_attr",
-            "attrs": ["s_value"],
+            "key": "bytes_attr",
+            "attrs": ["bytes"],
         },
         "ConstBool": {"opcode": "ConstBool", "key": "bool_attr", "attrs": ["value"]},
         "ConstNone": {"opcode": "ConstNone", "key": "none_singleton"},
@@ -3118,7 +3118,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
     assert "pub struct GvnValueKeySpec" in rendered
     expected_key_variants = {
         "ConstInt": "I64Attr",
-        "ConstBigInt": "StrAttr",
+        "ConstBigInt": "BytesAttr",
         "ConstBool": "BoolAttr",
         "ConstNone": "NoneSingleton",
         "ConstFloat": "F64BitsAttr",
@@ -3128,7 +3128,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
     }
     expected_attr_consts = {
         "ConstInt": 'const GVN_VALUE_KEY_ATTRS_CONST_INT: &[&str] = &["value"];',
-        "ConstBigInt": 'const GVN_VALUE_KEY_ATTRS_CONST_BIG_INT: &[&str] = &["s_value"];',
+        "ConstBigInt": 'const GVN_VALUE_KEY_ATTRS_CONST_BIG_INT: &[&str] = &["bytes"];',
         "ConstBool": 'const GVN_VALUE_KEY_ATTRS_CONST_BOOL: &[&str] = &["value"];',
         "ConstNone": "const GVN_VALUE_KEY_ATTRS_CONST_NONE: &[&str] = &[];",
         "ConstFloat": (
@@ -4688,7 +4688,7 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
         "ConstBool": "bool",
         "ConstStr": "string",
         "ConstBytes": "bytes",
-        "ConstBigInt": "bigint_decimal",
+        "ConstBigInt": "bigint_bytes",
     }
     expected_domains = {
         "Add": "numeric",
@@ -4736,7 +4736,7 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
         "bool": "LiteralPayloadKind::Bool",
         "string": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::String)",
         "bytes": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::Bytes)",
-        "bigint_decimal": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::BigintDecimal)",
+        "bigint_bytes": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::BigintBytes)",
     }
     for opcode, literal in expected_literals.items():
         arm = literal_block.split(f"OpCode::{opcode} =>", 1)[1].split("OpCode::", 1)[0]

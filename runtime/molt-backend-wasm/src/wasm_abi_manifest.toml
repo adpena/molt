@@ -2523,7 +2523,7 @@ runtime_name = "molt_ascii_from_obj"
 callable_arity = 1
 
 [[import]]
-name = "bigint_from_str"
+name = "bigint_from_bytes"
 return_contract = "owned_object"
 type = 16
 
@@ -7948,7 +7948,7 @@ lir_fast = "materialize"
 
 [[const_op_policy]]
 kind = "const_bigint"
-materializer_import = "bigint_from_str"
+materializer_import = "bigint_from_bytes"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"

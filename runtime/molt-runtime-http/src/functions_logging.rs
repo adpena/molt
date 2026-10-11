@@ -2,24 +2,23 @@ use std::collections::HashMap;
 
 use molt_obj_model::MoltObject;
 
-use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::{OwnedRuntimeValue, obj_from_bits};
 
 use crate::bridge::{
     alloc_string, alloc_string_bits, attr_name_bits_from_bytes, attr_optional, builtin_classes,
     call_callable0, call_callable1, call_class_init_with_args, clear_exception, dec_ref_bits,
-    dict_get_in_place, exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin,
-    object_type_id, raise_exception, resolve_global_bits, seq_snapshot, string_obj_to_owned,
-    to_f64, to_i64,
+    dict_get_in_place, exception_pending, missing_bits, molt_getattr_builtin, object_type_id,
+    raise_exception, resolve_global_bits, seq_snapshot, string_obj_to_owned, to_f64, to_i64,
 };
 
 fn logging_percent_lookup_mapping_value(
     _py: &molt_runtime_core::CoreGilToken,
     mapping_ptr: *mut u8,
     key: &str,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     let key_ptr = alloc_string(_py, key.as_bytes());
     if key_ptr.is_null() {
-        return None;
+        return Err(());
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let value = unsafe { dict_get_in_place(_py, mapping_ptr, key_bits) };
@@ -106,16 +105,14 @@ fn logging_config_dict_lookup(
     };
     let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
     dec_ref_bits(_py, key_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    Ok(value)
+    value.map_err(|()| MoltObject::none().bits())
 }
 
-fn logging_config_dict_items(
-    _py: &molt_runtime_core::CoreGilToken,
+fn logging_config_dict_items<'py>(
+    _py: &'py molt_runtime_core::CoreGilToken,
     dict_bits: u64,
-) -> Result<Vec<(u64, u64)>, u64> {
+) -> Result<Vec<(OwnedRuntimeValue<'py>, OwnedRuntimeValue<'py>)>, u64> {
+    let _dict = OwnedRuntimeValue::retain(_py, dict_bits);
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -173,14 +170,10 @@ fn logging_config_dict_items(
         ));
     }
     let entries = unsafe { seq_snapshot(list_ptr) };
-    let mut pairs: Vec<(u64, u64)> = Vec::new();
+    let mut pairs = Vec::new();
     for item_bits in entries.iter().copied() {
         let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
             dec_ref_bits(_py, list_bits);
-            for (key_bits, value_bits) in pairs {
-                dec_ref_bits(_py, key_bits);
-                dec_ref_bits(_py, value_bits);
-            }
             return Err(raise_exception::<u64>(
                 _py,
                 "TypeError",
@@ -189,10 +182,6 @@ fn logging_config_dict_items(
         };
         if unsafe { object_type_id(item_ptr) } != crate::bridge::type_id_tuple() {
             dec_ref_bits(_py, list_bits);
-            for (key_bits, value_bits) in pairs {
-                dec_ref_bits(_py, key_bits);
-                dec_ref_bits(_py, value_bits);
-            }
             return Err(raise_exception::<u64>(
                 _py,
                 "TypeError",
@@ -202,10 +191,6 @@ fn logging_config_dict_items(
         let fields = unsafe { seq_snapshot(item_ptr) };
         if fields.len() != 2 {
             dec_ref_bits(_py, list_bits);
-            for (key_bits, value_bits) in pairs {
-                dec_ref_bits(_py, key_bits);
-                dec_ref_bits(_py, value_bits);
-            }
             return Err(raise_exception::<u64>(
                 _py,
                 "TypeError",
@@ -214,9 +199,10 @@ fn logging_config_dict_items(
         }
         let key_bits = fields[0];
         let value_bits = fields[1];
-        inc_ref_bits(_py, key_bits);
-        inc_ref_bits(_py, value_bits);
-        pairs.push((key_bits, value_bits));
+        pairs.push((
+            OwnedRuntimeValue::retain(_py, key_bits),
+            OwnedRuntimeValue::retain(_py, value_bits),
+        ));
     }
     dec_ref_bits(_py, list_bits);
     Ok(pairs)
@@ -263,12 +249,12 @@ fn logging_config_name_list(
     Ok(names)
 }
 
-fn logging_config_call_method1(
-    _py: &molt_runtime_core::CoreGilToken,
+fn logging_config_call_method1<'py>(
+    _py: &'py molt_runtime_core::CoreGilToken,
     obj_bits: u64,
     method_name: &[u8],
     arg_bits: u64,
-) -> Result<u64, u64> {
+) -> Result<OwnedRuntimeValue<'py>, u64> {
     let Some(method_bits) = attr_optional(_py, obj_bits, method_name)? else {
         return Err(raise_exception::<u64>(
             _py,
@@ -281,7 +267,7 @@ fn logging_config_call_method1(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    Ok(out_bits)
+    Ok(unsafe { OwnedRuntimeValue::from_owned_bits(_py, out_bits) })
 }
 
 fn logging_config_clear_logger_handlers(
@@ -304,30 +290,34 @@ fn logging_config_clear_logger_handlers(
     };
     dec_ref_bits(_py, handlers_bits);
     for handler_bits in snapshot.iter().copied() {
-        let out_bits =
-            logging_config_call_method1(_py, logger_bits, b"removeHandler", handler_bits)?;
-        if !obj_from_bits(out_bits).is_none() {
-            dec_ref_bits(_py, out_bits);
-        }
+        drop(logging_config_call_method1(
+            _py,
+            logger_bits,
+            b"removeHandler",
+            handler_bits,
+        )?);
     }
     Ok(())
 }
 
-fn logging_config_resolve_ext_stream(
-    _py: &molt_runtime_core::CoreGilToken,
-    value_bits: u64,
-) -> Result<u64, u64> {
-    let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-        return Ok(value_bits);
+fn logging_config_resolve_ext_stream<'py>(
+    _py: &'py molt_runtime_core::CoreGilToken,
+    value: OwnedRuntimeValue<'py>,
+) -> Result<OwnedRuntimeValue<'py>, u64> {
+    let Some(text) = string_obj_to_owned(obj_from_bits(value.bits())) else {
+        return Ok(value);
     };
     if text == "ext://sys.stdout" {
-        return resolve_global_bits(_py, "sys", "stdout");
+        return resolve_global_bits(_py, "sys", "stdout")
+            .map(|bits| unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
     }
     if text == "ext://sys.stderr" {
-        return resolve_global_bits(_py, "sys", "stderr");
+        return resolve_global_bits(_py, "sys", "stderr")
+            .map(|bits| unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
     }
     if text == "ext://sys.stdin" {
-        return resolve_global_bits(_py, "sys", "stdin");
+        return resolve_global_bits(_py, "sys", "stdin")
+            .map(|bits| unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
     }
     Err(raise_exception::<u64>(
         _py,
@@ -339,539 +329,304 @@ fn logging_config_resolve_ext_stream(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let version_bits = match logging_config_dict_lookup(_py, config_bits, "version") {
-            Ok(Some(bits)) => bits,
-            Ok(None) => {
-                return raise_exception::<_>(_py, "ValueError", "logging config missing version");
-            }
-            Err(bits) => return bits,
-        };
-        let Some(version) = to_i64(obj_from_bits(version_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "logging config version must be int");
-        };
-        if version != 1 {
-            return raise_exception::<_>(_py, "ValueError", "unsupported logging config version");
-        }
-
-        let formatter_class_bits = match resolve_global_bits(_py, "logging", "Formatter") {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        };
-        let stream_handler_class_bits = match resolve_global_bits(_py, "logging", "StreamHandler") {
-            Ok(bits) => bits,
-            Err(bits) => {
-                dec_ref_bits(_py, formatter_class_bits);
-                return bits;
-            }
-        };
-        let file_handler_class_bits = match resolve_global_bits(_py, "logging", "FileHandler") {
-            Ok(bits) => bits,
-            Err(bits) => {
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return bits;
-            }
-        };
-        let get_logger_bits = match resolve_global_bits(_py, "logging", "getLogger") {
-            Ok(bits) => bits,
-            Err(bits) => {
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return bits;
-            }
-        };
-
-        let mut formatter_map: HashMap<String, u64> = HashMap::new();
-        let mut handler_map: HashMap<String, u64> = HashMap::new();
-
-        if let Ok(Some(formatters_bits)) =
-            logging_config_dict_lookup(_py, config_bits, "formatters")
-        {
-            let pairs = match logging_config_dict_items(_py, formatters_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            let Some(formatter_class_ptr) = obj_from_bits(formatter_class_bits).as_ptr() else {
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.Formatter is invalid");
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging formatter name must be str",
-                        );
-                    }
-                };
-                let fmt_bits = match logging_config_dict_lookup(_py, cfg_bits, "format") {
-                    Ok(Some(bits)) => bits,
-                    Ok(None) => MoltObject::none().bits(),
-                    Err(bits) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return bits;
-                    }
-                };
-                let formatter_bits = call_class_init_with_args(
+        let configure = || -> Result<(), u64> {
+            let version_bits = logging_config_dict_lookup(_py, config_bits, "version")?
+                .ok_or_else(|| {
+                    raise_exception::<u64>(_py, "ValueError", "logging config missing version")
+                })?;
+            let version = to_i64(obj_from_bits(version_bits)).ok_or_else(|| {
+                raise_exception::<u64>(_py, "TypeError", "logging config version must be int")
+            })?;
+            if version != 1 {
+                return Err(raise_exception::<u64>(
                     _py,
-                    MoltObject::from_ptr(formatter_class_ptr).bits(),
-                    &[fmt_bits],
-                );
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                formatter_map.insert(name, formatter_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
+                    "ValueError",
+                    "unsupported logging config version",
+                ));
             }
-        } else if exception_pending(_py) {
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
+            let formatter_class = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    resolve_global_bits(_py, "logging", "Formatter")?,
+                )
+            };
+            let stream_handler_class = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    resolve_global_bits(_py, "logging", "StreamHandler")?,
+                )
+            };
+            let file_handler_class = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    resolve_global_bits(_py, "logging", "FileHandler")?,
+                )
+            };
+            let get_logger = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    _py,
+                    resolve_global_bits(_py, "logging", "getLogger")?,
+                )
+            };
+            let mut formatter_map: HashMap<String, OwnedRuntimeValue<'_>> = HashMap::new();
+            let mut handler_map: HashMap<String, OwnedRuntimeValue<'_>> = HashMap::new();
 
-        if let Ok(Some(handlers_bits)) = logging_config_dict_lookup(_py, config_bits, "handlers") {
-            let pairs = match logging_config_dict_items(_py, handlers_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    for (_, formatter_bits) in formatter_map {
-                        dec_ref_bits(_py, formatter_bits);
-                    }
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            let Some(stream_handler_class_ptr) = obj_from_bits(stream_handler_class_bits).as_ptr()
-            else {
-                for (_, formatter_bits) in formatter_map {
-                    dec_ref_bits(_py, formatter_bits);
-                }
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.StreamHandler is invalid");
-            };
-            let Some(file_handler_class_ptr) = obj_from_bits(file_handler_class_bits).as_ptr()
-            else {
-                for (_, formatter_bits) in formatter_map {
-                    dec_ref_bits(_py, formatter_bits);
-                }
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.FileHandler is invalid");
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging handler name must be str",
-                        );
-                    }
-                };
-                let class_bits = match logging_config_dict_lookup(_py, cfg_bits, "class") {
-                    Ok(Some(bits)) => bits,
-                    Ok(None) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "logging handler config missing class",
-                        );
-                    }
-                    Err(bits) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return bits;
-                    }
-                };
-                let class_name = match string_obj_to_owned(obj_from_bits(class_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging handler class must be str",
-                        );
-                    }
-                };
-                let handler_bits = if class_name == "logging.StreamHandler" {
-                    let stream_arg_bits = match logging_config_dict_lookup(_py, cfg_bits, "stream")
-                    {
-                        Ok(Some(bits)) => match logging_config_resolve_ext_stream(_py, bits) {
-                            Ok(resolved_bits) => resolved_bits,
-                            Err(err_bits) => {
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return err_bits;
-                            }
-                        },
-                        Ok(None) => MoltObject::none().bits(),
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    call_class_init_with_args(
-                        _py,
-                        MoltObject::from_ptr(stream_handler_class_ptr).bits(),
-                        &[stream_arg_bits],
-                    )
-                } else if class_name == "logging.FileHandler" {
-                    let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")
-                    {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "logging FileHandler config missing filename",
-                            );
-                        }
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    let mode_bits = match logging_config_dict_lookup(_py, cfg_bits, "mode") {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => match alloc_string_bits(_py, "a") {
-                            Some(bits) => bits,
-                            None => {
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return MoltObject::none().bits();
-                            }
-                        },
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    let out_bits = call_class_init_with_args(
-                        _py,
-                        MoltObject::from_ptr(file_handler_class_ptr).bits(),
-                        &[filename_bits, mode_bits],
-                    );
-                    if let Ok(None) = logging_config_dict_lookup(_py, cfg_bits, "mode") {
-                        dec_ref_bits(_py, mode_bits);
-                    }
-                    out_bits
-                } else {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "unsupported logging handler class for intrinsic dictConfig",
-                    );
-                };
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        handler_bits,
-                        b"setLevel",
-                        level_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            dec_ref_bits(_py, handler_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                if let Ok(Some(formatter_name_bits)) =
-                    logging_config_dict_lookup(_py, cfg_bits, "formatter")
-                {
-                    let Some(formatter_name) =
-                        string_obj_to_owned(obj_from_bits(formatter_name_bits))
-                    else {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        dec_ref_bits(_py, handler_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging formatter reference must be str",
-                        );
-                    };
-                    let Some(formatter_bits) = formatter_map.get(&formatter_name).copied() else {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        dec_ref_bits(_py, handler_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "unknown formatter in logging handler config",
-                        );
-                    };
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        handler_bits,
-                        b"setFormatter",
-                        formatter_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            dec_ref_bits(_py, handler_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                handler_map.insert(name, handler_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
-            }
-        } else if exception_pending(_py) {
-            for (_, formatter_bits) in formatter_map {
-                dec_ref_bits(_py, formatter_bits);
-            }
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
-
-        if let Ok(Some(loggers_bits)) = logging_config_dict_lookup(_py, config_bits, "loggers") {
-            let pairs = match logging_config_dict_items(_py, loggers_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    for (_, handler_bits) in handler_map {
-                        dec_ref_bits(_py, handler_bits);
-                    }
-                    for (_, formatter_bits) in formatter_map {
-                        dec_ref_bits(_py, formatter_bits);
-                    }
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let logger_bits = call_callable1(_py, get_logger_bits, name_bits);
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                if let Err(bits) = logging_config_clear_logger_handlers(_py, logger_bits) {
-                    dec_ref_bits(_py, logger_bits);
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return bits;
-                }
-                if let Ok(Some(handler_list_bits)) =
-                    logging_config_dict_lookup(_py, cfg_bits, "handlers")
-                {
-                    let handler_names = match logging_config_name_list(_py, handler_list_bits) {
-                        Ok(value) => value,
-                        Err(bits) => {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    for handler_name in handler_names {
-                        let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "unknown handler in logger config",
-                            );
-                        };
-                        let out_bits = match logging_config_call_method1(
-                            _py,
-                            logger_bits,
-                            b"addHandler",
-                            handler_bits,
-                        ) {
-                            Ok(bits) => bits,
-                            Err(bits) => {
-                                dec_ref_bits(_py, logger_bits);
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return bits;
-                            }
-                        };
-                        if !obj_from_bits(out_bits).is_none() {
-                            dec_ref_bits(_py, out_bits);
-                        }
-                    }
-                }
-                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        logger_bits,
-                        b"setLevel",
-                        level_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                dec_ref_bits(_py, logger_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
-            }
-        } else if exception_pending(_py) {
-            for (_, handler_bits) in handler_map {
-                dec_ref_bits(_py, handler_bits);
-            }
-            for (_, formatter_bits) in formatter_map {
-                dec_ref_bits(_py, formatter_bits);
-            }
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
-
-        if let Ok(Some(root_bits)) = logging_config_dict_lookup(_py, config_bits, "root") {
-            let root_logger_bits = call_callable0(_py, get_logger_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if let Err(bits) = logging_config_clear_logger_handlers(_py, root_logger_bits) {
-                dec_ref_bits(_py, root_logger_bits);
-                return bits;
-            }
-            if let Ok(Some(handler_list_bits)) =
-                logging_config_dict_lookup(_py, root_bits, "handlers")
+            if let Some(formatters_bits) =
+                logging_config_dict_lookup(_py, config_bits, "formatters")?
             {
-                let handler_names = match logging_config_name_list(_py, handler_list_bits) {
-                    Ok(value) => value,
-                    Err(bits) => {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return bits;
+                let pairs = logging_config_dict_items(_py, formatters_bits)?;
+                if obj_from_bits(formatter_class.bits()).as_ptr().is_none() {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "logging.Formatter is invalid",
+                    ));
+                }
+                for (name, cfg) in pairs {
+                    let name =
+                        string_obj_to_owned(obj_from_bits(name.bits())).ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                "logging formatter name must be str",
+                            )
+                        })?;
+                    let fmt = OwnedRuntimeValue::retain(
+                        _py,
+                        logging_config_dict_lookup(_py, cfg.bits(), "format")?
+                            .unwrap_or_else(|| MoltObject::none().bits()),
+                    );
+                    let bits =
+                        call_class_init_with_args(_py, formatter_class.bits(), &[fmt.bits()]);
+                    if exception_pending(_py) {
+                        return Err(MoltObject::none().bits());
                     }
-                };
-                for handler_name in handler_names {
-                    let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return raise_exception::<_>(
+                    formatter_map.insert(name, unsafe {
+                        OwnedRuntimeValue::from_owned_bits(_py, bits)
+                    });
+                }
+            }
+            if let Some(handlers_bits) = logging_config_dict_lookup(_py, config_bits, "handlers")? {
+                let pairs = logging_config_dict_items(_py, handlers_bits)?;
+                if obj_from_bits(stream_handler_class.bits())
+                    .as_ptr()
+                    .is_none()
+                {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "logging.StreamHandler is invalid",
+                    ));
+                }
+                if obj_from_bits(file_handler_class.bits()).as_ptr().is_none() {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "logging.FileHandler is invalid",
+                    ));
+                }
+                for (name, cfg) in pairs {
+                    let name =
+                        string_obj_to_owned(obj_from_bits(name.bits())).ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                "logging handler name must be str",
+                            )
+                        })?;
+                    let class_bits = logging_config_dict_lookup(_py, cfg.bits(), "class")?
+                        .ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "ValueError",
+                                "logging handler config missing class",
+                            )
+                        })?;
+                    let class_name =
+                        string_obj_to_owned(obj_from_bits(class_bits)).ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                "logging handler class must be str",
+                            )
+                        })?;
+                    let bits = if class_name == "logging.StreamHandler" {
+                        let stream = match logging_config_dict_lookup(_py, cfg.bits(), "stream")? {
+                            Some(bits) => logging_config_resolve_ext_stream(
+                                _py,
+                                OwnedRuntimeValue::retain(_py, bits),
+                            )?,
+                            None => unsafe {
+                                OwnedRuntimeValue::from_owned_bits(_py, MoltObject::none().bits())
+                            },
+                        };
+                        call_class_init_with_args(
+                            _py,
+                            stream_handler_class.bits(),
+                            &[stream.bits()],
+                        )
+                    } else if class_name == "logging.FileHandler" {
+                        let filename_bits =
+                            logging_config_dict_lookup(_py, cfg.bits(), "filename")?.ok_or_else(
+                                || {
+                                    raise_exception::<u64>(
+                                        _py,
+                                        "ValueError",
+                                        "logging FileHandler config missing filename",
+                                    )
+                                },
+                            )?;
+                        let filename = OwnedRuntimeValue::retain(_py, filename_bits);
+                        let mode = match logging_config_dict_lookup(_py, cfg.bits(), "mode")? {
+                            Some(bits) => OwnedRuntimeValue::retain(_py, bits),
+                            None => unsafe {
+                                OwnedRuntimeValue::from_owned_bits(
+                                    _py,
+                                    alloc_string_bits(_py, "a")
+                                        .ok_or_else(|| MoltObject::none().bits())?,
+                                )
+                            },
+                        };
+                        call_class_init_with_args(
+                            _py,
+                            file_handler_class.bits(),
+                            &[filename.bits(), mode.bits()],
+                        )
+                    } else {
+                        return Err(raise_exception::<u64>(
                             _py,
                             "ValueError",
-                            "unknown handler in root logger config",
-                        );
+                            "unsupported logging handler class for intrinsic dictConfig",
+                        ));
                     };
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        root_logger_bits,
-                        b"addHandler",
-                        handler_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, root_logger_bits);
-                            return bits;
+                    if exception_pending(_py) {
+                        return Err(MoltObject::none().bits());
+                    }
+                    let handler = unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) };
+                    if let Some(level_bits) = logging_config_dict_lookup(_py, cfg.bits(), "level")?
+                    {
+                        let level = OwnedRuntimeValue::retain(_py, level_bits);
+                        drop(logging_config_call_method1(
+                            _py,
+                            handler.bits(),
+                            b"setLevel",
+                            level.bits(),
+                        )?);
+                    }
+                    if let Some(formatter_name_bits) =
+                        logging_config_dict_lookup(_py, cfg.bits(), "formatter")?
+                    {
+                        let formatter_name = string_obj_to_owned(obj_from_bits(
+                            formatter_name_bits,
+                        ))
+                        .ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                "logging formatter reference must be str",
+                            )
+                        })?;
+                        let formatter = formatter_map.get(&formatter_name).ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "ValueError",
+                                "unknown formatter in logging handler config",
+                            )
+                        })?;
+                        drop(logging_config_call_method1(
+                            _py,
+                            handler.bits(),
+                            b"setFormatter",
+                            formatter.bits(),
+                        )?);
+                    }
+                    handler_map.insert(name, handler);
+                }
+            }
+            if let Some(loggers_bits) = logging_config_dict_lookup(_py, config_bits, "loggers")? {
+                for (name, cfg) in logging_config_dict_items(_py, loggers_bits)? {
+                    let bits = call_callable1(_py, get_logger.bits(), name.bits());
+                    if exception_pending(_py) {
+                        return Err(MoltObject::none().bits());
+                    }
+                    let logger = unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) };
+                    logging_config_clear_logger_handlers(_py, logger.bits())?;
+                    if let Some(handler_list_bits) =
+                        logging_config_dict_lookup(_py, cfg.bits(), "handlers")?
+                    {
+                        let handler_list = OwnedRuntimeValue::retain(_py, handler_list_bits);
+                        for name in logging_config_name_list(_py, handler_list.bits())? {
+                            let handler = handler_map.get(&name).ok_or_else(|| {
+                                raise_exception::<u64>(
+                                    _py,
+                                    "ValueError",
+                                    "unknown handler in logger config",
+                                )
+                            })?;
+                            drop(logging_config_call_method1(
+                                _py,
+                                logger.bits(),
+                                b"addHandler",
+                                handler.bits(),
+                            )?);
                         }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
+                    }
+                    if let Some(level_bits) = logging_config_dict_lookup(_py, cfg.bits(), "level")?
+                    {
+                        let level = OwnedRuntimeValue::retain(_py, level_bits);
+                        drop(logging_config_call_method1(
+                            _py,
+                            logger.bits(),
+                            b"setLevel",
+                            level.bits(),
+                        )?);
                     }
                 }
             }
-            if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, root_bits, "level") {
-                let out_bits = match logging_config_call_method1(
-                    _py,
-                    root_logger_bits,
-                    b"setLevel",
-                    level_bits,
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return bits;
+            if let Some(root_bits) = logging_config_dict_lookup(_py, config_bits, "root")? {
+                let root = OwnedRuntimeValue::retain(_py, root_bits);
+                let bits = call_callable0(_py, get_logger.bits());
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                let logger = unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) };
+                logging_config_clear_logger_handlers(_py, logger.bits())?;
+                if let Some(handler_list_bits) =
+                    logging_config_dict_lookup(_py, root.bits(), "handlers")?
+                {
+                    let handler_list = OwnedRuntimeValue::retain(_py, handler_list_bits);
+                    for name in logging_config_name_list(_py, handler_list.bits())? {
+                        let handler = handler_map.get(&name).ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "ValueError",
+                                "unknown handler in root logger config",
+                            )
+                        })?;
+                        drop(logging_config_call_method1(
+                            _py,
+                            logger.bits(),
+                            b"addHandler",
+                            handler.bits(),
+                        )?);
                     }
-                };
-                if !obj_from_bits(out_bits).is_none() {
-                    dec_ref_bits(_py, out_bits);
+                }
+                if let Some(level_bits) = logging_config_dict_lookup(_py, root.bits(), "level")? {
+                    let level = OwnedRuntimeValue::retain(_py, level_bits);
+                    drop(logging_config_call_method1(
+                        _py,
+                        logger.bits(),
+                        b"setLevel",
+                        level.bits(),
+                    )?);
                 }
             }
-            dec_ref_bits(_py, root_logger_bits);
-        } else if exception_pending(_py) {
-            return MoltObject::none().bits();
+            Ok(())
+        };
+        match configure() {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
         }
-
-        for (_, handler_bits) in handler_map {
-            dec_ref_bits(_py, handler_bits);
-        }
-        for (_, formatter_bits) in formatter_map {
-            dec_ref_bits(_py, formatter_bits);
-        }
-        dec_ref_bits(_py, get_logger_bits);
-        dec_ref_bits(_py, file_handler_class_bits);
-        dec_ref_bits(_py, stream_handler_class_bits);
-        dec_ref_bits(_py, formatter_class_bits);
-        MoltObject::none().bits()
     })
 }
 
@@ -999,13 +754,16 @@ pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits:
             }
 
             let key: String = chars[idx + 2..close].iter().collect();
-            let Some(value_bits) =
-                logging_percent_lookup_mapping_value(_py, mapping_ptr, key.as_str())
-            else {
-                out.push_str(token.as_str());
-                idx = close + 2;
-                continue;
-            };
+            let value_bits =
+                match logging_percent_lookup_mapping_value(_py, mapping_ptr, key.as_str()) {
+                    Ok(Some(value)) => value,
+                    Ok(None) => {
+                        out.push_str(token.as_str());
+                        idx = close + 2;
+                        continue;
+                    }
+                    Err(()) => return MoltObject::none().bits(),
+                };
 
             let Some(rendered) = logging_percent_render_value(_py, spec, value_bits) else {
                 return MoltObject::none().bits();

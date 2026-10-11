@@ -198,7 +198,7 @@ fn buffer_export_contract_all_bytearray_resize_families() {
                     MoltObject::from_int(1).bits(),
                     MoltObject::from_int(100).bits(),
                 ),
-                4 => crate::molt_bytearray_pop(owner, none_bits()),
+                4 => crate::molt_bytearray_pop(owner, MoltObject::from_int(-1).bits()),
                 5 => crate::molt_bytearray_remove(owner, MoltObject::from_int(97).bits()),
                 6 => crate::molt_bytearray_resize(owner, MoltObject::from_int(1).bits()),
                 7 => crate::molt_bytearray_resize(owner, MoltObject::from_int(4096).bits()),

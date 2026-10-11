@@ -186,15 +186,12 @@ pub(crate) fn comparison_value_to_bool(
         CompareValueOutcome::NotComparable => return CompareBoolOutcome::NotComparable,
         CompareValueOutcome::Error => return CompareBoolOutcome::Error,
     };
-    let previous = exception_last_bits_noinc(_py);
-    let truthy = is_truthy(_py, obj_from_bits(bits));
+    let truth = crate::object::ops::truth_value(_py, obj_from_bits(bits));
     dec_ref_bits(_py, bits);
-    if exception_pending(_py) && exception_last_bits_noinc(_py) != previous {
-        CompareBoolOutcome::Error
-    } else if truthy {
-        CompareBoolOutcome::True
-    } else {
-        CompareBoolOutcome::False
+    match truth {
+        Ok(true) => CompareBoolOutcome::True,
+        Ok(false) => CompareBoolOutcome::False,
+        Err(()) => CompareBoolOutcome::Error,
     }
 }
 
@@ -270,6 +267,17 @@ impl SequenceComparison {
     }
 
     pub(crate) fn invoke(self, py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) -> u64 {
+        if matches!(self, Self::List)
+            && (crate::object::list_storage::native_list(left).is_some()
+                || crate::object::list_storage::native_list(right).is_some())
+        {
+            let Some(list) =
+                crate::object::list_storage::ListStorage::admit(py, left, op.method_name())
+            else {
+                return MoltObject::none().bits();
+            };
+            return list.compare(right, op);
+        }
         if matches!(self, Self::Tuple)
             && (crate::object::tuple_storage::native_tuple(left).is_some()
                 || crate::object::tuple_storage::native_tuple(right).is_some())
@@ -318,6 +326,19 @@ impl SequenceComparison {
         right: u64,
         op: RichCompareOp,
     ) -> CompareValueOutcome {
+        if matches!(self, Self::List) && crate::object::list_storage::native_list(right).is_some() {
+            let list = crate::object::list_storage::ListStorage::from_bits(
+                py,
+                MoltObject::from_ptr(lhs).bits(),
+            )
+            .unwrap();
+            let value = list.compare(right, op);
+            return if exception_pending(py) {
+                CompareValueOutcome::Error
+            } else {
+                CompareValueOutcome::Value(value)
+            };
+        }
         if matches!(self, Self::Bytearray) {
             use crate::object::buffer_exports::{ScopedBuffer, supports_buffer};
             if !supports_buffer(py, MoltObject::from_ptr(lhs).bits()) || !supports_buffer(py, right)
@@ -584,6 +605,23 @@ pub extern "C" fn molt_cell_ge(a: u64, b: u64) -> u64 {
     })
 }
 
+/// Typed completion shared by runtime operators and the C richcompare hook.
+pub(crate) fn compare_value_for_op(
+    py: &PyToken<'_>,
+    left: MoltObject,
+    right: MoltObject,
+    op: RichCompareOp,
+) -> CompareValueOutcome {
+    match op {
+        RichCompareOp::Eq => compare_object_eq_value(py, left, right),
+        RichCompareOp::Ne => compare_object_ne_value(py, left, right),
+        RichCompareOp::Lt => compare_object_value_for_op(py, left, right, CompareOp::Lt),
+        RichCompareOp::Le => compare_object_value_for_op(py, left, right, CompareOp::Le),
+        RichCompareOp::Gt => compare_object_value_for_op(py, left, right, CompareOp::Gt),
+        RichCompareOp::Ge => compare_object_value_for_op(py, left, right, CompareOp::Ge),
+    }
+}
+
 fn compare_object_eq_value(
     _py: &PyToken<'_>,
     lhs: MoltObject,
@@ -596,8 +634,7 @@ fn compare_object_eq_value(
         CompareValueOutcome::NotComparable => {}
         outcome => return outcome,
     }
-    let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
-    match rich_compare_value(_py, lhs, rhs, name, name) {
+    match rich_compare_value(_py, lhs, rhs, RichCompareOp::Eq) {
         CompareValueOutcome::NotComparable => {
             CompareValueOutcome::Value(MoltObject::from_bool(lhs.bits() == rhs.bits()).bits())
         }
@@ -617,8 +654,7 @@ fn compare_object_ne_value(
         CompareValueOutcome::NotComparable => {}
         outcome => return outcome,
     }
-    let name = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
-    match rich_compare_value(_py, lhs, rhs, name, name) {
+    match rich_compare_value(_py, lhs, rhs, RichCompareOp::Ne) {
         CompareValueOutcome::NotComparable => {
             CompareValueOutcome::Value(MoltObject::from_bool(lhs.bits() != rhs.bits()).bits())
         }
@@ -680,25 +716,17 @@ fn compare_op_symbol(op: CompareOp) -> &'static str {
     }
 }
 
-fn compare_op_method_names(_py: &PyToken<'_>, op: CompareOp) -> (u64, u64) {
-    match op {
-        CompareOp::Lt => (
-            intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__"),
-            intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__"),
-        ),
-        CompareOp::Le => (
-            intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__"),
-            intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__"),
-        ),
-        CompareOp::Gt => (
-            intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__"),
-            intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__"),
-        ),
-        CompareOp::Ge => (
-            intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__"),
-            intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__"),
-        ),
-    }
+fn rich_compare_name(py: &PyToken<'_>, op: RichCompareOp) -> u64 {
+    let names = &runtime_state(py).interned;
+    let slot = match op {
+        RichCompareOp::Lt => &names.lt_name,
+        RichCompareOp::Le => &names.le_name,
+        RichCompareOp::Eq => &names.eq_name,
+        RichCompareOp::Ne => &names.ne_name,
+        RichCompareOp::Gt => &names.gt_name,
+        RichCompareOp::Ge => &names.ge_name,
+    };
+    intern_static_name(py, slot, op.method_name().as_bytes())
 }
 
 fn compare_object_value_for_op(
@@ -711,8 +739,7 @@ fn compare_object_value_for_op(
         CompareValueOutcome::NotComparable => {}
         outcome => return outcome,
     }
-    let (name, reflected) = compare_op_method_names(_py, op);
-    match rich_compare_value(_py, lhs, rhs, name, reflected) {
+    match rich_compare_value(_py, lhs, rhs, rich_order(op)) {
         CompareValueOutcome::NotComparable => {
             compare_type_error(_py, lhs, rhs, compare_op_symbol(op));
             CompareValueOutcome::Error
@@ -768,13 +795,9 @@ pub(crate) fn rich_compare_bool(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
-    op_name_bits: u64,
-    reverse_name_bits: u64,
+    op: RichCompareOp,
 ) -> CompareBoolOutcome {
-    comparison_value_to_bool(
-        _py,
-        rich_compare_value(_py, lhs, rhs, op_name_bits, reverse_name_bits),
-    )
+    comparison_value_to_bool(_py, rich_compare_value(_py, lhs, rhs, op))
 }
 
 /// Invoke one type slot, never an instance attribute. This also serves
@@ -789,36 +812,26 @@ pub(crate) fn rich_compare_method_value(
     let Some(class) = obj_from_bits(type_of_bits(_py, receiver.bits())).as_ptr() else {
         return CompareValueOutcome::NotComparable;
     };
-    let previous = exception_last_bits_noinc(_py);
-    let changed = || exception_pending(_py) && exception_last_bits_noinc(_py) != previous;
     let owner = MoltObject::from_ptr(class).bits();
     inc_ref_bits(_py, owner);
     let outcome = (|| unsafe {
-        let Some(raw) = class_attr_lookup_raw_mro(_py, class, name) else {
-            return if changed() {
-                CompareValueOutcome::Error
-            } else {
-                CompareValueOutcome::NotComparable
-            };
+        let raw = match class_attr_lookup_raw_mro(_py, class, name) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return CompareValueOutcome::NotComparable,
+            Err(()) => return CompareValueOutcome::Error,
         };
-        let Some(result) = crate::builtins::attr::descriptor_special_call1(
+        let result = match crate::builtins::attr::descriptor_special_call1(
             _py,
             raw,
             class,
             Some(receiver.bits()),
             other.bits(),
             crate::builtins::attr::DescriptorCallPolicy::RichComparison,
-        ) else {
-            return if changed() {
-                CompareValueOutcome::Error
-            } else {
-                CompareValueOutcome::NotComparable
-            };
+        ) {
+            Ok(Some(result)) => result,
+            Ok(None) => return CompareValueOutcome::NotComparable,
+            Err(()) => return CompareValueOutcome::Error,
         };
-        if changed() {
-            dec_ref_bits(_py, result);
-            return CompareValueOutcome::Error;
-        }
         if is_not_implemented_bits(_py, result) {
             dec_ref_bits(_py, result);
             CompareValueOutcome::NotComparable
@@ -834,9 +847,53 @@ pub(crate) fn rich_compare_value(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
-    op_name_bits: u64,
-    reverse_name_bits: u64,
+    op: RichCompareOp,
 ) -> CompareValueOutcome {
+    // One real native operand selects the existing C reflected-slot authority.
+    // Managed-only operands stay here, so its managed hook cannot recurse.
+    let has_native = [lhs, rhs].into_iter().any(|value| {
+        value
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_FOREIGN)
+    });
+    if has_native {
+        use crate::object::foreign::NativeObjectOwner;
+        use molt_cpython_abi::{bridge::GLOBAL_BRIDGE, hooks::DecodedHandleResult};
+        unsafe {
+            let left = NativeObjectOwner::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(lhs.bits()),
+            );
+            if left.as_ptr().is_null() {
+                crate::cpython_abi_hooks::propagate_native_failure(_py, "comparison operand");
+                return CompareValueOutcome::Error;
+            }
+            let right = NativeObjectOwner::from_owned(
+                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(rhs.bits()),
+            );
+            if right.as_ptr().is_null() {
+                crate::cpython_abi_hooks::propagate_native_failure(_py, "comparison operand");
+                return CompareValueOutcome::Error;
+            }
+            let result = molt_cpython_abi::api::typeobj::PyObject_RichCompare(
+                left.as_ptr(),
+                right.as_ptr(),
+                op as i32,
+            );
+            let result = molt_cpython_abi::bridge::owned_native_result_to_runtime(result);
+            return match result.decode() {
+                DecodedHandleResult::Ok(bits) => CompareValueOutcome::Value(bits),
+                DecodedHandleResult::Missing | DecodedHandleResult::Error => {
+                    crate::cpython_abi_hooks::propagate_native_failure(_py, "native comparison");
+                    CompareValueOutcome::Error
+                }
+            };
+        }
+    }
+    let op_name_bits = rich_compare_name(_py, op);
+    let reverse_name_bits = rich_compare_name(_py, op.reversed());
+    if obj_from_bits(op_name_bits).is_none() || obj_from_bits(reverse_name_bits).is_none() {
+        return CompareValueOutcome::Error;
+    }
     let left_class = type_of_bits(_py, lhs.bits());
     let right_class = type_of_bits(_py, rhs.bits());
     // Rich comparisons give a strict subtype priority even when its method is
@@ -860,15 +917,13 @@ pub(crate) fn rich_compare_value(
 }
 
 fn rich_compare_order(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
-    let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
-    let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
-    match rich_compare_bool(_py, lhs, rhs, lt_name_bits, gt_name_bits) {
+    match rich_compare_bool(_py, lhs, rhs, RichCompareOp::Lt) {
         CompareBoolOutcome::True => return CompareOutcome::Ordered(Ordering::Less),
         CompareBoolOutcome::False => {}
         CompareBoolOutcome::NotComparable => return CompareOutcome::NotComparable,
         CompareBoolOutcome::Error => return CompareOutcome::Error,
     }
-    match rich_compare_bool(_py, rhs, lhs, lt_name_bits, gt_name_bits) {
+    match rich_compare_bool(_py, rhs, lhs, RichCompareOp::Lt) {
         CompareBoolOutcome::True => CompareOutcome::Ordered(Ordering::Greater),
         CompareBoolOutcome::False => CompareOutcome::Ordered(Ordering::Equal),
         CompareBoolOutcome::NotComparable => CompareOutcome::NotComparable,

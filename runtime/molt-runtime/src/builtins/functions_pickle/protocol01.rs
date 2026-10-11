@@ -23,6 +23,9 @@ fn pickle_string_repr(_py: &crate::PyToken<'_>, value: &str) -> Result<String, u
     };
     let rendered = format_obj(_py, obj_from_bits(value_bits));
     dec_ref_bits(_py, value_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
     Ok(rendered)
 }
 
@@ -78,14 +81,22 @@ fn pickle_dump_obj(
     };
     let type_id = unsafe { object_type_id(ptr) };
     if type_id == crate::TYPE_ID_BIGINT {
+        let rendered = format_obj(_py, obj);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
         out.push('I');
-        out.push_str(format_obj(_py, obj).as_str());
+        out.push_str(&rendered);
         out.push('\n');
         return Ok(());
     }
     if type_id == TYPE_ID_STRING {
+        let rendered = format_obj(_py, obj);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
         out.push('S');
-        out.push_str(format_obj(_py, obj).as_str());
+        out.push_str(&rendered);
         out.push('\n');
         return Ok(());
     }
@@ -559,10 +570,9 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                     if unsafe { object_type_id(target_ptr) } != TYPE_ID_DICT {
                         return pickle_raise(_py, "pickle.loads: setitem target is not dict");
                     }
-                    unsafe {
-                        crate::dict_set_in_place(_py, target_ptr, key_bits, value_bits);
-                    }
-                    if exception_pending(_py) {
+                    let completed =
+                        unsafe { crate::dict_set_in_place(_py, target_ptr, key_bits, value_bits) };
+                    if !completed {
                         return MoltObject::none().bits();
                     }
                     stack.push(PickleStackItem::Value(target_bits));

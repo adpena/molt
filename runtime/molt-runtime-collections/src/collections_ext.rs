@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime-collections/src/collections_ext.rs ===
 //
-// Intrinsic implementations for collections.OrderedDict and collections.ChainMap.
+// Intrinsic implementations for the stateful collections runtime primitives.
 //
 // Handle model: global Mutex<HashMap<i64, State>> keyed by an atomically-issued
 // handle ID, returned to Python as a NaN-boxed integer. Uses a global registry
@@ -19,10 +19,9 @@ use molt_runtime_core::prelude::*;
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, compare_eq,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_set_in_place,
-    dict_snapshot, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy,
-    object_type_id, raise_exception, raise_key_error_with_key, seq_snapshot, string_obj_to_owned,
-    to_i64, type_name,
+    dec_ref_bits, dict_like_bits_from_ptr, dict_set_in_place, dict_snapshot, exception_pending,
+    inc_ref_bits, index_i64_with_overflow, is_truthy, object_type_id, raise_exception,
+    raise_key_error_with_key, seq_snapshot, string_obj_to_owned, to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -34,12 +33,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 fn next_ordereddict_handle() -> i64 {
     collections_state()
         .next_ordereddict_handle
-        .fetch_add(1, Ordering::Relaxed)
-}
-
-fn next_chainmap_handle() -> i64 {
-    collections_state()
-        .next_chainmap_handle
         .fetch_add(1, Ordering::Relaxed)
 }
 
@@ -623,402 +616,6 @@ pub extern "C" fn molt_ordereddict_drop(handle_bits: u64) -> u64 {
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ChainMap state
-//
-// A ChainMap is an ordered list of Molt dict object-bits (each must remain
-// alive for as long as the ChainMap lives). We store the dict_bits (NaN-boxed
-// u64) directly.  The "first" map is maps[0]; updates/deletes operate only on
-// maps[0].
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct ChainMapState {
-    /// List of dict object bits, index 0 is the primary (first) map.
-    maps: Vec<u64>,
-}
-
-fn cm_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
-    let obj = obj_from_bits(handle_bits);
-    let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "ChainMap handle must be an int");
-        return None;
-    };
-    Some(id)
-}
-
-/// Build a new ChainMap from a list of Molt dict objects. Returns handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_new(maps_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let obj = obj_from_bits(maps_bits);
-        let mut map_list: Vec<u64> = Vec::new();
-        if let Some(ptr) = obj.as_ptr() {
-            let type_id = unsafe { object_type_id(ptr) };
-            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = unsafe { seq_snapshot(ptr) };
-                for &elem_bits in elems.iter() {
-                    let ep = obj_from_bits(elem_bits);
-                    if ep
-                        .as_ptr()
-                        .is_some_and(|eptr| unsafe { object_type_id(eptr) } != TYPE_ID_DICT)
-                    {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "ChainMap maps must be dicts",
-                        );
-                    }
-                    map_list.push(elem_bits);
-                }
-            } else {
-                return raise_exception::<_>(_py, "TypeError", "ChainMap expects a list of dicts");
-            }
-        }
-        // If maps_bits is None, start with empty primary dict.
-        if obj.is_none() {
-            let empty_ptr = alloc_dict_with_pairs(_py, &[]);
-            if empty_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate dict");
-            }
-            map_list.push(MoltObject::from_ptr(empty_ptr).bits());
-        }
-        // Ensure there is always at least one map.
-        if map_list.is_empty() {
-            let empty_ptr = alloc_dict_with_pairs(_py, &[]);
-            if empty_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate dict");
-            }
-            map_list.push(MoltObject::from_ptr(empty_ptr).bits());
-        }
-        let id = next_chainmap_handle();
-        collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .insert(id, ChainMapState { maps: map_list });
-        MoltObject::from_int(id).bits()
-    })
-}
-
-/// Search all maps in order for key. Returns value or raises KeyError.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        for dict_bits in maps {
-            let dict_obj = obj_from_bits(dict_bits);
-            let Some(dict_ptr) = dict_obj.as_ptr() else {
-                continue;
-            };
-            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                continue;
-            }
-            if let Some(val) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-                return val;
-            }
-        }
-        raise_exception::<_>(_py, "KeyError", "key not found")
-    })
-}
-
-/// Set key in the first (primary) map. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_setitem(handle_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let first_map_bits = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .and_then(|s| s.maps.first().copied());
-        let Some(dict_bits) = first_map_bits else {
-            return raise_exception::<_>(_py, "KeyError", "ChainMap has no maps");
-        };
-        let dict_obj = obj_from_bits(dict_bits);
-        let Some(dict_ptr) = dict_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "first map is not a dict");
-        };
-        if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "first map is not a dict");
-        }
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-        }
-        MoltObject::none().bits()
-    })
-}
-
-/// Delete key from the first map only. Raises KeyError if not found there.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let first_map_bits = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .and_then(|s| s.maps.first().copied());
-        let Some(dict_bits) = first_map_bits else {
-            return raise_exception::<_>(_py, "KeyError", "key not found");
-        };
-        let dict_obj = obj_from_bits(dict_bits);
-        let Some(dict_ptr) = dict_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "KeyError", "key not found");
-        };
-        if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "KeyError", "key not found");
-        }
-        let deleted = unsafe { dict_del_in_place(_py, dict_ptr, key_bits) };
-        if !deleted {
-            return raise_exception::<_>(_py, "KeyError", "key not found in first map");
-        }
-        MoltObject::none().bits()
-    })
-}
-
-/// Return True if key exists in any map.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        for dict_bits in maps {
-            let dict_obj = obj_from_bits(dict_bits);
-            let Some(dict_ptr) = dict_obj.as_ptr() else {
-                continue;
-            };
-            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                continue;
-            }
-            if unsafe { dict_get_in_place(_py, dict_ptr, key_bits) }.is_some() {
-                return MoltObject::from_bool(true).bits();
-            }
-        }
-        MoltObject::from_bool(false).bits()
-    })
-}
-
-/// Return total count of unique keys across all maps.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        // Collect unique key bits across all maps.
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        for dict_bits in maps {
-            let dict_obj = obj_from_bits(dict_bits);
-            let Some(dict_ptr) = dict_obj.as_ptr() else {
-                continue;
-            };
-            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                continue;
-            }
-            let Some(order) = (unsafe { dict_snapshot(_py, dict_ptr) }) else {
-                return MoltObject::none().bits();
-            };
-            let mut i = 0;
-            while i + 1 < order.len() {
-                seen.insert(order[i]);
-                i += 2;
-            }
-        }
-        MoltObject::from_int(seen.len() as i64).bits()
-    })
-}
-
-/// Return list of unique keys (first occurrence wins, preserving dict order).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        let mut keys: Vec<u64> = Vec::new();
-        for dict_bits in maps {
-            let dict_obj = obj_from_bits(dict_bits);
-            let Some(dict_ptr) = dict_obj.as_ptr() else {
-                continue;
-            };
-            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                continue;
-            }
-            let Some(order) = (unsafe { dict_snapshot(_py, dict_ptr) }) else {
-                return MoltObject::none().bits();
-            };
-            let mut i = 0;
-            while i + 1 < order.len() {
-                let k = order[i];
-                if seen.insert(k) {
-                    keys.push(k);
-                }
-                i += 2;
-            }
-        }
-        let ptr = alloc_list(_py, &keys);
-        if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-/// Return a new ChainMap with an optional new map prepended. Returns handle.
-/// If m_bits is None, prepend a fresh empty dict.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_new_child(handle_bits: u64, m_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let existing_maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        let new_first = {
-            let m_obj = obj_from_bits(m_bits);
-            if m_obj.is_none() {
-                let empty_ptr = alloc_dict_with_pairs(_py, &[]);
-                if empty_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate dict");
-                }
-                MoltObject::from_ptr(empty_ptr).bits()
-            } else {
-                if m_obj
-                    .as_ptr()
-                    .is_some_and(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_DICT)
-                {
-                    return raise_exception::<_>(_py, "TypeError", "new_child map must be a dict");
-                }
-                m_bits
-            }
-        };
-        let mut new_maps = Vec::with_capacity(existing_maps.len() + 1);
-        new_maps.push(new_first);
-        new_maps.extend_from_slice(&existing_maps);
-        let new_id = next_chainmap_handle();
-        collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .insert(new_id, ChainMapState { maps: new_maps });
-        MoltObject::from_int(new_id).bits()
-    })
-}
-
-/// Return a new ChainMap containing all maps except the first. Returns handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_parents(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let mut maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        if !maps.is_empty() {
-            maps.remove(0);
-        }
-        if maps.is_empty() {
-            let empty_ptr = alloc_dict_with_pairs(_py, &[]);
-            if empty_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate dict");
-            }
-            maps.push(MoltObject::from_ptr(empty_ptr).bits());
-        }
-        let new_id = next_chainmap_handle();
-        collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .insert(new_id, ChainMapState { maps });
-        MoltObject::from_int(new_id).bits()
-    })
-}
-
-/// Return list of underlying dict objects.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_maps(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let maps: Vec<u64> = collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.maps.clone())
-            .unwrap_or_default();
-        let ptr = alloc_list(_py, &maps);
-        if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-/// Release ChainMap handle. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chainmap_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = cm_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        collections_state()
-            .chainmap_registry
-            .lock()
-            .unwrap()
-            .remove(&id);
-        MoltObject::none().bits()
-    })
-}
 // ─── Handle counter ─────────────────────────────────────────────────────────
 
 fn next_deque_handle() -> i64 {
@@ -2018,11 +1615,9 @@ fn release_handle_value(_py: &CoreGilToken, bits: u64) {
 
 struct CollectionsRuntimeState {
     next_ordereddict_handle: AtomicI64,
-    next_chainmap_handle: AtomicI64,
     next_deque_handle: AtomicI64,
     next_defaultdict_handle: AtomicI64,
     ordereddict_registry: Mutex<HashMap<i64, OrderedDictState>>,
-    chainmap_registry: Mutex<HashMap<i64, ChainMapState>>,
     deque_registry: Mutex<HashMap<i64, DequeState>>,
     defaultdict_registry: Mutex<HashMap<i64, DefaultDictState>>,
 }
@@ -2031,11 +1626,9 @@ impl CollectionsRuntimeState {
     fn new() -> Self {
         Self {
             next_ordereddict_handle: AtomicI64::new(1),
-            next_chainmap_handle: AtomicI64::new(1),
             next_deque_handle: AtomicI64::new(1),
             next_defaultdict_handle: AtomicI64::new(1),
             ordereddict_registry: Mutex::new(HashMap::new()),
-            chainmap_registry: Mutex::new(HashMap::new()),
             deque_registry: Mutex::new(HashMap::new()),
             defaultdict_registry: Mutex::new(HashMap::new()),
         }
@@ -2043,7 +1636,6 @@ impl CollectionsRuntimeState {
 
     fn clear(&self, _py: &CoreGilToken) {
         self.ordereddict_registry.lock().unwrap().clear();
-        self.chainmap_registry.lock().unwrap().clear();
         let drained_deques: Vec<DequeState> = {
             let mut deques = self.deque_registry.lock().unwrap();
             deques.drain().map(|(_, state)| state).collect()
@@ -2187,9 +1779,10 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
         };
         let handle_bits = unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, handle_name_bits) };
         dec_ref_bits(_py, handle_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
+        let handle_bits = match handle_bits {
+            Ok(handle) => handle,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let Some(handle_bits) = handle_bits else {
             return raise_exception::<_>(_py, "RuntimeError", "defaultdict handle is missing");
         };
@@ -2198,7 +1791,12 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(dict_bits) = (unsafe { dict_like_bits_from_ptr(_py, self_ptr) }) else {
+        let Some(dict_bits) = (unsafe {
+            (match dict_like_bits_from_ptr(_py, self_ptr) {
+                Ok(storage) => storage,
+                Err(()) => return MoltObject::none().bits(),
+            })
+        }) else {
             return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
         };
         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -2212,9 +1810,8 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
                     "defaultdict storage is unavailable",
                 );
             }
-            dict_set_in_place(_py, dict_ptr, key_bits, val);
         }
-        if exception_pending(_py) {
+        if !unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val) } {
             dec_ref_bits(_py, val);
             return MoltObject::none().bits();
         }

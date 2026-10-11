@@ -414,10 +414,13 @@ pub(super) fn importlib_find_spec_orchestrated_impl(
         }
         let cache_key_bits = MoltObject::from_ptr(cache_key_ptr).bits();
         let cached_bits = unsafe { dict_get_in_place(_py, spec_cache_ptr, cache_key_bits) };
-        if exception_pending(_py) {
-            dec_ref_bits(_py, cache_key_bits);
-            return Err(MoltObject::none().bits());
-        }
+        let cached_bits = match cached_bits {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(_py, cache_key_bits);
+                return Err(MoltObject::none().bits());
+            }
+        };
         if let Some(cached_bits) = cached_bits {
             if !obj_from_bits(cached_bits).is_none() {
                 inc_ref_bits(_py, cached_bits);
@@ -439,10 +442,9 @@ pub(super) fn importlib_find_spec_orchestrated_impl(
                 machinery_bits,
             },
         )?;
-        unsafe {
-            dict_set_in_place(_py, spec_cache_ptr, cache_key_bits, spec_bits);
-        }
-        if exception_pending(_py) {
+        let completed =
+            unsafe { dict_set_in_place(_py, spec_cache_ptr, cache_key_bits, spec_bits) };
+        if !completed {
             if !obj_from_bits(spec_bits).is_none() {
                 dec_ref_bits(_py, spec_bits);
             }

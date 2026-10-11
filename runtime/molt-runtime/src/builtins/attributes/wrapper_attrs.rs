@@ -393,14 +393,18 @@ pub(crate) fn prepare_wrapper_members(
                     };
                 let enabled = member.enabled(major, minor);
                 if !enabled {
-                    if let Some(existing) = dict_get_in_place(py, staged, name_bits)
-                        && let Some(ptr) = obj_from_bits(existing).as_ptr()
+                    if let Some(existing) = match dict_get_in_place(py, staged, name_bits) {
+                        Ok(value) => value,
+                        Err(()) => return None,
+                    } && let Some(ptr) = obj_from_bits(existing).as_ptr()
                         && layout::native_descriptor_flavor(ptr) == Some(member.flavor)
                         && layout::native_descriptor_operation(ptr) == Some(member.operation.tag())
                         && layout::native_descriptor_owner_bits(ptr) == class_bits
                         && layout::native_descriptor_getter_bits(ptr) == getter
                     {
-                        dict_del_in_place(py, staged, name_bits);
+                        if dict_del_in_place(py, staged, name_bits).is_err() {
+                            return None;
+                        }
                     }
                     if exception_pending(py) {
                         return None;
@@ -410,7 +414,10 @@ pub(crate) fn prepare_wrapper_members(
                 // Preserve identity for already-present version-gated members
                 // whose admission did not change between the two versions.
                 if previous_version != 0
-                    && let Some(existing) = dict_get_in_place(py, staged, name_bits)
+                    && let Some(existing) = match dict_get_in_place(py, staged, name_bits) {
+                        Ok(value) => value,
+                        Err(()) => return None,
+                    }
                     && let Some(ptr) = obj_from_bits(existing).as_ptr()
                     && layout::native_descriptor_flavor(ptr) == Some(member.flavor)
                     && layout::native_descriptor_operation(ptr) == Some(member.operation.tag())
@@ -448,8 +455,7 @@ pub(crate) fn prepare_wrapper_members(
                 if exception_pending(py) {
                     return None;
                 }
-                dict_set_in_place(py, staged, name_bits, descriptor);
-                if exception_pending(py) {
+                if !dict_set_in_place(py, staged, name_bits, descriptor) {
                     return None;
                 }
             }
@@ -602,12 +608,14 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                         _ => unreachable!("invalid super member selector"),
                     };
                     inc_ref_bits(py, value);
-                    Some(value)
+                    Ok(Some(value))
                 }
                 MemberOperation::CoroutineRunning
                 | MemberOperation::CoroutineFrame
                 | MemberOperation::CoroutineCode
-                | MemberOperation::CoroutineAwait => coroutine_member_value(py, object, operation),
+                | MemberOperation::CoroutineAwait => coroutine_member_value(py, object, operation)
+                    .map(Some)
+                    .ok_or(()),
                 MemberOperation::Reference(index) => {
                     let bits = layout::wrapper_reference_bits(object, index);
                     let bits = if is_missing_bits(py, bits) {
@@ -616,38 +624,41 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                         bits
                     };
                     inc_ref_bits(py, bits);
-                    Some(bits)
+                    Ok(Some(bits))
                 }
                 MemberOperation::Name => property_name_value(py, object),
                 MemberOperation::Abstract => abstract_member(
                     py,
                     object,
                     WrapperKind::from_type_id(object_type_id(object)).unwrap(),
-                ),
+                )
+                .map(Some),
                 MemberOperation::Dictionary => {
-                    crate::object::field_storage::materialize(py, object).inspect(|&bits| {
-                        inc_ref_bits(py, bits);
-                    })
+                    crate::object::field_storage::materialize(py, object)
+                        .inspect(|&bits| {
+                            inc_ref_bits(py, bits);
+                        })
+                        .map(Some)
+                        .ok_or(())
                 }
-                MemberOperation::LazyMetadata => lazy_wrapped_attribute(py, object, name),
+                MemberOperation::LazyMetadata => lazy_wrapped_attribute(py, object, name).map(Some),
                 MemberOperation::RootMetadata(_) => {
                     unreachable!("root metadata has no wrapper callback")
                 }
             };
-            result.unwrap_or_else(|| {
-                if !exception_pending(py) {
-                    raise_exception::<()>(
-                        py,
-                        "AttributeError",
-                        &format!(
-                            "'{}' object has no attribute '{}'",
-                            class_name_for_error(object_class_bits(object)),
-                            string_obj_to_owned(obj_from_bits(name)).unwrap_or_default()
-                        ),
-                    );
-                }
-                MoltObject::none().bits()
-            })
+            match result {
+                Ok(Some(value)) => value,
+                Ok(None) => raise_exception::<u64>(
+                    py,
+                    "AttributeError",
+                    &format!(
+                        "'{}' object has no attribute '{}'",
+                        class_name_for_error(object_class_bits(object)),
+                        string_obj_to_owned(obj_from_bits(name)).unwrap_or_default(),
+                    ),
+                ),
+                Err(()) => MoltObject::none().bits(),
+            }
         }
     })
 }
@@ -696,7 +707,11 @@ unsafe fn mutate_member(
                 let Some(value) = value else {
                     return raise_exception::<u64>(py, "TypeError", "cannot delete __dict__");
                 };
-                crate::object::field_storage::replace_dictionary(py, object, Some(value));
+                if crate::object::field_storage::replace_dictionary(py, object, Some(value))
+                    .is_err()
+                {
+                    return MoltObject::none().bits();
+                }
             }
             MemberOperation::LazyMetadata => {
                 let Some(dictionary) = crate::object::field_storage::materialize(py, object) else {
@@ -706,9 +721,17 @@ unsafe fn mutate_member(
                 let dictionary = obj_from_bits(dictionary).as_ptr().unwrap();
                 let _dictionary_owner = PtrDropGuard::new(dictionary);
                 match value {
-                    Some(value) => dict_set_in_place(py, dictionary, name, value),
+                    Some(value) => {
+                        if !dict_set_in_place(py, dictionary, name, value) {
+                            return MoltObject::none().bits();
+                        }
+                    }
                     None => {
-                        if !dict_del_in_place(py, dictionary, name) && !exception_pending(py) {
+                        let deleted = match dict_del_in_place(py, dictionary, name) {
+                            Ok(deleted) => deleted,
+                            Err(()) => return MoltObject::none().bits(),
+                        };
+                        if !deleted {
                             raise_exception::<()>(
                                 py,
                                 "AttributeError",
@@ -750,43 +773,49 @@ pub extern "C" fn molt_wrapper_member_delete(descriptor: u64, instance: u64) -> 
 
 /// Ordinary Python lookup, with only AttributeError treated as absent. Pins the
 /// target through callbacks; returned values are owned.
-unsafe fn optional_attribute(py: &PyToken<'_>, target: u64, name: u64) -> Option<u64> {
+unsafe fn optional_attribute(py: &PyToken<'_>, target: u64, name: u64) -> Result<Option<u64>, ()> {
     inc_ref_bits(py, target);
-    let value = molt_get_attr_name(target, name);
+    let value = super::get_attr_name(py, target, name);
     dec_ref_bits(py, target);
-    if exception_pending(py) {
-        dec_ref_bits(py, value);
-        clear_attribute_error_if_pending(py);
-        None
-    } else {
-        Some(value)
+    match value {
+        Ok(value) => Ok(Some(value)),
+        Err(()) => {
+            if clear_attribute_error_if_pending(py) {
+                Ok(None)
+            } else {
+                Err(())
+            }
+        }
     }
 }
 
 /// Native property name query for both __name__ and descriptor diagnostics.
 /// Does not invoke a property subclass's override. Some is an owned value,
 /// including explicit None; None means absent or a pending callback exception.
-pub(crate) unsafe fn property_name_value(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
+pub(crate) unsafe fn property_name_value(
+    py: &PyToken<'_>,
+    object: *mut u8,
+) -> Result<Option<u64>, ()> {
     unsafe {
         let name = layout::property_name_bits(object);
         if !is_missing_bits(py, name) {
             inc_ref_bits(py, name);
-            return Some(name);
+            return Ok(Some(name));
         }
         let getter = property_get_bits(object);
         if obj_from_bits(getter).is_none() {
-            return None;
+            return Ok(None);
         }
-        let name = attr_name_bits_from_bytes(py, b"__name__")?;
+        let name = attr_name_bits_from_bytes(py, b"__name__").ok_or(())?;
         let result = optional_attribute(py, getter, name);
         dec_ref_bits(py, name);
         result
     }
 }
 
-unsafe fn abstract_member(py: &PyToken<'_>, object: *mut u8, kind: WrapperKind) -> Option<u64> {
+unsafe fn abstract_member(py: &PyToken<'_>, object: *mut u8, kind: WrapperKind) -> Result<u64, ()> {
     unsafe {
-        let name = attr_name_bits_from_bytes(py, b"__isabstractmethod__")?;
+        let name = attr_name_bits_from_bytes(py, b"__isabstractmethod__").ok_or(())?;
         let count = if kind == WrapperKind::Property { 3 } else { 1 };
         let result = (|| {
             for index in 0..count {
@@ -796,20 +825,15 @@ unsafe fn abstract_member(py: &PyToken<'_>, object: *mut u8, kind: WrapperKind) 
                 if is_missing_bits(py, target) || obj_from_bits(target).is_none() {
                     continue;
                 }
-                if let Some(value) = optional_attribute(py, target, name) {
-                    let truth = is_truthy(py, obj_from_bits(value));
+                if let Some(value) = optional_attribute(py, target, name)? {
+                    let truth = crate::object::ops::truth_value(py, obj_from_bits(value));
                     dec_ref_bits(py, value);
-                    if exception_pending(py) {
-                        return None;
+                    if truth? {
+                        return Ok(MoltObject::from_bool(true).bits());
                     }
-                    if truth {
-                        return Some(MoltObject::from_bool(true).bits());
-                    }
-                } else if exception_pending(py) {
-                    return None;
                 }
             }
-            Some(MoltObject::from_bool(false).bits())
+            Ok(MoltObject::from_bool(false).bits())
         })();
         dec_ref_bits(py, name);
         result
@@ -819,21 +843,18 @@ unsafe fn abstract_member(py: &PyToken<'_>, object: *mut u8, kind: WrapperKind) 
 /// Materialize and pin the selected dictionary before calling into the target.
 /// If the callback replaces __dict__, the in-flight cache still belongs to the
 /// selected dictionary, not to a subsequently installed one.
-unsafe fn lazy_wrapped_attribute(py: &PyToken<'_>, object: *mut u8, name: u64) -> Option<u64> {
+unsafe fn lazy_wrapped_attribute(py: &PyToken<'_>, object: *mut u8, name: u64) -> Result<u64, ()> {
     unsafe {
         let target = layout::wrapper_reference_bits(object, 0);
         inc_ref_bits(py, target);
         let result = (|| {
-            let dictionary = crate::object::field_storage::materialize(py, object)?;
+            let dictionary = crate::object::field_storage::materialize(py, object).ok_or(())?;
             inc_ref_bits(py, dictionary);
             let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
             let _dictionary_owner = PtrDropGuard::new(dictionary_ptr);
-            if let Some(value) = dict_get_in_place(py, dictionary_ptr, name) {
+            if let Some(value) = dict_get_in_place(py, dictionary_ptr, name)? {
                 inc_ref_bits(py, value);
-                return Some(value);
-            }
-            if exception_pending(py) {
-                return None;
+                return Ok(value);
             }
             if is_missing_bits(py, target) {
                 raise_exception::<()>(
@@ -841,19 +862,14 @@ unsafe fn lazy_wrapped_attribute(py: &PyToken<'_>, object: *mut u8, name: u64) -
                     "RuntimeError",
                     "uninitialized descriptor wrapper object",
                 );
-                return None;
+                return Err(());
             }
-            let value = molt_get_attr_name(target, name);
-            if exception_pending(py) {
+            let value = super::get_attr_name(py, target, name)?;
+            if !dict_set_in_place(py, dictionary_ptr, name, value) {
                 dec_ref_bits(py, value);
-                return None;
+                return Err(());
             }
-            dict_set_in_place(py, dictionary_ptr, name, value);
-            if exception_pending(py) {
-                dec_ref_bits(py, value);
-                return None;
-            }
-            Some(value)
+            Ok(value)
         })();
         dec_ref_bits(py, target);
         result
@@ -883,13 +899,23 @@ pub(crate) unsafe fn wrapper_copy_metadata(py: &PyToken<'_>, object: u64, target
             let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
                 return false;
             };
-            if let Some(value) = optional_attribute(py, target, name_bits) {
-                let result = molt_set_attr_name(object, name_bits, value);
-                crate::call::discard_owned_call_result(py, result);
-                dec_ref_bits(py, value);
-            }
+            let completed = match optional_attribute(py, target, name_bits) {
+                Ok(Some(value)) => {
+                    let result = super::mutate_attr_name(
+                        py,
+                        object,
+                        name_bits,
+                        crate::builtins::attr::DescriptorMutation::Set(value),
+                        molt_cpython_abi::hooks::AttributeMutation::Normal,
+                    );
+                    dec_ref_bits(py, value);
+                    result.is_ok()
+                }
+                Ok(None) => true,
+                Err(()) => false,
+            };
             dec_ref_bits(py, name_bits);
-            if exception_pending(py) {
+            if !completed {
                 return false;
             }
         }
@@ -950,7 +976,11 @@ mod tests {
                         let version =
                             attr_name_bits_from_bytes(py, format!("3.{minor}.0").as_bytes())
                                 .unwrap();
-                        assert!(dict_get_in_place(py, dictionary, name).is_none());
+                        assert!(
+                            dict_get_in_place(py, dictionary, name)
+                                .expect("dictionary lookup succeeds")
+                                .is_none()
+                        );
                         let publish = || {
                             crate::object::ops_sys::molt_sys_set_version_info(
                                 MoltObject::from_int(3).bits(),
@@ -963,7 +993,8 @@ mod tests {
                         };
                         publish();
                         assert!(!exception_pending(py));
-                        let descriptor = dict_get_in_place(py, dictionary, name);
+                        let descriptor = dict_get_in_place(py, dictionary, name)
+                            .expect("dictionary lookup succeeds");
                         assert_eq!(descriptor.is_some(), minor >= 14);
                         assert_eq!(
                             crate::object::ops_sys::runtime_target_python_info(runtime_state(py))
@@ -979,7 +1010,11 @@ mod tests {
                         assert!(!exception_pending(py));
                         assert_eq!(class_dict_bits(root), namespace);
                         assert_eq!(class_layout_version_bits(root), epoch);
-                        assert_eq!(dict_get_in_place(py, dictionary, name), descriptor);
+                        assert_eq!(
+                            dict_get_in_place(py, dictionary, name)
+                                .expect("dictionary lookup succeeds"),
+                            descriptor
+                        );
                         assert_eq!(
                             runtime_state(py)
                                 .attributes
@@ -1003,7 +1038,11 @@ mod tests {
                         molt_exception_clear();
                         assert_eq!(class_dict_bits(root), namespace);
                         assert_eq!(class_layout_version_bits(root), epoch);
-                        assert_eq!(dict_get_in_place(py, dictionary, name), descriptor);
+                        assert_eq!(
+                            dict_get_in_place(py, dictionary, name)
+                                .expect("dictionary lookup succeeds"),
+                            descriptor
+                        );
                         assert_eq!(
                             runtime_state(py)
                                 .attributes
@@ -1032,7 +1071,9 @@ mod tests {
                 let pointer = obj_from_bits(dictionary).as_ptr().unwrap();
                 let func_name = attr_name_bits_from_bytes(py, b"__func__").unwrap();
                 let annotations_name = attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
-                let func = dict_get_in_place(py, pointer, func_name).unwrap();
+                let func = dict_get_in_place(py, pointer, func_name)
+                    .expect("dictionary lookup succeeds")
+                    .unwrap();
                 let object_class_name = attr_name_bits_from_bytes(py, b"__objclass__").unwrap();
                 let member_name = attr_name_bits_from_bytes(py, b"__name__").unwrap();
                 let read_name = molt_get_attr_name(func, member_name);
@@ -1049,7 +1090,8 @@ mod tests {
                     func,
                     None,
                     Some(classes.staticmethod),
-                );
+                )
+                .expect("operation succeeds");
                 assert_eq!(class_read, func);
                 dec_ref_bits(py, class_read);
                 let wrapper = alloc_staticmethod_obj(py, MoltObject::from_int(43).bits());
@@ -1058,7 +1100,8 @@ mod tests {
                     func,
                     Some(MoltObject::from_ptr(wrapper).bits()),
                     Some(classes.staticmethod),
-                );
+                )
+                .expect("operation succeeds");
                 assert_eq!(direct_read, MoltObject::from_int(43).bits());
                 dec_ref_bits(py, direct_read);
                 dec_ref_bits(py, MoltObject::from_ptr(wrapper).bits());
@@ -1073,8 +1116,16 @@ mod tests {
                 let staged = prepare_wrapper_members(py, 3, 14).unwrap();
                 assert_eq!(class_dict_bits(class), dictionary);
                 assert_eq!(class_layout_version_bits(class), original_version);
-                assert!(dict_get_in_place(py, pointer, annotations_name).is_none());
-                assert!(dict_get_in_place(py, root_dictionary, root_name).is_none());
+                assert!(
+                    dict_get_in_place(py, pointer, annotations_name)
+                        .expect("dictionary lookup succeeds")
+                        .is_none()
+                );
+                assert!(
+                    dict_get_in_place(py, root_dictionary, root_name)
+                        .expect("dictionary lookup succeeds")
+                        .is_none()
+                );
                 assert_eq!(class_layout_version_bits(root), root_version);
                 drop(staged);
                 assert_eq!(class_layout_version_bits(root), root_version);
@@ -1083,7 +1134,11 @@ mod tests {
                 for minor in [14, 13, 12, 14] {
                     prepare_wrapper_members(py, 3, minor).unwrap().commit(py);
                     assert_eq!(class_dict_bits(class), dictionary);
-                    assert_eq!(dict_get_in_place(py, pointer, func_name), Some(func));
+                    assert_eq!(
+                        dict_get_in_place(py, pointer, func_name)
+                            .expect("dictionary lookup succeeds"),
+                        Some(func)
+                    );
                     for (kind, owner) in [
                         (MemberOwner::Staticmethod, classes.staticmethod),
                         (MemberOwner::Classmethod, classes.classmethod),
@@ -1102,7 +1157,8 @@ mod tests {
                         {
                             let name =
                                 attr_name_bits_from_bytes(py, member.name.as_bytes()).unwrap();
-                            let descriptor = dict_get_in_place(py, namespace, name);
+                            let descriptor = dict_get_in_place(py, namespace, name)
+                                .expect("dictionary lookup succeeds");
                             if member.enabled(3, minor) {
                                 let descriptor =
                                     obj_from_bits(descriptor.unwrap()).as_ptr().unwrap();
@@ -1414,13 +1470,13 @@ mod tests {
                 molt_set_attr_name(MoltObject::from_ptr(object).bits(), doc, none);
                 assert_eq!(layout::property_doc_bits(object), none);
                 assert!(layout::property_replace_name_bits(py, object, none));
-                assert_eq!(property_name_value(py, object), Some(none));
+                assert_eq!(property_name_value(py, object), Ok(Some(none)));
                 assert!(layout::property_replace_name_bits(
                     py,
                     object,
                     missing_bits(py)
                 ));
-                assert_eq!(property_name_value(py, object), None);
+                assert_eq!(property_name_value(py, object), Ok(None));
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, text);
                 dec_ref_bits(py, doc);

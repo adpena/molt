@@ -36,26 +36,25 @@ fn traceback_attribute<'a, 'py>(
     py: &'a PyToken<'py>,
     value: u64,
     name: u64,
-) -> Option<ExceptionValue<'a, 'py>> {
-    let ptr = obj_from_bits(value).as_ptr()?;
+) -> Result<Option<ExceptionValue<'a, 'py>>, ()> {
+    let Some(ptr) = obj_from_bits(value).as_ptr() else {
+        return Ok(None);
+    };
     unsafe { crate::builtins::attr::attr_lookup_ptr_allow_missing(py, ptr, name) }
-        .map(|bits| ExceptionValue::adopt(py, bits))
+        .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
 }
 
-fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Option<(Vec<u8>, i64, Vec<u8>)> {
+fn traceback_frame_info(
+    py: &PyToken<'_>,
+    frame: u64,
+) -> Result<Option<(Vec<u8>, i64, Vec<u8>)>, ()> {
     let interned = &runtime_state(py).interned;
     let code_name = intern_static_name(py, &interned.f_code_name, b"f_code");
     let line_name = intern_static_name(py, &interned.f_lineno_name, b"f_lineno");
-    let code = traceback_attribute(py, frame, code_name);
-    if exception_pending(py) {
-        return None;
-    }
-    let line = traceback_attribute(py, frame, line_name);
-    if exception_pending(py) {
-        return None;
-    }
+    let code = traceback_attribute(py, frame, code_name)?;
+    let line = traceback_attribute(py, frame, line_name)?;
     if code.is_none() && line.is_none() {
-        return None;
+        return Ok(None);
     }
     let lineno = line
         .as_ref()
@@ -65,16 +64,11 @@ fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Option<(Vec<u8>, i64, V
     let mut function = b"<module>".to_vec();
     if let Some(code) = code {
         let filename_name =
-            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_filename")?);
-        let function_name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_name")?);
-        let file = traceback_attribute(py, code.bits(), filename_name.bits());
-        if exception_pending(py) {
-            return None;
-        }
-        let name = traceback_attribute(py, code.bits(), function_name.bits());
-        if exception_pending(py) {
-            return None;
-        }
+            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_filename").ok_or(())?);
+        let function_name =
+            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_name").ok_or(())?);
+        let file = traceback_attribute(py, code.bits(), filename_name.bits())?;
+        let name = traceback_attribute(py, code.bits(), function_name.bits())?;
         if let Some(file) = file.and_then(|value| string_obj_bytes(obj_from_bits(value.bits()))) {
             filename = file;
         }
@@ -84,7 +78,7 @@ fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Option<(Vec<u8>, i64, V
             function = name;
         }
     }
-    Some((filename, lineno, function))
+    Ok(Some((filename, lineno, function)))
 }
 
 pub(crate) fn traceback_frames(
@@ -104,21 +98,24 @@ pub(crate) fn traceback_frames(
         if limit.is_some_and(|max| out.len() >= max) || !seen.insert(current.bits()) {
             break;
         }
-        let Some(frame) = traceback_attribute(py, current.bits(), frame_name) else {
+        let Some(frame) = (match traceback_attribute(py, current.bits(), frame_name) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        }) else {
             break;
         };
-        let line = traceback_attribute(py, current.bits(), line_name);
-        if exception_pending(py) {
-            return Vec::new();
-        }
-        let next = traceback_attribute(py, current.bits(), next_name);
-        if exception_pending(py) {
-            return Vec::new();
-        }
-        let info = traceback_frame_info(py, frame.bits());
-        if exception_pending(py) {
-            return Vec::new();
-        }
+        let line = (match traceback_attribute(py, current.bits(), line_name) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        });
+        let next = (match traceback_attribute(py, current.bits(), next_name) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        });
+        let info = (match traceback_frame_info(py, frame.bits()) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        });
         let (filename, frame_line, name) =
             info.unwrap_or_else(|| (b"<unknown>".to_vec(), 0, b"<module>".to_vec()));
         let lineno = line
@@ -1016,13 +1013,16 @@ pub(crate) fn traceback_payload_from_frame_chain(
     let mut seen = HashSet::new();
     let mut owners = Vec::new();
     while !obj_from_bits(current.bits()).is_none() && seen.insert(current.bits()) {
-        let Some((filename, lineno, name)) = traceback_frame_info(py, current.bits()) else {
+        let Some((filename, lineno, name)) = (match traceback_frame_info(py, current.bits()) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        }) else {
             break;
         };
-        let back = traceback_attribute(py, current.bits(), back_name);
-        if exception_pending(py) {
-            return Vec::new();
-        }
+        let back = (match traceback_attribute(py, current.bits(), back_name) {
+            Ok(value) => value,
+            Err(()) => return Vec::new(),
+        });
         let line = traceback_source_line_native(py, &filename, lineno);
         out.push(TracebackPayloadFrame {
             filename,
@@ -1112,12 +1112,12 @@ pub(crate) fn traceback_payload_from_lazy_chain(
 pub(crate) fn traceback_payload_from_entry(
     _py: &PyToken<'_>,
     entry_bits: u64,
-) -> Option<TracebackPayloadFrame> {
+) -> Result<Option<TracebackPayloadFrame>, ()> {
     if exception_pending(_py) {
-        return None;
+        return Err(());
     }
     if obj_from_bits(entry_bits).is_none() {
-        return None;
+        return Ok(None);
     }
     let entry_obj = obj_from_bits(entry_bits);
     if let Some(entry_ptr) = entry_obj.as_ptr() {
@@ -1128,26 +1128,36 @@ pub(crate) fn traceback_payload_from_entry(
                     _py,
                     entry_ptr,
                     "traceback entry snapshot allocation failed",
-                )?;
+                )
+                .ok_or(())?;
                 if elems.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 if elems.len() == 1 {
                     return traceback_payload_from_entry(_py, elems[0]);
                 }
                 if elems.len() >= 7 {
                     let filename = format_obj_str_bytes(_py, obj_from_bits(elems[0]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let end_lineno = to_i64(obj_from_bits(elems[2])).unwrap_or(lineno);
                     let colno = to_i64(obj_from_bits(elems[3])).unwrap_or(-1);
                     let end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(-1);
                     let name = format_obj_str_bytes(_py, obj_from_bits(elems[5]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let line = if obj_from_bits(elems[6]).is_none() {
                         traceback_source_span_native(_py, &filename, lineno, end_lineno)
                     } else {
                         format_obj_str_bytes(_py, obj_from_bits(elems[6]))
                     };
-                    return Some(TracebackPayloadFrame {
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
+                    return Ok(Some(TracebackPayloadFrame {
                         filename,
                         lineno,
                         end_lineno,
@@ -1155,18 +1165,27 @@ pub(crate) fn traceback_payload_from_entry(
                         end_colno,
                         name,
                         line,
-                    });
+                    }));
                 }
                 if elems.len() >= 4 {
                     let filename = format_obj_str_bytes(_py, obj_from_bits(elems[0]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let name = format_obj_str_bytes(_py, obj_from_bits(elems[2]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let line = if obj_from_bits(elems[3]).is_none() {
                         Vec::new()
                     } else {
                         format_obj_str_bytes(_py, obj_from_bits(elems[3]))
                     };
-                    return Some(TracebackPayloadFrame {
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
+                    return Ok(Some(TracebackPayloadFrame {
                         filename,
                         lineno,
                         end_lineno: lineno,
@@ -1174,14 +1193,23 @@ pub(crate) fn traceback_payload_from_entry(
                         end_colno: -1,
                         name,
                         line,
-                    });
+                    }));
                 }
                 if elems.len() >= 3 {
                     let filename = format_obj_str_bytes(_py, obj_from_bits(elems[0]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
                     let name = format_obj_str_bytes(_py, obj_from_bits(elems[2]));
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
                     let line = traceback_source_line_native(_py, &filename, lineno);
-                    return Some(TracebackPayloadFrame {
+                    if exception_pending(_py) {
+                        return Err(());
+                    }
+                    return Ok(Some(TracebackPayloadFrame {
                         filename,
                         lineno,
                         end_lineno: lineno,
@@ -1189,7 +1217,7 @@ pub(crate) fn traceback_payload_from_entry(
                         end_colno: -1,
                         name,
                         line,
-                    });
+                    }));
                 }
                 if elems.len() == 2 {
                     let first_obj = obj_from_bits(elems[0]);
@@ -1197,7 +1225,7 @@ pub(crate) fn traceback_payload_from_entry(
                     if let (Some(filename), Some(lineno)) =
                         (string_obj_bytes(first_obj), to_i64(second_obj))
                     {
-                        return Some(TracebackPayloadFrame {
+                        return Ok(Some(TracebackPayloadFrame {
                             filename,
                             lineno,
                             end_lineno: lineno,
@@ -1205,12 +1233,12 @@ pub(crate) fn traceback_payload_from_entry(
                             end_colno: 0,
                             name: "<module>".as_bytes().to_vec(),
                             line: Vec::new(),
-                        });
+                        }));
                     }
                     if let (Some(lineno), Some(filename)) =
                         (to_i64(first_obj), string_obj_bytes(second_obj))
                     {
-                        return Some(TracebackPayloadFrame {
+                        return Ok(Some(TracebackPayloadFrame {
                             filename,
                             lineno,
                             end_lineno: lineno,
@@ -1218,13 +1246,13 @@ pub(crate) fn traceback_payload_from_entry(
                             end_colno: 0,
                             name: "<module>".as_bytes().to_vec(),
                             line: Vec::new(),
-                        });
+                        }));
                     }
                     if let (Some(symbol), Some(_name)) =
                         (string_obj_bytes(first_obj), string_obj_bytes(second_obj))
                     {
                         let (filename, name) = traceback_split_molt_symbol(&symbol);
-                        return Some(TracebackPayloadFrame {
+                        return Ok(Some(TracebackPayloadFrame {
                             filename,
                             lineno: 0,
                             end_lineno: 0,
@@ -1232,10 +1260,10 @@ pub(crate) fn traceback_payload_from_entry(
                             end_colno: 0,
                             name,
                             line: Vec::new(),
-                        });
+                        }));
                     }
                 }
-                return None;
+                return Ok(None);
             }
             if type_id == TYPE_ID_DICT {
                 let interned = &runtime_state(_py).interned;
@@ -1247,35 +1275,42 @@ pub(crate) fn traceback_payload_from_entry(
                     intern_static_name(_py, &interned.end_lineno_name, b"end_lineno");
                 let colno_key = intern_static_name(_py, &interned.colno_name, b"colno");
                 let end_colno_key = intern_static_name(_py, &interned.end_colno_name, b"end_colno");
-                let filename_bits = dict_get_in_place(_py, entry_ptr, filename_key)?;
-                let lineno_bits = dict_get_in_place(_py, entry_ptr, lineno_key)?;
+                let Some(filename_bits) = dict_get_in_place(_py, entry_ptr, filename_key)? else {
+                    return Ok(None);
+                };
+                let Some(lineno_bits) = dict_get_in_place(_py, entry_ptr, lineno_key)? else {
+                    return Ok(None);
+                };
                 let lineno = to_i64(obj_from_bits(lineno_bits)).unwrap_or(0);
                 let filename = format_obj_str_bytes(_py, obj_from_bits(filename_bits));
                 if exception_pending(_py) {
-                    return None;
+                    return Err(());
                 }
-                let name = dict_get_in_place(_py, entry_ptr, name_key)
+                let name = dict_get_in_place(_py, entry_ptr, name_key)?
                     .map(|bits| format_obj_str_bytes(_py, obj_from_bits(bits)))
                     .unwrap_or_else(|| "<module>".as_bytes().to_vec());
                 if exception_pending(_py) {
-                    return None;
+                    return Err(());
                 }
-                let colno = dict_get_in_place(_py, entry_ptr, colno_key)
+                let colno = dict_get_in_place(_py, entry_ptr, colno_key)?
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
                     .unwrap_or(-1);
-                let end_colno = dict_get_in_place(_py, entry_ptr, end_colno_key)
+                let end_colno = dict_get_in_place(_py, entry_ptr, end_colno_key)?
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
                     .unwrap_or(-1);
-                let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)
+                let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)?
                     .and_then(|bits| to_i64(obj_from_bits(bits)))
                     .unwrap_or(lineno);
-                let line = dict_get_in_place(_py, entry_ptr, line_key)
+                let line = dict_get_in_place(_py, entry_ptr, line_key)?
                     .filter(|bits| !obj_from_bits(*bits).is_none())
                     .map(|bits| format_obj_str_bytes(_py, obj_from_bits(bits)))
                     .unwrap_or_else(|| {
                         traceback_source_span_native(_py, &filename, lineno, end_lineno)
                     });
-                return Some(TracebackPayloadFrame {
+                if exception_pending(_py) {
+                    return Err(());
+                }
+                return Ok(Some(TracebackPayloadFrame {
                     filename,
                     lineno,
                     end_lineno,
@@ -1283,14 +1318,14 @@ pub(crate) fn traceback_payload_from_entry(
                     end_colno,
                     name,
                     line,
-                });
+                }));
             }
         }
     }
 
     if let Some(value) = string_obj_bytes(entry_obj) {
         let (filename, name) = traceback_split_molt_symbol(&value);
-        return Some(TracebackPayloadFrame {
+        return Ok(Some(TracebackPayloadFrame {
             filename,
             lineno: 0,
             end_lineno: 0,
@@ -1298,15 +1333,15 @@ pub(crate) fn traceback_payload_from_entry(
             end_colno: 0,
             name,
             line: Vec::new(),
-        });
+        }));
     }
 
     let mut from_tb = traceback_payload_from_traceback(_py, entry_bits, Some(1));
     if let Some(frame) = from_tb.pop() {
-        return Some(frame);
+        return Ok(Some(frame));
     }
     let mut from_frame = traceback_payload_from_frame_chain(_py, entry_bits, Some(1));
-    from_frame.pop()
+    Ok(from_frame.pop())
 }
 
 pub(crate) fn traceback_payload_from_entries(
@@ -1332,7 +1367,11 @@ pub(crate) fn traceback_payload_from_entries(
     };
     let mut out: Vec<TracebackPayloadFrame> = Vec::new();
     for bits in elems.iter().copied() {
-        if let Some(frame) = traceback_payload_from_entry(_py, bits) {
+        let frame = match traceback_payload_from_entry(_py, bits) {
+            Ok(frame) => frame,
+            Err(()) => return Vec::new(),
+        };
+        if let Some(frame) = frame {
             out.push(frame);
             if let Some(max) = limit
                 && out.len() >= max
@@ -1391,10 +1430,10 @@ pub(crate) fn traceback_payload_from_source(
     if !from_frame.is_empty() {
         return from_frame;
     }
-    if let Some(frame) = traceback_payload_from_entry(_py, source_bits) {
-        return vec![frame];
+    match traceback_payload_from_entry(_py, source_bits) {
+        Ok(Some(frame)) => vec![frame],
+        Ok(None) | Err(()) => Vec::new(),
     }
-    Vec::new()
 }
 
 pub(crate) fn traceback_payload_to_list(

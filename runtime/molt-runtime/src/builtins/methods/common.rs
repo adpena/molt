@@ -91,10 +91,10 @@ pub(crate) fn configure_builtin_signature(
         if exception_pending(py) {
             return false;
         }
-        let existing = function_attr_bits(py, ptr, names_key);
-        if exception_pending(py) {
-            return false;
-        }
+        let existing = match function_attr_bits(py, ptr, names_key) {
+            Ok(value) => value,
+            Err(()) => return false,
+        };
         if existing.is_none() {
             let mut names = Vec::new();
             if names.try_reserve_exact(arg_names.len()).is_err() {
@@ -332,9 +332,17 @@ pub(crate) fn init_native_callable(
     spec: NativeCallableSpec<'_>,
     initialize: impl FnOnce() -> u64,
 ) -> u64 {
-    if exception_pending(py) {
-        return 0;
-    }
+    // Initialization builds unpublished runtime metadata. Its explicit outcome
+    // preserves an incoming error on success and selects a real failure. Public
+    // namespace lookup and publication below retain ordinary callback visibility.
+    let initialize = || {
+        let mut result = 0;
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            result = initialize();
+            result != 0
+        });
+        result
+    };
     if let Some(slot) = spec.cache {
         return init_atomic_bits(py, slot, initialize);
     }
@@ -359,9 +367,16 @@ pub(crate) fn init_native_callable(
             );
             return 0;
         };
-        if let Some(existing) = dict_get_in_place(py, dict, key) {
-            dec_ref_bits(py, key);
-            return existing;
+        match dict_get_in_place(py, dict, key) {
+            Ok(Some(existing)) => {
+                dec_ref_bits(py, key);
+                return existing;
+            }
+            Err(()) => {
+                dec_ref_bits(py, key);
+                return 0;
+            }
+            Ok(None) => {}
         }
         if crate::object::class_storage::class_declares(
             owner,
@@ -375,10 +390,10 @@ pub(crate) fn init_native_callable(
             dec_ref_bits(py, key);
             return 0;
         }
-        dict_set_in_place(py, dict, key, function);
+        let installed = dict_set_in_place(py, dict, key, function);
         dec_ref_bits(py, key);
         dec_ref_bits(py, function);
-        if exception_pending(py) {
+        if !installed {
             return 0;
         }
         class_bump_layout_version(owner);

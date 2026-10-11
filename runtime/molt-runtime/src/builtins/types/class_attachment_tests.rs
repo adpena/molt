@@ -144,7 +144,10 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         crate::molt_exception_clear();
         assert_eq!(type_of_bits(_py, first), metaclass);
         assert_eq!(
-            unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+            unsafe {
+                dict_get_in_place(_py, namespace_ptr, class_name)
+                    .expect("dictionary lookup succeeds")
+            },
             None
         );
         dec_ref_bits(_py, error);
@@ -154,7 +157,10 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         unsafe { dict_set_in_place(_py, namespace_ptr, class_name, property) };
         assert!(!exception_pending(_py));
         assert_eq!(
-            unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+            unsafe {
+                dict_get_in_place(_py, namespace_ptr, class_name)
+                    .expect("dictionary lookup succeeds")
+            },
             Some(property)
         );
         unsafe { crate::object::class_finish_definition(_py, first_ptr) }
@@ -187,7 +193,10 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
             crate::molt_exception_clear();
             assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
             assert_eq!(
-                unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+                unsafe {
+                    dict_get_in_place(_py, namespace_ptr, class_name)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(property)
             );
             assert_eq!(
@@ -282,7 +291,9 @@ fn tuple_sequence_descriptors_reject_other_physical_receivers() {
                 ("__getitem__", true),
                 ("__contains__", true),
             ] {
-                let method = crate::builtins::containers::tuple_method_bits(py, name).unwrap();
+                let method = crate::builtins::containers::tuple_method_bits(py, name)
+                    .expect("method lookup succeeds")
+                    .unwrap();
                 let result = unsafe {
                     if binary {
                         crate::call_callable2(py, method, receiver, MoltObject::from_int(0).bits())
@@ -416,7 +427,9 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
             );
             dec_ref_bits(py, copied);
         }
-        let base_method = crate::builtins::containers::tuple_method_bits(py, "__iter__").unwrap();
+        let base_method = crate::builtins::containers::tuple_method_bits(py, "__iter__")
+            .expect("method lookup succeeds")
+            .unwrap();
         let iterator = unsafe { crate::call_callable1(py, base_method, source) };
         assert!(!exception_pending(py));
         let item = crate::molt_next_builtin(iterator, missing_bits(py));

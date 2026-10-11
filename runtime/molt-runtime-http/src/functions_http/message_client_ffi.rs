@@ -51,8 +51,12 @@ pub extern "C" fn molt_http_message_set_raw(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let name = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits));
-        let value = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
+        let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let Some(value) = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits)) else {
+            return MoltObject::none().bits();
+        };
         let Some(()) = http_message_with_mut(handle, |message| {
             http_message_push_header(_py, message, name, value);
         }) else {
@@ -73,9 +77,10 @@ pub extern "C" fn molt_http_message_get(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle = http_message_header_key(
-            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
-        );
+        let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let needle = http_message_header_key(name.as_str());
         let Some(out) = http_message_with(handle, |message| {
             let Some(idx) = message
                 .index
@@ -111,9 +116,10 @@ pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) ->
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle = http_message_header_key(
-            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
-        );
+        let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let needle = http_message_header_key(name.as_str());
         let Some(out) = http_message_with(handle, |message| {
             let indices = message
                 .index
@@ -166,9 +172,10 @@ pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle = http_message_header_key(
-            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
-        );
+        let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let needle = http_message_header_key(name.as_str());
         let Some(found) = http_message_with(handle, |message| message.index.contains_key(&needle))
         else {
             return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");

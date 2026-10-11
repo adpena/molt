@@ -138,11 +138,17 @@ pub extern "C" fn __molt_logging_call_callable1(call_bits: u64, arg0: u64) -> u6
 pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(
     ptr: *mut u8,
     name_bits: u64,
-) -> u64 {
+    out: *mut u64,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let bits: u64 =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
-        bits
+        match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
+            Ok(Some(bits)) => {
+                unsafe { *out = bits };
+                1
+            }
+            Ok(None) => 0,
+            Err(()) => -1,
+        }
     })
 }
 

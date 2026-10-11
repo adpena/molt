@@ -240,11 +240,12 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
         if is_iterable_coroutine_bits(bits) {
             return iterator_poll_adapter(py, bits);
         }
-        let method =
-            unsafe { crate::builtins::attr::lookup_async_special_method(py, bits, b"__await__") };
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
+        let method = match unsafe {
+            crate::builtins::attr::lookup_async_special_method(py, bits, b"__await__")
+        } {
+            Ok(method) => method,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let Some(method) = method else {
             let message = format!(
                 "object {} can't be used in 'await' expression",
@@ -265,11 +266,13 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
         if is_coroutine_wrapper_bits(iterator) || is_native_poll_future_bits(iterator) {
             return iterator;
         }
-        let valid = unsafe { crate::builtins::attr::is_iterator_bits(py, iterator) };
-        if exception_pending(py) {
-            dec_ref_bits(py, iterator);
-            return MoltObject::none().bits();
-        }
+        let valid = match unsafe { crate::builtins::attr::is_iterator_bits(py, iterator) } {
+            Ok(valid) => valid,
+            Err(()) => {
+                dec_ref_bits(py, iterator);
+                return MoltObject::none().bits();
+            }
+        };
         if !valid {
             let message = format!(
                 "__await__() returned non-iterator of type '{}'",
@@ -743,7 +746,7 @@ fn iterator_resume(
                     b"throw".as_slice()
                 };
                 let name = crate::attr_name_bits_from_bytes(py, method_name);
-                let method = name.and_then(|name| {
+                let method = name.ok_or(()).and_then(|name| {
                     let method = unsafe {
                         crate::builtins::attr::attr_lookup_ptr_allow_missing(
                             py,
@@ -754,28 +757,25 @@ fn iterator_resume(
                     dec_ref_bits(py, name);
                     method
                 });
-                if exception_pending(py) {
-                    if let Some(method) = method {
+                match method {
+                    Err(()) => MoltObject::none().bits(),
+                    Ok(Some(method)) => {
+                        let result = unsafe {
+                            if closing {
+                                call_callable0(py, method)
+                            } else {
+                                call_throw_method(py, method, exception)
+                            }
+                        };
                         dec_ref_bits(py, method);
-                    }
-                    MoltObject::none().bits()
-                } else if let Some(method) = method {
-                    let result = unsafe {
-                        if closing {
-                            call_callable0(py, method)
+                        if closing && !exception_pending(py) {
+                            dec_ref_bits(py, result);
+                            raise_throw_argument(py, exception)
                         } else {
-                            call_throw_method(py, method, exception)
+                            result
                         }
-                    };
-                    dec_ref_bits(py, method);
-                    if closing && !exception_pending(py) {
-                        dec_ref_bits(py, result);
-                        raise_throw_argument(py, exception)
-                    } else {
-                        result
                     }
-                } else {
-                    raise_throw_argument(py, exception)
+                    Ok(None) => raise_throw_argument(py, exception),
                 }
             }
         }
@@ -815,8 +815,11 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         inc_ref_bits(py, value);
         return value;
     }
-    let marker_present = unsafe {
+    let marker_present = match unsafe {
         crate::builtins::attr::has_special_method(py, value, b"_asyncio_future_blocking")
+    } {
+        Ok(present) => present,
+        Err(()) => return MoltObject::none().bits(),
     };
     if !marker_present {
         return raise_exception::<_>(py, "RuntimeError", "Task got bad yield");

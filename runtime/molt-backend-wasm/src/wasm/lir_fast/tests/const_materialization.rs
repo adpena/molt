@@ -98,15 +98,15 @@ fn lir_literal_consts_materialize_without_generic_bail() {
         {
             let mut attrs = AttrDict::new();
             attrs.insert(
-                "s_value".into(),
-                AttrValue::Str("9223372036854775808".into()),
+                "bytes".into(),
+                AttrValue::Bytes(vec![0, 0x80, 0, 0, 0, 0, 0, 0, 0]),
             );
             (
                 "const_bigint_literal",
                 OpCode::ConstBigInt,
                 TirType::DynBox,
                 attrs,
-                "bigint_from_str",
+                "bigint_from_bytes",
             )
         },
         {

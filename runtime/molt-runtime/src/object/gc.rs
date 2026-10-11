@@ -666,6 +666,11 @@ struct NativeTrackedEntry {
     tracked: bool,
     finalized: bool,
     pinned: bool,
+    // Intrusive deferred-deallocation links reuse allocation identity metadata.
+    // A queued object remains enrolled, with C refcount zero and tracking off.
+    deferred_next: usize,
+    deferred: bool,
+    restore_tracked: bool,
 }
 
 const TRACKED_REGISTRY_SHARDS: usize = 64;
@@ -1262,6 +1267,9 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
             tracked: false,
             finalized: false,
             pinned: false,
+            deferred_next: 0,
+            deferred: false,
+            restore_tracked: false,
         },
     );
     drop(shard);
@@ -1283,6 +1291,9 @@ pub(crate) unsafe fn native_gc_track(address: usize) -> bool {
         return false;
     };
     assert_native_gc_owner(entry);
+    if entry.deferred {
+        return false;
+    }
     if !entry.tracked {
         if molt_cpython_abi::abi_types::is_immortal_refcnt(unsafe {
             molt_cpython_abi::native_gc_node_refcount(address)
@@ -1312,6 +1323,63 @@ pub(crate) fn native_gc_untrack(address: usize) {
     }
 }
 
+/// Attach an already allocated node to its thread's native destruction queue.
+/// This transition never allocates, runs a callback, changes the C refcount, or
+/// retires identity. The queued node cannot become a cycle-collection candidate.
+pub(crate) fn native_gc_defer(address: usize, next: usize, restore_tracking: bool) -> bool {
+    if address == 0 || address == next {
+        return false;
+    }
+    let shard_index = tracked_registry_shard_index_from_address(address);
+    let mut shard = lock_tracked_registry_shard(shard_index);
+    let Some(entry) = shard.native_nodes.get_mut(&address) else {
+        return false;
+    };
+    assert_native_gc_owner(entry);
+    if entry.pinned || entry.deferred {
+        return false;
+    }
+    assert_eq!(
+        unsafe { molt_cpython_abi::native_gc_node_refcount(address) },
+        0,
+        "queueing a native object with live C references"
+    );
+    entry.deferred_next = next;
+    entry.restore_tracked = restore_tracking && entry.tracked;
+    entry.deferred = true;
+    if entry.tracked {
+        entry.tracked = false;
+        profile_gc_untrack(1);
+    }
+    true
+}
+
+/// Remove one intrusive link before the caller invokes the object's actual
+/// destructor. CPython 3.14 restores prior tracking at this common entry;
+/// older local participants enter their slots already untracked.
+pub(crate) fn native_gc_resume(address: usize) -> usize {
+    let shard_index = tracked_registry_shard_index_from_address(address);
+    let mut shard = lock_tracked_registry_shard(shard_index);
+    let entry = shard
+        .native_nodes
+        .get_mut(&address)
+        .expect("queued native allocation identity disappeared");
+    assert_native_gc_owner(entry);
+    assert!(
+        !entry.pinned && !entry.tracked,
+        "queued native GC state changed"
+    );
+    assert!(entry.deferred, "native allocation was not queued");
+    entry.deferred = false;
+    let next = std::mem::take(&mut entry.deferred_next);
+    if std::mem::take(&mut entry.restore_tracked) {
+        entry.tracked = true;
+        entry.generation = 0;
+        profile_gc_track();
+    }
+    next
+}
+
 pub(crate) fn native_gc_deallocate(py: &PyToken<'_>, address: usize) {
     if address == 0 {
         return;
@@ -1329,6 +1397,10 @@ pub(crate) fn native_gc_deallocate(py: &PyToken<'_>, address: usize) {
     assert!(
         !slot.get().pinned,
         "native GC node deallocated while collector-pinned"
+    );
+    assert!(
+        !slot.get().deferred,
+        "native GC node deallocated while queued"
     );
     let entry = slot.remove();
     if entry.tracked {
@@ -4165,12 +4237,12 @@ mod tests {
             // Candidate-order demotion would leave it tracked one GC too long.
             let tuple_dict = alloc_dict_with_pairs(_py, &[key, list_bits]);
             let late_tuple = alloc_tuple(_py, &[atomic]);
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 _py,
                 tuple_dict,
                 key,
                 MoltObject::from_ptr(late_tuple).bits(),
-            );
+            ));
             collect_cycles(_py);
             assert!(!gc_is_tracked(late_tuple));
             assert_eq!(
@@ -4183,9 +4255,9 @@ mod tests {
                 let mapping = alloc_dict_with_pairs(_py, &[key, list_bits]);
                 let bits = MoltObject::from_ptr(mapping).bits();
                 match operation {
-                    0 => dict_set_in_place(_py, mapping, key, atomic),
+                    0 => assert!(dict_set_in_place(_py, mapping, key, atomic)),
                     1 => {
-                        assert!(crate::object::ops::dict_del_in_place(_py, mapping, key));
+                        assert!(crate::object::ops::dict_del_in_place(_py, mapping, key).unwrap());
                     }
                     2 => {
                         let value = crate::object::ops_dict::molt_dict_pop(
@@ -4244,7 +4316,7 @@ mod tests {
             let parent_bits = MoltObject::from_ptr(parent).bits();
             collect_cycles(_py);
             assert!(gc_is_tracked(parent));
-            dict_set_in_place(_py, child, key, parent_bits);
+            assert!(dict_set_in_place(_py, child, key, parent_bits));
             dec_ref_bits(_py, child_bits);
             dec_ref_bits(_py, parent_bits);
             assert_eq!(

@@ -319,17 +319,17 @@ fn parse_blake2_options(
             return Ok(opts);
         }
     }
-    let get_opt = |key: &str| -> Option<u64> {
+    let get_opt = |key: &str| -> Result<Option<u64>, u64> {
         let key_ptr = alloc_string(_py, key.as_bytes());
         if key_ptr.is_null() {
-            return None;
+            return Err(MoltObject::none().bits());
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let value = unsafe { dict_get_in_place(_py, ptr, key_bits) };
         dec_ref_bits(_py, key_bits);
-        value
+        value.map_err(|()| MoltObject::none().bits())
     };
-    if let Some(bits) = get_opt("digest_size") {
+    if let Some(bits) = get_opt("digest_size")? {
         let val = int_from_bits(_py, bits, "digest_size")?;
         if val < 1 || val as usize > max_digest {
             let msg = format!("digest_size must be between 1 and {max_digest} bytes");
@@ -337,7 +337,7 @@ fn parse_blake2_options(
         }
         opts.digest_size = val as usize;
     }
-    if let Some(bits) = get_opt("key") {
+    if let Some(bits) = get_opt("key")? {
         let key = bytes_like_required(_py, bits, "key")?.to_vec();
         if key.len() > max_key {
             let msg = format!("maximum key length is {max_key} bytes");
@@ -345,7 +345,7 @@ fn parse_blake2_options(
         }
         opts.key = key;
     }
-    if let Some(bits) = get_opt("salt") {
+    if let Some(bits) = get_opt("salt")? {
         let salt = bytes_like_required(_py, bits, "salt")?.to_vec();
         if salt.len() > max_salt {
             let msg = format!("maximum salt length is {max_salt} bytes");
@@ -353,7 +353,7 @@ fn parse_blake2_options(
         }
         opts.salt = salt;
     }
-    if let Some(bits) = get_opt("person") {
+    if let Some(bits) = get_opt("person")? {
         let person = bytes_like_required(_py, bits, "person")?.to_vec();
         if person.len() > max_person {
             let msg = format!("maximum person length is {max_person} bytes");
@@ -361,7 +361,7 @@ fn parse_blake2_options(
         }
         opts.person = person;
     }
-    if let Some(bits) = get_opt("fanout") {
+    if let Some(bits) = get_opt("fanout")? {
         let val = int_from_bits(_py, bits, "fanout")?;
         if !(0..=255).contains(&val) {
             return Err(raise_exception::<u64>(
@@ -372,7 +372,7 @@ fn parse_blake2_options(
         }
         opts.fanout = val as u8;
     }
-    if let Some(bits) = get_opt("depth") {
+    if let Some(bits) = get_opt("depth")? {
         let val = int_from_bits(_py, bits, "depth")?;
         if !(1..=255).contains(&val) {
             return Err(raise_exception::<u64>(
@@ -383,7 +383,7 @@ fn parse_blake2_options(
         }
         opts.depth = val as u8;
     }
-    if let Some(bits) = get_opt("leaf_size") {
+    if let Some(bits) = get_opt("leaf_size")? {
         let val = int_from_bits(_py, bits, "leaf_size")?;
         if val < 0 {
             return Err(raise_exception::<u64>(
@@ -394,7 +394,7 @@ fn parse_blake2_options(
         }
         opts.leaf_size = val as u32;
     }
-    if let Some(bits) = get_opt("node_offset") {
+    if let Some(bits) = get_opt("node_offset")? {
         let val = int_from_bits(_py, bits, "node_offset")?;
         if val < 0 {
             return Err(raise_exception::<u64>(
@@ -405,7 +405,7 @@ fn parse_blake2_options(
         }
         opts.node_offset = val as u64;
     }
-    if let Some(bits) = get_opt("node_depth") {
+    if let Some(bits) = get_opt("node_depth")? {
         let val = int_from_bits(_py, bits, "node_depth")?;
         if !(0..=255).contains(&val) {
             return Err(raise_exception::<u64>(
@@ -416,7 +416,7 @@ fn parse_blake2_options(
         }
         opts.node_depth = val as u8;
     }
-    if let Some(bits) = get_opt("inner_size") {
+    if let Some(bits) = get_opt("inner_size")? {
         let val = int_from_bits(_py, bits, "inner_size")?;
         if val < 0 || val as usize > max_digest {
             let msg = format!("inner_size must be between 0 and {max_digest}");
@@ -424,7 +424,7 @@ fn parse_blake2_options(
         }
         opts.inner_size = val as usize;
     }
-    if let Some(bits) = get_opt("last_node") {
+    if let Some(bits) = get_opt("last_node")? {
         opts.last_node = is_truthy(_py, obj_from_bits(bits));
     }
     Ok(opts)

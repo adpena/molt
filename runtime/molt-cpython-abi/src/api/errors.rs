@@ -2459,23 +2459,29 @@ pub unsafe extern "C" fn molt_native_exception_dealloc(op: *mut PyObject) {
     }
 }
 
-/// Validate an owned native callback result before publishing it across either
-/// ABI boundary. A success with an exception is a contract violation; its
-/// result is released and the original exception becomes SystemError cause and context.
+/// Complete a direct native operation using its explicit pointer result.
+/// A successful slot may be called with an already-selected exception. Only
+/// NULL denotes failure; generic calls additionally use check_callable_result.
 pub(crate) unsafe fn check_native_result(result: *mut PyObject, operation: &str) -> *mut PyObject {
-    let pending = raised_error_pending();
-    if result.is_null() {
-        if !pending {
-            crate::capi_trace::record_silent_failure(operation, None);
-            unsafe {
-                replace_current_with_system_error(&format!(
-                    "{operation} returned NULL without an exception"
-                ))
-            };
-        }
-        return result;
+    if result.is_null() && !raised_error_pending() {
+        crate::capi_trace::record_silent_failure(operation, None);
+        unsafe {
+            replace_current_with_system_error(&format!(
+                "{operation} returned NULL without an exception"
+            ))
+        };
     }
-    if pending {
+    result
+}
+
+/// Generic callable completion implements _Py_CheckFunctionResult: a non-NULL
+/// result with an exception is invalid, unlike direct slot completion.
+pub(crate) unsafe fn check_callable_result(
+    result: *mut PyObject,
+    operation: &str,
+) -> *mut PyObject {
+    let result = unsafe { check_native_result(result, operation) };
+    if !result.is_null() && raised_error_pending() {
         unsafe {
             crate::api::refcount::Py_XDECREF(result);
             replace_current_with_system_error(&format!(
@@ -2487,13 +2493,12 @@ pub(crate) unsafe fn check_native_result(result: *mut PyObject, operation: &str)
     result
 }
 
-/// Status callbacks use the same two-channel contract as object results.
-/// Returns 0 on success and -1 on error. Inquiry callers must retain their
-/// original successful value after validation instead of returning this status.
+/// Validate explicit operation status, returning 0 on success and -1 on error.
+/// A nonnegative slot result is authoritative even with an admitted prior
+/// exception. Inquiry callers retain their original successful scalar value.
 pub(crate) unsafe fn check_native_status(status: c_int, operation: &str) -> c_int {
-    let pending = raised_error_pending();
     if status < 0 {
-        if !pending {
+        if !raised_error_pending() {
             crate::capi_trace::record_silent_failure(operation, None);
             unsafe {
                 replace_current_with_system_error(&format!(
@@ -2501,14 +2506,6 @@ pub(crate) unsafe fn check_native_status(status: c_int, operation: &str) -> c_in
                 ))
             };
         }
-        return -1;
-    }
-    if pending {
-        unsafe {
-            replace_current_with_system_error(&format!(
-                "{operation} succeeded with an exception set"
-            ))
-        };
         return -1;
     }
     0

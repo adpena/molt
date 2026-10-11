@@ -17,12 +17,13 @@ use std::ptr;
 mod comparison_tests;
 
 pub(crate) mod list_slots;
+pub(crate) mod native_list;
 
 // ─── PyList ───────────────────────────────────────────────────────────────
 
-/// Resolve `op` to its runtime handle bits iff it is a Molt-native list.
-/// `None` → the caller sets the CPython-shaped exception (`BadInternalCall`).
-fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
+/// Resolve the managed list backing. A genuine native list has no runtime
+/// list handle and is admitted separately through its physical layout.
+fn resolve_managed_list(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
@@ -45,6 +46,7 @@ fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
 /// a free-threaded runtime.
 pub(crate) struct ListRead {
     object: *mut PyListObject,
+    managed_bits: Option<u64>,
     _runtime_gil: crate::hooks::RuntimeGilGuard,
 }
 
@@ -53,7 +55,7 @@ impl ListRead {
         unsafe { Self::acquire_with_completeness(op, true) }
     }
 
-    unsafe fn acquire_len(op: *mut PyObject) -> Option<Self> {
+    pub(crate) unsafe fn acquire_len(op: *mut PyObject) -> Option<Self> {
         unsafe { Self::acquire_with_completeness(op, false) }
     }
 
@@ -63,7 +65,8 @@ impl ListRead {
             return None;
         }
         let runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-        if let Some(bits) = resolve_native_list(op) {
+        let managed_bits = resolve_managed_list(op);
+        if let Some(bits) = managed_bits {
             let committed = if require_complete {
                 GLOBAL_BRIDGE.commit_list_view(bits)
             } else {
@@ -78,7 +81,12 @@ impl ListRead {
         }
         let object = op.cast::<PyListObject>();
         let len = unsafe { (*object).ob_base.ob_size };
-        if len < 0 || (len > 0 && unsafe { (*object).ob_item }.is_null()) {
+        let allocated = unsafe { (*object).allocated };
+        let native_capacity_valid = managed_bits.is_some()
+            || allocated >= len
+            || (allocated == -1 && len == 0 && unsafe { (*object).ob_item }.is_null());
+        if len < 0 || !native_capacity_valid || (len > 0 && unsafe { (*object).ob_item }.is_null())
+        {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
@@ -89,8 +97,45 @@ impl ListRead {
         }
         Some(Self {
             object,
+            managed_bits,
             _runtime_gil: runtime_gil,
         })
+    }
+
+    pub(crate) fn managed_bits(&self) -> Option<u64> {
+        self.managed_bits
+    }
+
+    pub(crate) fn native_pointer(&self) -> Option<*mut PyListObject> {
+        self.managed_bits.is_none().then_some(self.object)
+    }
+
+    pub(crate) unsafe fn reserve_additional(&self, additional: usize) -> bool {
+        if let Some(bits) = self.managed_bits {
+            let rc = unsafe { (hooks_or_stubs().list_reserve_additional)(bits, additional) };
+            if rc < 0 {
+                unsafe { crate::api::errors::check_native_status(rc, "list capacity reservation") };
+                false
+            } else {
+                true
+            }
+        } else {
+            unsafe { native_list::reserve_additional(self.object, additional) }
+        }
+    }
+
+    pub(crate) unsafe fn append_owned(&self, item: *mut PyObject) -> bool {
+        if self.managed_bits.is_none() {
+            unsafe { native_list::append_owned(self.object, item) }
+        } else {
+            let rc = unsafe { PyList_Append(self.object.cast(), item) };
+            unsafe { crate::api::refcount::Py_DECREF(item) };
+            rc == 0
+        }
+    }
+
+    pub(crate) unsafe fn finish_extend(&self) -> bool {
+        self.managed_bits.is_some() || unsafe { native_list::finish_extend(self.object) }
     }
 
     #[inline]
@@ -166,17 +211,16 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    let bridge = &*GLOBAL_BRIDGE;
-    let list_bits = match resolve_native_list(list) {
-        Some(bits) => bits,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return -1;
-        }
-    };
-    if !bridge.commit_list_view(list_bits) {
+    let Some(read) = (unsafe { ListRead::acquire(list) }) else {
         return -1;
-    }
+    };
+    let Some(list_bits) = read.managed_bits() else {
+        return if unsafe { native_list::append(read.object, item) } {
+            0
+        } else {
+            -1
+        };
+    };
     let Some(item_value) = (unsafe { RuntimeValue::acquire_edge(item) }) else {
         // No foreign wrapper could be minted (runtime hooks absent), or a
         // known runtime identity failed edge preparation. Fail loud instead of
@@ -268,6 +312,11 @@ pub unsafe extern "C" fn PyList_GetItemRef(op: *mut PyObject, i: Py_ssize_t) -> 
 pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) {
     // The macro's caller proves a valid list and index. Preserve its deliberate
     // no-DECREF replacement semantics while sharing the canonical transaction.
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    if resolve_managed_list(op).is_none() {
+        unsafe { *(*op.cast::<PyListObject>()).ob_item.add(i as usize) = v };
+        return;
+    }
     let old = unsafe { *(*op.cast::<PyListObject>()).ob_item.add(i as usize) };
     if old.is_null() && v.is_null() {
         return;
@@ -301,21 +350,20 @@ pub unsafe extern "C" fn PyList_SetItem(
     i: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
-    let list_bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe {
-                crate::api::refcount::Py_XDECREF(v);
-                crate::api::errors::PyErr_BadInternalCall();
-            }
-            return -1;
+    if unsafe { PyList_Check(op) } == 0 {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::PyErr_BadInternalCall();
         }
-    };
-    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-    if !GLOBAL_BRIDGE.commit_list_view_partial(list_bits) {
-        unsafe { crate::api::refcount::Py_XDECREF(v) };
         return -1;
     }
+    let Some(read) = (unsafe { ListRead::acquire_len(op) }) else {
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        return -1;
+    };
+    let Some(list_bits) = read.managed_bits() else {
+        return unsafe { native_list::set_item(read.object, i, v) };
+    };
     let value = if v.is_null() {
         None
     } else {
@@ -1580,16 +1628,9 @@ pub unsafe extern "C" fn PyList_SetSlice(
     ihigh: Py_ssize_t,
     itemlist: *mut PyObject,
 ) -> c_int {
-    let list_bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return -1;
-        }
-    };
-    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
         return -1;
-    }
+    };
     // Finish the replacement's user callbacks before observing destination
     // storage. Self-assignment copies that storage without invoking __iter__.
     let replacement = if itemlist.is_null() {
@@ -1601,7 +1642,7 @@ pub unsafe extern "C" fn PyList_SetSlice(
             unsafe {
                 crate::api::abstract_sequence::materialize_iterable_pointers(
                     itemlist,
-                    None,
+                    Some(c"can only assign an iterable".as_ptr()),
                     crate::api::abstract_sequence::SequenceMaterialization::Fast,
                 )
             }
@@ -1611,25 +1652,49 @@ pub unsafe extern "C" fn PyList_SetSlice(
         };
         Some(items)
     };
-    let replacement_len = replacement.as_ref().map_or(0, |items| items.len());
-    let mut runtime_owners = Vec::new();
-    let mut replacement_bits = Vec::new();
-    if runtime_owners.try_reserve_exact(replacement_len).is_err()
-        || replacement_bits.try_reserve_exact(replacement_len).is_err()
+    unsafe { set_list_slice(&read, ilow, ihigh, replacement.as_ref()) }
+}
+
+/// Retain exact runtime inputs while their borrowed bits cross a list mutation
+/// hook. Contiguous and indexed replacement use the same ingress owner.
+unsafe fn acquire_list_replacement(
+    items: &[*mut PyObject],
+) -> Option<(Vec<RuntimeValue>, Vec<u64>)> {
+    let mut owners = Vec::new();
+    let mut bits = Vec::new();
+    if owners.try_reserve_exact(items.len()).is_err()
+        || bits.try_reserve_exact(items.len()).is_err()
     {
         unsafe { crate::api::errors::PyErr_NoMemory() };
+        return None;
+    }
+    for &item in items {
+        let value = unsafe { RuntimeValue::acquire(item) }?;
+        bits.push(value.bits());
+        owners.push(value);
+    }
+    Some((owners, bits))
+}
+
+/// The one publication transaction for slice replacement and known-size Extend.
+/// All iterable callbacks have completed before this boundary.
+pub(crate) unsafe fn set_list_slice(
+    read: &ListRead,
+    ilow: Py_ssize_t,
+    ihigh: Py_ssize_t,
+    replacement: Option<&crate::api::abstract_sequence::MaterializedPointers>,
+) -> c_int {
+    let op = read.object.cast::<PyObject>();
+    let Some(list_bits) = read.managed_bits() else {
+        let items = replacement.map_or(&[][..], |items| items.as_slice());
+        return unsafe { native_list::splice(read.object, ilow, ihigh, items) };
+    };
+    let Some((_runtime_owners, replacement_bits)) =
+        (unsafe { acquire_list_replacement(replacement.map_or(&[], |items| items.as_slice())) })
+    else {
         return -1;
-    }
-    if let Some(replacement) = &replacement {
-        for &item in replacement.as_slice() {
-            let Some(value) = (unsafe { RuntimeValue::acquire(item) }) else {
-                return -1;
-            };
-            replacement_bits.push(value.bits());
-            runtime_owners.push(value);
-        }
-    }
-    let Some(current) =
+    };
+    let Some(mut current) =
         (unsafe { crate::api::abstract_sequence::MaterializedPointers::from_list_storage(op) })
     else {
         return -1;
@@ -1656,6 +1721,12 @@ pub unsafe extern "C" fn PyList_SetSlice(
         future.extend_from_slice(replacement.as_slice());
     }
     future.extend_from_slice(&current.as_slice()[high..]);
+    // Removed items still belong to the live destination. Retain only future
+    // survivors through projection so this temporary cannot override the
+    // mutation owner's reverse retirement order.
+    for index in low..high {
+        unsafe { crate::api::refcount::Py_DECREF(current.take(index)) };
+    }
     let h = hooks_or_stubs();
     let rc = unsafe {
         (h.list_set_slice)(
@@ -1668,7 +1739,128 @@ pub unsafe extern "C" fn PyList_SetSlice(
             future.len(),
         )
     };
-    unsafe { crate::api::errors::check_native_status(rc, "list slice replacement") }
+    if rc < 0 {
+        unsafe { crate::api::errors::check_native_status(rc, "list slice replacement") }
+    } else {
+        rc
+    }
+}
+
+/// Extended operations enter the same managed mutation and projection owners
+/// used by runtime list storage. Removal indices are strictly ascending;
+/// replacement indices retain the slice's order.
+pub(crate) unsafe fn mutate_list_indices(
+    read: &ListRead,
+    indices: &[usize],
+    replacement: Option<&[*mut PyObject]>,
+) -> c_int {
+    let Some(bits) = read.managed_bits() else {
+        unreachable!("native storage has its own buffer owner")
+    };
+    if indices.is_empty() {
+        return 0;
+    }
+    let Some((_runtime_owners, replacement_bits)) =
+        (unsafe { acquire_list_replacement(replacement.unwrap_or(&[])) })
+    else {
+        return -1;
+    };
+    let Some(mut current) = (unsafe {
+        crate::api::abstract_sequence::MaterializedPointers::from_list_storage(read.object.cast())
+    }) else {
+        return -1;
+    };
+    let mut future = Vec::new();
+    if future.try_reserve_exact(current.len()).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
+    }
+    if let Some(items) = replacement {
+        future.extend_from_slice(current.as_slice());
+        for (&index, &item) in indices.iter().zip(items) {
+            future[index] = item;
+        }
+    } else {
+        let mut removed = indices.iter().copied().peekable();
+        for (index, &item) in current.as_slice().iter().enumerate() {
+            if removed.peek() == Some(&index) {
+                removed.next();
+            } else {
+                future.push(item);
+            }
+        }
+    }
+    for &index in indices {
+        unsafe { crate::api::refcount::Py_DECREF(current.take(index)) };
+    }
+    let result = unsafe {
+        (hooks_or_stubs().list_mutate_indices)(
+            bits,
+            indices.as_ptr(),
+            indices.len(),
+            if replacement.is_some() {
+                replacement_bits.as_ptr()
+            } else {
+                ptr::null()
+            },
+            future.as_ptr(),
+            future.len(),
+        )
+    };
+    if result < 0 {
+        unsafe { crate::api::errors::check_native_status(result, "extended list slice mutation") }
+    } else {
+        result
+    }
+}
+
+/// Public since CPython 3.13; shares the private extension operation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Extend(list: *mut PyObject, iterable: *mut PyObject) -> c_int {
+    unsafe { crate::api::abstract_sequence::extend_list(list, iterable) }
+}
+
+/// Public since CPython 3.13; clearing uses the same empty-first transaction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Clear(list: *mut PyObject) -> c_int {
+    unsafe { PyList_SetSlice(list, 0, Py_ssize_t::MAX, ptr::null_mut()) }
+}
+
+/// Rust descriptor ingress into the same physical list owner. The runtime
+/// admits the receiver and converts its index before entering this function.
+pub unsafe fn native_list_pop(op: *mut PyObject, index: Py_ssize_t) -> *mut PyObject {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
+        return ptr::null_mut();
+    };
+    let Some(native) = read.native_pointer() else {
+        unsafe {
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return ptr::null_mut();
+    };
+    let len = unsafe { read.len() };
+    if index < 0 || index as usize >= len {
+        unsafe {
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return ptr::null_mut();
+    }
+    unsafe { native_list::pop(native, index as usize) }
+}
+
+/// Key and receiver are borrowed for the call; native storage and key results
+/// remain in the physical ABI domain throughout the existing sort transaction.
+pub unsafe fn native_list_sort(op: *mut PyObject, key: *mut PyObject, reverse: bool) -> c_int {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
+        return -1;
+    };
+    let Some(native) = read.native_pointer() else {
+        unsafe {
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return -1;
+    };
+    unsafe { native_list::sort(native, key, reverse) }
 }
 
 #[unsafe(no_mangle)]
@@ -1676,16 +1868,12 @@ pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
     // CPython: BadInternalCall on a non-list; sorts IN PLACE via the runtime
     // comparison authority. The previous body discarded op and fabricated
     // success (0) without sorting.
-    let list_bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return -1;
-        }
-    };
-    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
         return -1;
-    }
+    };
+    let Some(list_bits) = read.managed_bits() else {
+        return unsafe { native_list::sort(read.object, ptr::null_mut(), false) };
+    };
     let h = hooks_or_stubs();
     let rc = unsafe { (h.list_sort)(list_bits) };
     if rc != 0 {
@@ -1701,16 +1889,13 @@ pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
 pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
     // CPython: BadInternalCall on a non-list; reverses IN PLACE. The previous
     // body discarded op and fabricated success (0) without reversing.
-    let list_bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return -1;
-        }
-    };
-    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
         return -1;
-    }
+    };
+    let Some(list_bits) = read.managed_bits() else {
+        unsafe { native_list::reverse(read.object) };
+        return 0;
+    };
     let h = hooks_or_stubs();
     let rc = unsafe { (h.list_reverse)(list_bits) };
     if rc != 0 {
@@ -1763,16 +1948,16 @@ pub unsafe extern "C" fn PyList_Insert(
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    let list_bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return -1;
-        }
-    };
-    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
         return -1;
-    }
+    };
+    let Some(list_bits) = read.managed_bits() else {
+        return if unsafe { native_list::insert(read.object, where_, v) } {
+            0
+        } else {
+            -1
+        };
+    };
     let Some(item_value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe {

@@ -1672,7 +1672,7 @@ fn bytes_split_impl(
     };
     // __index__ can resize either bytearray argument. Do not acquire any byte
     // slice until it has completed; then consume the live post-callback storage.
-    let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
+    let maxsplit = index_ssize_from_obj(_py, maxsplit_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }

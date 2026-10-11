@@ -1,7 +1,7 @@
 use super::super::*;
 use super::OpFlow;
 use crate::tir::simple_def_use::simple_ir_out_result;
-use molt_ir::literal_payload::required_simple_literal_bytes;
+use molt_ir::literal_payload::{integer_literal_bytes, required_simple_literal_bytes};
 
 /// Single-source kind authority for [`handle_const_literal_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Integer aliases use the same generated
@@ -243,7 +243,7 @@ fn hoist_bigint_literal(
     let callee = SimpleBackend::import_func_id_split(
         module,
         import_ids,
-        "molt_bigint_from_str",
+        "molt_bigint_from_bytes",
         &[types::I64, types::I64],
         &[types::I64],
     );
@@ -317,7 +317,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                 if native_int_literal_fits_inline(val) {
                     continue;
                 }
-                let bytes = val.to_string().into_bytes();
+                let bytes = integer_literal_bytes(i128::from(val));
                 if seen_bigint_bytes.insert(bytes.clone()) {
                     unique_bigints.push((bytes, out_name));
                 }
@@ -463,11 +463,10 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                     box_int(val),
                 );
             } else {
-                let s = val.to_string();
-                let bytes = s.as_bytes();
+                let bytes = integer_literal_bytes(i128::from(val));
                 let slot = hoists
                     .const_bigint_slots
-                    .get(bytes)
+                    .get(&bytes)
                     .expect("boxed integer literal must have a frame anchor");
                 let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
                 def_var_named(builder, vars, out_name, boxed);

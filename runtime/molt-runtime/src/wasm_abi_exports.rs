@@ -23,7 +23,10 @@ pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_is_exact_builtin_dict(_py, ptr)
-                    && let Some(val) = crate::dict_get_in_place(_py, ptr, key_bits)
+                    && let Some(val) = match crate::dict_get_in_place(_py, ptr, key_bits) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    }
                 {
                     // inc_ref only needed for heap-pointer values; inline
                     // int/float/bool/none values have no refcount.
@@ -52,8 +55,7 @@ pub extern "C" fn molt_dict_setitem(dict_bits: u64, key_bits: u64, value_bits: u
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == crate::TYPE_ID_DICT {
-                    crate::dict_set_in_place(_py, ptr, key_bits, value_bits);
-                    if crate::exception_pending(_py) {
+                    if !crate::dict_set_in_place(_py, ptr, key_bits, value_bits) {
                         return MoltObject::none().bits();
                     }
                     return dict_bits;

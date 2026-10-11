@@ -52,8 +52,8 @@ mod slice;
 use identity::RawBinding;
 pub use identity::{BridgeIdentity, MoltValueHandle, StaticBindingError};
 pub(crate) use identity::{
-    NumericCarrierKind, NumericCarrierRecord, ResolvedPyObject, RuntimeValue, admit_reference,
-    observe_pyobject, resolve_pyobject, resolved_molt_handle,
+    NumericCarrierKind, NumericCarrierRecord, ResolvedPyObject, RuntimeValue, RuntimeValueAccess,
+    admit_reference, observe_pyobject, resolve_pyobject, resolved_molt_handle,
 };
 use lifecycle::BridgeLifecycle;
 pub use lifecycle::{
@@ -2154,7 +2154,9 @@ pub unsafe fn molt_foreign_hash(c_ptr: usize) -> isize {
 pub unsafe fn owned_native_result_to_runtime(
     result: *mut PyObject,
 ) -> crate::hooks::OwnedHandleResult {
-    let result = unsafe { crate::api::errors::check_native_result(result, "native slot") };
+    // The producing API owns its completion contract. Direct native slots may
+    // return a value with an admitted prior error; generic calls perform their
+    // stricter result validation before reaching this projection boundary.
     if result.is_null() {
         unsafe { ensure_result_error(c"native slot returned NULL without an exception") };
         return crate::hooks::OwnedHandleResult::error();

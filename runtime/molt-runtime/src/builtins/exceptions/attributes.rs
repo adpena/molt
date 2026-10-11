@@ -203,7 +203,7 @@ unsafe fn mutate_field(
         };
         let slot = match field {
             Field::Dictionary => {
-                crate::object::field_storage::replace_dictionary(py, object, Some(value));
+                let _ = crate::object::field_storage::replace_dictionary(py, object, Some(value));
                 return MoltObject::none().bits();
             }
             Field::Args => {
@@ -299,11 +299,10 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
                 return false;
             };
             let _name_owner = crate::PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
-            if dict_get_in_place(py, dictionary, name).is_some() {
-                continue;
-            }
-            if exception_pending(py) {
-                return false;
+            match dict_get_in_place(py, dictionary, name) {
+                Ok(Some(_)) => continue,
+                Ok(None) => {}
+                Err(()) => return false,
             }
             let descriptor = alloc_native_descriptor(
                 py,
@@ -322,9 +321,9 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
                 dec_ref_bits(py, descriptor);
                 return false;
             }
-            dict_set_in_place(py, dictionary, name, descriptor);
+            let published = dict_set_in_place(py, dictionary, name, descriptor);
             dec_ref_bits(py, descriptor);
-            if exception_pending(py) {
+            if !published {
                 return false;
             }
             crate::class_bump_layout_version(class);
@@ -351,7 +350,8 @@ mod tests {
             let args_name = attr_name_bits_from_bytes(&py, b"args").unwrap();
             let cause_name = attr_name_bits_from_bytes(&py, b"__cause__").unwrap();
             let namespace = obj_from_bits(class_dict_bits(base_ptr)).as_ptr().unwrap();
-            let previous_cause = dict_get_in_place(&py, namespace, cause_name);
+            let previous_cause =
+                dict_get_in_place(&py, namespace, cause_name).expect("dictionary lookup succeeds");
             assert!(previous_cause.is_some());
             assert!(crate::object::class_storage::class_declares(
                 base_ptr,
@@ -359,13 +359,14 @@ mod tests {
             ));
             let args_descriptor =
                 crate::builtins::attr::class_namespace_lookup_raw(&py, base_ptr, args_name)
+                    .expect("operation succeeds")
                     .expect("ordinary lookup sees the declared field immediately");
             assert_eq!(
                 object_type_id(obj_from_bits(args_descriptor).as_ptr().unwrap()),
                 crate::TYPE_ID_NATIVE_DESCRIPTOR
             );
             assert_eq!(
-                dict_get_in_place(&py, namespace, cause_name),
+                dict_get_in_place(&py, namespace, cause_name).expect("dictionary lookup succeeds"),
                 previous_cause
             );
             inc_ref_bits(&py, args_descriptor);
@@ -446,13 +447,14 @@ mod tests {
                 (*native.cast::<PyAttributeErrorObject>()).base.args,
                 tuple_view
             );
-            dec_ref_bits(&py, result);
+            assert_eq!(result, Ok(()));
             let observed = crate::builtins::types::native_descriptor_get(
                 &py,
                 args_descriptor,
                 Some(receiver),
                 Some(base),
-            );
+            )
+            .expect("operation succeeds");
             assert_eq!(observed, tuple_bits);
             dec_ref_bits(&py, observed);
 
@@ -463,6 +465,7 @@ mod tests {
                 obj_from_bits(typed_owner).as_ptr().unwrap(),
                 typed_name,
             )
+            .expect("operation succeeds")
             .unwrap();
             inc_ref_bits(&py, typed_descriptor);
             let result = crate::builtins::types::native_descriptor_mutate(
@@ -473,13 +476,14 @@ mod tests {
             );
             assert_eq!((*native.cast::<PyAttributeErrorObject>()).obj, tuple_view);
             assert!(!exception_pending(&py));
-            dec_ref_bits(&py, result);
+            assert_eq!(result, Ok(()));
             let observed = crate::builtins::types::native_descriptor_get(
                 &py,
                 typed_descriptor,
                 Some(receiver),
                 Some(typed_owner),
-            );
+            )
+            .expect("operation succeeds");
             assert_eq!(observed, tuple_bits);
             dec_ref_bits(&py, observed);
             let result = crate::builtins::types::native_descriptor_mutate(
@@ -490,7 +494,7 @@ mod tests {
             );
             assert!((*native.cast::<PyAttributeErrorObject>()).obj.is_null());
             assert!(!exception_pending(&py));
-            dec_ref_bits(&py, result);
+            assert_eq!(result, Ok(()));
             for bits in [
                 typed_descriptor,
                 typed_name,

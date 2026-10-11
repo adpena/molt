@@ -30,7 +30,16 @@ show("divmod_mixed", lambda: divmod(7, 0.0))
 # interpreted as an integer" (version-stable).
 show("list_pop_str", lambda: [1, 2, 3].pop("x"))
 show("list_pop_float", lambda: [1, 2, 3].pop(1.5))
+show("list_pop_none", lambda: [1, 2, 3].pop(None))
+show("list_pop_default", lambda: [1, 2, 3].pop())
+show("list_bound_pop_none", lambda: getattr([1, 2, 3], "pop")(None))
 show("list_insert_str", lambda: [1, 2, 3].insert("x", 9))
+
+# The same argument binder serves bytearray.pop: omission is -1, not None.
+show("bytearray_pop_none", lambda: bytearray(b"abc").pop(None))
+show("bytearray_pop_default", lambda: bytearray(b"abc").pop())
+show("bytearray_bound_pop_none", lambda: getattr(bytearray(b"abc"), "pop")(None))
+show("bytearray_pop_huge_empty", lambda: bytearray().pop(10**100))
 
 # list.index not found: "<repr(x)> is not in list" on 3.12/3.13, static
 # "list.index(x): x not in list" on 3.14.
@@ -60,3 +69,25 @@ show("bytearray_fromhex_odd", lambda: bytearray.fromhex("abc"))
 # operation" on all versions.
 show("float_fromhex_int", lambda: float.fromhex(5))
 show("float_fromhex_bytes", lambda: float.fromhex(b"x"))
+
+
+# Index conversion runs before the operation reads the current length.
+class AppendingIndex:
+    def __init__(self, target):
+        self.target = target
+
+    def __index__(self):
+        self.target.append(44)
+        return -1
+
+
+empty = []
+show("list_pop_index_grows_empty", lambda: empty.pop(AppendingIndex(empty)))
+print("list_pop_remaining", empty)
+
+empty_bytes = bytearray()
+show(
+    "bytearray_pop_index_grows_empty",
+    lambda: empty_bytes.pop(AppendingIndex(empty_bytes)),
+)
+print("bytearray_pop_remaining", empty_bytes)

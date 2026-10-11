@@ -794,19 +794,18 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
                     if exception_pending(_py) {
                         return MoltObject::none().bits() as i64;
                     }
-                    let Some(delay_secs) =
-                        crate::builtins::numbers::float_storage_value(_py, float_bits)
-                    else {
-                        if !exception_pending(_py) {
+                    match crate::builtins::numbers::float_storage_value(_py, float_bits) {
+                        Ok(Some(delay_secs)) => delay_secs,
+                        Ok(None) => {
                             raise_exception::<()>(
                                 _py,
                                 "SystemError",
                                 "float conversion returned no float storage",
                             );
+                            return MoltObject::none().bits() as i64;
                         }
-                        return MoltObject::none().bits() as i64;
-                    };
-                    delay_secs
+                        Err(()) => return MoltObject::none().bits() as i64,
+                    }
                 } else {
                     0.0
                 };

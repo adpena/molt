@@ -343,15 +343,14 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                         "dataclass field index out of range",
                     );
                 }
-                let val = crate::object::accessors::object_field_get_ptr_raw(
+                let val = match crate::object::accessors::object_field_get_ptr_raw(
                     _py,
                     ptr,
                     idx as usize * std::mem::size_of::<u64>(),
-                );
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, val);
-                    return MoltObject::none().bits();
-                }
+                ) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if is_missing_bits(_py, val) {
                     let desc_ptr = dataclass_desc_ptr(ptr);
                     let name = if !desc_ptr.is_null() {
@@ -417,12 +416,16 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                         "dataclass field index out of range",
                     );
                 }
-                crate::object::accessors::object_field_set_ptr_raw(
+                if crate::object::accessors::object_field_set_ptr_raw(
                     _py,
                     ptr,
                     idx as usize * std::mem::size_of::<u64>(),
                     val_bits,
-                );
+                )
+                .is_err()
+                {
+                    return MoltObject::none().bits();
+                }
                 return obj_bits;
             }
         }
@@ -552,11 +555,8 @@ unsafe fn prepare_dataclass_class_metadata(
             // Namespace visibility selects the logical field's row. A class
             // variable shadowing an inherited slot remains a dictionary field;
             // the hidden physical slot is appended independently below.
-            let declared = class_attr_lookup_raw_mro(py, class, key)
+            let declared = class_attr_lookup_raw_mro(py, class, key)?
                 .and_then(|descriptor| crate::builtins::types::managed_slot_field(py, descriptor));
-            if exception_pending(py) {
-                return Err(());
-            }
             projection.push(crate::object::DataclassField {
                 name: key,
                 kind: declared.map_or(
@@ -592,7 +592,9 @@ unsafe fn prepare_dataclass_class_metadata(
         (*desc).hash_mode = 0;
         let flags_name =
             attr_name_bits_from_bytes(py, b"__molt_dataclass_field_flags__").ok_or(())?;
-        if let Some(flags) = class_attr_lookup_raw_mro(py, class, flags_name)
+        let lookup = class_attr_lookup_raw_mro(py, class, flags_name);
+        dec_ref_bits(py, flags_name);
+        if let Some(flags) = lookup?
             && let Some(flags) = obj_from_bits(flags).as_ptr()
             && matches!(object_type_id(flags), TYPE_ID_LIST | TYPE_ID_TUPLE)
         {
@@ -608,20 +610,14 @@ unsafe fn prepare_dataclass_class_metadata(
                 (*desc).field_flags = flags;
             }
         }
-        dec_ref_bits(py, flags_name);
-        if exception_pending(py) {
-            return Err(());
-        }
         let hash_name = attr_name_bits_from_bytes(py, b"__molt_dataclass_hash__").ok_or(())?;
-        if let Some(hash) = class_attr_lookup_raw_mro(py, class, hash_name)
+        let lookup = class_attr_lookup_raw_mro(py, class, hash_name);
+        dec_ref_bits(py, hash_name);
+        if let Some(hash) = lookup?
             && let Some(hash) =
                 to_i64(obj_from_bits(hash)).and_then(|value| u8::try_from(value).ok())
         {
             (*desc).hash_mode = hash;
-        }
-        dec_ref_bits(py, hash_name);
-        if exception_pending(py) {
-            return Err(());
         }
         let mut detached_values = Vec::new();
         if detached_values

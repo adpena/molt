@@ -43,7 +43,7 @@ pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         MoltObject::from_bool(std::fs::metadata(path).is_ok()).bits()
     })
@@ -57,7 +57,7 @@ pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let is_dir = std::fs::metadata(path)
             .map(|meta| meta.is_dir())
@@ -74,7 +74,7 @@ pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let is_file = std::fs::metadata(path)
             .map(|meta| meta.is_file())
@@ -91,7 +91,7 @@ pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let is_link = std::fs::symlink_metadata(path)
             .map(|meta| meta.file_type().is_symlink())
@@ -108,7 +108,7 @@ pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::read_link(&path) {
             Ok(target) => {
@@ -146,11 +146,11 @@ pub extern "C" fn molt_path_symlink(
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let target_is_directory = is_truthy(_py, obj_from_bits(target_is_directory_bits));
         match create_symlink_path(&src, &dst, target_is_directory) {
@@ -181,7 +181,7 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let mode = index_i64_from_obj(_py, mode_bits, "mkdir() mode must be int");
         if exception_pending(_py) {
@@ -224,7 +224,7 @@ pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::remove_file(&path) {
             Ok(()) => MoltObject::none().bits(),
@@ -251,7 +251,7 @@ pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::remove_dir(&path) {
             Ok(()) => MoltObject::none().bits(),
@@ -603,7 +603,7 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let mode = index_i64_from_obj(_py, mode_bits, "makedirs() mode must be int");
         if exception_pending(_py) {
@@ -1135,7 +1135,7 @@ pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
         }
         let dir = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let pattern = match path_str_arg_from_bits(_py, pattern_bits, "pattern") {
             Ok(pattern) => pattern,
@@ -1453,7 +1453,7 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let mode = index_i64_from_obj(_py, mode_bits, "chmod() mode must be int");
         if exception_pending(_py) {
@@ -1723,7 +1723,7 @@ pub extern "C" fn molt_os_stat(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::metadata(&path) {
             Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
@@ -1737,7 +1737,7 @@ pub extern "C" fn molt_os_lstat(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
@@ -1762,7 +1762,7 @@ pub extern "C" fn molt_os_lstat_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         #[cfg(unix)]
         {
@@ -1845,11 +1845,11 @@ pub extern "C" fn molt_os_rename(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::rename(&src, &dst) {
             Ok(()) => MoltObject::none().bits(),
@@ -1863,11 +1863,11 @@ pub extern "C" fn molt_os_replace(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         match std::fs::rename(&src, &dst) {
             Ok(()) => MoltObject::none().bits(),
@@ -1898,7 +1898,7 @@ pub extern "C" fn molt_os_stat_at(
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         #[cfg(unix)]
         {
@@ -1952,11 +1952,11 @@ pub extern "C" fn molt_os_rename_at(
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         #[cfg(unix)]
         {
@@ -2020,11 +2020,11 @@ pub extern "C" fn molt_os_replace_at(
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         #[cfg(unix)]
         {
@@ -2090,11 +2090,11 @@ pub extern "C" fn molt_os_link_at(
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let dst = match path_from_bits(_py, dst_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         #[cfg(unix)]
         {
@@ -2260,7 +2260,7 @@ pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) 
     crate::with_gil_entry_nopanic!(_py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "flags must be an integer");

@@ -160,13 +160,14 @@ pub extern "C" fn __molt_collections_attr_lookup_ptr_allow_missing(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { attr_lookup_ptr_allow_missing(_py, obj_ptr, attr_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -258,44 +259,13 @@ pub extern "C" fn __molt_collections_index_i64_with_overflow(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_dict_get_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    out: *mut u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
-                unsafe {
-                    *out = bits;
-                }
-                1
-            }
-            None => 0,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_dict_set_in_place(
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
-        1
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if unsafe { dict_del_in_place(_py, dict_ptr, key_bits) } {
-            1
-        } else {
-            0
-        }
+        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
     })
 }
 
@@ -306,13 +276,14 @@ pub extern "C" fn __molt_collections_dict_like_bits_from_ptr(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_like_bits_from_ptr(_py, obj_ptr) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -436,6 +407,126 @@ mod tests {
             let _ = crate::molt_runtime_collections::collections_ext::molt_defaultdict_drop(
                 handle_bits,
             );
+        });
+    }
+
+    #[test]
+    fn optional_attribute_transports_preserve_status_output_and_prior_identity() {
+        use crate::builtins::exceptions::ExceptionValue;
+        use crate::cpython_abi_hooks::native_test_fixture::NativeType;
+        use molt_cpython_abi::abi_types::*;
+        use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        use molt_runtime_core::OwnedRuntimeValue;
+        use std::cell::Cell;
+        use std::ptr;
+
+        thread_local! {
+            static MODE: Cell<u8> = const { Cell::new(0) };
+            static SEEN: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                MODE.set(0);
+                SEEN.set(ptr::null_mut());
+                unsafe { errors::PyErr_Clear() };
+            }
+        }
+        unsafe extern "C" fn get(receiver: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
+            unsafe {
+                if MODE.get() == 2 {
+                    return object::PyObject_GenericGetAttr(receiver, name);
+                }
+                let prior = errors::PyErr_GetRaisedException();
+                SEEN.set(prior);
+                errors::PyErr_SetRaisedException(prior);
+                if MODE.get() == 1 {
+                    ptr::null_mut()
+                } else {
+                    object::Py_NewRef(&raw mut Py_None)
+                }
+            }
+        }
+
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let _reset = Reset;
+                let prior_ptr = crate::builtins::exceptions::alloc_exception(
+                    py,
+                    "LookupError",
+                    "transport prior",
+                );
+                assert!(!prior_ptr.is_null());
+                let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
+                let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
+                assert!(!prior_view.is_null());
+                let mut class =
+                    NativeType::subtype(&raw mut PyBaseObject_Type, c"AttributeTransport");
+                class.tp_getattro = Some(get);
+                assert_eq!(class.ready(), 0);
+                let receiver =
+                    OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *class, 0));
+                assert!(!receiver.as_ptr().is_null());
+                let receiver_bits = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    GLOBAL_BRIDGE
+                        .molt_value_for_pyobj(receiver.as_ptr())
+                        .unwrap(),
+                );
+                let name = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::attr_name_bits_from_bytes(py, b"transport_missing").unwrap(),
+                );
+                let pointer = obj_from_bits(receiver_bits.bits()).as_ptr().unwrap();
+                let transports: &[extern "C" fn(*mut u8, u64, *mut u64) -> i32] = &[
+                    super::__molt_collections_attr_lookup_ptr_allow_missing,
+                    #[cfg(feature = "stdlib_logging_ext")]
+                    crate::logging_bridge::__molt_logging_attr_lookup_ptr_allow_missing,
+                ];
+                for &transport in transports {
+                    for runtime_prior in [false, true] {
+                        for mode in [0, 1] {
+                            MODE.set(mode);
+                            if runtime_prior {
+                                crate::record_exception(py, prior_ptr);
+                            } else {
+                                errors::PyErr_SetRaisedException(object::Py_NewRef(prior_view));
+                            }
+                            let mut out = 0x1234_u64;
+                            let status = transport(pointer, name.bits(), &mut out);
+                            let result = (status == 1)
+                                .then(|| OwnedRuntimeValue::from_owned_bits(py.core_token(), out));
+                            let observed =
+                                OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                            assert_eq!(
+                                SEEN.get(),
+                                prior_view,
+                                "native slot must observe the exact incoming instance"
+                            );
+                            assert_eq!(observed.as_ptr(), prior_view);
+                            if mode == 0 {
+                                assert_eq!(status, 1);
+                                assert_eq!(result.unwrap().bits(), MoltObject::none().bits());
+                            } else {
+                                assert_eq!(
+                                    status, -1,
+                                    "NULL with the same instance is still failure"
+                                );
+                                assert_eq!(out, 0x1234, "failure must not write output");
+                            }
+                        }
+                    }
+                    MODE.set(2);
+                    let mut out = 0x5678_u64;
+                    assert_eq!(transport(pointer, name.bits(), &mut out), 0);
+                    assert_eq!(out, 0x5678, "absence must not write output");
+                    let unexpected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(unexpected.as_ptr().is_null());
+                }
+            }
         });
     }
 }

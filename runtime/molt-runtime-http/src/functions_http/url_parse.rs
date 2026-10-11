@@ -214,7 +214,8 @@ pub(super) fn urllib_urlencode_impl(
                 "too many values to unpack (expected 2)",
             ));
         }
-        let key_text = crate::bridge::format_obj_str(_py, obj_from_bits(item_fields[0]));
+        let key_text = crate::bridge::format_obj_str(_py, obj_from_bits(item_fields[0]))
+            .ok_or_else(|| MoltObject::none().bits())?;
         let key_enc = urllib_quote_plus_impl(&key_text, safe);
         let value_obj = obj_from_bits(item_fields[1]);
         let mut wrote_pair = false;
@@ -225,7 +226,8 @@ pub(super) fn urllib_urlencode_impl(
             {
                 let seq = unsafe { seq_snapshot(value_ptr) };
                 for value_bits in seq.iter().copied() {
-                    let value_text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
+                    let value_text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits))
+                        .ok_or_else(|| MoltObject::none().bits())?;
                     let value_enc = urllib_quote_plus_impl(&value_text, safe);
                     out_pairs.push(format!("{key_enc}={value_enc}"));
                 }
@@ -233,7 +235,8 @@ pub(super) fn urllib_urlencode_impl(
             }
         }
         if !wrote_pair {
-            let value_text = crate::bridge::format_obj_str(_py, value_obj);
+            let value_text = crate::bridge::format_obj_str(_py, value_obj)
+                .ok_or_else(|| MoltObject::none().bits())?;
             let value_enc = urllib_quote_plus_impl(&value_text, safe);
             out_pairs.push(format!("{key_enc}={value_enc}"));
         }

@@ -393,7 +393,7 @@ fn static_managed_protocol_tables_dispatch_without_overwriting_object() {
 }
 
 #[test]
-fn managed_container_base_preserves_native_gc_storage_rejection() {
+fn managed_list_base_admits_native_storage_with_inherited_lifecycle() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
@@ -409,13 +409,28 @@ fn managed_container_base_preserves_native_gc_storage_rejection() {
             assert_ne!((*tp).tp_flags & Py_TPFLAGS_HAVE_GC, 0);
             assert!((*tp).tp_traverse.is_some());
             assert!((*tp).tp_clear.is_some());
-            assert!(typeobj::PyType_GenericAlloc(tp, 0).is_null());
-            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
-            assert!(!error.as_ptr().is_null());
-            let message = OwnedPyObject::from_owned(typeobj::PyObject_Str(error.as_ptr()));
-            let text = std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(message.as_ptr()))
-                .to_string_lossy();
-            assert!(text.contains("managed builtin GC storage slots"));
+            let instance = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(tp, 0));
+            assert!(!instance.as_ptr().is_null());
+            assert!(
+                GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(instance.as_ptr())
+                    .is_none()
+            );
+            let address = instance.as_ptr().addr();
+            assert_ne!(memory::PyObject_GC_IsTracked(instance.as_ptr()), 0);
+            assert_eq!(sequences::PyList_Size(instance.as_ptr()), 0);
+            assert_eq!(
+                sequences::PyList_Append(instance.as_ptr(), &raw mut Py_None),
+                0
+            );
+            assert_eq!(
+                sequences::PyList_GetItem(instance.as_ptr(), 0),
+                &raw mut Py_None
+            );
+            assert_eq!((*tp).tp_clear.unwrap()(instance.as_ptr()), 0);
+            assert_eq!(sequences::PyList_Size(instance.as_ptr()), 0);
+            drop(instance);
+            assert!(!crate::object::gc::native_gc_is_enrolled(address));
             dec_ref_bits(py, class);
             assert!(errors::PyErr_Occurred().is_null());
         }

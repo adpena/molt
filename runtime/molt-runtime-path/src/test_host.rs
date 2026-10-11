@@ -313,6 +313,7 @@ pub extern "C" fn __molt_path_audit_capability_decision(
 }
 
 unexpected_u64!(__molt_path_molt_object_hash(bits: u64));
+unexpected_u64!(__molt_path_fspath_bits(bits: u64));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_path_from_bits(

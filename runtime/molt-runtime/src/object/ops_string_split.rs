@@ -576,7 +576,7 @@ fn string_split_impl(
     let Some(hay_ptr) = validate_string_receiver(_py, hay_bits, method) else {
         return MoltObject::none().bits();
     };
-    let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
+    let maxsplit = index_ssize_from_obj(_py, maxsplit_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }

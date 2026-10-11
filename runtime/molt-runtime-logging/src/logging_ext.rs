@@ -1070,9 +1070,20 @@ pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bit
                     if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
                         unsafe {
                             let write_name = crate::bridge::intern_static_name(_py, b"write");
-                            if let Some(write_fn) = crate::bridge::attr_lookup_ptr_allow_missing(
+                            if obj_from_bits(write_name).is_none() {
+                                dec_ref_bits(_py, msg_bits);
+                                return MoltObject::none().bits();
+                            }
+                            let write_fn = match crate::bridge::attr_lookup_ptr_allow_missing(
                                 _py, stream_ptr, write_name,
                             ) {
+                                Ok(method) => method,
+                                Err(()) => {
+                                    dec_ref_bits(_py, msg_bits);
+                                    return MoltObject::none().bits();
+                                }
+                            };
+                            if let Some(write_fn) = write_fn {
                                 let result = crate::bridge::call_callable1(_py, write_fn, msg_bits);
                                 if !obj_from_bits(result).is_none() {
                                     dec_ref_bits(_py, result);

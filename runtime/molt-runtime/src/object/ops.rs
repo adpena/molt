@@ -102,7 +102,7 @@ pub use specialized_list::{
     molt_list_int_getitem_truthy, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
     molt_list_int_setitem,
 };
-pub(crate) use subscript::value_supports_mp_subscript;
+pub(crate) use subscript::{index_impl, value_supports_mp_subscript};
 pub use subscript::{
     molt_contains, molt_del_index, molt_delitem_method, molt_getitem_method,
     molt_getitem_unchecked, molt_index, molt_list_contains, molt_ord_at, molt_setitem_method,
@@ -1740,53 +1740,53 @@ pub unsafe extern "C" fn molt_unpack_sequence(
     })
 }
 
-unsafe fn dict_subclass_storage_bits(py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+unsafe fn dict_subclass_storage_bits(py: &PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, ()> {
     unsafe {
-        let slot = crate::object::layout::dict_subclass_storage_slot(ptr)?;
+        let Some(slot) = crate::object::layout::dict_subclass_storage_slot(ptr) else {
+            return Ok(None);
+        };
         let current = *slot;
         if current != 0 {
             if obj_from_bits(current)
                 .as_ptr()
                 .is_some_and(|dict| object_type_id(dict) == TYPE_ID_DICT)
             {
-                return Some(current);
+                return Ok(Some(current));
             }
             raise_exception::<()>(py, "SystemError", "invalid dict subclass backing");
-            return None;
+            return Err(());
         }
         let dictionary = alloc_dict_with_pairs(py, &[]);
         if dictionary.is_null() {
-            return None;
+            return Err(());
         }
         let bits = MoltObject::from_ptr(dictionary).bits();
         *slot = bits;
         crate::object::object_mark_has_ptrs(py, ptr);
-        Some(bits)
+        Ok(Some(bits))
     }
 }
 
-pub(crate) unsafe fn dict_like_bits_from_ptr(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+pub(crate) unsafe fn dict_like_bits_from_ptr(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> Result<Option<u64>, ()> {
     unsafe {
-        if object_type_id(ptr) == TYPE_ID_DICT {
-            return Some(MoltObject::from_ptr(ptr).bits());
+        match object_type_id(ptr) {
+            TYPE_ID_DICT => Ok(Some(MoltObject::from_ptr(ptr).bits())),
+            TYPE_ID_OBJECT => dict_subclass_storage_bits(py, ptr),
+            _ => Ok(None),
         }
-        if object_type_id(ptr) == TYPE_ID_OBJECT {
-            return dict_subclass_storage_bits(_py, ptr);
-        }
-        None
     }
 }
 
-/// C dictionary admission distinguishes a non-dictionary from failed lazy storage.
-/// Returned backing bits are borrowed from the original receiver.
+/// Dictionary admission distinguishes a non-dictionary from failed lazy storage.
+/// Returned backing bits are borrowed from the original receiver. Completion
+/// depends on the actual storage operation, never an admitted prior exception.
 pub(crate) fn dict_backing_bits(py: &PyToken<'_>, bits: u64) -> Result<Option<u64>, ()> {
-    let backing = obj_from_bits(bits)
-        .as_ptr()
-        .and_then(|ptr| unsafe { dict_like_bits_from_ptr(py, ptr) });
-    if exception_pending(py) {
-        Err(())
-    } else {
-        Ok(backing)
+    match obj_from_bits(bits).as_ptr() {
+        Some(ptr) => unsafe { dict_like_bits_from_ptr(py, ptr) },
+        None => Ok(None),
     }
 }
 
@@ -1841,58 +1841,77 @@ pub(crate) fn tuple_from_isize_slice(_py: &PyToken<'_>, values: &[isize]) -> u64
     }
 }
 
-fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> bool {
+fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
     unsafe {
         {
             let call_bits =
-                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__bool__");
+                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__bool__")?;
             if let Some(call_bits) = call_bits {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
-                    return false;
+                    return Err(());
                 }
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(b) = res_obj.as_bool() {
                     dec_ref_bits(_py, res_bits);
-                    return b;
+                    return Ok(b);
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                 dec_ref_bits(_py, res_bits);
                 let msg = format!("__bool__ should return bool, returned {res_type}");
                 let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-                return false;
+                return Err(());
             }
-        }
-        if exception_pending(_py) {
-            return false;
         }
         {
             let call_bits =
-                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__len__");
+                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__len__")?;
             if let Some(call_bits) = call_bits {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
-                    return false;
+                    return Err(());
                 }
                 let length = crate::object::ops_sys::coerce_length_result(_py, res_bits);
                 dec_ref_bits(_py, res_bits);
-                return length.is_some_and(|length| length != 0);
+                return length.map(|length| length != 0).ok_or(());
             }
         }
-        !exception_pending(_py)
+        Ok(true)
     }
 }
 
-pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
+/// Read a genuine native truth slot's explicit completion. The public bool
+/// runtime entry retains its established false failure sentinel; typed truth
+/// consumers use this status before retiring their owned result.
+pub(crate) unsafe fn native_truth_value(py: &PyToken<'_>, ptr: *mut u8) -> Result<bool, ()> {
+    let native = core::ptr::with_exposed_provenance_mut(unsafe {
+        crate::object::foreign::foreign_ptr_from_obj(ptr)
+    });
+    let truth = unsafe { molt_cpython_abi::api::object::PyObject_IsTrue(native) };
+    if truth < 0 {
+        crate::cpython_abi_hooks::propagate_native_failure(py, "object truth inquiry");
+        Err(())
+    } else {
+        Ok(truth != 0)
+    }
+}
+
+/// Runtime boolean ABI lowers failure to false; the pending error remains
+/// owned by the canonical producer. Callers needing status use truth_value.
+pub(crate) fn is_truthy(py: &PyToken<'_>, obj: MoltObject) -> bool {
+    truth_value(py, obj).unwrap_or(false)
+}
+
+pub(crate) fn truth_value(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
     if obj.is_none() {
-        return false;
+        return Ok(false);
     }
     if let Some(b) = obj.as_bool() {
-        return b;
+        return Ok(b);
     }
     if let Some(ptr) = obj.as_ptr()
         && !ptr.is_null()
@@ -1902,15 +1921,7 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
                 // Foreign wrappers have no managed class edge. Their native
                 // type owns nb_bool / mp_length / sq_length through the same
                 // ABI inquiry used when the object is observed directly in C.
-                let native = core::ptr::with_exposed_provenance_mut(
-                    crate::object::foreign::foreign_ptr_from_obj(ptr),
-                );
-                let truth = molt_cpython_abi::api::object::PyObject_IsTrue(native);
-                if truth < 0 {
-                    crate::cpython_abi_hooks::propagate_native_failure(_py, "object truth inquiry");
-                    return false;
-                }
-                return truth != 0;
+                return native_truth_value(_py, ptr);
             }
             if !crate::object::iterable::builtin_receiver(_py, ptr) {
                 return truthy_from_special(_py, obj);
@@ -1918,82 +1929,82 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
         }
     }
     if let Some(i) = to_i64(obj) {
-        return i != 0;
+        return Ok(i != 0);
     }
     if let Some(f) = as_float_extended(obj) {
-        return f != 0.0;
+        return Ok(f != 0.0);
     }
     if let Some(big) = to_bigint(obj) {
-        return !big.is_zero();
+        return Ok(!big.is_zero());
     }
     if let Some(ptr) = obj.as_ptr() {
         if ptr.is_null() {
-            return false;
+            return Ok(false);
         }
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_STRING {
-                return string_len(ptr) > 0;
+                return Ok(string_len(ptr) > 0);
             }
             if type_id == TYPE_ID_BYTES {
-                return bytes_len(ptr) > 0;
+                return Ok(bytes_len(ptr) > 0);
             }
             if type_id == TYPE_ID_COMPLEX {
                 let value = *complex_ref(ptr);
-                return value.re != 0.0 || value.im != 0.0;
+                return Ok(value.re != 0.0 || value.im != 0.0);
             }
             if type_id == TYPE_ID_BYTEARRAY {
-                return bytes_len(ptr) > 0;
+                return Ok(bytes_len(ptr) > 0);
             }
             if matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
                 && crate::object::iterable::builtin_receiver(_py, ptr)
             {
-                return list_len(ptr) > 0;
+                return Ok(list_len(ptr) > 0);
             }
             if type_id == TYPE_ID_TUPLE {
-                return tuple_len(ptr) > 0;
+                return Ok(tuple_len(ptr) > 0);
             }
             if type_id == TYPE_ID_DICT {
-                return dict_len(ptr) > 0;
+                return Ok(dict_len(ptr) > 0);
             }
             if type_id == TYPE_ID_SET {
-                return set_len(ptr) > 0;
+                return Ok(set_len(ptr) > 0);
             }
             if type_id == TYPE_ID_FROZENSET {
-                return set_len(ptr) > 0;
+                return Ok(set_len(ptr) > 0);
             }
             if type_id == TYPE_ID_BUFFER2D {
                 let buf_ptr = buffer2d_ptr(ptr);
                 if buf_ptr.is_null() {
-                    return false;
+                    return Ok(false);
                 }
                 let buf = &*buf_ptr;
-                return buf.rows.saturating_mul(buf.cols) > 0;
+                return Ok(buf.rows.saturating_mul(buf.cols) > 0);
             }
             if type_id == TYPE_ID_DICT_KEYS_VIEW
                 || type_id == TYPE_ID_DICT_VALUES_VIEW
                 || type_id == TYPE_ID_DICT_ITEMS_VIEW
             {
-                return dict_view_len(ptr) > 0;
+                return Ok(dict_view_len(ptr) > 0);
             }
             if type_id == TYPE_ID_RANGE {
                 let Some((start, stop, step)) = range_components_bigint(ptr) else {
-                    return false;
+                    return Ok(false);
                 };
                 let len = range_len_bigint(&start, &stop, &step);
-                return !len.is_zero();
+                return Ok(!len.is_zero());
             }
             if type_id == TYPE_ID_ITER {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_GENERATOR {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_ASYNC_GENERATOR {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_ENUMERATE {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_CALL_ITER
                 || type_id == TYPE_ID_REVERSED
@@ -2001,24 +2012,24 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
                 || type_id == TYPE_ID_MAP
                 || type_id == TYPE_ID_FILTER
             {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_SLICE {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_CONTEXT_MANAGER {
-                return true;
+                return Ok(true);
             }
             if type_id == TYPE_ID_FILE_HANDLE {
-                return true;
+                return Ok(true);
             }
             if crate::object::heap_kind_has_class_shape(type_id) || type_id == TYPE_ID_DATACLASS {
                 return truthy_from_special(_py, obj);
             }
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 fn union_type_display_name(_py: &PyToken<'_>) -> &'static str {
@@ -2165,8 +2176,7 @@ unsafe fn install_guarded_class_namespace(
         return false;
     };
     for pair in attrs.as_chunks::<2>().0 {
-        unsafe { crate::dict_set_in_place(_py, dict_ptr, pair[0], pair[1]) };
-        if exception_pending(_py) {
+        if !unsafe { crate::dict_set_in_place(_py, dict_ptr, pair[0], pair[1]) } {
             return false;
         }
     }
@@ -2176,9 +2186,9 @@ unsafe fn install_guarded_class_namespace(
         &crate::runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
-    unsafe { crate::dict_set_in_place(_py, dict_ptr, layout_attr, size_obj) };
+    let completed = unsafe { crate::dict_set_in_place(_py, dict_ptr, layout_attr, size_obj) };
     crate::dec_ref_bits(_py, size_obj);
-    !exception_pending(_py)
+    completed
         && unsafe {
             crate::builtins::types::class_finalize_namespace_metadata(_py, class_ptr, name_bits)
         }

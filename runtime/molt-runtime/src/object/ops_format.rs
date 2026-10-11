@@ -59,16 +59,23 @@ impl FormatOutput {
         }
     }
 
-    fn into_bytes(self, py: &PyToken<'_>) -> Vec<u8> {
+    pub(crate) fn into_bytes_result(self, py: &PyToken<'_>) -> Result<Vec<u8>, FormatError> {
         if let Self::Bytes(bytes) = self {
-            return bytes;
+            return if exception_pending(py) {
+                Err(FormatError::Pending)
+            } else {
+                Ok(bytes)
+            };
         }
         self.with_bytes(py, |bytes| {
             let mut out = format_buffer(bytes.len())?;
             out.extend_from_slice(bytes);
             Ok(out)
         })
-        .unwrap_or_else(|error| {
+    }
+
+    fn into_bytes(self, py: &PyToken<'_>) -> Vec<u8> {
+        self.into_bytes_result(py).unwrap_or_else(|error| {
             error.raise::<()>(py);
             Vec::new()
         })
@@ -315,11 +322,39 @@ fn format_complex(re: f64, im: f64) -> String {
     format!("({re_text}{sign}{im_text}j)")
 }
 
-fn format_range(start: &BigInt, stop: &BigInt, step: &BigInt) -> String {
+pub(crate) fn format_bigint_decimal(
+    py: &PyToken<'_>,
+    value: &BigInt,
+) -> Result<String, FormatError> {
+    molt_runtime_core::integer_decimal::decimal_string(value, || {
+        crate::builtins::sys_ext::current_int_max_str_digits(py)
+    })
+    .map_err(|error| FormatError::Diagnostic("ValueError", Cow::Owned(error.to_string())))
+}
+
+pub(crate) fn format_bigint_decimal_magnitude(
+    py: &PyToken<'_>,
+    value: &BigInt,
+) -> Result<String, FormatError> {
+    molt_runtime_core::integer_decimal::decimal_magnitude(value, || {
+        crate::builtins::sys_ext::current_int_max_str_digits(py)
+    })
+    .map_err(|error| FormatError::Diagnostic("ValueError", Cow::Owned(error.to_string())))
+}
+
+fn format_range(
+    py: &PyToken<'_>,
+    start: &BigInt,
+    stop: &BigInt,
+    step: &BigInt,
+) -> Result<String, FormatError> {
+    let start = format_bigint_decimal(py, start)?;
+    let stop = format_bigint_decimal(py, stop)?;
     if step == &BigInt::from(1) {
-        format!("range({start}, {stop})")
+        Ok(format!("range({start}, {stop})"))
     } else {
-        format!("range({start}, {stop}, {step})")
+        let step = format_bigint_decimal(py, step)?;
+        Ok(format!("range({start}, {stop}, {step})"))
     }
 }
 
@@ -350,10 +385,14 @@ fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 /// Look up a string-valued attribute in a namespace with normal dict key
 /// equality. `attr_name_bits_from_bytes` returns an owned reference, including
 /// when the name is cached, so release it after the borrowed dict lookup.
-fn dict_get_attr_string(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8]) -> Option<Vec<u8>> {
-    let key_bits = attr_name_bits_from_bytes(_py, name)?;
+fn dict_get_attr_string(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    name: &[u8],
+) -> Result<Option<Vec<u8>>, ()> {
+    let key_bits = attr_name_bits_from_bytes(_py, name).ok_or(())?;
     let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) }
-        .and_then(|bits| string_obj_bytes(obj_from_bits(bits)));
+        .map(|value| value.and_then(|bits| string_obj_bytes(obj_from_bits(bits))));
     dec_ref_bits(_py, key_bits);
     value
 }
@@ -382,7 +421,7 @@ fn format_qualified_type_name_in_context(
             let dict_bits = class_dict_bits(type_ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
-                && let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__")
+                && let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__").ok()?
             {
                 module_name = Some(val);
             }
@@ -645,15 +684,14 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
             out.push('=');
             // Generated dataclass repr reads each field immediately before
             // its repr callback; a callback may replace a later field.
-            let val = crate::object::accessors::object_field_get_ptr_raw(
+            let val = match crate::object::accessors::object_field_get_ptr_raw(
                 _py,
                 ptr,
                 idx * std::mem::size_of::<u64>(),
-            );
-            if exception_pending(_py) {
-                dec_ref_bits(_py, val);
-                return "<dataclass>".into();
-            }
+            ) {
+                Ok(value) => value,
+                Err(()) => return "<dataclass>".into(),
+            };
             if is_missing_bits(_py, val) {
                 let type_label = if desc.name.is_empty() {
                     "dataclass"
@@ -968,22 +1006,19 @@ pub(crate) unsafe fn try_format_special_method_bits(
     slot: &str,
 ) -> Option<u64> {
     unsafe {
-        let Some(method) =
-            lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot.as_bytes())
-        else {
-            if !exception_pending(py) {
-                return None;
-            }
-            // CPython before 3.14 clears a failed __repr__ descriptor lookup
-            // and uses object.__repr__; a failure while calling the bound
-            // method still propagates. sys_version_info is the runtime target.
-            let propagate_repr_lookup = super::ops_sys::runtime_target_at_least(py, 3, 14);
-            if slot == "__repr__" && !propagate_repr_lookup {
-                clear_exception(py);
-                return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
-            }
-            return Some(MoltObject::none().bits());
-        };
+        let method =
+            match lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot.as_bytes()) {
+                Ok(Some(method)) => method,
+                Ok(None) => return None,
+                Err(()) => {
+                    // Only failed descriptor binding is suppressed by the pre-3.14 repr rule.
+                    if slot == "__repr__" && !super::ops_sys::runtime_target_at_least(py, 3, 14) {
+                        clear_exception(py);
+                        return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
+                    }
+                    return Some(MoltObject::none().bits());
+                }
+            };
         Some(invoke_format_method(py, method, slot, None))
     }
 }
@@ -1009,7 +1044,13 @@ unsafe fn try_subclass_repr_override(
         let class = obj_from_bits(class_bits).as_ptr()?;
         let base = obj_from_bits(builtin_class_bits).as_ptr()?;
         let name = intern_static_name(py, &runtime_state(py).interned.repr_name, b"__repr__");
-        if class_attr_lookup_raw_mro(py, class, name) == class_attr_lookup_raw_mro(py, base, name) {
+        if (match class_attr_lookup_raw_mro(py, class, name) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        }) == (match class_attr_lookup_raw_mro(py, base, name) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        }) {
             return None;
         }
         try_format_special_method(py, ptr, "__repr__")
@@ -1048,16 +1089,21 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
             let base = obj_from_bits(base_bits).as_ptr()?;
             let name =
                 intern_static_name(py, &runtime_state(py).interned.format_name, b"__format__");
-            if class_attr_lookup_raw_mro(py, class, name)
-                == class_attr_lookup_raw_mro(py, base, name)
-            {
+            if (match class_attr_lookup_raw_mro(py, class, name) {
+                Ok(raw) => raw,
+                Err(()) => return Some(MoltObject::none().bits()),
+            }) == (match class_attr_lookup_raw_mro(py, base, name) {
+                Ok(raw) => raw,
+                Err(()) => return Some(MoltObject::none().bits()),
+            }) {
                 return None;
             }
         }
-        if let Some(method) = lookup_special_method(py, obj.bits(), b"__format__") {
-            return Some(invoke_format_method(py, method, "__format__", Some(spec)));
+        match lookup_special_method(py, obj.bits(), b"__format__") {
+            Ok(Some(method)) => Some(invoke_format_method(py, method, "__format__", Some(spec))),
+            Ok(None) => None,
+            Err(()) => Some(MoltObject::none().bits()),
         }
-        exception_pending(py).then_some(MoltObject::none().bits())
     }
 }
 
@@ -1066,22 +1112,20 @@ unsafe fn list_repr_contents(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     if !guard.active() {
         return "[...]".into();
     }
+    let storage =
+        crate::object::list_storage::ListStorage::from_bits(py, MoltObject::from_ptr(ptr).bits())
+            .expect("admitted list renderer");
     let mut out = FormatBuffer::from("[");
     let mut index = 0;
-    unsafe {
-        while index < crate::object::seq_access::locked_len(ptr) {
-            let Some(item) = crate::object::seq_access::pin_item(py, ptr, index) else {
-                continue;
-            };
-            if index != 0 {
-                out.push_str(", ");
-            }
-            out.push_output(py, format_obj_output(py, obj_from_bits(item.bits())));
-            if exception_pending(py) {
-                break;
-            }
-            index += 1;
+    while let Some(item) = storage.item(index) {
+        if index != 0 {
+            out.push_str(", ");
         }
+        out.push_output(py, format_obj_output(py, obj_from_bits(item.bits())));
+        if exception_pending(py) {
+            break;
+        }
+        index += 1;
     }
     out.push(']');
     out.into()
@@ -1089,20 +1133,17 @@ unsafe fn list_repr_contents(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 
 pub(crate) extern "C" fn list_repr_slot(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let Some(ptr) = crate::object::ops_list::list_receiver(py, bits, "__repr__") else {
+        let Some(storage) = crate::object::ops_list::list_receiver(py, bits, "__repr__") else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
-            let rendered = list_repr_contents(py, ptr);
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
-            rendered.into_bits(py)
+        if !storage.promote() {
+            return MoltObject::none().bits();
         }
+        let rendered = unsafe { list_repr_contents(py, storage.wrapper_ptr()) };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        rendered.into_bits(py)
     })
 }
 
@@ -1124,22 +1165,39 @@ unsafe fn try_subclass_str_or_repr_override(
 
         let str_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
-        let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
-        let base_str = class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits);
+        let raw_str = (match class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        });
+        let base_str = (match class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        });
         if raw_str.is_some() && raw_str != base_str {
             return try_format_special_method(_py, ptr, "__str__");
         }
 
         let object_ptr = obj_from_bits(builtin_classes(_py).object).as_ptr()?;
-        if base_str != class_attr_lookup_raw_mro(_py, object_ptr, str_name_bits) {
+        if base_str
+            != (match class_attr_lookup_raw_mro(_py, object_ptr, str_name_bits) {
+                Ok(raw) => raw,
+                Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+            })
+        {
             // A declaring __str__ slot (not object.__str__) keeps its own
             // semantics when only the subclass's __repr__ changes.
             return None;
         }
         let repr_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
-        let raw_repr = class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits);
-        let base_repr = class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits);
+        let raw_repr = (match class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        });
+        let base_repr = (match class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits) {
+            Ok(raw) => raw,
+            Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
+        });
         if raw_repr.is_some() && raw_repr != base_repr {
             return try_format_special_method(_py, ptr, "__repr__");
         }
@@ -1152,13 +1210,18 @@ pub(crate) unsafe fn format_module_default(py: &PyToken<'_>, ptr: *mut u8) -> Fo
         let Some(dictionary) = obj_from_bits(module_dict_bits(ptr)).as_ptr() else {
             return "<module '?'>".into();
         };
-        let name =
-            dict_get_attr_string(py, dictionary, b"__name__").unwrap_or_else(|| b"?".to_vec());
+        let name = match dict_get_attr_string(py, dictionary, b"__name__") {
+            Ok(name) => name.unwrap_or_else(|| b"?".to_vec()),
+            Err(()) => return "".into(),
+        };
         let mut out = FormatBuffer::from("<module '");
         out.push_bytes(&name);
         out.push('\'');
         if !exception_pending(py)
-            && let Some(file) = dict_get_attr_string(py, dictionary, b"__file__")
+            && let Some(file) = match dict_get_attr_string(py, dictionary, b"__file__") {
+                Ok(file) => file,
+                Err(()) => return "".into(),
+            }
         {
             out.push_str(" from '");
             out.push_bytes(&file);
@@ -1232,7 +1295,13 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                     return u8::from(value).to_string().into();
                 }
                 let ptr = bigint_ptr_from_bits(payload).expect("validated integer payload");
-                return bigint_ref(ptr).to_string().into();
+                return match format_bigint_decimal(_py, bigint_ref(ptr)) {
+                    Ok(text) => text.into(),
+                    Err(error) => {
+                        error.raise::<()>(_py);
+                        FormatOutput::Bytes(Vec::new())
+                    }
+                };
             }
             if type_id == TYPE_ID_COMPLEX {
                 let value = *complex_ref(ptr);
@@ -1250,7 +1319,13 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
             }
             if type_id == TYPE_ID_RANGE {
                 if let Some((start, stop, step)) = range_components_bigint(ptr) {
-                    return format_range(&start, &stop, &step).into();
+                    return match format_range(_py, &start, &stop, &step) {
+                        Ok(text) => text.into(),
+                        Err(error) => {
+                            error.raise::<()>(_py);
+                            FormatOutput::Bytes(Vec::new())
+                        }
+                    };
                 }
                 return "range(?)".into();
             }
@@ -1813,7 +1888,14 @@ mod tests {
                 assert!(!dict.is_null());
                 let dict_bits = MoltObject::from_ptr(dict).bits();
                 let view = make_view(dict_bits);
-                unsafe { dict_set_in_place(py, dict, MoltObject::from_int(1).bits(), view) };
+                unsafe {
+                    assert!(dict_set_in_place(
+                        py,
+                        dict,
+                        MoltObject::from_int(1).bits(),
+                        view
+                    ))
+                };
                 let refs = refcount(view);
                 assert_eq!(super::format_obj(py, obj_from_bits(view)), expected);
                 assert!(!crate::exception_pending(py));
@@ -1903,7 +1985,7 @@ mod tests {
             let file_ptr = alloc_string(_py, b"/tmp/pathlib.py");
             assert!(!file_ptr.is_null());
             let file_bits = MoltObject::from_ptr(file_ptr).bits();
-            unsafe { dict_set_in_place(_py, dict_ptr, file_key, file_bits) };
+            unsafe { assert!(dict_set_in_place(_py, dict_ptr, file_key, file_bits)) };
 
             let key_refs = refcount(file_key);
             for _ in 0..16 {
@@ -1934,18 +2016,18 @@ mod tests {
             let qual_ptr = alloc_string(_py, b"Outer.C");
             assert!(!module_ptr.is_null() && !qual_ptr.is_null());
             unsafe {
-                dict_set_in_place(
+                assert!(dict_set_in_place(
                     _py,
                     dict_ptr,
                     module_key,
                     MoltObject::from_ptr(module_ptr).bits(),
-                );
-                dict_set_in_place(
+                ));
+                assert!(dict_set_in_place(
                     _py,
                     dict_ptr,
                     qual_key,
                     MoltObject::from_ptr(qual_ptr).bits(),
-                );
+                ));
             }
             let class_bits = crate::builtins::types::molt_type_new(
                 crate::builtin_classes(_py).type_obj,
@@ -3104,7 +3186,11 @@ fn format_int_with_spec(
     if negative {
         value = -value;
     }
-    let mut digits = value.to_str_radix(base);
+    let mut digits = if base == 10 {
+        format_bigint_decimal_magnitude(_py, &value)?
+    } else {
+        value.to_str_radix(base)
+    };
     if ty == 'X' {
         digits = digits.to_uppercase();
     }

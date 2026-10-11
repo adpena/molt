@@ -355,7 +355,13 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
             };
             if source_cancelled {
                 let cancel_msg_ref =
-                    asyncio_attr_lookup_allow_missing(_py, source_bits, b"_cancel_message");
+                    match asyncio_attr_lookup_allow_missing(_py, source_bits, b"_cancel_message") {
+                        Ok(value) => value,
+                        Err(()) => {
+                            asyncio_clear_pending_exception(_py);
+                            return MoltObject::from_bool(false).bits();
+                        }
+                    };
                 let cancel_msg_bits = cancel_msg_ref.unwrap_or_else(|| MoltObject::none().bits());
                 let out_bits = asyncio_call_method1(_py, target_bits, b"cancel", cancel_msg_bits);
                 if let Some(found_bits) = cancel_msg_ref
@@ -435,21 +441,33 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
                     return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
                 };
                 let waiter_bits = waiter.bits();
-                let Some(owner_bits) =
-                    asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_owner")
-                else {
-                    continue;
-                };
+                let owner_bits =
+                    match asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_owner")
+                    {
+                        Ok(Some(bits)) => bits,
+                        Ok(None) => continue,
+                        Err(()) => {
+                            dec_ref_bits(_py, waiter_tuple_bits);
+                            return MoltObject::none().bits();
+                        }
+                    };
                 if obj_from_bits(owner_bits).is_none() {
                     dec_ref_bits(_py, owner_bits);
                     continue;
                 }
-                let Some(owner_waiters_bits) =
-                    asyncio_attr_lookup_allow_missing(_py, owner_bits, b"_waiters")
-                else {
-                    dec_ref_bits(_py, owner_bits);
-                    continue;
-                };
+                let owner_waiters_bits =
+                    match asyncio_attr_lookup_allow_missing(_py, owner_bits, b"_waiters") {
+                        Ok(Some(bits)) => bits,
+                        Ok(None) => {
+                            dec_ref_bits(_py, owner_bits);
+                            continue;
+                        }
+                        Err(()) => {
+                            dec_ref_bits(_py, owner_bits);
+                            dec_ref_bits(_py, waiter_tuple_bits);
+                            return MoltObject::none().bits();
+                        }
+                    };
                 let out_bits =
                     asyncio_call_method1(_py, owner_waiters_bits, b"remove", waiter_bits);
                 if exception_pending(_py) {
@@ -563,9 +581,18 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                     return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
                 };
                 let waiter_bits = waiter.bits();
-                if let Some(token_bits) =
-                    asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_token_id")
-                {
+                let token = match asyncio_attr_lookup_allow_missing(
+                    _py,
+                    waiter_bits,
+                    b"_molt_event_token_id",
+                ) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        dec_ref_bits(_py, waiter_tuple_bits);
+                        return MoltObject::none().bits();
+                    }
+                };
+                if let Some(token_bits) = token {
                     if to_i64(obj_from_bits(token_bits)).is_some() {
                         let out =
                             crate::molt_asyncio_event_waiters_unregister(token_bits, waiter_bits);

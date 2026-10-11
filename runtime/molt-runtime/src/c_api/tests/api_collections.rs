@@ -84,6 +84,62 @@ fn c_api_dict_new_setitem_getitem_contains_size() {
 }
 
 #[test]
+fn c_api_dictionary_completion_preserves_an_existing_error() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dictionary = PyDict_New();
+        let _dictionary_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), dictionary)
+        };
+        let updates = PyDict_New();
+        let _updates_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), updates)
+        };
+        let key = MoltObject::from_int(7).bits();
+        let value = MoltObject::from_int(23).bits();
+        let other = MoltObject::from_int(8).bits();
+        assert_eq!(PyDict_SetItem(updates, other, value), 0);
+        raise_exception::<()>(py, "LookupError", "existing caller error");
+        let original = molt_exception_last_pending();
+        let _original_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), original)
+        };
+        let unchanged = || {
+            let observed = molt_exception_last_pending();
+            let _observed_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), observed)
+            };
+            assert_eq!(
+                observed, original,
+                "completion must preserve the same error object"
+            );
+        };
+        assert_eq!(PyDict_SetItem(dictionary, key, value), 0);
+        unchanged();
+        assert_eq!(PyDict_GetItem(dictionary, key), value);
+        unchanged();
+        assert_eq!(PyDict_Contains(dictionary, key), 1);
+        assert_eq!(PyDict_Contains(dictionary, other), 0);
+        unchanged();
+        assert_eq!(PyDict_Update(dictionary, updates), 0);
+        assert_eq!(PyDict_GetItem(dictionary, other), value);
+        unchanged();
+        let copied = PyDict_Copy(dictionary);
+        let _copied_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), copied)
+        };
+        assert_ne!(copied, 0);
+        assert_eq!(PyDict_GetItem(copied, key), value);
+        unchanged();
+        assert_eq!(PyDict_DelItem(dictionary, key), 0);
+        assert_eq!(PyDict_Contains(dictionary, key), 0);
+        unchanged();
+        clear_exception(py);
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
 fn c_api_dict_set_item_string() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -231,7 +287,7 @@ fn c_api_iter_protocol_on_list() {
         let list_bits = MoltObject::from_ptr(list_ptr).bits();
 
         // Check PyIter_Check on the list (not an iterator itself).
-        assert_eq!(PyIter_Check(list_bits), 0);
+        assert_eq!(PyIter_Check(list_bits), Ok(false));
 
         // Get an iterator.
         let iter = PyObject_GetIter(list_bits);
@@ -239,7 +295,7 @@ fn c_api_iter_protocol_on_list() {
         assert!(!exception_pending(_py));
 
         // The iterator should pass PyIter_Check.
-        assert_eq!(PyIter_Check(iter), 1);
+        assert_eq!(PyIter_Check(iter), Ok(true));
 
         // Iterate: 10, 20, 30, then NULL.
         let v1 = PyIter_Next(iter);

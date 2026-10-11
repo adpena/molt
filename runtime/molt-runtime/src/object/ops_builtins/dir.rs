@@ -198,10 +198,10 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 // dir() follows type-special lookup, including the native
                 // foreign descriptor owner. Instance attributes are not hooks.
                 let override_bits =
-                    crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__dir__");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
+                    match crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__dir__") {
+                        Ok(method) => method,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
 
                 if let Some(override_bits) = override_bits {
                     let res_bits = call_callable0(_py, override_bits);

@@ -407,10 +407,10 @@ unsafe fn native_type_namespace_mutation(
             return -1;
         }
         let _meta_owner = OwnedPyObject::from_borrowed(meta.cast());
-        let descriptor = OwnedPyObject::from_borrowed(_PyType_Lookup(meta, name));
-        if descriptors::pending() {
-            return -1;
-        }
+        let descriptor = match type_lookup_borrowed(meta, name) {
+            Ok(descriptor) => OwnedPyObject::from_borrowed(descriptor),
+            Err(crate::ErrorIndicatorSet) => return -1,
+        };
         if let Some(status) = crate::api::descriptor::set(descriptor.as_ptr(), tp.cast(), value) {
             return status;
         }

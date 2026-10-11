@@ -292,25 +292,24 @@ pub(crate) unsafe fn wrapper_uses_default_method(
     ptr: *mut u8,
     name: &[u8],
     symbol: u64,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
         let Some(kind) = WrapperKind::from_type_id(object_type_id(ptr)) else {
-            return false;
+            return Ok(false);
         };
         let class = type_of_bits(py, MoltObject::from_ptr(ptr).bits());
         if class == kind.class(py) {
-            return true;
+            return Ok(true);
         }
         let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
-            return false;
+            return Ok(false);
         };
-        let Some(name) = attr_name_bits_from_bytes(py, name) else {
-            return false;
-        };
+        let name = attr_name_bits_from_bytes(py, name).ok_or(())?;
         let raw = crate::builtins::attr::class_attr_lookup_raw_mro(py, class_ptr, name);
         dec_ref_bits(py, name);
-        !exception_pending(py)
-            && crate::call::type_policy::callable_matches_runtime_symbol(raw, symbol)
+        Ok(crate::call::type_policy::callable_matches_runtime_symbol(
+            raw?, symbol,
+        ))
     }
 }
 
@@ -322,7 +321,7 @@ pub(crate) unsafe fn wrapper_get(
     wrapper: u64,
     instance: Option<u64>,
     owner: Option<u64>,
-) -> u64 {
+) -> Result<u64, ()> {
     unsafe {
         let ptr = obj_from_bits(wrapper)
             .as_ptr()
@@ -343,14 +342,21 @@ pub(crate) unsafe fn wrapper_get(
             WrapperKind::Property => {
                 if instance.is_none_or(|value| obj_from_bits(value).is_none()) {
                     inc_ref_bits(py, wrapper);
-                    return wrapper;
+                    return Ok(wrapper);
                 }
                 let getter = property_get_bits(ptr);
                 if obj_from_bits(getter).is_none() {
-                    return property_missing_accessor(py, ptr, instance.unwrap(), "getter");
+                    property_missing_accessor(py, ptr, instance.unwrap(), "getter");
+                    return Err(());
                 }
                 let _getter = WrapperInputs::new(py, [getter]);
-                call_callable1(py, getter, instance.unwrap())
+                let value = call_callable1(py, getter, instance.unwrap());
+                if exception_pending(py) {
+                    dec_ref_bits(py, value);
+                    Err(())
+                } else {
+                    Ok(value)
+                }
             }
             WrapperKind::Classmethod | WrapperKind::Staticmethod => {
                 let target = match kind {
@@ -358,34 +364,36 @@ pub(crate) unsafe fn wrapper_get(
                     _ => staticmethod_func_bits(ptr),
                 };
                 if crate::builtins::methods::is_missing_bits(py, target) {
-                    return raise_exception::<_>(
+                    raise_exception::<()>(
                         py,
                         "RuntimeError",
                         &format!("uninitialized {} object", kind.name()),
                     );
+                    return Err(());
                 }
                 if kind == WrapperKind::Staticmethod {
                     inc_ref_bits(py, target);
-                    return target;
+                    return Ok(target);
                 }
                 let _target = WrapperInputs::new(py, [target]);
-                if !crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
-                    let descriptor =
-                        crate::builtins::attr::has_special_method(py, target, b"__get__");
-                    if exception_pending(py) {
-                        return MoltObject::none().bits();
-                    }
-                    if descriptor {
-                        return crate::builtins::attr::descriptor_bind(
-                            py,
-                            target,
-                            Some(owner),
-                            Some(owner),
-                        )
-                        .unwrap_or_else(|| MoltObject::none().bits());
-                    }
+                if !crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
+                    && crate::builtins::attr::has_special_method(py, target, b"__get__")?
+                {
+                    return crate::builtins::attr::descriptor_bind(
+                        py,
+                        target,
+                        Some(owner),
+                        Some(owner),
+                    )?
+                    .ok_or(());
                 }
-                crate::builtins::functions::explicit_bound_method_new(py, target, owner)
+                let bound =
+                    crate::builtins::functions::explicit_bound_method_new(py, target, owner);
+                if obj_from_bits(bound).is_none() {
+                    Err(())
+                } else {
+                    Ok(bound)
+                }
             }
         }
     }
@@ -398,7 +406,10 @@ unsafe fn property_missing_accessor(
     accessor: &str,
 ) -> u64 {
     unsafe {
-        let name = crate::builtins::attributes::property_name_value(py, ptr);
+        let name = match crate::builtins::attributes::property_name_value(py, ptr) {
+            Ok(name) => name,
+            Err(()) => return MoltObject::none().bits(),
+        };
         if exception_pending(py) {
             if let Some(name) = name {
                 dec_ref_bits(py, name);
@@ -446,7 +457,7 @@ pub(crate) unsafe fn property_mutate(
     wrapper: u64,
     instance: u64,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let ptr = obj_from_bits(wrapper)
             .as_ptr()
@@ -465,20 +476,22 @@ pub(crate) unsafe fn property_mutate(
             property_del_bits(ptr)
         };
         if obj_from_bits(accessor).is_none() {
-            return property_missing_accessor(
+            property_missing_accessor(
                 py,
                 ptr,
                 instance,
                 if value.is_some() { "setter" } else { "deleter" },
             );
+            return Err(());
         }
         let _accessor = WrapperInputs::new(py, [accessor]);
         let result = match value {
             Some(value) => call_callable2(py, accessor, instance, value),
             None => call_callable1(py, accessor, instance),
         };
+        let failed = exception_pending(py);
         dec_ref_bits(py, result);
-        MoltObject::none().bits()
+        if failed { Err(()) } else { Ok(()) }
     }
 }
 
@@ -661,9 +674,16 @@ fn wrapper_method(
                     return raise_exception::<_>(py, "TypeError", "__get__(None, None) is invalid");
                 }
                 wrapper_get(py, receiver, instance, owner)
+                    .unwrap_or_else(|()| MoltObject::none().bits())
             }
-            WrapperOperation::Set => property_mutate(py, receiver, args[0], Some(args[1])),
-            WrapperOperation::Delete => property_mutate(py, receiver, args[0], None),
+            WrapperOperation::Set => {
+                let _ = property_mutate(py, receiver, args[0], Some(args[1]));
+                MoltObject::none().bits()
+            }
+            WrapperOperation::Delete => {
+                let _ = property_mutate(py, receiver, args[0], None);
+                MoltObject::none().bits()
+            }
             WrapperOperation::SetName => {
                 let _inputs = WrapperInputs::new(py, [receiver, args[1]]);
                 if !property_replace_name_bits(py, ptr, args[1]) {

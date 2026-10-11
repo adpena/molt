@@ -244,7 +244,7 @@ fn module_del_global_releases_owned_list_builder_literal_element() {
     assert_eq!(set_result, none());
     assert_eq!(refcount(list_bits), 2);
 
-    let popped_bits = unsafe { molt_list_pop(list_bits, none()) };
+    let popped_bits = unsafe { molt_list_pop(list_bits, MoltObject::from_int(-1).bits()) };
     assert_eq!(popped_bits, elem1_bits);
     molt_runtime::molt_dec_ref_obj(popped_bits);
 

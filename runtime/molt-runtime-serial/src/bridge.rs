@@ -537,19 +537,6 @@ pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u6
     unsafe { (vt().call_callable2)(call_bits, arg0, arg1) }
 }
 
-/// # Safety
-///
-/// `ptr` must refer to a live pointer-backed Molt object for the duration of
-/// this call.
-pub unsafe fn attr_lookup_ptr_allow_missing(
-    _py: &PyToken,
-    ptr: *mut u8,
-    name_bits: u64,
-) -> Option<u64> {
-    let result = unsafe { (vt().attr_lookup_ptr_allow_missing)(ptr, name_bits) };
-    if result == 0 { None } else { Some(result) }
-}
-
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
     unsafe { (vt().intern_static_name)(key.as_ptr(), key.len()) }
 }
@@ -579,27 +566,27 @@ pub fn molt_is_callable(_py: &PyToken, bits: u64) -> bool {
     unsafe { (vt().molt_is_callable)(bits) != 0 }
 }
 
-pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
+pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { (vt().format_obj)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        String::from_utf8_lossy(&boxed).into_owned()
+        Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
-        "<?>".to_string()
+        None
     }
 }
 
-pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
+pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { (vt().format_obj_str)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        String::from_utf8_lossy(&boxed).into_owned()
+        Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
-        "<?>".to_string()
+        None
     }
 }
 
@@ -622,23 +609,37 @@ pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
-pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { (vt().dict_get_in_place)(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary lookup status"),
+    }
 }
 
 /// # Safety
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
+#[must_use]
 pub unsafe fn dict_set_in_place(
     _py: &PyToken,
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    unsafe { (vt().dict_set_in_place)(dict_ptr, key_bits, val_bits) != 0 }
+    match unsafe { (vt().dict_set_in_place)(dict_ptr, key_bits, val_bits) } {
+        1 => true,
+        0 => false,
+        _ => unreachable!("invalid dictionary mutation status"),
+    }
 }
 
 /// # Safety

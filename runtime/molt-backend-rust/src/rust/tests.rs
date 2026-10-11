@@ -1373,7 +1373,7 @@ fn compile_checked_rejects_even_i64_sized_bigint_literals() {
             ops: vec![
                 OpIR {
                     kind: "const_bigint".to_string(),
-                    s_value: Some("2305843009213693951".to_string()),
+                    bytes: Some(vec![0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
                     out: Some("big".to_string()),
                     ..OpIR::default()
                 },
@@ -1411,7 +1411,7 @@ fn compile_checked_rejects_unrepresented_literal_values() {
             ops: vec![
                 OpIR {
                     kind: "const_bigint".to_string(),
-                    s_value: Some("9223372036854775808".to_string()),
+                    bytes: Some(vec![0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
                     out: Some("too_big".to_string()),
                     ..OpIR::default()
                 },

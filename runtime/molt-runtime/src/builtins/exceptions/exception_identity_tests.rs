@@ -1106,7 +1106,9 @@ fn spoofed_native_identity_cannot_enter_exception_matching_or_descriptors() {
                 ),
                 0
             );
-            let method = exception_method_bits(py, "add_note").unwrap();
+            let method = exception_method_bits(py, "add_note")
+                .expect("method lookup succeeds")
+                .unwrap();
             inc_ref_bits(py, method);
             assert!(
                 !crate::builtins::functions::native_callable::admit_native_call(
@@ -1152,7 +1154,9 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
                 (&raw mut *first).cast::<PyObject>(),
             );
 
-            let descriptor = object_method_bits(py, "__init_subclass__").unwrap();
+            let descriptor = object_method_bits(py, "__init_subclass__")
+                .expect("method lookup succeeds")
+                .unwrap();
             inc_ref_bits(py, descriptor);
             let receiver = native_descriptor_receiver(
                 py,
@@ -1168,6 +1172,7 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
             assert_eq!(receiver.bits(), class);
             drop(receiver);
             let bound = crate::builtins::attr::descriptor_bind(py, descriptor, None, Some(bits))
+                .expect("operation succeeds")
                 .expect("materialized native classmethod");
             assert_eq!(
                 bound_method_self_bits(obj_from_bits(bound).as_ptr().unwrap()),
@@ -1194,10 +1199,13 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
                 class
             );
 
-            let repr_descriptor = object_method_bits(py, "__repr__").unwrap();
+            let repr_descriptor = object_method_bits(py, "__repr__")
+                .expect("method lookup succeeds")
+                .unwrap();
             inc_ref_bits(py, repr_descriptor);
             let repr_bound =
                 crate::builtins::attr::descriptor_bind(py, repr_descriptor, None, Some(bits))
+                    .expect("operation succeeds")
                     .expect("native method wrapper");
             let rendered = native_callable_repr(py, obj_from_bits(repr_bound).as_ptr().unwrap())
                 .expect("native method repr");
@@ -1236,7 +1244,9 @@ fn native_exception_public_methods_use_physical_receiver_admission() {
             let native = native_exception(&raw mut PyExc_ValueError);
             let bits = foreign_bits(native);
             let note = MoltObject::from_ptr(alloc_string(py, b"native note")).bits();
-            let method = exception_method_bits(py, "add_note").unwrap();
+            let method = exception_method_bits(py, "add_note")
+                .expect("method lookup succeeds")
+                .unwrap();
             inc_ref_bits(py, method);
             let function = obj_from_bits(method).as_ptr().unwrap();
             assert_eq!(
@@ -1263,7 +1273,9 @@ fn native_exception_public_methods_use_physical_receiver_admission() {
             );
             refcount::Py_DECREF(notes);
 
-            let traceback_method = exception_method_bits(py, "with_traceback").unwrap();
+            let traceback_method = exception_method_bits(py, "with_traceback")
+                .expect("method lookup succeeds")
+                .unwrap();
             inc_ref_bits(py, traceback_method);
             let result =
                 crate::call_callable2(py, traceback_method, bits, MoltObject::none().bits());
@@ -1393,7 +1405,9 @@ fn init_storage_call(
     values: &[u64],
 ) {
     let owner = exception_type_bits_from_name(py, root.owner_name());
-    let callable = exception_method_bits_for_owner(py, owner, "__init__").unwrap();
+    let callable = exception_method_bits_for_owner(py, owner, "__init__")
+        .expect("method lookup succeeds")
+        .unwrap();
     let mut arguments = vec![receiver];
     arguments.extend_from_slice(positional);
     let result = unsafe {

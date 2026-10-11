@@ -47,7 +47,10 @@ fn refs(bits: u64) -> u32 {
 }
 
 fn lookup(py: &PyToken<'_>, mapping: u64, key: u64) -> Option<u64> {
-    unsafe { dict_get_in_place(py, obj_from_bits(mapping).as_ptr().unwrap(), key) }
+    unsafe {
+        dict_get_in_place(py, obj_from_bits(mapping).as_ptr().unwrap(), key)
+            .expect("dictionary lookup succeeds")
+    }
 }
 
 /// Transfer one owned value into an activation payload slot.
@@ -640,6 +643,7 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
                 .unwrap(),
                 key,
             )
+            .expect("dictionary lookup succeeds")
         };
         assert_eq!(
             next,

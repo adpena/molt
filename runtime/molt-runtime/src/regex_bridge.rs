@@ -177,13 +177,14 @@ pub extern "C" fn __molt_regex_dict_get_in_place(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -195,8 +196,7 @@ pub extern "C" fn __molt_regex_dict_set_in_place(
     val_bits: u64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
-        1
+        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
     })
 }
 

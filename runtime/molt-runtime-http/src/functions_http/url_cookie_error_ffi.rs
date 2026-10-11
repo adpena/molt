@@ -455,7 +455,7 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     expires_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let out = http_cookies_render_morsel_impl(
+        let out = match http_cookies_render_morsel_impl(
             _py,
             HttpCookieMorselInput {
                 name_bits,
@@ -499,8 +499,11 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let reason_text = crate::bridge::format_obj_str(_py, obj_from_bits(reason_bits));
-        let out = format!("<urlopen error {reason_text}>");
+        let Some(reason_text) = crate::bridge::format_obj_str(_py, obj_from_bits(reason_bits)) else { return MoltObject::none().bits(); };
+        let out = format!("<urlopen error {reason_text}>") {
+            Ok(out) => out,
+            Err(bits) => return bits,
+        };
         let out_ptr = alloc_string(_py, out.as_bytes());
         if out_ptr.is_null() {
             MoltObject::none().bits()
@@ -541,8 +544,12 @@ pub extern "C" fn molt_urllib_error_httperror_init(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_error_httperror_str(code_bits: u64, msg_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let code_text = crate::bridge::format_obj_str(_py, obj_from_bits(code_bits));
-        let msg_text = crate::bridge::format_obj_str(_py, obj_from_bits(msg_bits));
+        let Some(code_text) = crate::bridge::format_obj_str(_py, obj_from_bits(code_bits)) else {
+            return MoltObject::none().bits();
+        };
+        let Some(msg_text) = crate::bridge::format_obj_str(_py, obj_from_bits(msg_bits)) else {
+            return MoltObject::none().bits();
+        };
         let out = format!("HTTP Error {code_text}: {msg_text}");
         let out_ptr = alloc_string(_py, out.as_bytes());
         if out_ptr.is_null() {

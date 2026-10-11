@@ -29,11 +29,9 @@ fn put(py: &PyToken<'_>, dict: *mut u8, name: &str, value: u64) -> bool {
     if exception_pending(py) {
         return false;
     }
-    unsafe {
-        crate::dict_set_in_place(py, dict, key, value);
-    }
+    let stored = unsafe { crate::dict_set_in_place(py, dict, key, value) };
     dec_ref_bits(py, key);
-    !exception_pending(py)
+    stored
 }
 fn descriptor(py: &PyToken<'_>, class: u64, dict: *mut u8, name: &str, operation: u32) -> bool {
     let key = text(py, name);

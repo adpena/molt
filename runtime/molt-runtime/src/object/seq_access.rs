@@ -18,7 +18,15 @@ pub(crate) struct PinnedSequenceItem<'a, 'py> {
     bits: u64,
 }
 
-impl PinnedSequenceItem<'_, '_> {
+impl<'a, 'py> PinnedSequenceItem<'a, 'py> {
+    /// Adopt an item already retained by the physical sequence owner.
+    /// # Safety
+    /// `bits` transfers one live runtime reference under `py` custody.
+    #[inline]
+    pub(crate) unsafe fn from_owned_bits(py: &'a PyToken<'py>, bits: u64) -> Self {
+        Self { py, bits }
+    }
+
     #[inline]
     pub(crate) fn bits(&self) -> u64 {
         self.bits

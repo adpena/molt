@@ -9,7 +9,9 @@ pub extern "C" fn molt_urllib_request_request_init(
     method_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let url_text = crate::bridge::format_obj_str(_py, obj_from_bits(url_bits));
+        let Some(url_text) = crate::bridge::format_obj_str(_py, obj_from_bits(url_bits)) else {
+            return MoltObject::none().bits();
+        };
         let url_ptr = alloc_string(_py, url_text.as_bytes());
         if url_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1073,7 +1075,9 @@ pub extern "C" fn molt_urllib_request_response_getheader(
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
-        let name = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits));
+        let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
+            return MoltObject::none().bits();
+        };
         let Some(out) = urllib_response_with(handle, |resp| {
             let Some(joined) = urllib_response_joined_header(resp, name.as_str()) else {
                 return Ok(None);

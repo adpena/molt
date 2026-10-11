@@ -126,15 +126,15 @@ pub(crate) unsafe fn is_exact_staticmethod_wrapper(py: &PyToken<'_>, ptr: *mut u
     }
 }
 
-unsafe fn has_builtin_staticmethod_call(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+unsafe fn has_builtin_staticmethod_call(py: &PyToken<'_>, ptr: *mut u8) -> Result<bool, ()> {
     unsafe {
-        object_type_id(ptr) == TYPE_ID_STATICMETHOD
+        Ok(object_type_id(ptr) == TYPE_ID_STATICMETHOD
             && crate::builtins::types::wrappers::wrapper_uses_default_method(
                 py,
                 ptr,
                 b"__call__",
                 fn_key!(crate::molt_staticmethod_call),
-            )
+            )?)
     }
 }
 
@@ -149,12 +149,10 @@ pub(crate) unsafe fn resolve_staticmethod_call_target<'guard, 'py>(
         let Some(call_ptr) = obj_from_bits(call_bits).as_ptr() else {
             return StaticmethodCallTarget::NotStaticmethod;
         };
-        if !has_builtin_staticmethod_call(py, call_ptr) {
-            return if exception_pending(py) {
-                StaticmethodCallTarget::Raised
-            } else {
-                StaticmethodCallTarget::NotStaticmethod
-            };
+        match has_builtin_staticmethod_call(py, call_ptr) {
+            Ok(true) => {}
+            Ok(false) => return StaticmethodCallTarget::NotStaticmethod,
+            Err(()) => return StaticmethodCallTarget::Raised,
         }
 
         let mut depth = StaticmethodResolutionDepth::new();
@@ -168,18 +166,21 @@ pub(crate) unsafe fn resolve_staticmethod_call_target<'guard, 'py>(
                     _depth: depth,
                 });
             };
-            if !has_builtin_staticmethod_call(py, current_ptr) {
-                if exception_pending(py) {
+            match has_builtin_staticmethod_call(py, current_ptr) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return StaticmethodCallTarget::Owned(OwnedStaticmethodCallTarget {
+                        py,
+                        bits: current_owned.expect("staticmethod target must be retained"),
+                        _depth: depth,
+                    });
+                }
+                Err(()) => {
                     if let Some(bits) = current_owned {
                         dec_ref_bits(py, bits);
                     }
                     return StaticmethodCallTarget::Raised;
                 }
-                return StaticmethodCallTarget::Owned(OwnedStaticmethodCallTarget {
-                    py,
-                    bits: current_owned.expect("staticmethod target must be retained"),
-                    _depth: depth,
-                });
             }
             if !depth.enter(py) {
                 if let Some(bits) = current_owned {
@@ -227,20 +228,15 @@ pub(crate) unsafe fn lookup_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> Ca
         let call_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
         let result = match class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits) {
-            Some(_) if exception_pending(_py) => CallAttrLookup::Raised,
-            Some(raw_bits) => {
+            Ok(Some(raw_bits)) => {
                 match descriptor_bind(_py, raw_bits, Some(class_bits), Some(obj_bits)) {
-                    Some(bits) if exception_pending(_py) => {
-                        dec_ref_bits(_py, bits);
-                        CallAttrLookup::Raised
-                    }
-                    Some(bits) => CallAttrLookup::Found(bits),
-                    None if exception_pending(_py) => CallAttrLookup::Raised,
-                    None => CallAttrLookup::Missing,
+                    Ok(Some(bits)) => CallAttrLookup::Found(bits),
+                    Ok(None) => CallAttrLookup::Missing,
+                    Err(()) => CallAttrLookup::Raised,
                 }
             }
-            None if exception_pending(_py) => CallAttrLookup::Raised,
-            None => CallAttrLookup::Missing,
+            Ok(None) => CallAttrLookup::Missing,
+            Err(()) => CallAttrLookup::Raised,
         };
         dec_ref_bits(_py, obj_bits);
         dec_ref_bits(_py, class_bits);
@@ -267,8 +263,16 @@ pub(crate) unsafe fn has_type_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> 
         let Some(class_ptr) = call_class_ptr(obj_ptr) else {
             return false;
         };
-        let call_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
-        class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits).is_some()
+        // A nonraising inquiry preserves both error channels. Managed classes
+        // currently derive presence from their declaration namespace; dispatch
+        // separately owns fallible descriptor binding.
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            let call_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+            matches!(
+                class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits),
+                Ok(Some(_))
+            )
+        })
     }
 }

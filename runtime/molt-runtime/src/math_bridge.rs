@@ -13,9 +13,9 @@ use crate::builtins::numbers::{
     index_i64_from_obj as _index_i64_from_obj, to_bigint as _to_bigint, to_f64 as _to_f64,
 };
 use crate::builtins::type_ops::type_of_bits as _type_of_bits;
-use crate::object::ops::{
-    format_obj as _format_obj, format_obj_str as _format_obj_str,
-    string_obj_to_owned as _string_obj_to_owned, type_name as _type_name,
+use crate::object::ops::{string_obj_to_owned as _string_obj_to_owned, type_name as _type_name};
+use crate::object::ops_format::{
+    format_obj_output as _format_obj, format_obj_str_output as _format_obj_str,
 };
 use crate::*;
 use num_bigint::{BigInt, Sign};
@@ -247,6 +247,84 @@ pub extern "C" fn __molt_math_to_i64(bits: u64, out: *mut i64) -> i32 {
         }
         None => 0,
     }
+}
+
+// Conversion boundaries use the shared numeric protocol owner. The older
+// to_* exports below remain pure carrier probes for their existing consumers.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_float_as_double(bits: u64, out: *mut f64) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::numbers::float_as_double(py, bits) {
+            Some(value) => {
+                unsafe {
+                    *out = value;
+                }
+                1
+            }
+            None => -1,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_exact_float_value(bits: u64, out: *mut f64) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::numbers::exact_float_storage_value(py, bits) {
+            Ok(Some(value)) => {
+                unsafe {
+                    *out = value;
+                }
+                1
+            }
+            Ok(None) => 0,
+            Err(()) => -1,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_integer_storage(
+    bits: u64,
+    out_sign: *mut i32,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let value = match crate::builtins::numbers::integer_storage_bigint(py, bits) {
+            Ok(Some(value)) => value,
+            Ok(None) => return 0,
+            Err(()) => return -1,
+        };
+        let (sign, bytes) = value.to_bytes_be();
+        let status = unsafe {
+            crate::resource::bridge_buffer::export_u8_box(
+                bytes.into_boxed_slice(),
+                out_ptr,
+                out_len,
+            )
+        };
+        if status == 0 {
+            raise_exception::<()>(
+                py,
+                "MemoryError",
+                "math integer storage transport allocation failed",
+            );
+            return -1;
+        }
+        unsafe {
+            *out_sign = match sign {
+                Sign::Minus => -1,
+                Sign::NoSign => 0,
+                Sign::Plus => 1,
+            };
+        }
+        1
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_target_minor() -> i64 {
+    crate::with_gil_entry_nopanic!(py, { crate::object::ops_sys::runtime_target_minor(py) })
 }
 
 #[unsafe(no_mangle)]
@@ -520,11 +598,12 @@ pub extern "C" fn __molt_math_lookup_special_method(
                 name_bits,
             )
         } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe { *out = bits };
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -591,8 +670,13 @@ pub extern "C" fn __molt_math_format_obj(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let s = _format_obj(_py, obj);
-        let bytes = s.into_bytes().into_boxed_slice();
+        let bytes = match _format_obj(_py, obj).into_bytes_result(_py) {
+            Ok(bytes) => bytes.into_boxed_slice(),
+            Err(error) => {
+                error.raise::<()>(_py);
+                return 0;
+            }
+        };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
@@ -605,9 +689,21 @@ pub extern "C" fn __molt_math_format_obj_str(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let s = _format_obj_str(_py, obj);
-        let bytes = s.into_bytes().into_boxed_slice();
+        let bytes = match _format_obj_str(_py, obj).into_bytes_result(_py) {
+            Ok(bytes) => bytes.into_boxed_slice(),
+            Err(error) => {
+                error.raise::<()>(_py);
+                return 0;
+            }
+        };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_current_int_max_str_digits() -> usize {
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::builtins::sys_ext::current_int_max_str_digits(_py)
     })
 }
 
@@ -623,13 +719,14 @@ pub extern "C" fn __molt_math_dict_get_in_place(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -641,8 +738,7 @@ pub extern "C" fn __molt_math_dict_set_in_place(
     val_bits: u64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
-        1
+        i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
     })
 }
 
@@ -819,6 +915,550 @@ mod tests {
             let _ = __molt_math_intern_static_name(key.as_ptr(), key.len());
             assert!(exception_pending(_py));
             clear_exception(_py);
+        });
+    }
+}
+
+#[cfg(test)]
+mod numeric_protocol_tests {
+    use crate::builtins::exceptions::ExceptionValue;
+    use crate::cpython_abi_hooks::native_test_fixture::NativeType;
+    use crate::object::foreign::NativeObjectOwner;
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::{errors, numbers, object, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use std::ptr;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    static FLOAT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static INDEX_RESULT: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+    static RETIRING_FLOAT_TYPE: AtomicPtr<PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+    static RETIRING_FLOAT_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+
+    unsafe extern "C" fn retiring_float(_self: *mut PyObject) -> *mut PyObject {
+        unsafe {
+            let class = RETIRING_FLOAT_TYPE.load(Ordering::SeqCst);
+            if class.is_null() {
+                errors::PyErr_BadInternalCall();
+                return ptr::null_mut();
+            }
+            let result = typeobj::PyType_GenericAlloc(class, 0);
+            if !result.is_null() {
+                (*result.cast::<PyFloatObject>()).ob_fval = 2.5;
+            }
+            result
+        }
+    }
+
+    unsafe extern "C" fn retiring_float_drop(value: *mut PyObject) {
+        unsafe {
+            let error = errors::PyErr_GetRaisedException();
+            RETIRING_FLOAT_ERROR.store(error, Ordering::SeqCst);
+            errors::PyErr_SetRaisedException(error);
+            molt_cpython_abi::api::memory::PyObject_Free(value.cast());
+        }
+    }
+
+    unsafe extern "C" fn float_override(_self: *mut PyObject) -> *mut PyObject {
+        FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            let result = typeobj::PyType_GenericAlloc(&raw mut PyFloat_Type, 0);
+            if !result.is_null() {
+                (*result.cast::<PyFloatObject>()).ob_fval = 4.0;
+            }
+            result
+        }
+    }
+
+    unsafe extern "C" fn index_result(_self: *mut PyObject) -> *mut PyObject {
+        unsafe { object::Py_XNewRef(INDEX_RESULT.load(Ordering::SeqCst)) }
+    }
+
+    unsafe extern "C" fn floor_override(
+        _self: *mut PyObject,
+        _args: *mut PyObject,
+    ) -> *mut PyObject {
+        unsafe { numbers::PyLong_FromLong(23) }
+    }
+
+    struct CallbackState;
+    impl Drop for CallbackState {
+        fn drop(&mut self) {
+            INDEX_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+            RETIRING_FLOAT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+
+    struct WarningPolicy;
+    impl Drop for WarningPolicy {
+        fn drop(&mut self) {
+            crate::molt_warnings_resetwarnings();
+        }
+    }
+
+    #[test]
+    fn native_math_consumers_use_numeric_storage_and_protocol_owners() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            let py = &py;
+            FLOAT_CALLS.store(0, Ordering::SeqCst);
+            let mut integer_slots: PyNumberMethods = std::mem::zeroed();
+            integer_slots.nb_float = float_override as *const () as *mut _;
+            let mut integer_type = NativeType::subtype(&raw mut PyLong_Type, c"math.NativeInteger");
+            integer_type.tp_as_number = (&raw mut integer_slots).cast();
+            assert_eq!(integer_type.ready(), 0);
+            // Genuine physical 2**1200, with an override that generic float
+            // conversion must invoke and the actual-integer logarithm must ignore.
+            let integer = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *integer_type,
+                41,
+            ));
+            assert!(!integer.as_ptr().is_null());
+            let layout = integer.as_ptr().cast::<PyLongObject>();
+            (*layout).long_value.lv_tag = 41 << 3;
+            let digits = (&raw mut (*layout).long_value.ob_digit).cast::<u32>();
+            for index in 0..41 {
+                digits.add(index).write(u32::from(index == 40));
+            }
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(integer.as_ptr())
+                    .is_none()
+            );
+            let integer_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(integer.as_ptr())
+                    .unwrap(),
+            );
+            assert_eq!(
+                crate::object_type_id(crate::obj_from_bits(integer_bits.bits()).as_ptr().unwrap()),
+                crate::TYPE_ID_FOREIGN
+            );
+            let result = ExceptionValue::adopt(
+                py,
+                molt_runtime_math::math::molt_math_log2(integer_bits.bits()),
+            );
+            assert_eq!(
+                crate::as_float_extended(crate::obj_from_bits(result.bits())),
+                Some(1200.0)
+            );
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
+            let result = ExceptionValue::adopt(
+                py,
+                molt_runtime_math::math::molt_math_sqrt(integer_bits.bits()),
+            );
+            assert_eq!(
+                crate::as_float_extended(crate::obj_from_bits(result.bits())),
+                Some(2.0)
+            );
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+
+            let mut methods = [
+                PyMethodDef {
+                    ml_name: c"__floor__".as_ptr(),
+                    ml_meth: Some(floor_override),
+                    ml_flags: METH_NOARGS,
+                    ml_doc: ptr::null(),
+                },
+                PyMethodDef {
+                    ml_name: ptr::null(),
+                    ml_meth: None,
+                    ml_flags: 0,
+                    ml_doc: ptr::null(),
+                },
+            ];
+            let mut float_slots: PyNumberMethods = std::mem::zeroed();
+            float_slots.nb_float = float_override as *const () as *mut _;
+            let mut float_type = NativeType::subtype(&raw mut PyFloat_Type, c"math.NativeFloat");
+            float_type.tp_as_number = (&raw mut float_slots).cast();
+            float_type.tp_methods = methods.as_mut_ptr();
+            assert_eq!(float_type.ready(), 0);
+            let float = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *float_type,
+                0,
+            ));
+            assert!(!float.as_ptr().is_null());
+            (*float.as_ptr().cast::<PyFloatObject>()).ob_fval = 9.0;
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(float.as_ptr())
+                    .is_none()
+            );
+            let float_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(float.as_ptr()).unwrap(),
+            );
+            let result = ExceptionValue::adopt(
+                py,
+                molt_runtime_math::math::molt_math_sqrt(float_bits.bits()),
+            );
+            assert_eq!(
+                crate::as_float_extended(crate::obj_from_bits(result.bits())),
+                Some(3.0)
+            );
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+            let result = ExceptionValue::adopt(
+                py,
+                molt_runtime_math::math::molt_math_floor(float_bits.bits()),
+            );
+            assert_eq!(
+                crate::builtins::numbers::integer_storage_i64(py, result.bits()),
+                Some(23)
+            );
+
+            let exact = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyFloat_Type,
+                0,
+            ));
+            assert!(!exact.as_ptr().is_null());
+            (*exact.as_ptr().cast::<PyFloatObject>()).ob_fval = 9.5;
+            let exact_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(exact.as_ptr()).unwrap(),
+            );
+            let result = ExceptionValue::adopt(
+                py,
+                molt_runtime_math::math::molt_math_floor(exact_bits.bits()),
+            );
+            assert_eq!(
+                crate::builtins::numbers::integer_storage_i64(py, result.bits()),
+                Some(9)
+            );
+
+            assert_eq!(
+                crate::object_type_id(crate::obj_from_bits(exact_bits.bits()).as_ptr().unwrap()),
+                crate::TYPE_ID_FOREIGN,
+            );
+            // Storage probes are allowed with an existing indicator. Hit/miss
+            // comes from the producer, never from that unrelated old error.
+            let prior =
+                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            assert!(!prior.as_ptr().is_null());
+            let prior_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(prior.as_ptr()).unwrap(),
+            );
+            for runtime_prior in [false, true] {
+                if runtime_prior {
+                    crate::record_exception(
+                        py,
+                        crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
+                    );
+                } else {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                }
+                let mut value = 0.0;
+                assert_eq!(
+                    crate::builtins::numbers::float_storage_value(py, float_bits.bits()),
+                    Ok(Some(9.0)),
+                );
+                assert_eq!(
+                    crate::builtins::numbers::float_storage_value(py, integer_bits.bits()),
+                    Ok(None),
+                );
+                for (bits, expected) in [
+                    (exact_bits.bits(), 9.5),
+                    (float_bits.bits(), 9.0),
+                    (integer_bits.bits(), 4.0),
+                ] {
+                    assert_eq!(super::__molt_math_float_as_double(bits, &mut value), 1);
+                    assert_eq!(value, expected);
+                }
+                assert_eq!(
+                    super::__molt_math_exact_float_value(exact_bits.bits(), &mut value),
+                    1
+                );
+                assert_eq!(value, 9.5);
+                assert_eq!(
+                    super::__molt_math_exact_float_value(integer_bits.bits(), &mut value),
+                    0
+                );
+                assert_eq!(
+                    super::__molt_math_exact_float_value(
+                        crate::MoltObject::none().bits(),
+                        &mut value
+                    ),
+                    0
+                );
+                let mut sign = 0;
+                let mut bytes = ptr::null();
+                let mut len = 0;
+                assert_eq!(
+                    super::__molt_math_integer_storage(
+                        integer_bits.bits(),
+                        &mut sign,
+                        &mut bytes,
+                        &mut len
+                    ),
+                    1
+                );
+                let owned = molt_runtime_core::bridge_owned_u8_buffer(bytes, len);
+                assert_eq!(sign, 1);
+                assert_eq!(owned.len(), 151);
+                assert_eq!(owned[0], 1);
+                assert!(owned[1..].iter().all(|byte| *byte == 0));
+                drop(owned);
+                assert_eq!(
+                    super::__molt_math_integer_storage(
+                        exact_bits.bits(),
+                        &mut sign,
+                        &mut bytes,
+                        &mut len
+                    ),
+                    0
+                );
+                assert_eq!(
+                    super::__molt_math_integer_storage(
+                        crate::MoltObject::none().bits(),
+                        &mut sign,
+                        &mut bytes,
+                        &mut len
+                    ),
+                    0
+                );
+                let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(selected.as_ptr(), prior.as_ptr());
+                assert!(!crate::exception_pending(py));
+                assert!(!errors::raised_error_pending());
+            }
+
+            // The same magnitude returned by __index__ must overflow through
+            // PyFloat_AsDouble; it is not eligible for actual-integer log handling.
+            let mut index_slots: PyNumberMethods = std::mem::zeroed();
+            index_slots.nb_index = index_result as *const () as *mut _;
+            let mut index_type =
+                NativeType::subtype(&raw mut PyBaseObject_Type, c"math.NativeIndex");
+            index_type.tp_as_number = (&raw mut index_slots).cast();
+            assert_eq!(index_type.ready(), 0);
+            let index = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *index_type,
+                0,
+            ));
+            assert!(!index.as_ptr().is_null());
+            let index_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(index.as_ptr()).unwrap(),
+            );
+            // Use an exact native long result to isolate overflow from subtype warnings.
+            let huge = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyLong_Type,
+                41,
+            ));
+            assert!(!huge.as_ptr().is_null());
+            let layout = huge.as_ptr().cast::<PyLongObject>();
+            (*layout).long_value.lv_tag = 41 << 3;
+            let digits = (&raw mut (*layout).long_value.ob_digit).cast::<u32>();
+            for index in 0..41 {
+                digits.add(index).write(u32::from(index == 40));
+            }
+            let _callbacks = CallbackState;
+            INDEX_RESULT.store(huge.as_ptr(), Ordering::SeqCst);
+            for operation in [
+                molt_runtime_math::math::molt_math_log,
+                molt_runtime_math::math::molt_math_log2,
+                molt_runtime_math::math::molt_math_log10,
+            ] {
+                let result = ExceptionValue::adopt(py, operation(index_bits.bits()));
+                assert!(crate::obj_from_bits(result.bits()).is_none());
+                let error = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                assert_eq!(object::Py_TYPE(error.as_ptr()), PyExc_OverflowError.cast());
+                assert!(!crate::exception_pending(py));
+            }
+            INDEX_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
+        });
+    }
+
+    #[test]
+    fn native_scalar_float_status_distinguishes_minus_one_and_protocol_failure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            let py = &py;
+            let mut slots: PyNumberMethods = std::mem::zeroed();
+            slots.nb_index = index_result as *const () as *mut _;
+            let mut index_type =
+                NativeType::subtype(&raw mut PyBaseObject_Type, c"math.MinusOneIndex");
+            index_type.tp_as_number = (&raw mut slots).cast();
+            assert_eq!(index_type.ready(), 0);
+            let index = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *index_type,
+                0,
+            ));
+            assert!(!index.as_ptr().is_null());
+            let index_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(index.as_ptr()).unwrap(),
+            );
+            let integer = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyLong_Type,
+                1,
+            ));
+            assert!(!integer.as_ptr().is_null());
+            let integer_layout = integer.as_ptr().cast::<PyLongObject>();
+            (*integer_layout).long_value.lv_tag = (1 << 3) | 2;
+            (*integer_layout).long_value.ob_digit[0] = 1;
+            let float = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyFloat_Type,
+                0,
+            ));
+            assert!(!float.as_ptr().is_null());
+            (*float.as_ptr().cast::<PyFloatObject>()).ob_fval = -1.0;
+            let float_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(float.as_ptr()).unwrap(),
+            );
+            let plain = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut PyBaseObject_Type,
+                0,
+            ));
+            assert!(!plain.as_ptr().is_null());
+            let plain_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(plain.as_ptr()).unwrap(),
+            );
+            let prior =
+                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            assert!(!prior.as_ptr().is_null());
+            let prior_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(prior.as_ptr()).unwrap(),
+            );
+            let _callbacks = CallbackState;
+            INDEX_RESULT.store(integer.as_ptr(), Ordering::SeqCst);
+            for runtime_prior in [false, true] {
+                if runtime_prior {
+                    crate::record_exception(
+                        py,
+                        crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
+                    );
+                } else {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                }
+                for bits in [float_bits.bits(), index_bits.bits()] {
+                    let mut output = 7.0;
+                    assert_eq!(super::__molt_math_float_as_double(bits, &mut output), 1);
+                    assert_eq!(output, -1.0);
+                }
+                assert_eq!(numbers::PyFloat_AsDouble(index.as_ptr()), -1.0);
+                // CPython's object-producing PyNumber_Float checks -1 plus
+                // pending only after releasing its index result. Its scalar
+                // sibling returns that valid -1 directly.
+                let result = NativeObjectOwner::from_owned(
+                    molt_cpython_abi::api::abstract_number::PyNumber_Float(index.as_ptr()),
+                );
+                assert!(result.as_ptr().is_null());
+                let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(selected.as_ptr(), prior.as_ptr());
+                assert!(!crate::exception_pending(py));
+                assert!(!errors::raised_error_pending());
+
+                if runtime_prior {
+                    crate::record_exception(
+                        py,
+                        crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
+                    );
+                } else {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                }
+                let mut output = 7.0;
+                assert_eq!(
+                    super::__molt_math_float_as_double(plain_bits.bits(), &mut output),
+                    -1
+                );
+                assert_eq!(output, 7.0, "failed conversion must not publish a scalar");
+                let failure = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!failure.as_ptr().is_null());
+                assert_ne!(failure.as_ptr(), prior.as_ptr());
+                assert_eq!(object::Py_TYPE(failure.as_ptr()), PyExc_TypeError.cast());
+                assert!(!crate::exception_pending(py));
+                assert!(!errors::raised_error_pending());
+            }
+        });
+    }
+
+    #[test]
+    fn scalar_numeric_retirement_completes_legal_native_error_channel_movement() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            let py = &py;
+            let _warning_policy = WarningPolicy;
+            crate::molt_warnings_resetwarnings();
+            let ignore =
+                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, b"ignore").unwrap());
+            let configured = ExceptionValue::adopt(
+                py,
+                crate::molt_warnings_simplefilter(
+                    ignore.bits(),
+                    crate::builtins::exceptions::exception_type_bits_from_name(
+                        py,
+                        "DeprecationWarning",
+                    ),
+                    crate::MoltObject::from_int(0).bits(),
+                    crate::MoltObject::from_bool(false).bits(),
+                ),
+            );
+            assert!(!crate::exception_pending(py));
+            drop(configured);
+            let mut result_type = NativeType::subtype(&raw mut PyFloat_Type, c"math.RetiringFloat");
+            result_type.tp_dealloc = Some(retiring_float_drop);
+            assert_eq!(result_type.ready(), 0);
+            let mut slots: PyNumberMethods = std::mem::zeroed();
+            slots.nb_float = retiring_float as *const () as *mut _;
+            let mut input_type =
+                NativeType::subtype(&raw mut PyBaseObject_Type, c"math.FloatProducer");
+            input_type.tp_as_number = (&raw mut slots).cast();
+            assert_eq!(input_type.ready(), 0);
+            let input = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *input_type,
+                0,
+            ));
+            assert!(!input.as_ptr().is_null());
+            let input_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(input.as_ptr()).unwrap(),
+            );
+            let prior =
+                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            assert!(!prior.as_ptr().is_null());
+            let prior_bits = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE.molt_value_for_pyobj(prior.as_ptr()).unwrap(),
+            );
+            let _callbacks = CallbackState;
+            RETIRING_FLOAT_TYPE.store(&raw mut *result_type, Ordering::SeqCst);
+            for runtime_prior in [false, true] {
+                RETIRING_FLOAT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                if runtime_prior {
+                    crate::record_exception(
+                        py,
+                        crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
+                    );
+                } else {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                }
+                let mut value = 0.0;
+                assert_eq!(
+                    super::__molt_math_float_as_double(input_bits.bits(), &mut value),
+                    1
+                );
+                assert_eq!(value, 2.5);
+                assert_eq!(RETIRING_FLOAT_ERROR.load(Ordering::SeqCst), prior.as_ptr());
+                assert!(crate::exception_pending(py));
+                assert_eq!(
+                    crate::builtins::exceptions::thread_last_exception_bits_noinc(py),
+                    Some(prior_bits.bits())
+                );
+                let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(selected.as_ptr(), prior.as_ptr());
+                assert!(!crate::exception_pending(py));
+            }
         });
     }
 }

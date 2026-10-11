@@ -772,7 +772,7 @@ unsafe fn raw_call(
     } else {
         unsafe { adapter(self_, args, wrapped) }
     };
-    unsafe { operands.complete_result(result, "native slot wrapper") }
+    unsafe { operands.complete_callable_result(result, "native slot wrapper") }
 }
 
 /// These thunks complete at raw_call, where the hidden bound receiver is known.

@@ -285,7 +285,7 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
 }
 
 #[test]
-fn malformed_native_descriptor_callbacks_cannot_publish_success_or_silent_failure() {
+fn native_descriptor_completion_uses_explicit_status_and_rejects_silent_failure() {
     type GetSlot =
         unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
     type SetSlot =
@@ -306,43 +306,47 @@ fn malformed_native_descriptor_callbacks_cannot_publish_success_or_silent_failur
         let bits = GLOBAL_BRIDGE
             .molt_value_for_pyobj(&raw mut descriptor.object)
             .unwrap();
+        let descriptor_owner =
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
         let owner = builtin_classes(&py).object;
         let none = MoltObject::none().bits();
-        for (get_slot, set_slot) in [
+        // CPython object.c returns tp_descr_get/tp_descr_set completion directly.
+        // Only actual generic calls apply _Py_CheckFunctionResult validation.
+        for (get_slot, set_slot, succeeds, expected_error) in [
             (
                 success_with_error as GetSlot,
                 mutation_success_with_error as SetSlot,
+                true,
+                &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
             ),
             (
                 failure_without_error as GetSlot,
                 mutation_failure_without_error as SetSlot,
+                false,
+                &raw mut molt_cpython_abi::abi_types::PyExc_SystemError,
             ),
         ] {
             (*descriptor.object.ob_type).tp_descr_get = Some(get_slot);
             (*descriptor.object.ob_type).tp_descr_set = Some(set_slot);
-            descriptor_bind(&py, bits, Some(owner), Some(none));
-            assert!(exception_pending(&py));
-            let error = crate::exception_last_bits_noinc(&py).unwrap();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                &py,
-                error,
-                "SystemError"
-            ));
-            crate::clear_exception(&py);
+            let result = descriptor_bind(&py, bits, Some(owner), Some(none));
+            assert_eq!(result, if succeeds { Ok(Some(none)) } else { Err(()) });
+            if let Ok(Some(value)) = result {
+                dec_ref_bits(&py, value);
+            }
+            assert_eq!(errors::PyErr_ExceptionMatches(expected_error.cast()), 1);
+            errors::PyErr_Clear();
             assert_eq!(
                 descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
-                DescriptorMutationOutcome::Error
+                if succeeds {
+                    DescriptorMutationOutcome::Applied
+                } else {
+                    DescriptorMutationOutcome::Error
+                }
             );
-            assert!(exception_pending(&py));
-            let error = crate::exception_last_bits_noinc(&py).unwrap();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                &py,
-                error,
-                "SystemError"
-            ));
-            crate::clear_exception(&py);
+            assert_eq!(errors::PyErr_ExceptionMatches(expected_error.cast()), 1);
+            errors::PyErr_Clear();
         }
-        dec_ref_bits(&py, bits);
+        drop(descriptor_owner);
         assert_eq!(descriptor.object.ob_refcnt, 1);
         assert!(errors::PyErr_Occurred().is_null());
     });
@@ -446,22 +450,28 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
         let owner = builtin_classes(&py).object;
         let value = MoltObject::from_ptr(alloc_string(&py, b"receiver")).bits();
         let none = MoltObject::none().bits();
-        assert!(descriptor_is_data(&py, bits));
+        assert!(descriptor_is_data(&py, bits).expect("operation succeeds"));
 
         // Class access has an absent receiver; an explicit None receiver does not.
-        let class_access = descriptor_bind(&py, bits, Some(owner), None).unwrap();
+        let class_access = descriptor_bind(&py, bits, Some(owner), None)
+            .expect("operation succeeds")
+            .unwrap();
         assert_eq!(class_access, owner);
         assert!(descriptor.receiver.is_null());
         assert!(!descriptor.operand.is_null());
         dec_ref_bits(&py, class_access);
-        let none_access = descriptor_bind(&py, bits, Some(owner), Some(none)).unwrap();
+        let none_access = descriptor_bind(&py, bits, Some(owner), Some(none))
+            .expect("operation succeeds")
+            .unwrap();
         assert_eq!(none_access, none);
         assert_eq!(
             descriptor.receiver,
             &raw mut molt_cpython_abi::abi_types::Py_None
         );
         dec_ref_bits(&py, none_access);
-        let instance_access = descriptor_bind(&py, bits, Some(owner), Some(value)).unwrap();
+        let instance_access = descriptor_bind(&py, bits, Some(owner), Some(value))
+            .expect("operation succeeds")
+            .unwrap();
         assert_eq!(instance_access, value);
         dec_ref_bits(&py, instance_access);
 
@@ -492,8 +502,10 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
         // Native slot replacement is observed live; there is no name/cache proxy.
         (*descriptor.object.ob_type).tp_descr_get = None;
         (*descriptor.object.ob_type).tp_descr_set = None;
-        assert!(!descriptor_is_data(&py, bits));
-        let unbound = descriptor_bind(&py, bits, Some(owner), Some(value)).unwrap();
+        assert!(!descriptor_is_data(&py, bits).expect("operation succeeds"));
+        let unbound = descriptor_bind(&py, bits, Some(owner), Some(value))
+            .expect("operation succeeds")
+            .unwrap();
         assert_eq!(unbound, bits);
         dec_ref_bits(&py, unbound);
         assert_eq!(
@@ -534,7 +546,8 @@ fn native_descriptor_failures_keep_the_original_exception_and_stop_callbacks() {
             .unwrap();
         let owner = builtin_classes(&py).object;
         let none = MoltObject::none().bits();
-        descriptor_bind(&py, bits, Some(owner), Some(none));
+        descriptor_bind(&py, bits, Some(owner), Some(none))
+            .expect_err("native descriptor failure propagates");
         assert!(exception_pending(&py));
         let original = crate::exception_last_bits_noinc(&py).unwrap();
         assert!(crate::builtins::exceptions::exception_matches_builtin_name(
