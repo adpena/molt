@@ -3029,30 +3029,64 @@ fn global_name_suggestion(
     }
 }
 
+/// Who owns a globals namespace, named only when a trace or an error prints it.
+#[derive(Clone, Copy)]
+pub(crate) enum GlobalsOwner {
+    Named(&'static str),
+    Module(*mut u8),
+}
+
+impl GlobalsOwner {
+    fn label(self) -> String {
+        match self {
+            GlobalsOwner::Named(label) => label.to_string(),
+            GlobalsOwner::Module(module_ptr) => {
+                string_obj_to_owned(obj_from_bits(unsafe { module_name_bits(module_ptr) }))
+                    .unwrap_or_else(|| "<module>".to_string())
+            }
+        }
+    }
+}
+
+/// A global's name as text, for traces and errors only. Every global read in
+/// a function reaches the lookup, so the hit path compares and hashes the
+/// interned key and allocates nothing (HF-79).
+fn global_name_text(name_bits: u64) -> String {
+    string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string())
+}
+
+/// Whether ``MOLT_TRACE_MODULE_GLOBALS`` traces this name; the filtered mode
+/// names two sys flag globals.
+fn traces_module_global(name_bits: u64) -> bool {
+    match trace_module_globals_mode() {
+        TraceModuleGlobalsMode::Off => false,
+        TraceModuleGlobalsMode::Verbose => true,
+        TraceModuleGlobalsMode::Filtered => matches!(
+            global_name_text(name_bits).as_str(),
+            "_SYS_FLAGS_SEQUENCE_FIELDS" | "_FlagsTuple"
+        ),
+    }
+}
+
 /// The single lookup path for Python activations and explicit runtime module
 /// dictionaries. The caller selects namespace custody; this primitive never
 /// replaces a captured builtins dictionary after a miss.
 fn lookup_global_namespace(
     py: &PyToken<'_>,
     module_bits: u64,
-    module_label: &str,
+    owner: GlobalsOwner,
     globals_bits: u64,
     builtins_bits: u64,
     name_bits: u64,
-    name: &str,
 ) -> u64 {
-    let trace_mode = trace_module_globals_mode();
-    let trace_globals = trace_mode != TraceModuleGlobalsMode::Off
-        && (trace_mode == TraceModuleGlobalsMode::Verbose
-            || name == "_SYS_FLAGS_SEQUENCE_FIELDS"
-            || name == "_FlagsTuple");
+    let trace_globals = traces_module_global(name_bits);
     match lookup_namespace_item(py, globals_bits, name_bits) {
         Ok(Some(value)) => {
             if trace_globals {
                 eprintln!(
                     "molt module_get_global hit module={} name={} module_bits=0x{:x} dict_bits=0x{:x} val_type={}",
-                    module_label,
-                    name,
+                    owner.label(),
+                    global_name_text(name_bits),
                     module_bits,
                     globals_bits,
                     type_name(py, obj_from_bits(value)),
@@ -3064,7 +3098,10 @@ fn lookup_global_namespace(
             if trace_globals {
                 eprintln!(
                     "molt module_get_global miss module={} name={} module_bits=0x{:x} dict_bits=0x{:x}",
-                    module_label, name, module_bits, globals_bits,
+                    owner.label(),
+                    global_name_text(name_bits),
+                    module_bits,
+                    globals_bits,
                 );
             }
         }
@@ -3075,6 +3112,7 @@ fn lookup_global_namespace(
         Ok(None) => {}
         Err(()) => return MoltObject::none().bits(),
     }
+    let name = global_name_text(name_bits);
     if name == "exec" || name == "eval" {
         let message = format!(
             "MOLT_COMPAT_ERROR: {name}() is unsupported in compiled Molt binaries; \
@@ -3086,14 +3124,14 @@ Use static modules or pre-generated code paths instead."
     if trace_name_error() {
         eprintln!(
             "molt name error module={} name={} pending={}",
-            module_label,
+            owner.label(),
             name,
             exception_pending(py),
         );
     }
-    let suggestion = match global_name_suggestion(py, globals_bits, name) {
+    let suggestion = match global_name_suggestion(py, globals_bits, &name) {
         Ok(Some(suggestion)) => Some(suggestion),
-        Ok(None) => match global_name_suggestion(py, builtins_bits, name) {
+        Ok(None) => match global_name_suggestion(py, builtins_bits, &name) {
             Ok(suggestion) => suggestion,
             Err(()) => return MoltObject::none().bits(),
         },
@@ -3116,17 +3154,11 @@ Use static modules or pre-generated code paths instead."
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace_mode = trace_module_globals_mode();
-        let name =
-            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string());
-        let trace_globals = trace_mode != TraceModuleGlobalsMode::Off
-            && (trace_mode == TraceModuleGlobalsMode::Verbose
-                || name == "_SYS_FLAGS_SEQUENCE_FIELDS"
-                || name == "_FlagsTuple");
+        let trace_globals = traces_module_global(name_bits);
         if trace_globals {
             eprintln!(
                 "molt module_get_global enter name={} module_bits=0x{:x} pending={}",
-                name,
+                global_name_text(name_bits),
                 module_bits,
                 exception_pending(_py),
             );
@@ -3144,11 +3176,10 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 return lookup_global_namespace(
                     _py,
                     module_bits,
-                    "<frame>",
+                    GlobalsOwner::Named("<frame>"),
                     active_globals,
                     crate::builtins::frames::frame_stack_active_builtins_bits(),
                     name_bits,
-                    &name,
                 );
             }
             if exception_pending(_py) {
@@ -3164,7 +3195,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 if trace_globals {
                     eprintln!(
                         "molt module_get_global early_none name={} module_bits=0x{:x} module_is_none={} pending={}",
-                        name,
+                        global_name_text(name_bits),
                         module_bits,
                         module.is_none(),
                         exception_pending(_py),
@@ -3177,7 +3208,8 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 "TypeError",
                 &format!(
                     "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
-                    module_bits, name,
+                    module_bits,
+                    global_name_text(name_bits),
                 ),
             );
         };
@@ -3187,7 +3219,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     if trace_globals {
                         eprintln!(
                             "molt module_get_global early_type name={} module_bits=0x{:x} type_id={} pending={}",
-                            name,
+                            global_name_text(name_bits),
                             module_bits,
                             object_type_id(module_ptr),
                             exception_pending(_py),
@@ -3202,7 +3234,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                         "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
                         object_type_id(module_ptr),
                         module_bits,
-                        name,
+                        global_name_text(name_bits),
                     ),
                 );
             }
@@ -3213,8 +3245,6 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             {
                 return raise_exception::<_>(_py, "TypeError", "module dict missing");
             }
-            let module_label = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                .unwrap_or_else(|| "<module>".to_string());
             let builtins =
                 match crate::builtins::frames::frame_effective_builtins_bits(_py, globals) {
                     Ok(bits) => bits,
@@ -3223,11 +3253,10 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             lookup_global_namespace(
                 _py,
                 module_bits,
-                &module_label,
+                GlobalsOwner::Module(module_ptr),
                 globals,
                 builtins,
                 name_bits,
-                &name,
             )
         }
     })
