@@ -780,6 +780,7 @@ PyAPI_DATA(PyLongObject) _Py_FalseStruct;
 
 PyAPI_DATA(PyObject) Py_NotImplementedSentinel;
 PyAPI_DATA(PyObject) Py_EllipsisObject;
+PyAPI_DATA(PyTypeObject) PyEllipsis_Type;
 #define Py_NotImplemented (&Py_NotImplementedSentinel)
 #define Py_Ellipsis (&Py_EllipsisObject)
 

@@ -4824,7 +4824,7 @@ impl CpythonRuntimeState {
         }
     }
 
-    unsafe fn bind_static(
+    unsafe fn bind_static_class(
         &self,
         py: &crate::PyToken<'_>,
         pointer: *mut PyObject,
@@ -4849,6 +4849,19 @@ impl CpythonRuntimeState {
             (*ty).tp_flags = ((*ty).tp_flags & !molt_cpython_abi::hooks::TYPE_SEMANTIC_FLAGS_MASK)
                 | semantic_flags;
         }
+        unsafe { self.bind_static(py, pointer, bits, canonical_view) };
+    }
+
+    /// Own one runtime value behind a process-static C identity. Classes first
+    /// publish their semantic flags through `bind_static_class`; singleton values
+    /// use this same binding and teardown transaction without a type cast.
+    unsafe fn bind_static(
+        &self,
+        py: &crate::PyToken<'_>,
+        pointer: *mut PyObject,
+        bits: u64,
+        canonical_view: bool,
+    ) {
         let mut bindings = self.static_bindings.lock().unwrap();
         assert!(
             bindings.iter().all(|binding| binding.pointer != pointer),
@@ -4867,15 +4880,9 @@ impl CpythonRuntimeState {
         };
         if let Err(conflict) = bound {
             drop(bindings);
-            let name = unsafe { (*pointer.cast::<PyTypeObject>()).tp_name };
-            let name = if name.is_null() {
-                std::borrow::Cow::Borrowed("<unnamed>")
-            } else {
-                unsafe { CStr::from_ptr(name) }.to_string_lossy()
-            };
             dec_ref_bits(py, bits);
             panic!(
-                "static C shell {name} ({pointer:p}) could not bind runtime class {bits:#x}: {conflict:?}"
+                "static C object {pointer:p} could not bind runtime value {bits:#x}: {conflict:?}"
             );
         }
         bindings.push(StaticRuntimeBinding { pointer, bits });
@@ -4914,7 +4921,7 @@ impl CpythonRuntimeState {
             .collect()
     }
 
-    /// Release exact static-class anchors only after the last permitted C
+    /// Release exact static-object anchors only after the last permitted C
     /// callback drain. An isolate that never published these shells owns none.
     pub(crate) fn retire_static_bindings(&self, py: &crate::PyToken<'_>) {
         crate::gil_assert();
@@ -5081,13 +5088,13 @@ pub(crate) fn bind_context_class(
         return true;
     }
     unsafe {
-        runtime.bind_static(py, pointer, bits, true);
+        runtime.bind_static_class(py, pointer, bits, true);
     }
     true
 }
 
 /// Register the runtime hooks into `molt-lang-cpython-abi`.
-/// Install process-lived hooks once and publish class bindings once per runtime.
+/// Install process-lived hooks once and publish static bindings once per runtime.
 pub fn register_cpython_hooks() -> bool {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     with_gil(|_py| {
@@ -5112,6 +5119,14 @@ pub fn register_cpython_hooks() -> bool {
             (
                 builtins.none_type,
                 (&raw mut molt_cpython_abi::abi_types::PyNone_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.not_implemented_type,
+                (&raw mut molt_cpython_abi::abi_types::PyNotImplemented_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.ellipsis_type,
+                (&raw mut molt_cpython_abi::abi_types::PyEllipsis_Type).cast::<PyObject>(),
             ),
             (
                 builtins.int,
@@ -5210,7 +5225,7 @@ pub fn register_cpython_hooks() -> bool {
                 (&raw mut molt_cpython_abi::abi_types::PyCMethod_Type).cast::<PyObject>(),
             ),
         ] {
-            unsafe { runtime.bind_static(&_py, type_object, class_bits, true) };
+            unsafe { runtime.bind_static_class(&_py, type_object, class_bits, true) };
         }
         for exception in molt_cpython_abi::abi_types::exc_singleton_ptrs() {
             let Some(c_name) = molt_cpython_abi::abi_types::exc_singleton_name(exception) else {
@@ -5225,7 +5240,27 @@ pub fn register_cpython_hooks() -> bool {
                 continue;
             }
             let canonical_view = spec.canonical_name() == requested_name;
-            unsafe { runtime.bind_static(&_py, exception, class_bits, canonical_view) };
+            unsafe { runtime.bind_static_class(&_py, exception, class_bits, canonical_view) };
+        }
+        // These heap singletons belong to the existing per-runtime canonical
+        // pool. Bind them before any C callback can otherwise publish a FOREIGN
+        // wrapper, and use the same reverse identity for managed result export.
+        // Primary runtime startup reaches this boundary even without extensions.
+        for (kind, pointer) in [
+            (
+                crate::object::builders::CanonicalSpecialSingleton::NotImplemented,
+                &raw mut molt_cpython_abi::abi_types::Py_NotImplementedSentinel,
+            ),
+            (
+                crate::object::builders::CanonicalSpecialSingleton::Ellipsis,
+                &raw mut molt_cpython_abi::abi_types::Py_EllipsisObject,
+            ),
+        ] {
+            let bits = crate::object::builders::canonical_special_singleton_bits(&_py, kind);
+            if crate::obj_from_bits(bits).is_none() {
+                return false;
+            }
+            unsafe { runtime.bind_static(&_py, pointer, bits, true) };
         }
         static INSTALL_PROCESS_HOOKS: Once = Once::new();
         INSTALL_PROCESS_HOOKS.call_once(|| {
@@ -7953,6 +7988,31 @@ mod tests {
                         .bits();
                     assert_eq!(observed, binding.bits);
                 }
+                let singleton_bindings = [
+                    (
+                        &raw mut molt_cpython_abi::abi_types::Py_NotImplementedSentinel,
+                        crate::not_implemented_bits(&py),
+                    ),
+                    (
+                        &raw mut molt_cpython_abi::abi_types::Py_EllipsisObject,
+                        crate::ellipsis_bits(&py),
+                    ),
+                ];
+                for (pointer, bits) in singleton_bindings {
+                    assert_eq!(
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .molt_handle_for_pyobj(pointer)
+                            .expect("fresh runtime singleton ingress")
+                            .bits(),
+                        bits
+                    );
+                    assert_eq!(
+                        unsafe {
+                            molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                        },
+                        pointer
+                    );
+                }
                 unsafe {
                     super::native_lifecycle_tests::assert_c_exception_symbols_preserve_pending();
                 }
@@ -8127,6 +8187,14 @@ mod tests {
                         .molt_handle_for_pyobj(type_error)
                         .is_none()
                 );
+                for (pointer, _) in singleton_bindings {
+                    assert!(
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .molt_handle_for_pyobj(pointer)
+                            .is_none(),
+                        "retired runtime singleton ingress must be detached"
+                    );
+                }
                 if cycle != 2 {
                     crate::state::runtime_state::molt_runtime_reset_for_testing();
                     assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);

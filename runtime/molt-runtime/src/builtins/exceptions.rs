@@ -1995,23 +1995,6 @@ fn thread_last_exception_take() -> Option<PtrSlot> {
     }
 }
 
-#[inline]
-fn thread_last_exception_replace_borrowed(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    clear_emergency_memory_error_for_current();
-    let old = THREAD_LAST_EXCEPTION.with(|slot| slot.get());
-    if old == ptr {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-        return;
-    }
-    inc_ref_bits(_py, bits);
-    let old = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(ptr));
-    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-    if !old.is_null() && old != ptr {
-        let old_bits = MoltObject::from_ptr(old).bits();
-        dec_ref_bits(_py, old_bits);
-    }
-}
-
 pub(crate) fn thread_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
     thread_last_exception_raw_slot().map(|ptr| MoltObject::from_ptr(ptr.0).bits())
 }
@@ -4751,7 +4734,14 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             record_exception_with_caller_frame(_py, ptr, true);
             return MoltObject::none().bits();
         }
-        let bits = ExceptionValue::pin(_py, exc_bits).into_bits();
+        let selected = ExceptionValue::pin(_py, exc_bits);
+        let _previous = match take_raised(_py) {
+            RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => {
+                Some(ExceptionValue::adopt(_py, bits))
+            }
+            RaisedSnapshot::None | RaisedSnapshot::Emergency(_) => None,
+        };
+        let bits = selected.into_bits();
         let mut raised = Some(match current_task_key() {
             Some(task) => RaisedSnapshot::Task(task, bits),
             None => RaisedSnapshot::Thread(bits),

@@ -91,6 +91,8 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
             "PyMemoryView_FromMemory",
             "Py_None",
             "Py_EllipsisObject",
+            "PyEllipsis_Type",
+            "PyNotImplemented_Type",
             "Py_GenericAliasType",
             "PyRange_Type",
             "Py_NotImplementedSentinel",

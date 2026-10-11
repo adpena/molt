@@ -1352,6 +1352,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '"molt_PyArg_ParseTuple": "PyArg_ParseTuple"' in rendered_py
     assert '"Py_EllipsisObject": "molt_Py_EllipsisObject"' in rendered_py
     assert '"Py_EllipsisObject": "data"' in rendered_py
+    assert '"PyEllipsis_Type": "molt_PyEllipsis_Type"' in rendered_py
+    assert '"molt_PyEllipsis_Type": "PyEllipsis_Type"' in rendered_py
+    assert '"PyEllipsis_Type": "data"' in rendered_py
     assert '"Py_GenericAliasType": "data"' in rendered_py
     assert '"Py_OptimizeFlag": "data"' in rendered_py
     assert '"PyType_Ready": "function"' in rendered_py
