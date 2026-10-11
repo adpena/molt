@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "fd6a6f15ed939ca4d7add4a07e438add45fe36bb0d501c399af192f56b5054ee",
+  "authority_sha256": "849cbfa0591dc2b108cae582983fb35a6120c1acde5760eeb7b3f4e3e2d0bfbf",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5400,6 +5400,7 @@
         "tests/cli/test_cli_native_binary_authority.py",
         "tests/cli/test_native_artifact_contract.py",
         "tests/cli/test_native_symbol_authority.py",
+        "tests/test_native_symbol_table.py",
         "tests/cli/test_native_symbol_build_errors.py",
         "tests/cli/test_backend_artifact_contract.py",
         "tests/cli/test_artifact_sync.py",
@@ -5491,6 +5492,7 @@
         "tests/cli/test_cli_native_binary_authority.py",
         "tests/cli/test_native_artifact_contract.py",
         "tests/cli/test_native_symbol_authority.py",
+        "tests/test_native_symbol_table.py",
         "tests/cli/test_native_symbol_build_errors.py",
         "tests/cli/test_backend_artifact_contract.py",
         "tests/cli/test_artifact_sync.py",

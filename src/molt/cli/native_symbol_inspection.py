@@ -2,6 +2,11 @@
 
 Admission, source-extension validation and backend artifact caching consume this
 same inspection authority. Backend cache publication and locking live elsewhere.
+
+``molt.native_symbol_table`` reads ELF, Mach-O, COFF and WebAssembly symbol
+tables in-process, with no subprocess and no wall-clock bound. Only LLVM
+bitcode objects and archive members go to an admitted ``llvm-nm``, because
+only an ``llvm-nm`` at least as new as the producer can read them.
 """
 
 from __future__ import annotations
@@ -17,8 +22,8 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from collections.abc import Callable, Generator
-from typing import Literal, Sequence
+from collections.abc import Callable, Generator, Iterable
+from typing import Literal, Sequence, TypeVar
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
@@ -26,9 +31,23 @@ from molt.default_paths import _default_molt_cache
 from molt.cli.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
+    open_static_archive_members,
     static_archive_member_identities,
 )
 from molt.compiler_distribution import installed_compiler
+from molt.native_artifact_header import NativeReader
+from molt.native_symbol_table import (
+    NativeSymbolRow,
+    SymbolInputFormat,
+    is_llvm_bitcode,
+    read_symbol_rows,
+    symbol_input_format,
+)
+from molt.native_target_shape import (
+    NativeArtifactShape,
+    NativeObjectFormat,
+    native_artifact_shape,
+)
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
     StableRegularFileHandle,
@@ -52,9 +71,14 @@ from molt.llvm_toolchain import (
 
 
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
-# Prior generations could attach a supplied digest after metadata-only checks.
-# Do not admit their persistent tables even when current bytes match that key.
-_NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v3"
+_ParsedNmOutput = TypeVar("_ParsedNmOutput")
+# v4: ELF, Mach-O, COFF and WebAssembly facts come from the in-process reader;
+# llvm-nm reads only LLVM bitcode. Earlier generations never match this key.
+_NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v4"
+_IN_PROCESS_SYMBOL_READER = "in-process:molt.native_symbol_table"
+# A healthy llvm-nm read of bitcode takes well under a second. This bound only
+# stops a hung reader; the in-process reader has no wall-clock bound (HF-F173).
+_LLVM_NM_BITCODE_READ_TIMEOUT_S = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,8 +299,8 @@ def nm_reader_family_from_banner(banner: str | None) -> NmReaderFamily | None:
 
     ``llvm-nm`` announces itself as ``llvm-nm, compatible with GNU nm``; Xcode's
     ``nm`` is an llvm-nm and prints the same line. GNU binutils announces
-    ``GNU nm (GNU Binutils ...)``. Any other reader is not one this module knows
-    how to drive, so its candidate fails admission with the banner it printed.
+    ``GNU nm (GNU Binutils ...)``. Only an llvm-nm reads LLVM bitcode, so only
+    an llvm-nm passes admission; the banner names any other reader.
     """
     if banner is None:
         return None
@@ -302,12 +326,11 @@ def _cached_nm_reader_family(
 
 @dataclass(frozen=True, slots=True)
 class _NativeSymbolReaderCandidate:
+    """One llvm-nm entrypoint for LLVM bitcode, or the reason it was refused."""
+
     command: tuple[str, ...]
     executable_identity: StableRegularFileIdentity | WasiSdkInstallation | None = None
     admission_error: str | None = None
-    # ``None`` only together with ``admission_error``: an admitted reader always
-    # has a known family, because the family selects its command line.
-    reader_family: NmReaderFamily | None = None
 
     def cache_identity(self) -> str:
         return json.dumps(
@@ -329,6 +352,8 @@ class _NativeSymbolReaderCandidate:
 
 @dataclass(frozen=True, slots=True)
 class _NativeSymbolReader:
+    """The llvm-nm ladder for artifacts that contain LLVM bitcode."""
+
     candidates: tuple[_NativeSymbolReaderCandidate, ...]
     input_identity: tuple[str, ...]
     requirement: NativeSymbolRequirement
@@ -342,6 +367,21 @@ class _NativeSymbolReader:
             "cache_identity",
             (_NATIVE_SYMBOL_FACTS_PROTOCOL, *self.input_identity),
         )
+
+
+def _in_process_reader_identity(
+    requirement: NativeSymbolRequirement,
+) -> tuple[str, ...]:
+    """Facts identity for artifacts without bitcode: no external reader.
+
+    The in-process reader is part of this source tree, so the protocol
+    generation alone names it. Host tools and PATH never change these facts.
+    """
+    return (
+        _NATIVE_SYMBOL_FACTS_PROTOCOL,
+        _IN_PROCESS_SYMBOL_READER,
+        requirement.cache_identity(),
+    )
 
 
 @functools.lru_cache(maxsize=8)
@@ -412,20 +452,20 @@ def _native_symbol_reader_candidate(
                 admission_error=f"{type(refreshed_exc).__name__}: {refreshed_exc}",
             )
     reader_family, banner = _cached_nm_reader_family(str(entrypoint), identity.sha256)
-    if reader_family is None:
+    if reader_family != "llvm":
         return _NativeSymbolReaderCandidate(
             (str(entrypoint), *command[1:]),
             executable_identity=identity,
             admission_error=(
                 "nm reader printed no --version banner"
                 if banner is None
+                else f"GNU nm cannot read LLVM bitcode: {banner!r}"
+                if reader_family == "gnu"
                 else f"unrecognized nm reader banner: {banner!r}"
             ),
         )
     return _NativeSymbolReaderCandidate(
-        (str(entrypoint), *command[1:]),
-        executable_identity=identity,
-        reader_family=reader_family,
+        (str(entrypoint), *command[1:]), executable_identity=identity
     )
 
 
@@ -488,7 +528,6 @@ def _native_symbol_reader(
     candidate = _NativeSymbolReaderCandidate(
         (str(verification.path),),
         executable_identity=verification.executable_identity,
-        reader_family="llvm",
     )
     return _NativeSymbolReader(
         (candidate,),
@@ -641,21 +680,40 @@ def _remember_native_symbol_facts(
         cache.popitem(last=False)
 
 
-def _symbol_target_policy(target_triple: str | None) -> tuple[str, bool]:
-    from molt.cli.native_link_plan import (
-        NativeObjectFormat,
-        resolve_native_target_spec,
-        target_is_wasm,
-    )
+@dataclass(frozen=True, slots=True)
+class _SymbolTargetPolicy:
+    """Target facts that shape symbol reading, never the host's facts."""
+
+    triple: str
+    macho_decoration: bool
+    # Selects the slice of a universal Mach-O input; None when the target
+    # architecture has no Mach-O encoding.
+    macho_shape: NativeArtifactShape | None
+
+
+def _symbol_target_policy(target_triple: str | None) -> _SymbolTargetPolicy:
+    from molt.cli.native_link_plan import resolve_native_target_spec, target_is_wasm
 
     if target_triple is not None and target_is_wasm(target_triple):
-        return target_triple.strip().lower(), False
+        return _SymbolTargetPolicy(target_triple.strip().lower(), False, None)
     target = resolve_native_target_spec(target_triple)
-    return target.triple, target.object_format is NativeObjectFormat.MACHO
+    try:
+        macho_shape: NativeArtifactShape | None = native_artifact_shape(
+            target.arch,
+            target_triple=target.triple,
+            object_format=NativeObjectFormat.MACHO,
+        )
+    except RuntimeError:
+        macho_shape = None
+    return _SymbolTargetPolicy(
+        target.triple,
+        target.object_format is NativeObjectFormat.MACHO,
+        macho_shape,
+    )
 
 
 def _target_uses_macho_symbol_decoration(target_triple: str | None) -> bool:
-    return _symbol_target_policy(target_triple)[1]
+    return _symbol_target_policy(target_triple).macho_decoration
 
 
 def _normalize_native_symbol_name(
@@ -669,26 +727,69 @@ def _normalize_native_symbol_name(
 
 
 def _symbol_normalization_target(target_triple: str | None) -> str:
-    return f"target:{_symbol_target_policy(target_triple)[0]}"
+    return f"target:{_symbol_target_policy(target_triple).triple}"
 
 
-def _native_nm_command(
-    nm_command: Sequence[str],
-    path: Path,
-    *,
-    reader_family: NmReaderFamily,
-) -> list[str]:
-    """``-g`` reads the global symbol table, and only the symbol table.
+_KNOWN_SYMBOL_KINDS = frozenset("AaBbCcDdGgIiRrSsTtUuVvWw")
+_FUNCTION_SYMBOL_KINDS = frozenset("TtWi")
 
-    Rust's sysroot objects for Apple targets carry an embedded ``__LLVM,__bitcode``
-    section. llvm-nm's default bitcode reader then also lists the IR symbols,
-    with a dash placeholder instead of an address, which is not a symbol-table
-    row. ``--no-llvm-bc`` keeps llvm-nm (Xcode's ``nm`` included) on the native
-    symbol table. GNU nm has no bitcode reader and no such flag.
+
+def _facts_from_symbol_rows(
+    rows: Iterable[NativeSymbolRow], *, macho_decoration: bool
+) -> _NativeGlobalSymbolFacts:
+    """Project ``llvm-nm`` type letters into the shared symbol facts.
+
+    The in-process reader and the llvm-nm bitcode reader both end here, so
+    one table owns what each letter means. Mach-O targets drop one leading
+    underscore, as the target's C symbol decoration requires.
     """
-    if reader_family == "llvm":
-        return [*nm_command, "-g", "--no-llvm-bc", str(path)]
-    return [*nm_command, "-g", str(path)]
+    defined: set[str] = set()
+    undefined: set[str] = set()
+    defined_functions: set[str] = set()
+    weak_undefined: set[str] = set()
+    weak_defined: set[str] = set()
+
+    def undecorated(name: str) -> str:
+        if not name or _SYMBOL_WHITESPACE.search(name) is not None:
+            raise ValueError(f"symbol name is empty or contains whitespace: {name!r}")
+        return name[1:] if macho_decoration and name.startswith("_") else name
+
+    for row in rows:
+        kind = row.kind
+        if len(kind) != 1 or kind not in _KNOWN_SYMBOL_KINDS:
+            raise ValueError(f"unsupported symbol type {kind!r} for {row.name!r}")
+        symbol = undecorated(row.name)
+        if row.indirect is not None:
+            if kind != "I":
+                raise ValueError(f"indirect target on a non-indirect symbol {symbol!r}")
+            undefined.add(undecorated(row.indirect))
+        if kind == "U":
+            undefined.add(symbol)
+        elif kind in {"w", "v"}:
+            weak_undefined.add(symbol)
+        else:
+            defined.add(symbol)
+            if kind in {"V", "W"}:
+                weak_defined.add(symbol)
+            if kind in _FUNCTION_SYMBOL_KINDS:
+                defined_functions.add(symbol)
+    return _NativeGlobalSymbolFacts(
+        defined=frozenset(defined),
+        undefined=frozenset(undefined),
+        defined_functions=frozenset(defined_functions),
+        weak_undefined=frozenset(weak_undefined),
+        weak_defined=frozenset(weak_defined),
+    )
+
+
+def _llvm_nm_bitcode_command(command: Sequence[str], path: Path) -> list[str]:
+    """``-g`` lists the global symbols of each bitcode module.
+
+    The bitcode reader stays enabled: it is the reason this reader runs. In
+    a mixed archive llvm-nm also reads native members, but only the tables of
+    bitcode members become facts; the in-process reader owns the others.
+    """
+    return [*command, "-g", str(path)]
 
 
 def _nm_line_reports_no_symbols(
@@ -744,35 +845,45 @@ def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> b
     )
 
 
-# A healthy read finishes in milliseconds, so these bounds cost nothing there;
-# they only stop a hung reader. Five seconds for one object failed builds on
-# loaded hosted Linux runners (HF-82).
-_NM_OBJECT_READ_TIMEOUT_S = 60.0
-_NM_ARCHIVE_READ_TIMEOUT_S = 120.0
+def _artifact_reader(opened: StableRegularFileHandle) -> NativeReader:
+    """Bounded reads through the one admitted handle; no reopen by path."""
+    stream = opened.stream
+
+    def read_at(offset: int, size: int) -> bytes:
+        stream.seek(offset)
+        return stream.read(size)
+
+    return NativeReader(opened.stat.st_size, read_at)
 
 
-def _nm_read_timeout(default: float) -> float:
-    """Resolve the ``nm``/``llvm-nm`` object-symbol read timeout.
+def _symbol_artifact_has_llvm_bitcode(
+    opened: StableRegularFileHandle, *, archive: bool
+) -> bool:
+    """Whether llvm-nm must read part of this artifact.
 
-    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool.
-    Spawn and read time grows on loaded hosts and slow volumes, so the bound
-    only stops a hung reader. ``MOLT_NM_TIMEOUT_SEC`` replaces it.
+    Archives answer from member framing and four magic bytes per member, never
+    from member hashing, so a warm content-cache hit stays cheap.
     """
-    raw = os.environ.get("MOLT_NM_TIMEOUT_SEC")
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            value = 0.0
-        if value > 0:
-            return value
-    return default
+    try:
+        if not archive:
+            opened.stream.seek(0)
+            return is_llvm_bitcode(opened.stream.read(4))
+        with open_static_archive_members(opened.path, opened=opened) as (
+            members,
+            stream,
+        ):
+            for member in members:
+                stream.seek(member.content_offset)
+                if is_llvm_bitcode(stream.read(min(4, member.size))):
+                    return True
+        return False
+    except (OSError, ValueError) as error:
+        raise NativeSymbolArtifactError(opened.path, [str(error)]) from error
 
 
 def _read_native_global_symbol_facts(
     path: Path,
     *,
-    timeout: float,
     nm_command: Sequence[str] | None = None,
     target_triple: str | None = None,
     _reader: _NativeSymbolReader | None = None,
@@ -780,6 +891,12 @@ def _read_native_global_symbol_facts(
     archive_members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
     _opened: StableRegularFileHandle | None = None,
 ) -> _NativeGlobalSymbolFacts:
+    """Read current facts for one object or archive through one owned handle.
+
+    The in-process reader owns every non-bitcode object and member. A bitcode
+    object, or an archive with a bitcode member, also runs the llvm-nm ladder
+    once; its tables bind only the bitcode members.
+    """
     if _opened is None:
         with _open_native_symbol_artifact(path) as (opened, _identity):
             members = _symbol_artifact_members(opened.path, opened=opened)
@@ -789,7 +906,6 @@ def _read_native_global_symbol_facts(
                 )
             return _read_native_global_symbol_facts(
                 opened.path,
-                timeout=timeout,
                 nm_command=nm_command,
                 target_triple=target_triple,
                 _reader=_reader,
@@ -799,16 +915,125 @@ def _read_native_global_symbol_facts(
             )
     if _opened.path != path.expanduser().absolute():
         raise NativeSymbolArtifactError(path, ["symbol handle belongs to another path"])
-    reader = _reader or _native_symbol_reader(
-        nm_command=nm_command,
-        target_triple=target_triple,
-        requirement=requirement,
+    policy = _symbol_target_policy(target_triple)
+    artifact = _artifact_reader(_opened)
+
+    def bitcode_reader() -> _NativeSymbolReader:
+        return _reader or _native_symbol_reader(
+            nm_command=nm_command,
+            target_triple=target_triple,
+            requirement=requirement,
+        )
+
+    if archive_members is None:
+        try:
+            prefix = artifact.read(0, min(8, artifact.size), "object magic")
+            bitcode = symbol_input_format(prefix) is SymbolInputFormat.LLVM_BITCODE
+            if not bitcode:
+                facts = _facts_from_symbol_rows(
+                    read_symbol_rows(artifact, macho_shape=policy.macho_shape),
+                    macho_decoration=policy.macho_decoration,
+                )
+        except (OSError, ValueError) as error:
+            raise NativeSymbolArtifactError(path, [str(error)]) from error
+        if bitcode:
+            facts = _run_llvm_nm_ladder(
+                path,
+                bitcode_reader(),
+                parse=lambda result: _parse_llvm_nm_object_result(
+                    result, policy=policy
+                ),
+            )
+    else:
+        facts = _read_archive_symbol_facts(
+            path,
+            artifact,
+            archive_members,
+            policy=policy,
+            bitcode_reader=bitcode_reader,
+        )
+    if not requirement.accepts(facts):
+        raise NativeSymbolInspectionError(
+            path,
+            [
+                "no function definitions satisfy consumer requirement "
+                f"{requirement.cache_identity()}"
+            ],
+        )
+    return facts
+
+
+def _read_archive_symbol_facts(
+    path: Path,
+    artifact: NativeReader,
+    members: tuple[StaticArchiveMemberIdentity, ...],
+    *,
+    policy: _SymbolTargetPolicy,
+    bitcode_reader: Callable[[], _NativeSymbolReader],
+) -> _NativeGlobalSymbolFacts:
+    tables: list[_NativeGlobalSymbolFacts | None] = []
+    for identity in members:
+        member = identity.member
+        try:
+            reader = artifact.slice(
+                member.content_offset, member.size, "archive member"
+            )
+            prefix = reader.read(0, min(8, member.size), "archive member magic")
+            if symbol_input_format(prefix) is SymbolInputFormat.LLVM_BITCODE:
+                tables.append(None)
+                continue
+            tables.append(
+                _facts_from_symbol_rows(
+                    read_symbol_rows(reader, macho_shape=policy.macho_shape),
+                    macho_decoration=policy.macho_decoration,
+                )
+            )
+        except (OSError, ValueError) as error:
+            raise NativeSymbolArtifactError(
+                path,
+                [f"archive member {identity.ordinal} ({member.name!r}): {error}"],
+            ) from error
+    bitcode = [ordinal for ordinal, facts in enumerate(tables) if facts is None]
+    if bitcode:
+        names = frozenset(item.member.name for item in members)
+
+        def parse(result: subprocess.CompletedProcess[str]) -> list[str]:
+            return _bind_nm_archive_tables(
+                _validated_nm_output(result, archive_member_names=names),
+                path=path,
+                members=members,
+            )
+
+        bound = _run_llvm_nm_ladder(path, bitcode_reader(), parse=parse)
+        for ordinal in bitcode:
+            tables[ordinal] = _facts_from_nm_output(
+                bound[ordinal], macho_decoration=policy.macho_decoration
+            )
+    bound_members: list[_NativeArchiveMemberSymbolFacts] = []
+    for identity, facts in zip(members, tables):
+        assert facts is not None
+        bound_members.append(_NativeArchiveMemberSymbolFacts(identity, facts))
+    return _NativeGlobalSymbolFacts(
+        frozenset(), frozenset(), frozenset(), members=tuple(bound_members)
     )
+
+
+def _run_llvm_nm_ladder(
+    path: Path,
+    reader: _NativeSymbolReader,
+    *,
+    parse: Callable[[subprocess.CompletedProcess[str]], _ParsedNmOutput],
+) -> _ParsedNmOutput:
+    """Run admitted llvm-nm candidates in order until one output parses.
+
+    Reading bitcode is a leaf, non-spawning, read-only operation, so it does
+    not go through the process-tree memory guard. Its timeout only stops a
+    hung reader.
+    """
     if not reader.candidates:
         raise NativeSymbolInspectionError(
-            path, ["no nm/llvm-nm candidate is available"]
+            path, ["LLVM bitcode needs llvm-nm, and no llvm-nm candidate is available"]
         )
-    read_timeout = _nm_read_timeout(timeout)
     _require_unchanged_symbol_reader(path, reader)
     failures: list[str] = []
     primary: BaseException | None = None
@@ -818,18 +1043,9 @@ def _read_native_global_symbol_facts(
             failures.append(f"{command!r}: {candidate.admission_error}")
             continue
         assert candidate.executable_identity is not None
-        assert candidate.reader_family is not None
         execution_error: BaseException | None = None
         result: subprocess.CompletedProcess[str] | None = None
         try:
-            # Reading a static object's global symbol table is a leaf,
-            # non-spawning, read-only operation: it can neither orphan a process
-            # tree nor run away on memory, so it does NOT go through the
-            # process-tree memory guard. Guarding it here regressed on slow
-            # hosts, where the guard's per-call repo-scoped orphan cleanup blew
-            # past the read timeout and killed a healthy `llvm-nm` mid-output
-            # (rc=124), stalling every source-recompiled extension seal at the
-            # object-fact step. A plain subprocess timeout is the correct bound.
             custody = (
                 contextlib.nullcontext(
                     (Path(command[0]), candidate.executable_identity)
@@ -844,13 +1060,9 @@ def _read_native_global_symbol_facts(
             with custody as (entrypoint, _identity):
                 try:
                     result = _run_completed_command(
-                        _native_nm_command(
-                            (str(entrypoint), *command[1:]),
-                            path,
-                            reader_family=candidate.reader_family,
-                        ),
+                        _llvm_nm_bitcode_command((str(entrypoint), *command[1:]), path),
                         capture_output=True,
-                        timeout=read_timeout,
+                        timeout=_LLVM_NM_BITCODE_READ_TIMEOUT_S,
                         env=None,
                         cwd=path.parent,
                         memory_guard_prefix=None,
@@ -872,61 +1084,44 @@ def _read_native_global_symbol_facts(
             continue
         assert result is not None
         try:
-            facts = _parse_native_nm_result(
-                result,
-                path=path,
-                archive_members=archive_members,
-                target_triple=target_triple,
-            )
+            return parse(result)
         except ValueError as error:
             if primary is None:
                 primary = error
             failures.append(f"{command!r}: {error}")
-            continue
-        if reader.requirement.accepts(facts):
-            return facts
-        failures.append(
-            f"{command!r}: no function definitions satisfy consumer requirement "
-            f"{reader.requirement.cache_identity()}"
-        )
     raise NativeSymbolInspectionError(path, failures) from primary
 
 
-def _parse_native_nm_result(
+def _validated_nm_output(
     result: subprocess.CompletedProcess[str],
     *,
-    path: Path,
-    archive_members: tuple[StaticArchiveMemberIdentity, ...] | None,
-    target_triple: str | None,
-) -> _NativeGlobalSymbolFacts:
-    if (
-        archive_members is None
-        and result.returncode in {0, 1}
-        and _nm_result_reports_no_symbols(result)
-    ):
-        return _NativeGlobalSymbolFacts(frozenset(), frozenset(), frozenset())
-    names = (
-        None
-        if archive_members is None
-        else frozenset(item.member.name for item in archive_members)
-    )
+    archive_member_names: frozenset[str] | None,
+) -> str:
+    """Reject a failed or diagnostic-bearing run; drop benign empty rows."""
     if result.returncode != 0 or any(
-        line.strip() and not _nm_line_reports_no_symbols(line.strip(), result, names)
+        line.strip()
+        and not _nm_line_reports_no_symbols(line.strip(), result, archive_member_names)
         for line in result.stderr.splitlines()
     ):
         raise ValueError(
             f"exit {result.returncode}; stdout={result.stdout[:2048]!r}; "
             f"stderr={result.stderr[:2048]!r}"
         )
-    output = "\n".join(
+    return "\n".join(
         line
         for line in result.stdout.splitlines()
-        if not _nm_line_reports_no_symbols(line.strip(), result, names)
+        if not _nm_line_reports_no_symbols(line.strip(), result, archive_member_names)
     )
-    if archive_members is None:
-        return _parse_native_nm_global_symbol_facts(output, target_triple=target_triple)
-    return _parse_native_archive_symbol_facts(
-        output, path=path, members=archive_members, target_triple=target_triple
+
+
+def _parse_llvm_nm_object_result(
+    result: subprocess.CompletedProcess[str], *, policy: _SymbolTargetPolicy
+) -> _NativeGlobalSymbolFacts:
+    if result.returncode in {0, 1} and _nm_result_reports_no_symbols(result):
+        return _NativeGlobalSymbolFacts(frozenset(), frozenset(), frozenset())
+    return _facts_from_nm_output(
+        _validated_nm_output(result, archive_member_names=None),
+        macho_decoration=policy.macho_decoration,
     )
 
 
@@ -1036,15 +1231,15 @@ def _native_symbol_facts_admission(
     """One owned admission for native shape, member framing and symbol facts.
 
     Supplied digests and all cache hits require current content admission.
-    Member parsing and external nm retain that same handle. Closing fences
-    precede either persistent or process-cache publication.
+    Member parsing and the bitcode llvm-nm retain that same handle. Closing
+    fences precede either persistent or process-cache publication.
     """
     computed = False
     with _open_native_symbol_artifact(path, identity) as (opened, admitted):
         if validate_shape is not None:
             validate_shape(opened)
-        # Format, not caller spelling or pathname, owns retention and nm policy.
-        # A warm content hit needs only this header, never another member parse.
+        # Format, not caller spelling or pathname, owns retention and reader
+        # policy. A warm content hit needs only the header and member magics.
         archive = archive or _symbol_artifact_has_archive_header(opened)
         cache = (
             _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
@@ -1056,14 +1251,24 @@ def _native_symbol_facts_admission(
             if archive
             else _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT
         )
-        reader = _native_symbol_reader(
-            nm_command=nm_command,
-            target_triple=target_triple,
-            requirement=requirement,
+        # Only bitcode makes the facts depend on an external reader.
+        reader = (
+            _native_symbol_reader(
+                nm_command=nm_command,
+                target_triple=target_triple,
+                requirement=requirement,
+            )
+            if _symbol_artifact_has_llvm_bitcode(opened, archive=archive)
+            else None
+        )
+        reader_identity = (
+            _in_process_reader_identity(requirement)
+            if reader is None
+            else reader.cache_identity
         )
         cache_key = _native_symbol_facts_cache_key(
             admitted,
-            reader_identity=reader.cache_identity,
+            reader_identity=reader_identity,
             target_triple=target_triple,
         )
         facts = cache.get(cache_key)
@@ -1084,25 +1289,23 @@ def _native_symbol_facts_admission(
                     path,
                     object_digest=admitted.sha256,
                     target_triple=target_triple,
-                    reader_identity=reader.cache_identity,
+                    reader_identity=reader_identity,
                     members=members,
                 )
             if facts is None or not requirement.accepts(facts):
                 facts = _read_native_global_symbol_facts(
                     opened.path,
-                    timeout=(
-                        _NM_ARCHIVE_READ_TIMEOUT_S
-                        if archive
-                        else _NM_OBJECT_READ_TIMEOUT_S
-                    ),
+                    nm_command=nm_command,
                     target_triple=target_triple,
                     _reader=reader,
+                    requirement=requirement,
                     archive_members=members,
                     _opened=opened,
                 )
                 facts = replace(facts, artifact_digest=admitted.sha256)
                 computed = True
-        _require_unchanged_symbol_reader(path, reader)
+        if reader is not None:
+            _require_unchanged_symbol_reader(path, reader)
         yield opened, admitted, facts
     # Facts describe bytes read during the admitted interval. They remain valid
     # under that content key if the pathname changes after custody is released;
@@ -1122,7 +1325,7 @@ def _native_symbol_facts_admission(
                 object_digest=admitted.sha256,
                 facts=facts,
                 target_triple=target_triple,
-                reader_identity=reader.cache_identity,
+                reader_identity=reader_identity,
             )
 
 
@@ -1162,19 +1365,18 @@ def _native_object_global_symbol_sets(
     return facts.symbol_sets()
 
 
-def _parse_native_nm_global_symbol_facts(
-    output: str,
-    *,
-    target_triple: str | None = None,
-) -> _NativeGlobalSymbolFacts:
-    """Parse one object's symbol table; archive boundaries must never be dropped."""
+_NM_ADDRESS = re.compile(r"[0-9a-fA-F]+|-+")
+_NM_INDIRECT = re.compile(r"(.*) \(indirect for ([^\s]+)\)")
 
-    defined: set[str] = set()
-    undefined: set[str] = set()
-    defined_functions: set[str] = set()
-    weak_undefined: set[str] = set()
-    weak_defined: set[str] = set()
-    macho_decoration = _target_uses_macho_symbol_decoration(target_triple)
+
+def _facts_from_nm_output(
+    output: str, *, macho_decoration: bool
+) -> _NativeGlobalSymbolFacts:
+    """Parse one llvm-nm table; archive boundaries must never be dropped.
+
+    llvm-nm prints dashes, not an address, for a defined bitcode symbol.
+    """
+    rows: list[NativeSymbolRow] = []
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -1182,45 +1384,28 @@ def _parse_native_nm_global_symbol_facts(
         if line.endswith(":"):
             raise ValueError(f"unexpected nm header without member custody: {line!r}")
         indirect_target: str | None = None
-        indirect = re.fullmatch(r"(.*) \(indirect for ([^\s]+)\)", line)
+        indirect = _NM_INDIRECT.fullmatch(line)
         if indirect:
             line, indirect_target = indirect.groups()
         parts = line.split()
         if len(parts) == 2:
             kind, name = parts
-        elif len(parts) == 3 and re.fullmatch(r"[0-9a-fA-F]+", parts[0]):
+        elif len(parts) == 3 and _NM_ADDRESS.fullmatch(parts[0]):
             _, kind, name = parts
         else:
             raise ValueError(f"unrecognized nm symbol row: {line[:512]!r}")
-        if len(kind) != 1 or kind not in "AaBbCcDdGgIiRrSsTtUuVvWw":
-            raise ValueError(f"unsupported nm symbol type in row: {line[:512]!r}")
-        symbol = name[1:] if macho_decoration and name.startswith("_") else name
-        if indirect_target is not None:
-            if kind != "I":
-                raise ValueError(
-                    f"indirect target on a non-indirect nm row: {raw_line[:512]!r}"
-                )
-            undefined.add(
-                indirect_target[1:]
-                if macho_decoration and indirect_target.startswith("_")
-                else indirect_target
-            )
-        if kind == "U":
-            undefined.add(symbol)
-        elif kind in {"w", "v"}:
-            weak_undefined.add(symbol)
-        else:
-            defined.add(symbol)
-            if kind in {"V", "W"}:
-                weak_defined.add(symbol)
-            if kind in {"T", "t", "W", "i"}:
-                defined_functions.add(symbol)
-    return _NativeGlobalSymbolFacts(
-        defined=frozenset(defined),
-        undefined=frozenset(undefined),
-        defined_functions=frozenset(defined_functions),
-        weak_undefined=frozenset(weak_undefined),
-        weak_defined=frozenset(weak_defined),
+        rows.append(NativeSymbolRow(kind, name, indirect_target))
+    return _facts_from_symbol_rows(rows, macho_decoration=macho_decoration)
+
+
+def _parse_native_nm_global_symbol_facts(
+    output: str,
+    *,
+    target_triple: str | None = None,
+) -> _NativeGlobalSymbolFacts:
+    return _facts_from_nm_output(
+        output,
+        macho_decoration=_target_uses_macho_symbol_decoration(target_triple),
     )
 
 
@@ -1246,13 +1431,12 @@ def _symbol_artifact_members(
         raise NativeSymbolArtifactError(path, [str(error)]) from error
 
 
-def _parse_native_archive_symbol_facts(
+def _bind_nm_archive_tables(
     output: str,
     *,
     path: Path,
     members: tuple[StaticArchiveMemberIdentity, ...],
-    target_triple: str | None,
-) -> _NativeGlobalSymbolFacts:
+) -> list[str]:
     """Bind each nm table to the same ordinal in the stable archive envelope.
 
     nm visits archives in stored member order (sorting only within tables).
@@ -1286,31 +1470,7 @@ def _parse_native_archive_symbol_facts(
         raise ValueError(
             f"nm archive member count differs: {len(tables)} != {len(members)}"
         )
-    return _NativeGlobalSymbolFacts(
-        frozenset(),
-        frozenset(),
-        frozenset(),
-        members=tuple(
-            _NativeArchiveMemberSymbolFacts(
-                identity,
-                _parse_native_nm_global_symbol_facts(
-                    "\n".join(lines), target_triple=target_triple
-                ),
-            )
-            for identity, lines in zip(members, tables)
-        ),
-    )
-
-
-def _parse_native_nm_global_symbol_sets(
-    output: str,
-    *,
-    target_triple: str | None = None,
-) -> _NativeObjectSymbolSets:
-    return _parse_native_nm_global_symbol_facts(
-        output,
-        target_triple=target_triple,
-    ).symbol_sets()
+    return ["\n".join(lines) for lines in tables]
 
 
 def _native_archive_global_symbol_facts(
@@ -1422,20 +1582,18 @@ def _write_native_archive_symbol_cache(
 
 
 def _nm_candidate_binaries() -> list[str]:
-    """Ordered candidate `nm` binaries for reading the runtime staticlib.
+    """Ordered ``llvm-nm`` candidates for LLVM bitcode objects and members.
 
-    The staticlib's members are LLVM *bitcode* when the runtime profile builds
-    with LTO, and bitcode is only readable by an ``llvm-nm`` whose LLVM is at
-    least as new as the producing rustc's. Apple's Xcode ``nm`` (an older LLVM
-    reader) rejects newer Rust bitcode with ``Unknown attribute kind`` — the
-    failure that silently broke symbol extraction when the toolchain moved to
-    Rust 1.96/LLVM 22 while ``shutil.which("nm")`` kept resolving to Xcode's.
-    Order newest/most-capable readers first; the extraction loop validates each
-    candidate (clean exit AND a non-empty ``molt_*`` set) before trusting it.
+    The in-process reader owns every other format. Bitcode is readable only by
+    an ``llvm-nm`` whose LLVM is at least as new as the producer's. Apple's
+    Xcode ``nm`` (an older LLVM reader) rejects newer Rust bitcode with
+    ``Unknown attribute kind``. Order newest and most capable readers first;
+    the ladder admits each candidate by its banner and accepts the first
+    clean, parseable read. GNU nm candidates fail admission.
     """
     # Installed runtime projections are shipped, but application objects and
     # source extensions still use this shared reader. Those consumers must not
-    # rediscover Rust merely to inspect native objects with host LLVM/binutils.
+    # rediscover Rust merely to read bitcode with host LLVM.
     source_checkout = installed_compiler(compiler_source_root()) is None
     return [
         str(path)
