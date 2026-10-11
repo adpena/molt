@@ -26,7 +26,12 @@ import time
 import warnings
 import weakref
 
-from molt.exact_json import canonical_json_sha256, read_exact, write_exact
+from molt.exact_json import (
+    canonical_json_sha256,
+    encode_exact,
+    read_exact,
+    write_exact,
+)
 from molt.file_deletion import delete_path
 from molt.file_locks import (
     _FileLockHandle,
@@ -38,6 +43,7 @@ from molt.file_publication import (
     durable_namespace_publish_directory_exclusive,
     durable_publish_exclusive,
     is_link_like,
+    namespace_move_exclusive,
     resolve_owned_path,
 )
 from molt.disk_capacity import require_scratch_capacity
@@ -101,6 +107,8 @@ class GuardScratchLease:
     target: Path
     owner: dict[str, object]
     lock: _FileLockHandle | None
+    # Set by the owner's finish when its generation reached reclaimed.
+    reclaimed: bool = False
 
     def release(self) -> None:
         if self.lock is not None:
@@ -338,9 +346,7 @@ def acquire_guard_scratch(
     try:
         target = new_temporary_directory(generation.parent.parent, prefix="pt-")
         nonce = secrets.token_hex(16)
-        write_exact(
-            target / _TARGET_RECEIPT, {"schema": SCHEMA, "nonce": nonce}, exclusive=True
-        )
+        _write_target_receipt(target, nonce)
         owner = {
             "schema": SCHEMA,
             "token": token,
@@ -359,6 +365,17 @@ def acquire_guard_scratch(
             f"scratch allocation preserved: generation={generation} target={target}"
         )
         raise
+
+
+def _write_target_receipt(target: Path, nonce: str) -> None:
+    """Write the allocation receipt with no durability barrier.
+
+    A crash that loses or truncates it only blocks adoption of this target,
+    which fails closed; every guarded launch is spared an fsync.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(target / _TARGET_RECEIPT, flags, 0o600), "wb") as stream:
+        stream.write(encode_exact({"schema": SCHEMA, "nonce": nonce}))
 
 
 def _generation_of_target(target: Path, token: str) -> Path:
@@ -573,7 +590,9 @@ def _remove_reclaimed_generation(generation: Path) -> str | None:
     removing.mkdir(exist_ok=True)
     tombstone = removing / generation.name
     try:
-        durable_namespace_publish_directory_exclusive(generation, tombstone)
+        # No durability barrier: a crash that rolls the move back leaves a
+        # reclaimed generation with its index, which the next sweep removes.
+        namespace_move_exclusive(resolve_owned_path(generation), tombstone)
     except (OSError, ValueError) as error:
         if os.path.lexists(generation):
             return f"{generation}: reclaimed receipt removal deferred: {error}"
@@ -825,9 +844,21 @@ def finish_guard_scratch(
             lease.release()
     if early is not None:
         return early
-    # The pending index of this generation is still published, so this sweep
-    # also removes the receipts of a run that reached reclaimed.
+    removal: tuple[str, str] | None = None
+    if lease.reclaimed:
+        # The owner verified reclaimed under its own lock, and that state is
+        # final: remove the receipts now instead of through a sweep's lock.
+        try:
+            deferral = _remove_reclaimed_generation(generation)
+        except OSError as error:
+            removal = ("errors", str(error))
+        else:
+            removal = None if deferral is None else ("deferred", deferral)
     sweep = reclaim_terminal_scratch(root, retention=retention)
+    if removal is not None:
+        entries = sweep[removal[0]]
+        assert isinstance(entries, list)
+        entries.append(removal[1])
     try:
         final_owner = _owner(generation)
     except (OSError, ValueError):
@@ -884,7 +915,7 @@ def _finish_guard_scratch_owned(
                 "error": owner.get("error"),
             }
         if success:
-            _reclaim_locked(generation, owner)
+            lease.reclaimed = _reclaim_locked(generation, owner)["state"] == "reclaimed"
         return None
     except BaseException as error:
         # Preserve the original error even if storage failure also prevents the

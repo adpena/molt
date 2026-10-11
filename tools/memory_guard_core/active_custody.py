@@ -40,7 +40,7 @@ from molt.file_locks import (
 from molt.file_publication import (
     atomic_write_bytes,
     canonical_file_leaf,
-    durable_publish_exclusive,
+    namespace_move_exclusive,
     metadata_is_link_like,
 )
 from molt.memory_guard_paths import retired_guard_marker_dir
@@ -80,7 +80,8 @@ _MAX_MARKER_BYTES = 16 * 1024 * 1024
 RETIRED_GUARD_MARKER_KEEP = 256
 _RETIRED_PRUNE_SLACK = 64
 # An exiting guard sweeps active/ when it holds this many more markers than
-# the previous sweep left there.
+# twice what the previous sweep left there. The gate grows with the records
+# that stay (live guards), so a session's sweeps cost O(records) in total.
 AUTO_SWEEP_GROWTH = 16
 # Above this many markers, active/ still holds history from before markers
 # retired. A guard never sweeps it; the operator migrates it once.
@@ -720,10 +721,15 @@ def _inspect_scratch(record: MarkerRecord) -> Mapping[str, object] | None:
 
 
 def _publish_retired(canonical: Path) -> Path:
+    """Move a resolved record into history; no durability barrier.
+
+    A crash that rolls the move back leaves a terminal record in active/,
+    which blocks nothing and which the next sweep retires again.
+    """
     retired = retired_guard_marker_dir(canonical.parent)
     retired.mkdir(exist_ok=True)
     destination = retired / canonical.name
-    durable_publish_exclusive(canonical, destination)
+    namespace_move_exclusive(canonical, destination)
     return destination
 
 
@@ -760,16 +766,20 @@ def _prune_retired(retired: Path) -> None:
 
 def _retire(
     path: Path,
-    expected: StableRegularFileIdentity | None,
+    accepts: Callable[[MarkerRecord], bool],
     decision: ReconciliationDecision,
     closure: Mapping[str, object] | None,
 ) -> ReconciliationDecision:
-    """Move one terminal record out of active/ once its scratch resolves."""
+    """Move one terminal record out of active/ once its scratch resolves.
+
+    ``accepts`` binds the record read under the lock to the caller's
+    evidence: the generation a reconciliation judged, or the producer token.
+    """
     scratch: Mapping[str, object] | None = None
     try:
         with _marker_lock(path) as canonical:
             current = read_marker_record(canonical)
-            if current.error is not None or current.identity != expected:
+            if current.error is not None or not accepts(current):
                 return replace(
                     decision, retirement="marker_changed_during_reconciliation"
                 )
@@ -796,18 +806,12 @@ def retire_active_guard_marker(path: Path, token: str) -> Path | None:
     The marker stays when the guard raised (a non-terminal status) or when
     its scratch is leased or indeterminate; a later sweep resolves both.
     """
-    record = read_marker_record(path)
-    if (
-        record.error is not None
-        or record.payload is None
-        or record.payload.get("token") != token
-        or not record.terminal
-    ):
-        return None
     decision = _retire(
         path,
-        record.identity,
-        ReconciliationDecision(str(path), "retire", "terminal_status", record.status),
+        lambda record: (
+            record.payload is not None and record.payload.get("token") == token
+        ),
+        ReconciliationDecision(str(path), "retire", "terminal_status", None),
         None,
     )
     return None if decision.retired_to is None else Path(decision.retired_to)
@@ -962,7 +966,9 @@ def _reconcile_record(
         )
         if not decision.applied:
             return decision
-    decision = _retire(record.path, expected, decision, closure)
+    decision = _retire(
+        record.path, lambda current: current.identity == expected, decision, closure
+    )
     if decision.disposition == "retire":
         if decision.retired_to is None:
             return replace(decision, disposition="already_terminal")
@@ -1151,9 +1157,11 @@ def sweep_active_guard_markers(
     """
     state_root = active_dir.parent
     count = _marker_count(active_dir, stop_after=AUTO_SWEEP_LIMIT + 1)
+    # Read the previous sweep's receipt only when a sweep can be due.
     if (
-        count > AUTO_SWEEP_LIMIT
-        or count <= _sweep_baseline(state_root) + AUTO_SWEEP_GROWTH
+        count <= AUTO_SWEEP_GROWTH
+        or count > AUTO_SWEEP_LIMIT
+        or count <= 2 * _sweep_baseline(state_root) + AUTO_SWEEP_GROWTH
     ):
         return None
     handle = _try_acquire_file_lock(state_root / _SWEEP_LOCK)

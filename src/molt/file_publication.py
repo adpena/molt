@@ -273,6 +273,16 @@ def _namespace_publish_leaf_exclusive_once(staged: Path, destination: Path) -> N
         )
 
 
+def namespace_move_exclusive(source: Path, destination: Path) -> None:
+    """Move one leaf atomically, refusing a rival; no durability barrier.
+
+    Only for records whose loss on a crash is harmless: the move is atomic,
+    but power loss can roll it back, and the owner's next pass repeats it.
+    Everything else uses the durable publication functions.
+    """
+    _namespace_publish_leaf_exclusive_once(Path(source), Path(destination))
+
+
 def _real_directory(path: Path, *, label: str) -> os.stat_result:
     try:
         metadata = path.lstat()
