@@ -132,74 +132,79 @@ the existing stable declaration owner and retires its namespace and MRO edges.
 All previous finding identities remain represented or explicitly renamed; the
 completed parts of V1-13, V1-17 and V1-19 do not close their wider obligations.
 
-The real MemoryError reserve is composed into that candidate with hook ABI 66.
-Its one ordinary instance owner now reaches thread/task raised state, public
-Get/Fetch, constructor reuse, terminal recycling and shutdown. Actual task
-producers admit their error slot before execution; the obsolete unread pending
-flag and emergency discriminator are deleted. Independent source review covers
-the complete provider and fixture migration. Runtime/ABI execution, allocator
-traffic outside the Molt resource tracker, resurrection/admission-failure
-controls, startup and retained-memory cost remain unqualified. Native/WASM and
-affected platform/profile cells must execute before family or release closure.
+The real MemoryError reserve is composed into the candidate with hook ABI 66.
+Its ordinary instance owner reaches thread/task raised state, public Get/Fetch,
+constructor reuse, terminal recycling and shutdown. Both actual task producers
+admit their error slot before execution; the unread pending flag and emergency
+discriminator are deleted. The admitted task map remains the complete runtime
+shutdown enumeration authority; moving a word into a sidecar would not replace
+that ownership duty. Startup, retained memory and task-map costs remain to be
+measured.
 
-The inherited-slot correction also joins the existing target-version namespace
-transaction and the shared process-type cohort. The 16 WASM GOT projection
-controls pass; actual target execution remains required. Adversarial review
-caught a quadratic deduplication scan in the prepared native invalidation plan;
-one shared traversal now visits descendants once across affected roots. The
-restart reproducer, version-publication rollback/watcher controls and measured
-startup policy costs remain required on the compiled composition.
+Reserve reset publishes prepared managed and C fields before releasing detached
+owners. Callback retention and mutation survive; unretained mutation declines
+recycling and follows terminal teardown instead of an unbounded reset loop.
+The same reset predicate governs recycling and shutdown. The default optimized
+image at `d5d570172` passes the actual C/managed resurrection and dirty teardown
+controls. It passes 22 of 24 focused controls; the remaining cold-slot failures
+are corrected in `da137646c`.
 
-The optimized build at `89ef36298` fails before execution on five unresolved
-namespace references in the reserve and pending-error fixture. The successor
-uses the existing object-header and C-error-transfer authorities; a same-pattern
-source search finds no remaining instances. Further independent review corrects
-the process-owned heap builtin policy: canonical exception schema selects heap
-declarations separately from CPython's static-builtin inheritance exceptions.
-`ExceptionGroup` therefore inherits its base methods on every admitted version.
-The prepared invalidation control covers a diamond with overlapping and repeated
-roots, requiring one callback per live identity and all tags cleared first.
+The shared slot policy materializes pre-3.14 builtin declarations from their
+ready base before namespace publication across Init/Str/GetAttr. Process-owned
+exception heap types retain their distinct declaration policy. The semantic
+wrapper fixture keeps physical-layout checks for native carriers. Prepared
+namespace invalidation shares one descendant traversal across roots, removing
+a quadratic deduplication scan; already-invalid roots return before allocating
+or admitting lifetimes. Standalone diamond/no-op controls still require fresh
+ABI execution. The 16 WASM GOT projection controls pass; actual target execution
+and startup-policy measurements remain required.
 
-The existing development-only allocation probe now observes and can deny Rust
-and ABI-platform C allocation. Its real public error-transfer control covers
-reserve exhaustion and reuse with positive allocation/refusal controls. It has
-not executed; direct extension libc calls and variadic-shim scratch allocations
-are outside this observation boundary. Production builds omit the probe.
-The actual terminal-retirement resurrection control passes at `d5d570172`;
-task-admission rollback and the allocator observer remain unqualified.
+At `da137646c`, the optimized development observer image passes all 24 focused
+runtime controls and the three-case ordering reproducer. Its broader diagnostic
+run has 1,816 passes and 26 failures, with all ten separate lifecycle controls
+passing. Five of those failures pass in isolation: four process-wide allocation
+counters had counted unrelated threads, and the reserve-capacity fixture had
+borrowed a runtime whose earlier test intentionally retired one cached value.
+Twenty-one failures reproduce alone. Review identifies shared numeric-result
+classification and finished-class sealing defects, a cold raw-ABI refusal
+mismatch, and incomplete migration of earlier error/ownership fixture oracles.
+The source successor now preserves incoming errors during numeric-result
+preparation, permits already-sealed class consumption under an incoming error,
+and returns the raw ABI failure sentinel without bootstrapping a cold interpreter.
+Fixture migration covers exact error owners, real denied operations, fresh reserve
+capacity, native destructor error preservation and real worker cache references.
+The worker panic control requires its original payload. These repairs have parsed
+but remain integration blockers until executed; passing focused tests do not
+qualify the full runtime or any unexecuted target/profile.
 
-The build at `353c795c8` also stops before execution: the migrated pending-error
-fixture still supplies an argument to the zero-argument transfer API. The
-successor removes that stale argument. Review of actual payload retirement also
-finds that reserve reset must publish its prepared managed and C fields before
-releasing detached owners. The shared reset now precedes callbacks for both
-recycling and shutdown. A callback may retain and mutate the value; its writes
-must survive. Mutation without a retained owner declines recycling and uses the
-existing terminal teardown, avoiding an unbounded reset loop. The same reset
-predicate governs reuse eligibility and shutdown work. The optimized image at
-`d5d570172` compiles and passes 22 of 24 fresh-process controls, including
-direct-C/managed revival, unretained mutation teardown, reserve exhaustion and
-reuse, task ownership, singleton identity and ordinary raised-error retirement.
-The two failures concern builtin slot namespaces: pre-3.14 list
-`__getattribute__` is missing, and an exception `__str__` descriptor has an
-unexpected physical type. The strict three-case order reproducer now passes its
-canonical-name check but retains the same target-version failure. The full
-runtime, standalone ABI, allocator and performance gates remain unqualified.
+The existing development probe observes Rust and ABI-platform C allocation and
+supports actual refusal. Both public allocation controls execute but fail their
+Rust allocator sensitivity assertions before reaching their semantic claims:
+the optimizer can eliminate a plain allocation/free pair. The source successor
+shares an opaque call to the actual global allocator with storage, counting and
+refusal witnesses. It does not substitute a test allocator. Direct extension
+libc calls and variadic-shim scratch allocation remain outside the C observation
+boundary. All instrumentation is omitted from ordinary production binaries.
 
-The slot successor materializes pre-3.14 builtin declarations from their ready
-base before namespace publication, using the existing manual-inheritance policy
-for the whole Init/Str/GetAttr family. General extension inheritance keeps its
-original order. The exception fixture now checks semantic wrapper kind and
-public declaring owner for managed carriers, retaining physical layout checks
-for native descriptors. Already-invalid roots return before traversal or
-lifetime admission; the existing test allocator and watcher controls cover the
-no-allocation path. These successor controls have not executed.
+A reviewed development-only task-admission control now calibrates real
+capacity-growing and non-growing constructor requests, refuses the exact final
+map-growth request, and checks prior rows, resource charges, argument/context
+owners, real public MemoryError transfer and a successful retry. It executes the
+FUTURE and anext-with-default producers; coroutine/generator refusal variants,
+WASM and performance remain unqualified. Tracking-disabled allocator paths keep
+their previous atomic-load cost. This source has not compiled or executed yet.
 
-The allocator observer build is now a named proof-plan image with its actual
-C/C++ subprocess requirements. An earlier ad hoc submission omitted those
-requirements and was refused by native process supervision before semantic
-execution. The canonical registration and delegated command controls pass 61
-tests; observer execution remains pending.
+The allocation-observer policy in the existing runtime gate replaces the
+build-only lane. Cargo supplies image identity, target, features and
+profile; libtest supplies the current inventory. Policy declares required semantic
+controls and process isolation. Each control must produce a fresh source/image-bound
+passing receipt; timing probes and unrelated tests remain explicitly unrun. The
+same gate retains ordinary default-feature qualification. This development tooling
+migration passes its focused tooling checks; real Rust execution is pending.
+No second runner or guest-side cost is introduced. Failed build/admission records remain distinct from semantic results.
+The next qualification must execute the composed corrections, updated standalone
+ABI66 consumers, default runtime gate and matched cost measurements before family
+or release closure.
 
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an

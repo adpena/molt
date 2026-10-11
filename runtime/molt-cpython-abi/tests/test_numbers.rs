@@ -1455,6 +1455,59 @@ fn test_physical_integer_subtype_index_ignores_override_and_returns_exact_int() 
 }
 
 #[test]
+fn exact_integer_normalization_preserves_prior_error_and_physical_owner() {
+    use molt_cpython_abi::api::{abstract_number, errors, numbers, refcount};
+    let _abi_test = init();
+    let mut subtype = support::StaticType::new();
+    subtype.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+    subtype.tp_base = &raw mut molt_cpython_abi::abi_types::PyLong_Type;
+    subtype.tp_name = c"IntSubtype".as_ptr();
+    unsafe {
+        errors::PyErr_SetString(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast(),
+            c"incoming numeric error".as_ptr(),
+        );
+        let prior = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!prior.as_ptr().is_null());
+        for value in [257i128, -257, (1i128 << 100) + 13, -((1i128 << 100) + 13)] {
+            let mut input =
+                physical_long_fixture(subtype.as_ptr(), value < 0, value.unsigned_abs());
+            let original_digits = input.digits;
+            let object = (&raw mut input).cast::<PyObject>();
+            errors::PyErr_SetRaisedException(refcount::Py_NewRef(prior.as_ptr()));
+            // Exercise owned-result normalization itself: PyNumber_Index's
+            // physical-subtype shortcut does not enter this authority.
+            let exact = refcount::OwnedPyObject::from_owned(abstract_number::exact_integer_result(
+                refcount::Py_NewRef(object),
+            ));
+            assert!(!exact.as_ptr().is_null());
+            assert_ne!(exact.as_ptr(), object);
+            assert_eq!(
+                (*exact.as_ptr()).ob_type,
+                &raw mut molt_cpython_abi::abi_types::PyLong_Type
+            );
+            let observed = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(observed.as_ptr(), prior.as_ptr());
+            let mut bytes = [0u8; 16];
+            assert_eq!(
+                numbers::_PyLong_AsByteArray(
+                    exact.as_ptr().cast(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    1,
+                    1
+                ),
+                0
+            );
+            assert_eq!(bytes, value.to_le_bytes());
+            assert_eq!(input.digits, original_digits);
+            assert_eq!(input.ob_base.ob_refcnt, 1);
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    }
+}
+
+#[test]
 fn test_as_long_long_overflow_has_cpython_exact_error_and_recovers() {
     let _abi_test = init();
     unsafe {

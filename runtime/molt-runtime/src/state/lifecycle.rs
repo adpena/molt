@@ -1652,10 +1652,15 @@ pub(crate) mod tests {
                         break;
                     }
                 }
-                assert!(
-                    passes >= 3,
-                    "runtime-only reentry requires another drain pass"
-                );
+                // Both drains can release context bindings in one pass. The
+                // contract is complete retirement and a stable fixed point.
+                assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
+                assert!(!super::clear_runtime_callback_roots(
+                    py,
+                    state,
+                    &mut modules
+                ));
+                assert!(!super::clear_thread_local_state(py));
                 assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
                 assert!(!crate::builtins::contextvars::clear_thread_context(py));
                 assert!(!crate::exception_pending(py));
@@ -1706,23 +1711,109 @@ pub(crate) mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn worker_cached_method(_self: u64) -> u64 {
+        MoltObject::none().bits()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct WorkerIcWitness {
+        class: u64,
+        method: u64,
+        receiver: u64,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl WorkerIcWitness {
+        fn new(py: &crate::PyToken<'_>) -> Self {
+            let name = crate::attr_name_bits_from_bytes(py, b"WorkerIcOwner").unwrap();
+            let class = crate::molt_class_new(name);
+            crate::dec_ref_bits(py, name);
+            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
+            unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
+            let method = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "worker_cached_method",
+                    worker_cached_method as *const (),
+                ),
+                1,
+            );
+            assert!(!method.is_null());
+            let method = MoltObject::from_ptr(method).bits();
+            let name = crate::attr_name_bits_from_bytes(py, b"cached").unwrap();
+            crate::molt_set_attr_name(class, name, method);
+            crate::dec_ref_bits(py, name);
+            let receiver = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            assert!(crate::obj_from_bits(receiver).as_ptr().is_some());
+            assert!(!crate::exception_pending(py));
+            Self {
+                class,
+                method,
+                receiver,
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Drop for WorkerIcWitness {
+        fn drop(&mut self) {
+            crate::with_gil_entry_nopanic!(py, {
+                for bits in [self.receiver, self.class, self.method] {
+                    crate::dec_ref_bits(py, bits);
+                }
+            });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn worker_method_refs(method: u64) -> u32 {
+        crate::gil_assert();
+        let ptr = crate::obj_from_bits(method).as_ptr().unwrap();
+        unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn traced_worker(should_panic: bool) -> (std::thread::Result<()>, Vec<&'static str>) {
-        let origin = crate::with_gil_entry_nopanic!(py, {
-            crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py))
+        let (origin, witness, baseline) = crate::with_gil_entry_nopanic!(py, {
+            let witness = WorkerIcWitness::new(py);
+            let baseline = worker_method_refs(witness.method);
+            (
+                crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py)),
+                witness,
+                baseline,
+            )
         });
+        // Main-thread owners keep the observed object alive across worker exit;
+        // the public method call must add a distinct cache-owned reference.
+        let method = witness.method;
+        let receiver = witness.receiver;
         let (id_tx, id_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
         let (stage_tx, stage_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             id_tx.send(std::thread::current().id()).unwrap();
             go_rx.recv().unwrap();
-            crate::test_support::with_expected_panic(|| {
+            let outcome = crate::test_support::catch_expected_unwind(|| {
                 super::run_runtime_worker(origin, || {
-                    crate::with_gil_entry_nopanic!(_py, {
-                        let _ = crate::runtime_state(_py);
+                    crate::with_gil_entry_nopanic!(py, {
+                        let result = crate::call::bind::molt_call_method_ic0(
+                            MoltObject::from_int(819).bits(),
+                            receiver,
+                            b"cached".as_ptr(),
+                            6,
+                        );
+                        assert_eq!(result, MoltObject::none().bits());
+                        crate::dec_ref_bits(py, result);
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(
+                            worker_method_refs(method),
+                            baseline + 1,
+                            "the public call must retain a real method-cache owner"
+                        );
                         if should_panic {
                             let _: u64 = crate::builtins::exceptions::raise_exception(
-                                _py,
+                                py,
                                 "RuntimeError",
                                 "intentional worker unwind",
                             );
@@ -1731,24 +1822,44 @@ pub(crate) mod tests {
                     });
                 });
             });
+            {
+                // A raw GIL guard observes before another execution entry or
+                // native TLS destructor could conceal an unfinished drain.
+                let _gil = crate::GilGuard::new();
+                assert_eq!(
+                    worker_method_refs(method),
+                    baseline,
+                    "worker cleanup must release exactly the cache-owned reference"
+                );
+                super::trace_thread_local_drop("ic_owner_released");
+            }
+            if let Err(panic) = outcome {
+                std::panic::resume_unwind(panic);
+            }
         });
         let worker_id = id_rx.recv().unwrap();
         *THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap() = Some((worker_id, stage_tx));
         go_tx.send(()).unwrap();
         let result = worker.join();
         *THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap() = None;
+        drop(witness);
         (result, stage_rx.try_iter().collect())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn assert_runtime_worker_released_ic_tls(stages: &[&'static str]) {
-        assert_eq!(
-            stages
-                .iter()
-                .filter(|stage| **stage == "ic_caches_cleared")
-                .count(),
-            1,
-            "the stack-owned runtime worker guard must drain IC refs exactly once"
+        let clear = stages
+            .iter()
+            .position(|stage| *stage == "ic_caches_cleared")
+            .unwrap();
+        let released = stages
+            .iter()
+            .position(|stage| *stage == "ic_owner_released")
+            .unwrap();
+        let tls_drop = stages.iter().position(|stage| *stage == "enter").unwrap();
+        assert!(
+            clear < released && released < tls_drop,
+            "the real cache owner must retire before TLS key destruction: {stages:?}"
         );
     }
 
@@ -1767,9 +1878,11 @@ pub(crate) mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (result, stages) = traced_worker(true);
 
-        assert!(
-            result.is_err(),
-            "the primary worker panic must remain observable after TLS cleanup"
+        let panic = result.expect_err("the primary worker panic must remain observable");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"intentional worker unwind"),
+            "a fixture or cleanup assertion must not masquerade as the expected panic"
         );
         assert_runtime_worker_released_ic_tls(&stages);
     }

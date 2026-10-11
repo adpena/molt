@@ -55,11 +55,13 @@ fn cold_projection_preserves_independent_raised_channels() {
         let c_error = errors::take_current_error().expect("C error");
         let c_type = c_error.exc_type;
         let c_value = c_error.value;
-        errors::restore_current_error_exact(c_error);
         let runtime_ptr =
             crate::builtins::exceptions::alloc_exception(&py, "KeyError", "runtime error");
         let runtime = MoltObject::from_ptr(runtime_ptr).bits();
-        crate::record_exception(&py, runtime_ptr);
+        // Restore already-owned independent channels without a new semantic
+        // raise, which correctly replaces either previous indicator.
+        crate::test_support::restore_runtime_raised(&py, runtime);
+        errors::restore_current_error_exact(c_error);
         let projected = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(runtime);
         assert!(
             !projected.is_null(),

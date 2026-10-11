@@ -2961,9 +2961,8 @@ pub(crate) unsafe fn class_finish_definition(
     class_ptr: *mut u8,
 ) -> Result<(), ()> {
     unsafe {
-        if crate::exception_pending(_py) {
-            return Err(());
-        }
+        // Consuming an already sealed layout performs no fallible preparation
+        // and must leave an unrelated incoming exception alone.
         if class_definition_is_finished(class_ptr) {
             assert!(
                 layout::class_cached_layout_size(class_ptr).is_some(),
@@ -2975,6 +2974,9 @@ pub(crate) unsafe fn class_finish_definition(
                 "finished class requires concrete physical storage"
             );
             return Ok(());
+        }
+        if crate::exception_pending(_py) {
+            return Err(());
         }
         if class_has_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHING) {
             crate::raise_exception::<()>(_py, "RuntimeError", "recursive class layout sealing");

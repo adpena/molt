@@ -1169,14 +1169,16 @@ mod tests {
                 );
                 let c_error = errors::take_current_error().expect("C pending error");
                 let c_identity = c_error.value;
-                errors::restore_current_error_exact(c_error);
                 let runtime_error = MoltObject::from_ptr(alloc_exception(
                     py,
                     "RuntimeError",
                     "runtime admission outer",
                 ))
                 .bits();
-                crate::record_exception(py, obj_from_bits(runtime_error).as_ptr().unwrap());
+                // Deliberately restore two saved owners. A semantic runtime
+                // raise would correctly replace the existing C indicator.
+                crate::test_support::restore_runtime_raised(py, runtime_error);
+                errors::restore_current_error_exact(c_error);
                 let runtime_class = pending_exception_class(py);
                 assert!(is_real_subtype(py, class_bits, builtins.object));
                 assert!(is_real_instance(py, bits, builtins.object));

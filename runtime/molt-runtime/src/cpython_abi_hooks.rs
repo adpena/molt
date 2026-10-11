@@ -10984,7 +10984,7 @@ mod tests {
         // its message names the operation, not the trampoline's flags.
         let message = pending_exception_message_for_assertion();
         assert!(
-            message.contains("C extension function returned NULL without an exception"),
+            message == "C extension function returned NULL without setting an exception",
             "{message}"
         );
         unsafe { hook_dec_ref(method_bits) };

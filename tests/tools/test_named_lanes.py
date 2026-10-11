@@ -17,6 +17,7 @@ from tools.proof_queue_pkg import pact
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = proof_plan.ProofPlan.load()
 PYTHON_LANE_IDS = (
+    "runtime.allocation-observer",
     "pact.witness.acceptance.native",
     "pact.witness.acceptance.wasm",
     "pact.witness.oracle",
@@ -59,7 +60,6 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     "lane_id",
     (
         "runtime.abi-fixture-authorities",
-        "runtime.allocation-observer-image",
         *PYTHON_LANE_IDS,
     ),
 )
@@ -72,7 +72,7 @@ def test_runtime_and_reference_lanes_have_the_required_native_languages(
     # WASM-only and reference-only lanes must not acquire native C custody.
     native_runtime = lane_id in {
         "runtime.abi-fixture-authorities",
-        "runtime.allocation-observer-image",
+        "runtime.allocation-observer",
         "pact.witness.acceptance.native",
         "r6.target-version-parity.py312",
         "r6.target-version-parity.py313",
@@ -91,10 +91,7 @@ def test_runtime_and_reference_lanes_have_the_required_native_languages(
 
 @pytest.mark.parametrize(
     ("lane_id", "languages"),
-    (
-        ("runtime.abi-fixture-authorities", ["c"]),
-        ("runtime.allocation-observer-image", ["c", "c++"]),
-    ),
+    (("runtime.abi-fixture-authorities", ["c"]),),
 )
 def test_native_test_images_declare_compilers_through_cargo_wrapping(
     lane_id: str, languages: list[str]
@@ -112,6 +109,17 @@ def test_native_test_images_declare_compilers_through_cargo_wrapping(
     assert "prepared_named_lane" not in spec
     with pytest.raises(ValueError, match="has no Python payload"):
         command_admission.prepared_named_lane_command(lane.id, Path("python"))
+
+
+def test_allocation_observer_lane_owns_build_and_exact_execution() -> None:
+    lane = PLAN.named_lane("runtime.allocation-observer")
+    assert "tools/run_runtime_test_gate.py" in lane.argv
+    assert lane.argv[-2:] == ("--policy", "allocation-observer")
+    assert "--no-run" not in lane.argv
+    assert not any(
+        item.id == "runtime.allocation-observer-image" for item in PLAN.named_lanes
+    )
+    assert lane.data["cargo_native_units"] == {"target": ["c", "c++"]}
 
 
 def test_drifted_named_lane_argv_cannot_silently_become_a_leaf() -> None:

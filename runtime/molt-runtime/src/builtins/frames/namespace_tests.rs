@@ -843,3 +843,369 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
         }
     });
 }
+
+#[cfg(all(
+    feature = "l7-attestation-probe",
+    not(target_arch = "wasm32"),
+    not(miri)
+))]
+mod task_growth_refusal {
+    use super::*;
+    use crate::attestation_probe::{self as probe, AllocationOutcome, AllocationTrace};
+    use crate::builtins::exceptions::ExceptionValue;
+    use crate::resource::{
+        LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker,
+    };
+
+    // These are fixture resource bounds, not object sizes or allocation ordinals.
+    const RESOURCE_BYTES: usize = 1 << 20;
+    const RESOURCE_ALLOCS: usize = 64;
+
+    struct ResourceBudget;
+    impl ResourceBudget {
+        fn enter() -> Self {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(RESOURCE_BYTES),
+                max_allocations: Some(RESOURCE_ALLOCS),
+                ..Default::default()
+            })));
+            Self
+        }
+    }
+    impl Drop for ResourceBudget {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    fn assert_budget_empty() {
+        with_tracker(|tracker| {
+            assert!(
+                tracker.on_allocate(RESOURCE_BYTES).is_ok(),
+                "rollback leaked bytes"
+            );
+            for _ in 1..RESOURCE_ALLOCS {
+                assert!(
+                    tracker.on_allocate(0).is_ok(),
+                    "rollback leaked an allocation charge"
+                );
+            }
+            assert!(
+                tracker.on_allocate(0).is_err(),
+                "allocation-count oracle is inactive"
+            );
+            tracker.on_free(RESOURCE_BYTES);
+            for _ in 1..RESOURCE_ALLOCS {
+                tracker.on_free(0);
+            }
+        });
+    }
+
+    fn assert_trace(trace: &AllocationTrace) {
+        assert!(
+            !trace.overflowed,
+            "allocator request trace exceeded its fixed storage"
+        );
+        assert!(
+            !trace.prefix_mismatch,
+            "allocation prefix changed; map refusal is unproven"
+        );
+    }
+
+    fn map_shape(py: &PyToken<'_>) -> (usize, usize) {
+        let slots = crate::runtime_state(py)
+            .task_last_exceptions
+            .lock()
+            .unwrap();
+        (slots.len(), slots.capacity())
+    }
+
+    fn input_refs(inputs: &[u64; 5]) -> [u32; 5] {
+        (*inputs).map(super::refs)
+    }
+
+    /// Run this exact test alone with --test-threads=1. The observer owns the
+    /// process allocator and the runtime transaction owns shared runtime state.
+    #[test]
+    fn both_task_producers_refuse_actual_late_map_growth_and_restore_owners() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            // The transaction restores scheduling state. Suppress unrelated
+            // collection so other objects' frees cannot mask leaked charges.
+            crate::runtime_state(py).gc.set_enabled(false);
+            let (code_ptr, code_bits) = crate::builtins::frames::tests::alloc_test_code(py);
+            let code = ExceptionValue::adopt(py, code_bits);
+            unsafe { code_set_frame_slot_id(code_ptr, 0) };
+            const TARGET: u64 = 105;
+            super::bind_code_target(py, code.bits(), TARGET);
+            let globals = ExceptionValue::adopt(py, super::dict(py));
+            let builtins = ExceptionValue::adopt(py, super::dict(py));
+            let generator = ExceptionValue::adopt(
+                py,
+                crate::molt_task_new(
+                    0,
+                    crate::GEN_CONTROL_SIZE as u64,
+                    crate::TASK_KIND_GENERATOR,
+                ),
+            );
+            assert!(obj_from_bits(generator.bits()).as_ptr().is_some());
+            let iterator = ExceptionValue::adopt(py, crate::molt_asyncgen_new(generator.bits()));
+            assert!(obj_from_bits(iterator.bits()).as_ptr().is_some());
+            let default = ExceptionValue::adopt(
+                py,
+                MoltObject::from_ptr(crate::alloc_string(py, b"anext default owner")).bits(),
+            );
+            assert!(obj_from_bits(default.bits()).as_ptr().is_some());
+            let inputs = [
+                code.bits(),
+                globals.bits(),
+                builtins.bits(),
+                iterator.bits(),
+                default.bits(),
+            ];
+            let mut held = Vec::with_capacity(128);
+            for _ in 0..2 {
+                let owner =
+                    ExceptionValue::adopt(py, crate::molt_task_new(0, 0, crate::TASK_KIND_FUTURE));
+                assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
+                held.push(owner);
+            }
+            let active = obj_from_bits(held[0].bits()).as_ptr().unwrap();
+            let suspended = obj_from_bits(held[1].bits()).as_ptr().unwrap();
+            let invocation = FrameInvocationGuard::for_suspended_namespace(
+                py,
+                code.bits(),
+                globals.bits(),
+                builtins.bits(),
+            )
+            .unwrap();
+            let baseline_refs = input_refs(&inputs);
+
+            for anext in [false, true] {
+                let construct = || {
+                    if anext {
+                        crate::molt_anext_builtin(iterator.bits(), default.bits())
+                    } else {
+                        crate::molt_task_new(TARGET, 0, crate::TASK_KIND_FUTURE)
+                    }
+                };
+                let suspended_error = {
+                    let _scope = crate::CurrentTaskScope::enter(py, suspended);
+                    unsafe { molt_cpython_abi::api::errors::PyErr_NoMemory() };
+                    crate::exception_last_bits_noinc(py).unwrap()
+                };
+                let _active = crate::CurrentTaskScope::enter(py, active);
+                assert!(!crate::exception_pending(py));
+                // Warm actual constructor metadata before either recording pass.
+                let warm = ExceptionValue::adopt(py, construct());
+                assert!(obj_from_bits(warm.bits()).as_ptr().is_some());
+                drop(warm);
+                assert!(map_shape(py).0 < map_shape(py).1);
+                let observation = probe::trace_allocations(None);
+                let plain_bits = construct();
+                let plain_trace = observation.finish();
+                let plain = ExceptionValue::adopt(py, plain_bits);
+                assert!(obj_from_bits(plain.bits()).as_ptr().is_some());
+                assert_trace(&plain_trace);
+                assert!(
+                    plain_trace
+                        .requests()
+                        .iter()
+                        .all(|request| request.outcome == AllocationOutcome::Granted)
+                );
+                drop(plain);
+                assert_eq!(input_refs(&inputs), baseline_refs);
+
+                // Populate only through real task constructors. Table len and
+                // capacity are observations, never a bucket-count formula.
+                loop {
+                    let (len, capacity) = map_shape(py);
+                    if len == capacity {
+                        break;
+                    }
+                    assert!(
+                        held.len() < held.capacity(),
+                        "task fixture exceeded its owner bound"
+                    );
+                    let owner = ExceptionValue::adopt(
+                        py,
+                        crate::molt_task_new(0, 0, crate::TASK_KIND_FUTURE),
+                    );
+                    assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
+                    held.push(owner);
+                }
+                let full = map_shape(py);
+                assert!(full.0 > 0);
+                let expected_live_refs: [u32; 5] = std::array::from_fn(|index| {
+                    baseline_refs[index] + u32::from(if anext { index >= 3 } else { index < 3 })
+                });
+                let budget = ResourceBudget::enter();
+                let observation = probe::trace_allocations(None);
+                let grown_bits = construct();
+                let growing = observation.finish();
+                let grown = ExceptionValue::adopt(py, grown_bits);
+                assert!(obj_from_bits(grown.bits()).as_ptr().is_some());
+                assert_trace(&growing);
+                assert!(
+                    growing
+                        .requests()
+                        .iter()
+                        .all(|request| request.outcome == AllocationOutcome::Granted)
+                );
+                assert_eq!(
+                    growing.requests().len(),
+                    plain_trace.requests().len() + 1,
+                    "a unique constructor-final map allocation was not isolated"
+                );
+                assert_eq!(
+                    &growing.requests()[..plain_trace.requests().len()],
+                    plain_trace.requests(),
+                    "growing and non-growing producer prefixes differ"
+                );
+                assert_eq!(map_shape(py).0, full.0 + 1);
+                assert!(map_shape(py).1 > full.1);
+                assert_eq!(input_refs(&inputs), expected_live_refs);
+                with_tracker(|tracker| {
+                    assert!(
+                        tracker.on_allocate(RESOURCE_BYTES).is_err(),
+                        "successful object/sidecar allocation must consume the resource budget"
+                    )
+                });
+                drop(grown);
+                assert_budget_empty();
+                drop(budget);
+
+                // Sensitivity control: the same selector must NOT deny an
+                // allocation when the real map already has spare capacity.
+                let observation = probe::trace_allocations(Some(growing.requests()));
+                let control_bits = construct();
+                let control_trace = observation.finish();
+                let control = ExceptionValue::adopt(py, control_bits);
+                assert!(obj_from_bits(control.bits()).as_ptr().is_some());
+                assert_trace(&control_trace);
+                assert_eq!(control_trace.requests(), plain_trace.requests());
+                assert_eq!(probe::denied_allocations(), 0);
+                drop(control);
+                {
+                    let mut slots = crate::runtime_state(py)
+                        .task_last_exceptions
+                        .lock()
+                        .unwrap();
+                    slots.shrink_to_fit();
+                }
+                assert_eq!(
+                    map_shape(py),
+                    full,
+                    "cannot reproduce the observed growth boundary without changing map policy"
+                );
+                let rows: Vec<_> = crate::runtime_state(py)
+                    .task_last_exceptions
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(&key, &value)| (key, value))
+                    .collect();
+                assert_eq!(input_refs(&inputs), baseline_refs);
+
+                let budget = ResourceBudget::enter();
+                let observation = probe::trace_allocations(Some(growing.requests()));
+                let refused_bits = construct();
+                let refused_trace = observation.finish();
+                let refused = ExceptionValue::adopt(py, refused_bits);
+                assert_trace(&refused_trace);
+                assert!(
+                    obj_from_bits(refused.bits()).is_none(),
+                    "late map growth was not refused"
+                );
+                assert_eq!(probe::denied_allocations(), 1);
+                assert!(refused_trace.requests().len() >= growing.requests().len());
+                let last = growing.requests().len() - 1;
+                assert_eq!(
+                    &refused_trace.requests()[..last],
+                    &growing.requests()[..last]
+                );
+                let mut expected_denied = growing.requests()[last];
+                expected_denied.outcome = AllocationOutcome::Denied;
+                assert_eq!(refused_trace.requests()[last], expected_denied);
+                assert_eq!(
+                    refused_trace
+                        .requests()
+                        .iter()
+                        .filter(|request| request.outcome == AllocationOutcome::Denied)
+                        .count(),
+                    1
+                );
+                assert!(
+                    refused_trace.requests()[last + 1..]
+                        .iter()
+                        .all(|request| request.outcome == AllocationOutcome::Granted)
+                );
+                assert_eq!(map_shape(py), full);
+                assert_eq!(input_refs(&inputs), baseline_refs);
+                assert_budget_empty();
+                assert_ne!(crate::exception_last_bits_noinc(py), Some(suspended_error));
+                // The selected error belongs to the executing, pre-admitted
+                // task. Prepared public Get/Set/Fetch must survive all denial.
+                let denial = probe::deny_allocations();
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(denial);
+                assert_eq!(probe::denied_allocations(), 0);
+                assert_eq!(probe::denied_c_allocations(), 0);
+                {
+                    let slots = crate::runtime_state(py)
+                        .task_last_exceptions
+                        .lock()
+                        .unwrap();
+                    assert_eq!(slots.len(), rows.len());
+                    assert!(
+                        rows.iter()
+                            .all(|(key, value)| slots.get(key) == Some(value)),
+                        "failure changed previous task rows or published a new row"
+                    );
+                }
+                let pending = acquire_pending_invocation_context(py, TARGET).unwrap();
+                assert_eq!(pending, [globals.bits(), builtins.bits(), code.bits()]);
+                for bits in pending {
+                    dec_ref_bits(py, bits);
+                }
+                assert_eq!(input_refs(&inputs), baseline_refs);
+                {
+                    let _scope = crate::CurrentTaskScope::enter(py, suspended);
+                    assert_eq!(crate::exception_last_bits_noinc(py), Some(suspended_error));
+                    let denial = probe::deny_allocations();
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                    drop(denial);
+                    assert_eq!(probe::denied_allocations(), 0);
+                    assert_eq!(probe::denied_c_allocations(), 0);
+                }
+                assert!(!crate::exception_pending(py));
+                let observation = probe::trace_allocations(None);
+                let retry_bits = construct();
+                let retry_trace = observation.finish();
+                let retry = ExceptionValue::adopt(py, retry_bits);
+                assert!(obj_from_bits(retry.bits()).as_ptr().is_some());
+                assert_trace(&retry_trace);
+                assert_eq!(
+                    retry_trace.requests(),
+                    growing.requests(),
+                    "retry changed the calibrated request stream"
+                );
+                assert_eq!(map_shape(py).0, full.0 + 1);
+                assert!(map_shape(py).1 > full.1);
+                assert_eq!(input_refs(&inputs), expected_live_refs);
+                drop(retry);
+                assert_eq!(input_refs(&inputs), baseline_refs);
+                assert_budget_empty();
+                drop(budget);
+                println!(
+                    "TASK_GROWTH_REFUSAL anext={anext} growing={:?} refused={:?} retry={:?}",
+                    growing.requests(),
+                    refused_trace.requests(),
+                    retry_trace.requests()
+                );
+            }
+            drop(invocation);
+            assert!(acquire_pending_invocation_context(py, TARGET).is_none());
+        });
+    }
+}

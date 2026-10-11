@@ -1495,8 +1495,8 @@ unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
             || crate::with_gil_entry_nopanic!(py, {
                 crate::object::builders::canonical_cache_locks_available_for_test(py)
             }));
-    // Materializing an emergency may itself touch these caches, so even the
-    // lawful Get/Set roundtrip waits until after the nonblocking observation.
+    // Observe lock release before the lawful Get/Set roundtrip and any
+    // subsequent callback reentry.
     if locks_available && OOM_PRIOR_ROUNDTRIP.with(std::cell::Cell::get) {
         let error = unsafe { errors::PyErr_GetRaisedException() };
         OOM_SELECTED_INSTANCE.with(|cell| cell.set(error.addr()));
@@ -2045,8 +2045,9 @@ fn container_backing_failure_selects_memory_error_before_partial_cleanup() {
                     install_oom_prior(&raw mut *payload_type, runtime);
                     OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
                     OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
                     set_tracker(Box::new(DenyRuntimeAllocation {
-                        attempts: std::rc::Rc::new(std::cell::Cell::new(0)),
+                        attempts: attempts.clone(),
                         denied_attempt: 2,
                     }));
                     let _restore_tracker = DenyRuntimeAllocations;
@@ -2069,6 +2070,10 @@ fn container_backing_failure_selects_memory_error_before_partial_cleanup() {
                     assert!(
                         result.is_null(),
                         "backing failure constructor {constructor}"
+                    );
+                    assert!(
+                        attempts.get() >= 2,
+                        "runtime={runtime}, constructor={constructor}: failure must reach the selected allocation"
                     );
                     assert_oom_prior_retired(1);
                     let selected =
@@ -2301,9 +2306,10 @@ fn array_allocation_failure_releases_storage_before_prior_retirement() {
                         ),
                         "operation {operation}: no lock or buffer export may constrain legal retirement reentry"
                     );
-                    assert!(
-                        attempts.get() > 1,
-                        "the displaced owner materialized the real emergency instance"
+                    assert_eq!(
+                        attempts.get(),
+                        1,
+                        "operation {operation}: the prepared error and its transport allocate no managed storage"
                     );
                     assert!(crate::exception_pending(py));
                     let selected =

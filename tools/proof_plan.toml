@@ -4105,14 +4105,14 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 6300
 
 [[named_lane]]
-id = "runtime.allocation-observer-image"
-description = "Build the existing development-only allocator observer images for runtime and public ABI allocation/refusal controls; no timed performance acceptance is implied."
-argv = ["cargo", "test", "--locked", "--profile", "release-output", "-p", "molt-runtime", "--lib", "--test", "l7_numeric_runtime_perf_attestation", "--features", "l7-attestation-probe", "--no-run", "--message-format=json"]
-toolchains = ["cargo", "rustc", "python"]
+id = "runtime.allocation-observer"
+description = "Build the development-only runtime and public ABI observer images once, discover required allocation/refusal controls and execute each in a fresh process with source/image-bound receipts; no timed performance acceptance is implied."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "allocation-observer"]
+toolchains = ["cargo", "rustc", "python", "uv"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
-timeout_seconds = 6300
+timeout_seconds = 9000
 
 [[named_lane]]
 id = "runtime.public-consumers.native"
