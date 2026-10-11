@@ -310,6 +310,11 @@ re-runs itself under a new guard. A test that needs another root
 sets its own. `tests/test_memory_guard_wiring.py` proves that a guarded child
 leaves no record in the host roots.
 
+A background thread in the test process, such as the serial session's
+sentinel, binds every module it uses before the thread starts and never runs an
+import: a test may clear `molt.*` from `sys.modules`, and an import on another
+thread would load the real package into the middle of that test.
+
 A host test that exercises Molt stdlib sources loads them by path, through
 `tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,
 or runs them in a child interpreter. It never puts `src/molt/stdlib` on the

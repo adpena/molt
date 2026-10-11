@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from types import ModuleType
 
 try:
     from tools import memory_guard, process_sentinel
@@ -1697,6 +1698,12 @@ class RepoProcessMemorySentinel:
         # that patch sampling): the background scan neither reads nor acts.
         self._paused = threading.Event()
         self._thread: threading.Thread | None = None
+        # Bound here, before any scan thread exists, so that thread never runs
+        # an import. A test may clear ``molt.*`` from sys.modules; an import on
+        # this thread would load the real package into the middle of that test.
+        from molt import backend_daemon_suite_custody
+
+        self._suite_custody: ModuleType = backend_daemon_suite_custody
         self._daemon_suite_lease = None
         self._daemon_suite_lease_previous = None
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
@@ -1721,8 +1728,7 @@ class RepoProcessMemorySentinel:
             self._started_monotonic = time.monotonic()
             self._started_at = _utc_timestamp()
             if os.name == "posix" and self._drain_on_exit and self._suppress_auto_guard:
-                from molt import backend_daemon_suite_custody as suite_custody
-
+                suite_custody = self._suite_custody
                 self._daemon_suite_lease_previous = os.environ.get(
                     suite_custody.LEASE_ENV
                 )
@@ -1756,8 +1762,7 @@ class RepoProcessMemorySentinel:
         except Exception:
             try:
                 if self._daemon_suite_lease is not None:
-                    from molt import backend_daemon_suite_custody as suite_custody
-
+                    suite_custody = self._suite_custody
                     try:
                         self._daemon_suite_lease.close()
                     finally:
@@ -1793,8 +1798,7 @@ class RepoProcessMemorySentinel:
                     self.drain_new_processes()
         finally:
             if self._daemon_suite_lease is not None:
-                from molt import backend_daemon_suite_custody as suite_custody
-
+                suite_custody = self._suite_custody
                 if self._daemon_suite_lease_previous is None:
                     os.environ.pop(suite_custody.LEASE_ENV, None)
                 else:
@@ -1841,8 +1845,7 @@ class RepoProcessMemorySentinel:
                 for pid in (self._tree_tracker.known_pids or set())
                 if pid in samples
             }
-        from molt import backend_daemon_suite_custody as suite_custody
-
+        suite_custody = self._suite_custody
         if (
             self._daemon_suite_lease is not None
             and self._daemon_suite_lease.record["owner_pid"] == os.getpid()

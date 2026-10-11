@@ -3916,3 +3916,34 @@ def test_platform_query_guard_does_not_select_unused_managed_tools(
     assert observed[0][0] == ("selected-external-tool", "--version")
     assert len(observed) == 1
     assert invalid.read_text(encoding="utf-8") == "file"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="suite custody scopes POSIX scans")
+def test_sentinel_scan_imports_nothing_while_a_test_clears_molt(tmp_path, monkeypatch):
+    """A background scan must not reload ``molt`` into another test's surgery.
+
+    HF-163 CI: a probe test cleared ``molt.*`` from sys.modules; the serial
+    session's sentinel scan then imported suite custody, which reloaded
+    ``molt.dx`` and ``molt.path_custody``. The probe reported that real
+    module instead of the foreign one it was testing.
+    """
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="no-import-scan",
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=32,
+            max_total_rss_gb=64,
+            max_global_rss_gb=96,
+            poll_interval=0.01,
+        ),
+        drain_on_exit=False,
+        suppress_auto_guard=False,
+    )
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", str(tmp_path / "no-lease"))
+    for name in tuple(sys.modules):
+        if name == "molt" or name.startswith("molt."):
+            monkeypatch.delitem(sys.modules, name)
+    sentinel.scan_once()
+    assert [name for name in sys.modules if name.split(".")[0] == "molt"] == []
