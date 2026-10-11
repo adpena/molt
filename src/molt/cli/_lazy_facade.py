@@ -380,7 +380,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_mlir_backend_executable_name": ("mlir_backend", "_mlir_backend_executable_name"),
     "_module_symbol_name": ("backend_cache", "_module_symbol_name"),
     "_native_main_stub_snippets": ("native_main_stub", "_native_main_stub_snippets"),
-    "_native_nm_command": ("native_symbol_inspection", "_native_nm_command"),
     "_native_object_global_symbol_sets": (
         "native_symbol_inspection",
         "_native_object_global_symbol_sets",

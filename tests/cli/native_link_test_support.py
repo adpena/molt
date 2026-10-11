@@ -37,11 +37,10 @@ from tests.native_artifact_fixtures import (
 
 @contextmanager
 def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[None]:
-    """Admit nm commands under the interpreter's content identity.
+    """Admit every bitcode-reader command under the interpreter's identity.
 
-    A real reader keeps the family its own ``--version`` banner names, so a
-    host's GNU nm never receives llvm-nm flags. Any other command is a stand-in
-    whose output the test fabricates; it is admitted as llvm-nm.
+    Only LLVM bitcode reaches an external reader. Tests that drive that ladder
+    fabricate its llvm-nm output, so each command is admitted as llvm-nm.
 
     The facts a test reads may be synthetic, so the persistent symbol-facts
     cache lives in ``facts_cache`` for the test: synthetic facts must never
@@ -53,20 +52,6 @@ def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[Non
         Path(sys.executable).resolve(strict=True), label="test symbol reader"
     )
 
-    def reader_family(executable: str) -> str:
-        path = Path(executable)
-        if not path.is_file():
-            return "llvm"
-        # Probe the resolved entrypoint, as reader admission does: hosts install
-        # nm behind a symlink (Ubuntu's /usr/bin/nm -> <triple>-nm).
-        entrypoint = path.resolve(strict=True)
-        if entrypoint == identity.path:
-            return "llvm"
-        family, _banner = native_symbol_inspection._cached_nm_reader_family(
-            str(entrypoint), stable_regular_file_identity(entrypoint, label="nm").sha256
-        )
-        return "llvm" if family is None else family
-
     @contextmanager
     def admitted_reader(path, *, label, identity=None):
         del label
@@ -77,9 +62,7 @@ def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[Non
         native_symbol_inspection,
         "_native_symbol_reader_candidate",
         lambda command: _NativeSymbolReaderCandidate(
-            tuple(command),
-            executable_identity=identity,
-            reader_family=reader_family(command[0]),
+            tuple(command), executable_identity=identity
         ),
     )
     monkeypatch.setattr(
@@ -128,6 +111,11 @@ RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(
 )
 
 
+# Raw LLVM bitcode magic. Only bitcode reaches the llvm-nm ladder, so tests of
+# that ladder frame this stand-in and fabricate the reader's output.
+LLVM_BITCODE_STAND_IN = b"BC\xc0\xde" + b"\x35\x14\x00\x00" * 4
+
+
 def static_archive_bytes(payload: bytes = b"object") -> bytes:
     name = b"object.o/".ljust(16)
     header = b"".join(
@@ -163,8 +151,8 @@ def single_member_archive_symbol_facts(
 class NativeArchiveFixtureCatalog:
     """Pytest-owned expected reader results for independently emitted bytes.
 
-    Only the external reader is replaced. Production artifact snapshots, reader
-    identity, digest stamping and caches consume these results unchanged.
+    Only the symbol-table read is replaced. Production artifact snapshots,
+    reader identity, digest stamping and caches consume these results unchanged.
     """
 
     def __init__(self) -> None:
@@ -196,7 +184,6 @@ class NativeArchiveFixtureCatalog:
         self,
         path: Path,
         *,
-        timeout: float,
         nm_command: Sequence[str] | None = None,
         target_triple: str | None = None,
         _reader: _NativeSymbolReader | None = None,
@@ -204,7 +191,7 @@ class NativeArchiveFixtureCatalog:
         archive_members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
         _opened: StableRegularFileHandle | None = None,
     ) -> _NativeGlobalSymbolFacts:
-        del timeout, nm_command, target_triple
+        del nm_command, target_triple
         if _opened is None or _opened.stream.closed:
             raise NativeSymbolInspectionError(
                 path, ["synthetic native reader requires a live owned descriptor"]

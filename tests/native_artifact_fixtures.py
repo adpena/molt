@@ -35,6 +35,7 @@ def native_relocatable_object(
     Function and data symbols occupy distinct sections; undefined references
     have the format's real undefined section/type and zero value. Object bytes
     therefore bind the same definitions and references asserted by reader mocks.
+    ELF ``weak_symbols`` may name a definition (``W``) or a reference (``w``).
     """
     from molt.cli.native_link_plan import resolve_native_target_spec
     from molt.native_target_shape import NativeObjectFormat, native_artifact_shape
@@ -56,8 +57,8 @@ def native_relocatable_object(
     ):
         raise ValueError("Fixture symbols must be unique, nonempty, and NUL-free")
     weak_names = frozenset(weak_symbols)
-    if not weak_names <= set(definitions):
-        raise ValueError("Weak fixture symbols must name declared definitions")
+    if not weak_names <= set(all_symbols):
+        raise ValueError("Weak fixture symbols must name declared symbols")
     if weak_names and target.object_format is not NativeObjectFormat.ELF:
         raise ValueError("Weak fixture bindings are implemented only for ELF")
     names = tuple(symbol.encode("ascii") for symbol in all_symbols)

@@ -4625,15 +4625,6 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "user",
       "default": "",
-      "kind": "float",
-      "name": "MOLT_NM_TIMEOUT_SEC",
-      "owner": "src/molt/cli/native_symbol_inspection.py",
-      "summary": "Wall-clock limit in seconds for one nm or llvm-nm symbol read of a native object; a positive float replaces the caller's default timeout, any other value keeps that default.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
       "kind": "path",
       "name": "MOLT_NODE_BIN",
       "owner": "src/molt/node_runtime.py",

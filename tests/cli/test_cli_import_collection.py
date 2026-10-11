@@ -184,22 +184,6 @@ def native_archives(
     runtime_fixture_root: RuntimeFixtureRoot,
 ) -> NativeArchiveFixtureCatalog:
     catalog = NativeArchiveFixtureCatalog()
-    reader = runtime_fixture_root.native_executable("native-symbol-reader/python")
-    reader_digest = hashlib.sha256(reader.read_bytes()).hexdigest()
-
-    def reader_family(path_text: str, digest: str) -> tuple[str, str]:
-        # Only the external version observation is synthetic. The production
-        # admission still owns executable bytes, descriptors and cache identity.
-        assert Path(path_text) == reader.resolve()
-        assert digest == reader_digest
-        return "llvm", "LLVM nm synthetic fixture"
-
-    monkeypatch.setattr(
-        native_symbol_inspection, "_nm_candidate_binaries", lambda: [str(reader)]
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "_cached_nm_reader_family", reader_family
-    )
     monkeypatch.setattr(
         native_symbol_inspection,
         "_read_native_global_symbol_facts",
@@ -5286,9 +5270,7 @@ def test_native_archive_fixture_reads_owned_descriptor_without_reopening(
                     "reader must not reopen a pathname"
                 ),
             )
-            facts = catalog.read_symbols(
-                path, timeout=1, archive_members=members, _opened=opened
-            )
+            facts = catalog.read_symbols(path, archive_members=members, _opened=opened)
         assert facts.defined == frozenset({"entry", "state"})
         assert facts.defined_functions == frozenset({"entry"})
         assert facts.members is not None
@@ -5323,16 +5305,14 @@ def test_native_archive_fixture_rejects_unowned_or_mismatched_reader_input(
                 members = (replace(members[0], sha256="0" * 64),)
             with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
                 catalog.read_symbols(
-                    selected_path, timeout=1, archive_members=members, _opened=supplied
+                    selected_path, archive_members=members, _opened=supplied
                 )
     if violation == "closed":
         with pytest.raises(
             native_symbol_inspection.NativeSymbolInspectionError,
             match="live owned descriptor",
         ):
-            catalog.read_symbols(
-                path, timeout=1, archive_members=members, _opened=opened
-            )
+            catalog.read_symbols(path, archive_members=members, _opened=opened)
 
 
 def test_native_archive_fixture_rejects_manifest_symbol_lie(

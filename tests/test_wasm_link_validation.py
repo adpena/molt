@@ -37,7 +37,6 @@ from molt.wasi_sdk_identity import (
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,
 )
-from tests.executable_test_support import write_mock_executable
 from tests.process_guard_common import install_module_view
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
@@ -865,75 +864,6 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
             key=lambda row: str(row["name"]),
         ),
     }
-
-
-@pytest.fixture(autouse=True)
-def _native_symbol_reader_fixture(
-    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
-) -> None:
-    """Mock SDK selection and nm transport, retaining native artifact admission."""
-    reader_path: Path | None = None
-    real_tool_version = native_symbol_inspection._tool_version
-
-    def tool_version(path: Path) -> str | None:
-        # The mock reader is an llvm-nm transport: it answers the --version
-        # probe with llvm-nm's banner, so reader admission names its family.
-        if reader_path is not None and path == reader_path:
-            return "llvm-nm, compatible with GNU nm"
-        return real_tool_version(path)
-
-    monkeypatch.setattr(native_symbol_inspection, "_tool_version", tool_version)
-
-    def reader(*, nm_command, target_triple, requirement):
-        nonlocal reader_path
-        assert nm_command is None
-        assert target_triple == "wasm32-wasip1"
-        if reader_path is None:
-            reader_path = write_mock_executable(
-                tmp_path_factory.mktemp("wasm-native-reader") / "llvm-nm",
-                b"mocked WASM llvm-nm transport v1\n",
-            )
-        candidate = native_symbol_inspection._native_symbol_reader_candidate(
-            (str(reader_path),)
-        )
-        assert candidate.admission_error is None
-        assert candidate.reader_family == "llvm"
-        return native_symbol_inspection._NativeSymbolReader(
-            (candidate,),
-            (candidate.cache_identity(), requirement.cache_identity()),
-            requirement,
-        )
-
-    def run_nm(command, **kwargs):
-        assert reader_path is not None
-        assert command[:3] == [str(reader_path), "-g", "--no-llvm-bc"]
-        assert len(command) == 4
-        path = Path(command[3])
-        assert kwargs["cwd"] == path.parent
-        rows: list[str] = []
-        archive = path.read_bytes().startswith(wasm_archive.AR_MAGIC)
-        for member in wasm_archive.iter_wasm_object_members(path):
-            if archive:
-                rows.append(f"{member.name}:")
-            for symbol in _fixture_linking_symbols(member.data):
-                flags = symbol["flags"]
-                binding = flags & SYMBOL_BINDING_MASK
-                if binding == FLAG_BINDING_LOCAL:
-                    continue
-                if flags & wasm_link_format.FLAG_UNDEFINED:
-                    if binding == FLAG_BINDING_WEAK:
-                        kind = "w" if symbol["kind"] == "function" else "v"
-                    else:
-                        kind = "U"
-                elif symbol["kind"] == "function":
-                    kind = "W" if binding == FLAG_BINDING_WEAK else "T"
-                else:
-                    kind = "V" if binding == FLAG_BINDING_WEAK else "D"
-                rows.append(f"00000000 {kind} {symbol['name']}")
-        return subprocess.CompletedProcess(command, 0, "\n".join(rows), "")
-
-    monkeypatch.setattr(native_symbol_inspection, "_native_symbol_reader", reader)
-    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run_nm)
 
 
 @pytest.fixture(autouse=True)

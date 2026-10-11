@@ -8,6 +8,7 @@ The caller owns the separate live file-node/content custody check.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import struct
@@ -38,17 +39,30 @@ def _ascii(raw: bytes, label: str) -> str:
         raise ValueError(f"COFF import library {label} is not ASCII") from exc
 
 
-def _short_import(
-    reader: NativeReader, dll_name: str, machines: tuple[int, ...]
-) -> None:
+@dataclass(frozen=True, slots=True)
+class CoffShortImport:
+    """One structurally valid short-import record; names stay raw bytes."""
+
+    machine: int
+    import_type: int  # 0 code, 1 data, 2 const
+    name_type: int
+    symbol_name: bytes
+    dll_name: bytes
+    export_name: bytes | None
+
+
+def decode_coff_short_import(reader: NativeReader) -> CoffShortImport:
+    """Decode the short-import header and its NUL-separated names.
+
+    This owns the record structure for every consumer. Consumers own their own
+    target, DLL and name-encoding policy.
+    """
     header = reader.read(0, 20, "COFF short import header")
     signature1, signature2, version, machine, _stamp, size, _hint, flags = (
         struct.unpack("<HHHHIIHH", header)
     )
     if (signature1, signature2) != (0, 0xFFFF) or version != 0:
         raise ValueError("COFF short import signature/version is invalid")
-    if machine not in machines:
-        raise ValueError("COFF short import machine disagrees with target architecture")
     if size != reader.size - 20 or not size or size > _MAX_MEMBER_BYTES:
         raise ValueError("COFF short import data extent is invalid")
     import_type, name_type = flags & 3, (flags >> 2) & 7
@@ -58,12 +72,28 @@ def _short_import(
     expected = 3 if name_type == 4 else 2  # IMPORT_NAME_EXPORTAS has a third name.
     if len(strings) != expected + 1 or strings[-1] or any(not s for s in strings[:-1]):
         raise ValueError("COFF short import names are malformed")
-    _ascii(strings[0], "symbol name")
-    actual_dll = _ascii(strings[1], "DLL name")
+    return CoffShortImport(
+        machine,
+        import_type,
+        name_type,
+        strings[0],
+        strings[1],
+        strings[2] if expected == 3 else None,
+    )
+
+
+def _short_import(
+    reader: NativeReader, dll_name: str, machines: tuple[int, ...]
+) -> None:
+    record = decode_coff_short_import(reader)
+    if record.machine not in machines:
+        raise ValueError("COFF short import machine disagrees with target architecture")
+    _ascii(record.symbol_name, "symbol name")
+    actual_dll = _ascii(record.dll_name, "DLL name")
     if actual_dll.casefold() != dll_name.casefold():
         raise ValueError("COFF short import targets a different DLL")
-    if expected == 3:
-        _ascii(strings[2], "export name")
+    if record.export_name is not None:
+        _ascii(record.export_name, "export name")
 
 
 def _coff_symbol_name(raw: bytes, string_table: bytes) -> str:

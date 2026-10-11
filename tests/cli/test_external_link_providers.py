@@ -11,10 +11,14 @@ import pytest
 from molt.cli import external_link_providers as providers
 from molt.cli import native_symbol_inspection
 from tests.cli.native_link_test_support import (
+    LLVM_BITCODE_STAND_IN,
     single_member_archive_symbol_facts,
     static_archive_bytes,
 )
 from tests.process_guard_common import install_module_view
+
+
+_BITCODE = LLVM_BITCODE_STAND_IN
 
 
 def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
@@ -179,16 +183,16 @@ def test_nm_symbol_normalization_uses_artifact_target_not_host(
     )
 
     wasm_defined, wasm_undefined = (
-        native_symbol_inspection._parse_native_nm_global_symbol_sets(
+        native_symbol_inspection._parse_native_nm_global_symbol_facts(
             output,
             target_triple="wasm32-wasip1",
-        )
+        ).symbol_sets()
     )
     macho_defined, macho_undefined = (
-        native_symbol_inspection._parse_native_nm_global_symbol_sets(
+        native_symbol_inspection._parse_native_nm_global_symbol_facts(
             output,
             target_triple="aarch64-apple-darwin",
-        )
+        ).symbol_sets()
     )
 
     assert wasm_defined == {"__molt_runtime"}
@@ -208,8 +212,9 @@ def test_nm_symbol_normalization_uses_artifact_target_not_host(
 def test_provider_projection_admits_once_and_fences_native_cache_hits(
     tmp_path, monkeypatch, query
 ):
+    # An LTO provider archive: its bitcode member needs the SDK llvm-nm.
     archive = tmp_path / "libc.a"
-    archive.write_bytes(static_archive_bytes(b"original"))
+    archive.write_bytes(static_archive_bytes(_BITCODE + b"original"))
     monkeypatch.setattr(
         providers,
         "_resolved_provider_archives",
@@ -234,7 +239,6 @@ def test_provider_projection_admits_once_and_fences_native_cache_hits(
             native_symbol_inspection._NativeSymbolReaderCandidate(
                 (str(reader_path),),
                 executable_identity=reader_identity,
-                reader_family="llvm",
             ),
         ),
         input_identity=(
@@ -293,7 +297,9 @@ def test_provider_projection_admits_once_and_fences_native_cache_hits(
             found = super().get(key, default)
             assert found is not None
             stamp = archive.stat()
-            archive.write_bytes(static_archive_bytes(b"replacement-with-changed-size"))
+            archive.write_bytes(
+                static_archive_bytes(_BITCODE + b"replacement-with-changed-size")
+            )
             os.utime(archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             return found
 
