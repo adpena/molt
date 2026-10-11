@@ -8,6 +8,7 @@ use crate::api::{
 
 #[path = "native_slot_buffer.rs"]
 mod buffer;
+pub(super) use buffer::export_type_shell as python_buffer_export_type_shell;
 
 pub(super) const fn dispatcher(slot: SlotWrapper) -> *mut c_void {
     macro_rules! pointer {

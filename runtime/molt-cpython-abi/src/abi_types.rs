@@ -2453,8 +2453,9 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
 
 /// Retire runtime-backed state without destroying canonical builtin C shells.
 ///
-/// Include the ordinary builtin parents as well as every exception singleton
-/// (including the internal ExceptionGroup): a parent may acquire a dict, MRO,
+/// Include the ordinary builtin parents, every exception singleton (including
+/// the internal ExceptionGroup) and the ABI's private process shells
+/// (`_buffer_wrapper` and the sequence iterator): each may acquire a dict, MRO,
 /// bases tuple, or cache after process bootstrap. No extension-owned type,
 /// capsule registry, foreign bridge entry, or process-owned hook is retired.
 ///
@@ -2479,6 +2480,11 @@ fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
             exc_singleton_ptrs()
                 .into_iter()
                 .map(|object| (object.cast(), false)),
+        )
+        .chain(
+            crate::api::typeobj::private_process_type_shells()
+                .into_iter()
+                .map(|shell| (shell, false)),
         )
         .collect()
 }
