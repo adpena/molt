@@ -169,7 +169,12 @@ fn exercise_native_namespaces(unwind_after_read: bool, receiver_address: &Cell<u
             let receiver_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(receiver_ptr).unwrap();
             let _receiver_owner = ExceptionValue::adopt(py, receiver_bits);
             receiver_address.set(receiver_ptr.addr());
-            assert!(GLOBAL_BRIDGE.pyobj_to_handle(receiver_ptr).is_some());
+            // A native object of a native class crosses as a foreign wrapper,
+            // which is not a managed view: observe that exact binding.
+            assert_eq!(
+                GLOBAL_BRIDGE.foreign_wrapper_for_pyobj(receiver_ptr),
+                Some(receiver_bits)
+            );
             let get = function(py, descriptor_get as *const (), 1);
             let _get_owner = ExceptionValue::adopt(py, get);
             let set = function(py, descriptor_set as *const (), 2);
@@ -501,10 +506,11 @@ fn native_descriptor_fixture_unwind_retires_foreign_receiver_binding() {
         Some(&"native descriptor fixture unwind")
     );
     assert_ne!(address.get(), 0);
-    assert!(
+    assert_eq!(
         GLOBAL_BRIDGE
-            .pyobj_to_handle(std::ptr::with_exposed_provenance_mut(address.get()))
-            .is_none()
+            .foreign_wrapper_for_pyobj(std::ptr::with_exposed_provenance_mut(address.get())),
+        None,
+        "unwind must retire the receiver's foreign binding"
     );
 }
 
