@@ -502,8 +502,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "_runtime_callable_symbols_file",
     ),
     "_rustup_setup_advice": ("setup_readiness", "_rustup_setup_advice"),
-    "_shared_cache_lock": ("backend_cache", "_shared_cache_lock"),
-    "_shared_cache_lock_dir_cached": ("backend_cache", "_shared_cache_lock_dir_cached"),
     "_shared_stdlib_cache_key": ("backend_cache", "_shared_stdlib_cache_key"),
     "_shared_stdlib_cache_lock": ("backend_cache", "_shared_stdlib_cache_lock"),
     "_shared_stdlib_cache_matches_key": (
@@ -531,10 +529,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_cache",
         "_shared_stdlib_native_symbol_closure_issue",
     ),
-    "_shared_stdlib_publish_lock_path": (
-        "backend_cache",
-        "_shared_stdlib_publish_lock_path",
-    ),
     "_short_backend_daemon_socket_dir": (
         "backend_execution",
         "_short_backend_daemon_socket_dir",
@@ -556,9 +550,9 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "runtime_callable_symbols",
         "_stage_runtime_callable_symbols_for_native_codegen",
     ),
-    "_stage_shared_stdlib_object_for_link": (
+    "_hydrate_shared_stdlib_archive": (
         "backend_cache",
-        "_stage_shared_stdlib_object_for_link",
+        "_hydrate_shared_stdlib_archive",
     ),
     "_start_backend_daemon": ("backend_execution", "_start_backend_daemon"),
     "_stdlib_module_symbols": ("backend_cache", "_stdlib_module_symbols"),

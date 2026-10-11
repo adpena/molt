@@ -552,6 +552,15 @@ def _connect(db: Path) -> sqlite3.Connection:
           AND status IN ('dispatched', 'running')
         """
     )
+    # Pending-key lookups must not walk retained terminal history. SQLite's
+    # implicit rowid order within this one-key index preserves oldest admission.
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS proof_runs_pending_per_contention_key
+        ON proof_runs(contention_key)
+        WHERE status IN ('queued', 'dispatched', 'running', 'stale')
+        """
+    )
     conn.commit()
     return conn
 

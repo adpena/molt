@@ -33,6 +33,47 @@ pub(crate) fn shared_stdlib_cache_matches(
     })
 }
 
+/// Transfer an admitted optional cache generation to the required build output
+/// before releasing cache custody. Downstream work never reopens this cache.
+pub(crate) fn hydrate_shared_stdlib_cache_archive(
+    source: &Path,
+    destination: &Path,
+    expected_key: Option<&str>,
+    expected_manifest: Option<&str>,
+    partition: &str,
+    stdlib_count: usize,
+) -> io::Result<bool> {
+    super::paths::validate_required_stdlib_output(destination, Some(source))?;
+    let resolved_source = super::paths::resolved_archive_path(source)?;
+    let source = resolved_source.as_path();
+    with_shared_stdlib_cache_publish_lock(source, || {
+        if !shared_stdlib_cache_matches_unlocked(
+            source,
+            expected_key,
+            expected_manifest,
+            Some(partition),
+        ) {
+            return Ok(false);
+        }
+        let key = read_stdlib_cache_key(source);
+        let manifest = read_stdlib_cache_manifest(source);
+        super::archive::publish_shared_stdlib_cache_archive(
+            destination,
+            |target| {
+                molt_artifact_publish::write_atomically(target, |writer| {
+                    let mut input = std::fs::File::open(source)?;
+                    io::copy(&mut input, writer).map(|_| ())
+                })
+            },
+            stdlib_count,
+            key.as_deref(),
+            manifest.as_deref(),
+            partition,
+        )?;
+        Ok(true)
+    })
+}
+
 /// Keep the validation decision and its invalidation in the same custody
 /// critical section. Compilation is intentionally outside this lock.
 pub(crate) fn admit_or_invalidate_shared_stdlib_cache(

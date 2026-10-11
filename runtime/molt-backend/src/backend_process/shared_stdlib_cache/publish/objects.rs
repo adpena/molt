@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use super::files::sha256_file_hex;
 use super::lock::with_shared_stdlib_cache_publish_lock;
+use super::paths::stdlib_archive_cache_root;
 use crate::backend_process::native_batch::{NativeBatchObjectJob, validate_native_object_bytes};
 
 const MAGIC: &[u8; 8] = b"MOLTNO01";
@@ -93,9 +94,7 @@ impl StdlibObjectCache {
             "effective_codegen".into(),
             molt_backend::SimpleBackend::object_codegen_identity(target),
         );
-        let parent = archive
-            .parent()
-            .ok_or_else(|| invalid("stdlib archive has no cache directory"))?;
+        let parent = stdlib_archive_cache_root(archive)?;
         Ok(Some(Self {
             root: parent.join("native-stdlib-objects-v1"),
             authority,
@@ -128,7 +127,7 @@ impl StdlibObjectCache {
 
     fn path(&self, key: &[u8; 32]) -> PathBuf {
         let hex = bytes_to_lower_hex(key);
-        self.root.join(&hex[..2]).join(format!("{hex}.entry"))
+        self.root.join(hex).join("object.entry")
     }
 
     /// Copy an admitted immutable generation to the job's private ordinary

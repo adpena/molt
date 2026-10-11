@@ -1,7 +1,7 @@
 """Tests for CLI flag -> manifest -> env var integration."""
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -36,7 +36,7 @@ def test_parse_audit_log_flag_rejects_invalid_sink():
 
 
 def test_parse_audit_log_flag_accepts_all_valid_sinks():
-    from molt.cli.build_inputs import _parse_audit_log_flag, _VALID_AUDIT_SINKS
+    from molt.cli.build_inputs import _VALID_AUDIT_SINKS, _parse_audit_log_flag
 
     for sink in _VALID_AUDIT_SINKS:
         env = _parse_audit_log_flag(f"{sink}:stderr")
@@ -119,7 +119,9 @@ def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
     cache_root = tmp_path / "cache"
     stdlib_object = tmp_path / "stdlib.o"
 
-    with cli._shared_cache_lock("unit", cache_root=cache_root):
+    from molt.file_locks import _shared_cache_lock
+
+    with _shared_cache_lock("unit", cache_root=cache_root):
         assert (cache_root / "locks" / "unit.lock").exists()
 
     with cli._shared_stdlib_cache_lock(stdlib_object):

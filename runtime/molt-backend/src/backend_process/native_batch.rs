@@ -17,7 +17,7 @@ pub(crate) use batching::{
     release_native_backend_batch_memory_to_os, resolved_batch_op_budget_limit,
     resolved_batch_size_limit,
 };
-pub(crate) use temp::finish_native_batch_temp_dir;
+pub(crate) use temp::{create_native_batch_temp_dir, finish_native_batch_temp_dir};
 #[cfg(test)]
 pub(crate) use temp::{
     preserve_native_batch_worker_failure_artifacts, remove_native_batch_temp_dir,

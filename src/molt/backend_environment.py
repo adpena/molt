@@ -130,6 +130,13 @@ class CodegenSelection:
 
     def environment(self, base: Mapping[str, str]) -> dict[str, str]:
         """Return a copy of ``base`` with this selection applied."""
+        if base.get("MOLT_GUARD_SCRATCH_ROOT"):
+            from molt.temporary_artifacts import guard_scratch
+
+            # Admission validates inherited scratch; the actual one-shot guard
+            # may replace it with its own allocation at child launch. Suite
+            # daemons remove it before acquiring their longer-lived temp root.
+            guard_scratch(base)
         env = dict(base)
         env["MOLT_BACKEND"] = self.backend
         env[DEBUG_ARTIFACT_DIR_ENV] = str(backend_debug_artifact_dir(base))

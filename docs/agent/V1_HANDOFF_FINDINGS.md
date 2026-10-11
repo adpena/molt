@@ -67,38 +67,63 @@ coordination records retain active worker scope and exact donor custody; the
 ledger remains the single release-status index. Complete semantic families must
 be qualified and landed together, with replaced internal lanes deleted.
 
-Current qualification (2026-10-11 UTC): candidate `203307fc7` passes the complete
+Current qualification (2026-10-11 UTC): candidate `bdca2f503` passes the complete
 optimized Linux/aarch64 runtime gate: 1,836 parallel cases and all ten isolated
-lifecycle controls. Complete ABI execution finishes across 56 binaries with
-782 passes, one failure and one ignored case. The sole failure is an exact-index
-fixture expecting an incoming error to reject an exact integer. CPython preserves
-the integer owner and incoming error; the reviewed correction also proves that a
-new provider failure takes precedence. Corrected execution remains required.
-The allocation observer attempt stops at development disk admission before tests.
-The compiled timing image also exposes an instrumentation-selection defect:
-calibration-only `l7-attestation-core` enabled inactive C allocation checks.
-The reviewed source correction separates `allocation-observer` and connects it
-only to explicit runtime allocation proofs. The gate must verify actual compiled
-ABI dependency features before timing/semantic or observer acceptance. A corrected
-uninstrumented image, repeated matched measurements and remaining target cells
-are still required; the runtime family is not ready to land.
+lifecycle controls. Complete ABI execution passes 783 cases across 56 binaries,
+with one ignored case. The exact-integer fixture now preserves the incoming
+error and separately proves newly raised provider failure, following CPython.
+The compiled default ABI dependency contains calibration support but no allocation
+observer. Dedicated allocation-observer execution passes all nine fresh-process
+controls, with actual ABI features confirming that only this proof selects the
+allocation instrumentation.
 
-The feature gate and existing buffered/streamed Cargo discovery now share one
-exact artifact decoder. Compiler-only evidence rejects malformed records; mixed
-test output preserves legitimate JSON fragments without crediting them as Cargo
-artifacts. All 298 focused tooling checks pass. Actual successor images must
-still exercise the new gate. Effective Rust flags remain owned by the existing
-toolchain capture, separately from Cargo's resolved-feature evidence.
+The feature gate and existing buffered/streamed Cargo discovery share one exact
+artifact decoder; all 298 focused tooling checks pass and actual successor images
+exercise the gate. Effective Rust flags remain owned by the existing toolchain
+capture, separately from Cargo's resolved-feature evidence. Seven alternating
+matched timing pairs show empty public async safepoints 11.64% faster and
+one-worker creation plus waiting shutdown 5.58% slower. The worker regression
+remains open; the runtime family is not qualified for landing. Thread-pool
+construction eagerly starts workers while pinned CPython starts them on demand;
+any correction must preserve submit, cancellation, shutdown and retirement custody
+and be measured through both empty and active workloads.
 
-Automatic cache retention remains blocked on complete artifact custody. Its
-review found a publication-to-link eviction race, reuse of optional cache bytes
-as required build output, and generic eviction of active publication stages and
-TIR lock/epoch namespaces. The correction must make required outputs build-owned,
-positively identify evictable completed entries, and preserve each namespace's
-existing synchronization authority. Queue admission must use an indexed pending
-lookup independent of retained proof history. Suite-owned scratch passes 100
-focused checks; this does not qualify the pending cache migration. V1-25 remains
-open for its full producer/consumer, concurrency and cost proof.
+Automatic cache retention has an independently reviewed complete source candidate.
+Required stdlib outputs are build-owned before cache admission, optional cache
+entries use their existing persistent locks, and pruning selects completed entries
+positively while protecting canonical home and control state. Queue maintenance
+admission uses the existing indexed pending lookup and performs no cache inventory
+in the foreground. Suite-owned scratch passes 100 focused checks. The first cache
+consumer run exposed import/fixture migration failures. Those are corrected; the
+complete main-based cache and suite-custody family passes 552 Python checks, 29
+selected consumers and all 36 final pruner controls. Candidate `e9b0b9be8` is
+independent of the runtime family. Actual Linux proof completion automatically
+dispatches maintenance, removes all 256 eligible leaves and preserves required
+archive bytes; both processes close successfully. The legacy-name inventory
+cross-product is replaced by an ephemeral component index with no per-name
+allocation when no legacy owners exist. Local median inventory time for 4,096
+entries plus 4,096 legacy locks falls from 2.391 s to 0.0642 s; modern-only cost
+is roughly unchanged. Fresh-process Python allocation measurement at 1,024 legacy
+locks shows peak scratch allocation rising from 1,762,078 to 1,862,513 bytes while
+retained allocation differs by 5,112 bytes. This is an explicit bounded scratch
+tradeoff for eliminating the quadratic scan, not a claim of lower memory use.
+The cache migration is landed on main at `e9b0b9be8`. Native qualification passes
+39 shared-cache/artifact controls, all three actual native worker tests and all
+four direct-daemon environment controls. The last four were run after landing
+because an initial source-directory-based filter did not match their compiled
+module name; exact raw test output now confirms their execution. Successful
+Cargo generations were automatically retired. Other target cells remain
+unverified. A host maintenance attempt fails before execution
+at supervisor bootstrap disk admission; the current macOS native supervisor is
+also ineligible. Linux remains the admitted execution cell. Operation-specific
+capacity and macOS supervisor support stay explicit release obligations; V1-25
+stays open.
+
+The all-WIP landing audit correction accounts for staged, unstaged and untracked
+paths independently and preserves exact Git pathname bytes. All 12 real-Git
+controls and applicable precommit checks pass; the fix is landed on main at
+`90134f3ef`. Path coverage does
+not establish byte equivalence or qualify the preserved donor families.
 
 The commit-specific records below preserve earlier failures and bounded results;
 they do not override the current qualification above.

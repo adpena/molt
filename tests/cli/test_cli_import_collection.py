@@ -12159,9 +12159,9 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         tmp_path / "artifacts" / "main_stub.c",
         output_obj,
         runtime_lib,
-        staged_stdlib,
+        stdlib_obj,
     ]
-    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes()
+    assert not staged_stdlib.exists()
 
 
 def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
@@ -12249,7 +12249,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     assert first.link_fingerprint["hash"] != second.link_fingerprint["hash"]
 
 
-def test_prepare_native_link_stages_stdlib_object_for_link_command(
+def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output_obj = tmp_path / "output.o"
@@ -12317,7 +12317,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
 
     forced_stdlib = list(
         whole_archive_link_arguments(
-            str(staged_stdlib), dialect=resolve_link_dialect(None)
+            str(stdlib_obj), dialect=resolve_link_dialect(None)
         )
     )
     assert any(
@@ -12327,7 +12327,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     assert str(prepared.link_output) in captured_link_cmd
     assert str(output_binary) not in captured_link_cmd
     assert str(output_binary) in prepared.link_cmd
-    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes()
+    assert not staged_stdlib.exists()
 
 
 def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
@@ -18737,19 +18737,17 @@ def test_stdlib_object_cache_path_tracks_build_variant(
     explicit_cache_root = tmp_path / "explicit-cache"
     monkeypatch.setenv("MOLT_CACHE", str(ambient_cache_root))
 
-    base = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "variant=a")
-    same = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "variant=a")
-    changed = cli._stdlib_object_cache_path(
-        explicit_cache_root / "program.o", "variant=b"
-    )
+    base = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "a" * 64)
+    same = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "a" * 64)
+    changed = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "b" * 64)
 
     assert base is not None
     assert same == base
     assert changed is not None
     assert changed != base
-    assert base.parent == explicit_cache_root
-    assert base.parent != ambient_cache_root
-    assert base.name.startswith("stdlib_shared_")
+    assert base == explicit_cache_root / "shared-stdlib" / ("a" * 64) / "stdlib.a"
+    assert not base.parent.exists()
+    assert not ambient_cache_root.exists()
     assert base.suffix == ".a"
 
 
@@ -27999,9 +27997,12 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
 ) -> None:
     # The explicit contract, not the filename suffix, determines output kind.
     backend_output = tmp_path / "output.o"
-    stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
+    stdlib_object_path = tmp_path / "build" / "main.stdlib.o"
     partition_env = {
         "MOLT_STDLIB_OBJ": str(stdlib_object_path),
+        "MOLT_STDLIB_CACHE_ENTRY": str(
+            tmp_path / "cache" / "shared-stdlib" / ("a" * 64) / "stdlib.a"
+        ),
         "MOLT_STDLIB_CACHE_KEY": "stdlib-cache-key",
         "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"stdlib-cache-key"}',
         "MOLT_STDLIB_MODULE_SYMBOLS": (
@@ -28039,7 +28040,18 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
-        request_environment=os.environ,
+        request_environment={
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if key != "MOLT_STDLIB_CACHE_ENTRY"
+            },
+            **(
+                {"MOLT_STDLIB_CACHE_ENTRY": partition_env["MOLT_STDLIB_CACHE_ENTRY"]}
+                if shared_stdlib
+                else {}
+            ),
+        },
     )
 
     if emit_mode == "obj" and shared_stdlib:
@@ -30550,14 +30562,14 @@ def test_shared_cache_lock_is_cache_rooted_and_session_independent(
     env_cache_root = tmp_path / "env-cache"
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     cli._default_molt_cache_cached.cache_clear()
-    cli._shared_cache_lock_dir_cached.cache_clear()
+    from molt.file_locks import _shared_cache_lock
 
     monkeypatch.setenv("MOLT_SESSION_ID", "session-a")
-    with cli._shared_cache_lock("compile.abc123"):
+    with _shared_cache_lock("compile.abc123"):
         assert (cache_root / "locks" / "compile.abc123.lock").exists()
 
     monkeypatch.setenv("MOLT_SESSION_ID", "session-b")
-    with cli._shared_cache_lock("compile.abc123"):
+    with _shared_cache_lock("compile.abc123"):
         assert (cache_root / "locks" / "compile.abc123.lock").exists()
 
     assert not (cache_root / "locks" / "compile.abc123.session-a.lock").exists()
@@ -30565,7 +30577,7 @@ def test_shared_cache_lock_is_cache_rooted_and_session_independent(
 
     monkeypatch.setenv("MOLT_CACHE", str(env_cache_root))
     cli._default_molt_cache_cached.cache_clear()
-    with cli._shared_cache_lock("compile.explicit", cache_root=explicit_cache_root):
+    with _shared_cache_lock("compile.explicit", cache_root=explicit_cache_root):
         assert (explicit_cache_root / "locks" / "compile.explicit.lock").exists()
     assert not (env_cache_root / "locks" / "compile.explicit.lock").exists()
 
@@ -30701,7 +30713,7 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
     assert not backend_output.exists()
 
 
-def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
+def test_stage_backend_output_and_caches_refuses_an_evictable_cache_as_required_output(
     tmp_path: Path,
 ) -> None:
     cache_path = tmp_path / "cache" / "module.o"
@@ -30725,15 +30737,11 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
         warnings=warnings,
     )
 
-    assert err is None
+    assert err is not None and "must be build-owned" in err
     assert warnings == []
     assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
-    assert output_artifact.read_bytes() == native_relocatable_object(
-        symbols=("molt_main",)
-    )
-    assert function_cache_path.read_bytes() == native_relocatable_object(
-        symbols=("molt_main",)
-    )
+    assert not output_artifact.exists()
+    assert not function_cache_path.exists()
 
 
 def test_stage_backend_output_and_caches_preserves_existing_module_cache(
@@ -31017,9 +31025,13 @@ def test_stage_backend_output_and_caches_isolates_mutable_output_from_immutable_
     assert function_cache_path.read_bytes() == native_relocatable_object(
         symbols=("molt_main",)
     )
-    assert (cache_path, output_artifact) in copies
+    assert (backend_output, output_artifact) in copies
+    assert (cache_path, output_artifact) not in copies
     output_artifact.write_bytes(b"mutated user output")
     assert cache_path.read_bytes() == native_relocatable_object(symbols=("molt_main",))
+    assert function_cache_path.read_bytes() == native_relocatable_object(
+        symbols=("molt_main",)
+    )
 
 
 def test_stage_backend_output_and_caches_without_cache_moves_output(
@@ -32002,7 +32014,14 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     assert setup.cache_path is not None
     assert setup.stdlib_object_path is not None
     assert setup.cache_path.parent == explicit_cache
-    assert setup.stdlib_object_path.parent == explicit_cache
+    assert setup.stdlib_cache_entry_path is not None
+    assert (
+        setup.stdlib_cache_entry_path.parent.parent == explicit_cache / "shared-stdlib"
+    )
+    assert (
+        setup.stdlib_object_path
+        == tmp_path / "shared-stdlib-link" / setup.stdlib_object_cache_key / "stdlib.a"
+    )
     expected_target = (
         requested_target.strip().lower()
         if requested_target is not None
@@ -32069,8 +32088,12 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     )
 
     assert setup.cache_path is None
+    assert setup.stdlib_cache_entry_path is None
     assert setup.stdlib_object_path is not None
-    assert setup.stdlib_object_path.parent == explicit_cache
+    assert (
+        setup.stdlib_object_path
+        == tmp_path / "shared-stdlib-link" / setup.stdlib_object_cache_key / "stdlib.a"
+    )
 
     # ---------------------------------------------------------------------------
     # C2.2  Link fingerprint hashes stdlib partition artifact contents
