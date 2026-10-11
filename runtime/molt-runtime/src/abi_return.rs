@@ -126,7 +126,7 @@ mod tests {
         (
             "PyErr_NoMemory",
             AbiReturnKind::RawHandle,
-            include_str!("c_api/cpython_compat.rs"),
+            include_str!("c_api/cpython_compat_test_support.rs"),
         ),
         (
             "molt_list_int_data",
@@ -278,7 +278,10 @@ mod tests {
         let module_find =
             function_body(include_str!("c_api/molt_api.rs"), "molt_module_state_find");
         assert!(module_find.contains("fail::<crate::abi_return::NullHandle>"));
-        let no_memory = function_body(include_str!("c_api/cpython_compat.rs"), "PyErr_NoMemory");
+        let no_memory = function_body(
+            include_str!("c_api/cpython_compat_test_support.rs"),
+            "PyErr_NoMemory",
+        );
         assert!(no_memory.contains("fail_memory::<crate::abi_return::NullHandle>"));
         // The owning seq_snapshot_bridge suite exercises both status exports
         // through allocation failure, output clearing, and reference retirement.
