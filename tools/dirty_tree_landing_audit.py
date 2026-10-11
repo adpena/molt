@@ -4,8 +4,8 @@
 This tool answers one narrow question that is otherwise easy to discover too
 late in a manual merge:
 
-    Did every owned dirty path from the source checkout appear in the landed
-    commit range?
+    Did every owned staged, unstaged, or untracked path from the source
+    checkout appear in the landed commit range?
 
 It deliberately audits path coverage, not byte equality. Conflict resolution,
 mainline drift, and generated authority can make the landed content differ from
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -69,66 +70,71 @@ class LandingAuditReport:
         }
 
 
-def _run_git(root: Path, args: Sequence[str]) -> str:
+def _run_git(root: Path, args: Sequence[str]) -> bytes:
     proc = subprocess.run(
         ["git", *args],
         cwd=str(root),
         capture_output=True,
-        text=True,
         check=False,
-        encoding="utf-8",
     )
     if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip()
+        detail = (proc.stderr.strip() or proc.stdout.strip()).decode(
+            "utf-8", errors="replace"
+        )
         raise LandingAuditError(
             f"git {' '.join(args)} failed in {root} (rc={proc.returncode}): {detail}"
         )
     return proc.stdout
 
 
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/").strip("/")
+def _normalize_pattern(pattern: str) -> str:
+    # Filters use native separators; a POSIX backslash is a literal filename
+    # character. Git-returned pathnames are never passed through this function.
+    if os.name == "nt":
+        pattern = pattern.replace("\\", "/")
+    return pattern.strip("/")
 
 
-def _git_lines(root: Path, args: Sequence[str]) -> list[str]:
+def _git_paths(root: Path, args: Sequence[str]) -> list[str]:
+    # Decode only after byte-level NUL splitting: text mode would translate
+    # literal CR/CRLF filenames, and separator rewriting would lose POSIX names.
     return [
-        _normalize_path(line)
-        for line in _run_git(root, args).splitlines()
-        if line.strip()
+        path.decode("utf-8", errors="surrogateescape")
+        for path in _run_git(root, args).split(b"\0")
+        if path
     ]
 
 
 def dirty_source_paths(root: Path) -> tuple[str, ...]:
-    tracked: set[str] = set()
-    for line in _run_git(root, ["diff", "--name-status", "--no-renames"]).splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 2:
-            raise LandingAuditError(f"unexpected git diff --name-status line: {line!r}")
-        tracked.add(_normalize_path(parts[-1]))
-
-    untracked = set(_git_lines(root, ["ls-files", "--others", "--exclude-standard"]))
+    # Keep the index and worktree transitions separately: a working copy can
+    # undo an indexed edit while the index still contains work to preserve.
+    tracked = {
+        path
+        for index_args in ([], ["--cached"])
+        for path in _git_paths(
+            root, ["diff", *index_args, "--name-only", "--no-renames", "-z"]
+        )
+    }
+    untracked = set(
+        _git_paths(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    )
     return tuple(sorted(tracked | untracked))
 
 
 def landed_range_paths(root: Path, base_ref: str, head_ref: str) -> tuple[str, ...]:
-    paths = _git_lines(
+    paths = _git_paths(
         root,
-        ["diff", "--name-only", "--no-renames", f"{base_ref}..{head_ref}"],
+        ["diff", "--name-only", "--no-renames", "-z", f"{base_ref}..{head_ref}"],
     )
     return tuple(sorted(set(paths)))
 
 
 def _path_matches(pattern: str, path: str) -> bool:
-    pattern = _normalize_path(pattern)
-    path = _normalize_path(path)
+    pattern = _normalize_pattern(pattern)
     if not pattern:
         return False
     if any(char in pattern for char in "*?[]"):
         return fnmatch.fnmatchcase(path, pattern)
-    if pattern.endswith("/"):
-        return path.startswith(pattern)
     return path == pattern or path.startswith(f"{pattern}/")
 
 
@@ -138,20 +144,20 @@ def filter_paths(
     owned: Sequence[str] = (),
     ignored: Sequence[str] = (),
 ) -> tuple[str, ...]:
-    normalized = [_normalize_path(path) for path in paths]
+    selected = paths
     if owned:
-        normalized = [
+        selected = [
             path
-            for path in normalized
+            for path in selected
             if any(_path_matches(pattern, path) for pattern in owned)
         ]
     if ignored:
-        normalized = [
+        selected = [
             path
-            for path in normalized
+            for path in selected
             if not any(_path_matches(pattern, path) for pattern in ignored)
         ]
-    return tuple(sorted(set(normalized)))
+    return tuple(sorted(set(selected)))
 
 
 def build_report(
@@ -178,8 +184,8 @@ def build_report(
         landed_root=str(landed_root),
         base_ref=base_ref,
         head_ref=head_ref,
-        owned=tuple(_normalize_path(pattern) for pattern in owned),
-        ignored=tuple(_normalize_path(pattern) for pattern in ignored),
+        owned=tuple(_normalize_pattern(pattern) for pattern in owned),
+        ignored=tuple(_normalize_pattern(pattern) for pattern in ignored),
         source_dirty_paths=filtered_source,
         landed_range_paths=filtered_landed,
         source_only=source_only,
@@ -217,8 +223,8 @@ def render_text(report: LandingAuditReport) -> str:
     status = "PASS" if report.ok else "FAIL"
     lines = [
         f"dirty landing audit: {status}",
-        f"source root: {report.source_root}",
-        f"landed root: {report.landed_root}",
+        f"source root: {json.dumps(report.source_root)}",
+        f"landed root: {json.dumps(report.landed_root)}",
         f"range: {report.base_ref}..{report.head_ref}",
         f"source dirty paths: {len(report.source_dirty_paths)}",
         f"landed range paths: {len(report.landed_range_paths)}",
@@ -227,16 +233,16 @@ def render_text(report: LandingAuditReport) -> str:
     ]
     if report.owned:
         lines.append("owned filters:")
-        lines.extend(f"  {pattern}" for pattern in report.owned)
+        lines.extend(f"  {json.dumps(pattern)}" for pattern in report.owned)
     if report.ignored:
         lines.append("ignored filters:")
-        lines.extend(f"  {pattern}" for pattern in report.ignored)
+        lines.extend(f"  {json.dumps(pattern)}" for pattern in report.ignored)
     if report.source_only:
         lines.append("source-only:")
-        lines.extend(f"  {path}" for path in report.source_only)
+        lines.extend(f"  {json.dumps(path)}" for path in report.source_only)
     if report.landed_only:
         lines.append("landed-only:")
-        lines.extend(f"  {path}" for path in report.landed_only)
+        lines.extend(f"  {json.dumps(path)}" for path in report.landed_only)
     return "\n".join(lines) + "\n"
 
 
@@ -248,7 +254,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--source-root",
         type=Path,
         required=True,
-        help="Dirty checkout whose tracked/untracked paths are the replay source.",
+        help="Dirty checkout whose staged, unstaged and untracked paths are the replay source.",
     )
     parser.add_argument(
         "--landed-root",
@@ -270,13 +276,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--owned",
         action="append",
         default=[],
-        help="Only audit matching path prefixes/globs; repeatable.",
+        help=(
+            "Only audit matching path prefixes/globs; repeatable. Filters use native "
+            "separators: POSIX backslashes are literal, Windows backslashes are separators."
+        ),
     )
     parser.add_argument(
         "--ignore",
         action="append",
         default=[],
-        help="Exclude matching path prefixes/globs from both sides; repeatable.",
+        help=(
+            "Exclude matching native path prefixes/globs from both sides; repeatable. "
+            "POSIX backslashes are literal, Windows backslashes are separators."
+        ),
     )
     parser.add_argument(
         "--fail-on-landed-only",
