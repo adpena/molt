@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 import platform
 
@@ -1122,7 +1123,13 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
-    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_tool,
+        sleep=lambda seconds: None,
+    )
 
     failure = bench_tool.prepare_molt_binary(
         str(script),
@@ -1176,7 +1183,13 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
-    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_tool,
+        sleep=lambda seconds: None,
+    )
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
@@ -1231,7 +1244,13 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
-    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_tool,
+        sleep=lambda seconds: None,
+    )
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
@@ -1281,7 +1300,13 @@ def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
-    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_tool,
+        sleep=lambda seconds: None,
+    )
 
     failure = bench_tool.prepare_molt_binary(
         str(script),
@@ -1346,7 +1371,13 @@ def test_prepare_molt_binary_preserves_native_runtime_failure_without_retry(
         "_prune_backend_daemons",
         lambda env=None: (prunes.append(env), 0)[1],
     )
-    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        bench_tool,
+        sleep=lambda seconds: None,
+    )
 
     failure = bench_tool.prepare_molt_binary(
         str(script),

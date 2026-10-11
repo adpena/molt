@@ -2716,6 +2716,8 @@ def test_process_wide_patch_probe_accepts_patches_of_an_installed_view(
         "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
         "    install_module_os_view(monkeypatch, other, name='nt')\n"
         "    monkeypatch.setattr(other.os, 'getpid', fake)\n"
+        "    install_thread_module_view(monkeypatch, 'time', time, clock)\n"
+        "    monkeypatch.setattr(clock.time, 'sleep', fake)\n"
     )
     assert _process_wide_patch_count(tmp_path, body) == 0
 
@@ -2739,6 +2741,9 @@ def test_process_wide_patch_probe_ignores_process_wide_by_nature(tmp_path: Path)
         "    monkeypatch.setattr(mod.sys, 'argv', ['molt'])\n"
         "    monkeypatch.setattr(sys, 'path', [])\n"
         "    monkeypatch.setattr(mod.os, 'environ', {})\n"
+        "    monkeypatch.setattr(sys, 'meta_path', [])\n"
+        "    monkeypatch.setattr(sys, 'path_hooks', [])\n"
+        "    monkeypatch.setattr(sys, 'path_importer_cache', {})\n"
         "    monkeypatch.setattr(mod, 'helper', fake)\n"
     )
     assert _process_wide_patch_count(tmp_path, body) == 0
