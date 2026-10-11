@@ -869,13 +869,10 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
     unsafe {
         let zero = numeric::PyFloat_FromDouble(0.0);
         assert!(!zero.is_null());
-        for (receiver, expected) in [
-            (ptr::null_mut(), None),
-            (
-                &raw mut molt_cpython_abi::abi_types::Py_None,
-                Some(MoltObject::none().bits()),
-            ),
-            (zero, Some(MoltObject::from_float(0.0).bits())),
+        for receiver in [
+            ptr::null_mut(),
+            &raw mut molt_cpython_abi::abi_types::Py_None,
+            zero,
         ] {
             let mut definition = molt_cpython_abi::abi_types::PyMethodDef {
                 ml_name: c"nullable_receiver".as_ptr(),
@@ -905,8 +902,26 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
             assert!(!result.is_null());
             molt_cpython_abi::api::refcount::Py_DECREF(result);
             let raw = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
+            // A C-origin float keeps its object identity: the receiver is the
+            // runtime identity of that exact carrier, a float equal to +0.0,
+            // never None and never an absent receiver.
+            let expected = if receiver.is_null() {
+                None
+            } else {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(receiver)
+                    .map(|handle| handle.bits())
+            };
             assert_eq!(raw.receiver, expected);
             assert_eq!(raw.null_self, receiver.is_null());
+            if receiver == zero {
+                let value = MoltObject::from_bits(raw.receiver.unwrap());
+                assert_ne!(value.bits(), MoltObject::none().bits());
+                let value = crate::to_f64(value).expect("float receiver");
+                assert_eq!(value.to_bits(), 0.0_f64.to_bits());
+            } else if !receiver.is_null() {
+                assert_eq!(raw.receiver, Some(MoltObject::none().bits()));
+            }
             let function = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .molt_handle_for_pyobj(callable)
                 .unwrap()
@@ -1656,9 +1671,16 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 // This reads the tracked runtime Vec directly. It deliberately
                 // never rereads the C view or calls bridge observation first.
                 let actual = crate::object::seq_access::pin_item(&py, list, 0).unwrap();
+                // The direct C store published the carrier's own identity: a
+                // C-origin int keeps a heap identity, so compare the value.
                 assert_eq!(
-                    MoltObject::from_bits(actual.bits()).as_int(),
+                    crate::to_i64(MoltObject::from_bits(actual.bits())),
                     Some(907),
+                    "channel={channel}, fail={fail}"
+                );
+                assert_eq!(
+                    crate::type_of_bits(&py, actual.bits()),
+                    crate::builtin_classes(&py).int,
                     "channel={channel}, fail={fail}"
                 );
                 assert_eq!(crate::exception_pending(&py), fail);
