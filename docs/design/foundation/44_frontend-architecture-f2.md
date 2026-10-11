@@ -827,13 +827,15 @@ Schema 5 persists each module/policy variant without an alternate root-alias wal
 Native object/archive inspection is owned by
 `cli/native_symbol_inspection.py`: typed facts, exact target decoration,
 reader/artifact generation custody, parser, and object/archive fact caches move
-together. External admission, source-extension closure, backend artifact caches
+together. It reads ELF, Mach-O, COFF and WebAssembly tables in-process through
+`native_symbol_table.py`; an llvm-nm ladder reads only LLVM bitcode.
+External admission, source-extension closure, backend artifact caches
 and runtime callable projection consume that authority. The backend cache keeps
 publication and locking, not a second symbol reader. Runtime callable materialization
 passes an immutable callable requirement (function prefix and exclusions) into
-the shared reader, then projects its admitted function facts. A successfully
-parsed but incompatible candidate advances the same reader ladder; the requirement
-is part of object/archive cache identity. Materialization keys its file by artifact and projection
+the shared reader, then projects its admitted function facts. Facts that fail the
+requirement are an inspection error; the requirement is part of object/archive
+cache identity. Materialization keys its file by artifact and projection
 digests, not size or rounded modification time. Target spelling is likewise owned
 by `cli/compiler_target.py`, not the native tool launcher. These semantic leaf
 authorities remain in lowering's source closure; backend publication does not.
