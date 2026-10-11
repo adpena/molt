@@ -18,7 +18,10 @@ from molt import process_guard
 from molt.cli.runtime_identity_schema import _BUILD_PYTHON_SCHEMA, _digest
 from molt.exact_json import ExactJsonError, loads_exact
 from molt.python_environment_identity import python_identity_probe_arguments
-from molt.python_runtime_identity import validate_python_runtime_identity
+from molt.python_runtime_identity import (
+    startup_selection_difference,
+    validate_python_runtime_identity,
+)
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     resolve_executable,
@@ -276,8 +279,15 @@ class BuildPythonAdmission:
                 "runtime build Python fresh selection emitted invalid JSON"
             ) from exc
         if selected != self._startup_selection:
+            assert self._startup_selection is not None
+            changes = (
+                startup_selection_difference(self._startup_selection, selected)
+                if isinstance(selected, dict)
+                else ["payload"]
+            )
             raise ValueError(
-                "runtime build Python fresh startup selection changed after admission"
+                "runtime build Python fresh startup selection changed after "
+                "admission: " + "; ".join(changes)
             )
 
     def capture(self, env: Mapping[str, str]) -> dict[str, object]:

@@ -73,21 +73,6 @@ _RUNTIME_IDENTITY_FIELDS = frozenset(
 )
 
 
-def _interpreter_machine() -> str:
-    """The running interpreter's machine name, read without host queries.
-
-    On Windows, CPython 3.12+ answers ``platform.machine()`` with a WMI query
-    through COM. COM frees those provider images while a capture runs, so the
-    loaded-image census in the startup selection changed under the
-    verification fence (HF-169). The interpreter's build platform names its
-    architecture and loads nothing. On POSIX, ``platform.machine()`` reads
-    ``os.uname()`` itself.
-    """
-    if os.name == "nt":
-        return sysconfig.get_platform().removeprefix("win-")
-    return os.uname().machine
-
-
 def _platform_identity() -> dict[str, object]:
     if sys.implementation.name != "cpython" or sys.version_info < (3, 12):
         raise PythonEnvironmentIdentityError(
@@ -102,7 +87,7 @@ def _platform_identity() -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             f"unsupported provisioned-Python operating system: {sys.platform}"
         )
-    raw_architecture = _interpreter_machine().strip().casefold()
+    raw_architecture = platform.machine().strip().casefold()
     architecture = {
         "amd64": "x86_64",
         "x86_64": "x86_64",
@@ -382,6 +367,46 @@ def _runtime_import_candidates(
     return directories, archives
 
 
+def startup_selection_difference(
+    before: Mapping[str, object], after: Mapping[str, object]
+) -> list[str]:
+    """Name what changed between two startup selections, bounded for messages.
+
+    A native census change lists the images gained and lost, so a refused
+    selection says which loader event moved it.
+    """
+
+    def names(paths: object) -> set[str]:
+        return {str(path) for path in paths} if isinstance(paths, list) else set()
+
+    def shown(items: set[str]) -> str:
+        listed = sorted(items)
+        return ", ".join(listed[:4]) + (
+            f" (+{len(listed) - 4} more)" if len(listed) > 4 else ""
+        )
+
+    changes: list[str] = []
+    for key in sorted(set(before) | set(after)):
+        old, new = before.get(key), after.get(key)
+        if old == new:
+            continue
+        if key == "native" and isinstance(old, Mapping) and isinstance(new, Mapping):
+            gained = names(new.get("paths")) - names(old.get("paths"))
+            lost = names(old.get("paths")) - names(new.get("paths"))
+            fields = sorted(
+                field
+                for field in set(old) | set(new)
+                if field != "paths" and old.get(field) != new.get(field)
+            )
+            parts = [f"gained {shown(gained)}"] if gained else []
+            parts += [f"lost {shown(lost)}"] if lost else []
+            parts += [f"changed {', '.join(fields)}"] if fields else []
+            changes.append("native images " + "; ".join(parts))
+        else:
+            changes.append(key)
+    return changes
+
+
 def current_python_runtime_selection() -> dict[str, object]:
     """Observe startup selection without inventorying or hashing runtime trees.
 
@@ -519,12 +544,15 @@ def _capture_runtime_with_context(
     )
 
     def verify_runtime_selection() -> None:
-        if (
-            startup_membership() != startup_files
-            or current_python_runtime_selection() != selection
-        ):
+        present = startup_membership()
+        current = current_python_runtime_selection()
+        if present != startup_files or current != selection:
+            changes = startup_selection_difference(selection, current)
+            if present != startup_files:
+                changes.insert(0, "startup configuration files")
             raise PythonEnvironmentIdentityError(
-                "CPython runtime/import selection changed after capture"
+                "CPython runtime/import selection changed after capture: "
+                + "; ".join(changes)
             )
 
     pool.capture_context.register_verification_fence(verify_runtime_selection)
