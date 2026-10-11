@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/platform_mod.rs ===
 //! `platform` module intrinsics for Molt.
 //!
@@ -57,10 +56,6 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
         return raise_exception::<u64>(_py, "MemoryError", "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
-}
-
-fn return_none() -> u64 {
-    MoltObject::none().bits()
 }
 
 // ── Uname cache (Unix) ────────────────────────────────────────────────────
