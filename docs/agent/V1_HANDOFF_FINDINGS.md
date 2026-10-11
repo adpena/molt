@@ -104,13 +104,22 @@ paired runner consumes both current gate publications and identical metric
 rosters, with one retained image per side and no historical configuration waiver.
 
 The browser asset graph's stale WASM ABI hash is repaired through the existing
-generator dependency chain. All 28 WASM projections and the graph are current;
+generator dependency chain. The omitted compatibility-error template migration
+now preserves the already-qualified allocation-failure sentinel; runtime bytes
+are unchanged. All 29 reproducible generators and nine owning controls pass;
+two generators requiring external host inputs are not exercised. All 28 WASM
+projections and the graph are current;
 486 browser/ABI-generation and affected typed-command consumer tests pass with
 four platform skips. Reviewed differential case selection reuses the existing
 named lanes, binds the expanded file closure to exact hashes, and preserves
 their compiler permissions. Its full queue consumer qualification is pending
 on Linux: macOS native build admission requires more free disk space than is
-available. These are development-side controls with no emitted-binary cost.
+available. Linux qualification also exposed a missing pinned Node PATH entry
+and capacity exhaustion while creating fixtures; neither failed run qualifies
+the tooling migration. Verified inactive executable/archive copies reclaim
+724 MB. Another 5.32 GB of old Cargo targets remains protected: 14 lack valid
+terminal evidence and one has seal drift. These are development-side controls
+and outstanding custody work, with no emitted-binary cost.
 
 Automatic cache retention has an independently reviewed complete source candidate.
 Required stdlib outputs are build-owned before cache admission, optional cache
