@@ -12,7 +12,7 @@ from molt.cli.compiler_target import (
     validate_compiler_target,
     _zig_target_query,
 )
-from molt.cli.llvm_wasi_tools import (
+from molt.llvm_wasi_tools import (
     llvm_linker_candidates,
     llvm_named_tool_candidates,
     llvm_tool_candidates,

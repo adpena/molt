@@ -1651,7 +1651,13 @@ def test_toolchain_documentation_projects_provider_and_executable_contracts() ->
             assert "setup_value" not in data
         else:
             row = (
-                prefix + f"— | `{data['version_pattern']}` | "
+                prefix
+                + (
+                    f"`compiler:{data['compiler_tool_selector']}`"
+                    if data.get("compiler_tool_selector") is not None
+                    else "—"
+                )
+                + f" | `{data['version_pattern']}` | "
                 f"`{data.get('probe_cwd', '.')}` | `{data['setup_value']}` | "
                 f"{len(data['setup_evidence'])} |"
             )
@@ -2463,6 +2469,8 @@ def _receipt_for(
         "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
         "mlir-opt": "LLVM version {}",
+        "llvm-strip": "LLVM version {}",
+        "wasm-opt": "wasm-opt version {0} (version_{0})",
         "lean": "Lean (version {})",
         "quint": "{}",
         "cargo-deny": "cargo-deny {}",
@@ -5254,3 +5262,58 @@ def test_runtime_public_consumers_lane_uses_canonical_diff_outputs() -> None:
         "--log-aggregate",
         "--failures-output",
     }.intersection(options)
+
+
+@pytest.mark.parametrize(
+    "name,role", [("llvm-strip", "strip"), ("wasm-opt", "wasm-opt")]
+)
+def test_compiler_helper_selection_reuses_actual_compiler_authority(
+    tmp_path, monkeypatch, name, role
+):
+    from molt import llvm_wasi_tools
+    from molt import wasm_optimizer_identity
+
+    selected = tmp_path / role
+    selected.write_bytes(b"selected helper")
+    env = {"PATH": "not ambient", "MOLT_TARGET_ROOT": str(tmp_path)}
+    seen = []
+
+    def llvm(requested, **kwargs):
+        seen.append((requested, kwargs["environment"]))
+        return (selected,)
+
+    def optimizer(**kwargs):
+        seen.append(("wasm-opt", kwargs["environment"]))
+        return str(selected)
+
+    monkeypatch.setattr(llvm_wasi_tools, "llvm_tool_candidates", llvm)
+    monkeypatch.setattr(wasm_optimizer_identity, "find_wasm_opt", optimizer)
+    policy = next(p for p in PLAN.toolchain_policies if p.name == name)
+    assert proof_plan.compiler_tool_path(policy, environment=env) == selected
+    assert seen == [(role, env)]
+
+
+def test_missing_compiler_helper_is_refused_before_probe(monkeypatch):
+    from molt import llvm_wasi_tools
+
+    monkeypatch.setattr(llvm_wasi_tools, "llvm_tool_candidates", lambda *a, **k: ())
+    policy = next(p for p in PLAN.toolchain_policies if p.name == "llvm-strip")
+    with pytest.raises(ValueError, match="selected compiler helper is unavailable"):
+        proof_plan.compiler_tool_path(policy, environment={})
+
+
+def test_optimizer_policy_accepts_only_canonical_pinned_binaryen_banners():
+    from molt.binaryen_identity import parse_binaryen_version_output
+
+    policy = next(p for p in PLAN.toolchain_policies if p.name == "wasm-opt")
+    pattern = str(policy.data["version_pattern"])
+    for banner in ("wasm-opt version 133", "wasm-opt version 133 (version_133)"):
+        assert parse_binaryen_version_output(banner)[0] == policy.data["setup_value"]
+        assert re.fullmatch(pattern, banner)
+    for banner in (
+        "wasm-opt version 132",
+        "wasm-opt version 133 (version_132)",
+        "wasm-opt version 133 local",
+        "wasm-opt version 133 ",
+    ):
+        assert re.fullmatch(pattern, banner) is None

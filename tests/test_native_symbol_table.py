@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli.llvm_wasi_tools import _tool_version, llvm_tool_candidates
+from molt.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.native_artifact_header import NativeArtifactError, NativeReader
 from molt.native_symbol_table import (
     NativeSymbolRow,

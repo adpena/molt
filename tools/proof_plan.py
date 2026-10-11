@@ -697,6 +697,14 @@ class ProofPlan:
                         f"{policy.name}: target-derived identity_provider must be one of "
                         f"{sorted(TARGET_DERIVED_IDENTITY_PROVIDERS)!r}"
                     )
+            selector = policy.data.get("compiler_tool_selector")
+            if selector is not None and (
+                identity_kind != "executable"
+                or {"native-strip": "llvm-strip", "wasm-opt": "wasm-opt"}.get(selector)
+                != policy.data.get("executable")
+                or policy.data.get("wasi_sdk_tool") is not None
+            ):
+                errors.append(f"{policy.name}: invalid compiler_tool_selector")
             sdk_role = policy.data.get("wasi_sdk_tool")
             if sdk_role is not None and (
                 identity_kind != "executable"
@@ -2229,6 +2237,33 @@ def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
+def compiler_tool_path(
+    policy: ToolchainPolicy, *, environment: Mapping[str, str]
+) -> Path | None:
+    """Use the compiler's selector for a declared post-link executable.
+
+    Proof admission must capture the tool the compiler will execute, including
+    managed installations and explicit optimizer pins, rather than a PATH decoy.
+    """
+    selector = policy.data.get("compiler_tool_selector")
+    if selector is None:
+        return None
+    if selector == "native-strip":
+        from molt.llvm_wasi_tools import llvm_tool_candidates
+
+        candidates = llvm_tool_candidates("strip", environment=environment)
+        selected = candidates[0] if candidates else None
+    elif selector == "wasm-opt":
+        from molt.wasm_optimizer_identity import find_wasm_opt
+
+        selected = find_wasm_opt(environment=environment)
+    else:
+        raise ValueError(f"{policy.name}: unknown compiler tool selector {selector!r}")
+    if selected is None:
+        raise ValueError(f"{policy.name}: selected compiler helper is unavailable")
+    return Path(selected).absolute()
+
+
 def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     if policy.identity_kind != "executable":
         raise ValueError(
@@ -2237,8 +2272,11 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
+    compiler_path = compiler_tool_path(policy, environment=os.environ)
     sdk_role = policy.data.get("wasi_sdk_tool")
-    if requested == "wasm-ld" or sdk_role is not None:
+    if compiler_path is not None:
+        path = str(compiler_path)
+    elif requested == "wasm-ld" or sdk_role is not None:
         from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
 
         try:

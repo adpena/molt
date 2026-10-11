@@ -1336,6 +1336,7 @@ def _reused_identity_is_current(
         return False
     try:
         _validate_wasi_sdk_policy(policy, identity)
+        process_image_capture.toolchain_images(policy.name, identity)
         if policy.name == "rustc":
             selection = toolchain_capture.validate_rust_link_selection(
                 identity, required_native_units=native_units, command_argv=command_argv
@@ -1423,6 +1424,12 @@ def _tool_identity(
         if relative_probe_cwd.is_absolute():
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
         probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
+    bound_payload = _bound_tool_payload(envelope, exact, requested)
+    compiler_path = (
+        proof_plan.compiler_tool_path(policy, environment=env)
+        if bound_payload is None
+        else None
+    )
     sdk_role = policy.data.get("wasi_sdk_tool")
     if sdk_role is not None:
         from molt.llvm_toolchain import resolve_wasi_sdk_tool
@@ -1432,8 +1439,10 @@ def _tool_identity(
         )
     elif name == "cargo":
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
-    elif payload := _bound_tool_payload(envelope, exact, requested):
-        path = _resolve_outer_executable(payload, cwd=probe_cwd, env=env)
+    elif bound_payload is not None:
+        path = _resolve_outer_executable(bound_payload, cwd=probe_cwd, env=env)
+    elif compiler_path is not None:
+        path = compiler_path
     elif name == "rustc" and (
         selected := executable_environment_value(env, "RUSTC")
         or executable_environment_value(env, "CARGO_BUILD_RUSTC")
@@ -1444,7 +1453,11 @@ def _tool_identity(
             requested, envelope, exact, cwd=probe_cwd, env=env
         )
     path = process_image_capture.custody_path(path)
-    selected_content_path = None
+    selected_content_path = (
+        path.resolve(strict=True)
+        if policy.data.get("compiler_tool_selector") is not None
+        else None
+    )
     if policy.data.get("fingerprint_domain") == "rustup":
         from molt.rust_toolchain import resolve_rustup_proxy
 
@@ -1596,7 +1609,14 @@ def _capture_tool_identity(
     version_args = tuple(raw_version_args)
     completed = _run_captured(
         _in_python_environment(
-            envelope, exact, (str(selected_content_path or path), *version_args)
+            envelope,
+            exact,
+            (
+                str(selected_content_path or path)
+                if policy.data.get("fingerprint_domain") == "rustup"
+                else str(path),
+                *version_args,
+            ),
         ),
         cwd=probe_cwd,
         env=env,

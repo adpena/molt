@@ -25,7 +25,7 @@ _NATIVE_LINK_COMMAND_DEFINITIONS = (
 
 
 def test_native_link_resolver_uses_shared_toolchain_authority() -> None:
-    from molt.cli import llvm_wasi_tools
+    from molt import llvm_wasi_tools
 
     assert (
         native_link_command.resolve_explicit_tool_command

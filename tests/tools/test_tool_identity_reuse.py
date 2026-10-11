@@ -1095,3 +1095,78 @@ def test_rust_receiver_binds_modeled_wrapper_to_its_exact_payload(
         command_identity.toolchain_capture.validate_rust_link_selection(
             identity, command_argv=[str(tools["cargo"]), "check"]
         )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX LLVM multicall symlink regression")
+@pytest.mark.parametrize("direct", [False, True])
+def test_compiler_strip_capture_binds_lexical_role_and_physical_image(
+    tmp_path, monkeypatch, direct
+):
+    from molt import llvm_wasi_tools
+    from molt.exact_json import canonical_json_sha256
+
+    physical = tmp_path / "llvm-objcopy"
+    physical.write_bytes(b"real selected LLVM multicall bytes")
+    physical.chmod(0o755)
+    lexical = tmp_path / "llvm-strip"
+    lexical.symlink_to(physical.name)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "llvm_tool_candidates", lambda *a, **k: (lexical,)
+    )
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "LLVM version 22.1.8", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", probe)
+    plan = proof_plan.ProofPlan.load()
+    command = [str(lexical), "--version"] if direct else ["compiler-driver"]
+    envelope = {"argv": command, "toolchains": ["llvm-strip"]}
+    if direct:
+        monkeypatch.setattr(
+            llvm_wasi_tools,
+            "llvm_tool_candidates",
+            lambda *a, **k: pytest.fail("direct tool consulted compiler selection"),
+        )
+    telemetry = []
+
+    def capture():
+        return command_identity._tool_identity(
+            plan,
+            "llvm-strip",
+            envelope,
+            command,
+            cwd=tmp_path,
+            env={},
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+
+    identity = capture()
+    command_identity._validate_toolchain_identity(plan, "llvm-strip", identity)
+    assert calls == [[str(lexical), "--version"]]
+    assert identity["path"] == str(lexical)
+    assert identity["content_path"] == str(physical)
+    assert {row["path"] for row in identity["process_images"]} == {
+        str(lexical),
+        str(physical),
+    }
+    assert capture() == identity and len(calls) == 1
+    assert telemetry[-1]["state"] == "hit"
+    omitted = dict(
+        identity,
+        process_images=[
+            row for row in identity["process_images"] if row["path"] != str(physical)
+        ],
+    )
+    with pytest.raises(ValueError, match="content image is outside"):
+        command_identity._validate_toolchain_identity(plan, "llvm-strip", omitted)
+    record_path = Path(telemetry[-1]["record"])
+    record = json.loads(record_path.read_text())
+    omitted.pop("identity_sha256")
+    omitted["identity_sha256"] = canonical_json_sha256(omitted)
+    record["identity"] = omitted
+    record_path.write_text(json.dumps(record))
+    assert capture() == identity and len(calls) == 2
+    assert telemetry[-1]["state"] == "miss"

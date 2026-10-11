@@ -19,7 +19,7 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli import extension_commands as cli_commands
-from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
+from molt import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extension_target as cli_source_extension_target
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import source_extensions as cli_source_extensions

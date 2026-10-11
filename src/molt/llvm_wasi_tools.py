@@ -16,7 +16,7 @@ from molt.dx import (
     selected_toolchain_contains,
 )
 
-from molt.cli.command_runtime import _run_completed_command
+from molt.process_guard import run_completed_command as _run_completed_command
 from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import normalize_wasi_sysroot
@@ -142,7 +142,7 @@ def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
 @functools.lru_cache(maxsize=8)
 def _cached_source_checkout_roots(module_file: str) -> tuple[Path, ...]:
     """Return the loaded checkout and its Git common checkout, if worktree-backed."""
-    checkout = Path(module_file).resolve().parents[3]
+    checkout = Path(module_file).resolve().parents[2]
     roots = [checkout]
     git_marker = checkout / ".git"
     if git_marker.is_file():
@@ -420,6 +420,8 @@ def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path,
             env=dict(environment),
             cwd=probe_cwd,
             memory_guard_prefix=None,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             return ()
@@ -431,6 +433,8 @@ def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path,
             env=dict(environment),
             cwd=probe_cwd,
             memory_guard_prefix=None,
+            encoding="utf-8",
+            errors="replace",
         )
         if version.returncode != 0:
             return ()
@@ -789,6 +793,8 @@ def _tool_version(
             env=None if environment is None else dict(environment),
             cwd=path.parent,
             memory_guard_prefix=None,
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return None

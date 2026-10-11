@@ -25,7 +25,7 @@ from molt.cli.compiler_target import (
     source_extension_compiler_dialect,
     SourceExtensionCompilerDialect,
 )
-from molt.cli.llvm_wasi_tools import (
+from molt.llvm_wasi_tools import (
     LlvmToolRole,
     LlvmWasiToolFamily,
     resolve_llvm_wasi_tool_family,

@@ -71,7 +71,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/installed_runtime.py",
     "src/molt/cli/installed_runtime_contract.py",
     "src/molt/cli/json_cache.py",
-    "src/molt/cli/llvm_wasi_tools.py",
+    "src/molt/llvm_wasi_tools.py",
     "src/molt/cli/models.py",
     "src/molt/cli/native_link_custody.py",
     "src/molt/cli/native_link_manifest.py",

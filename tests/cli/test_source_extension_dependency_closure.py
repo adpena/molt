@@ -340,7 +340,7 @@ def test_weak_binding_never_relaxes_unique_function_init_root(
 def test_real_elf_eager_weak_closure_agrees_with_linker(
     tmp_path: Path, isolated_molt_cache: Path, data: bool, bindings: tuple[bool, ...]
 ) -> None:
-    from molt.cli.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
+    from molt.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
     from tests.native_artifact_fixtures import native_relocatable_object
 
     nm_candidates = llvm_tool_candidates("nm")

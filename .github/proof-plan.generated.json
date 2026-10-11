@@ -1,6 +1,11 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "src/molt/binaryen_identity.py",
+    "src/molt/binaryen_toolchain.py",
+    "src/molt/llvm_wasi_tools.py",
+    "src/molt/wasm_optimization.py",
+    "src/molt/wasm_optimizer_identity.py",
     "tools/compatibility_error_protocol.py",
     "config/python_compatibility_error_sources.json",
     "src/molt/stdlib/_compatibility_errors.py",
@@ -345,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "65ad01dd39b6e2985026c81d4f1c5fc9fd9e8b20ed96a611972a5a1a3ed3e68e",
+  "authority_sha256": "887837e50c4cac4693aa8212e48aad3c241bb3fe6ee4cdf49156e6c7f94b53b4",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3120,7 +3125,9 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3203,7 +3210,9 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3371,7 +3380,9 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3516,7 +3527,8 @@
         "wasm-ld",
         "wasm-tools",
         "wasi-clang",
-        "ninja"
+        "ninja",
+        "wasm-opt"
       ]
     },
     {
@@ -3563,7 +3575,9 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3603,7 +3617,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3644,7 +3659,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3684,7 +3700,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3724,7 +3741,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3764,7 +3782,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3804,7 +3823,9 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3853,7 +3874,9 @@
         "ld.lld",
         "lld-link",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -3927,7 +3950,8 @@
         "ld.lld",
         "wasm-ld",
         "wasm-tools",
-        "wasi-clang"
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -5878,7 +5902,8 @@
         "uv",
         "rustc",
         "cargo",
-        "ld.lld"
+        "ld.lld",
+        "llvm-strip"
       ]
     },
     {
@@ -6648,7 +6673,8 @@
         "rustc",
         "cargo",
         "clang",
-        "llvm-config"
+        "llvm-config",
+        "llvm-strip"
       ]
     },
     {
@@ -9255,6 +9281,7 @@
       "version_pattern": "LLVM version 22\\.1\\.8\\b"
     },
     {
+      "compiler_tool_selector": "native-strip",
       "executable": "llvm-strip",
       "name": "llvm-strip",
       "setup_evidence": [
@@ -9265,6 +9292,19 @@
         "--version"
       ],
       "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "compiler_tool_selector": "wasm-opt",
+      "executable": "wasm-opt",
+      "name": "wasm-opt",
+      "setup_evidence": [
+        "config/binaryen_releases.toml::version = \"133\""
+      ],
+      "setup_value": "133",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^wasm-opt version 133(?: \\(version_133\\))?$"
     },
     {
       "executable": "wasm-ld",

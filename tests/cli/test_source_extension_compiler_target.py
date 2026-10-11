@@ -5,11 +5,8 @@ import shlex
 
 import pytest
 
-from molt.cli import (
-    llvm_wasi_tools,
-    source_extension_target,
-    source_extension_toolchain,
-)
+from molt import llvm_wasi_tools
+from molt.cli import source_extension_target, source_extension_toolchain
 from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
 
 
