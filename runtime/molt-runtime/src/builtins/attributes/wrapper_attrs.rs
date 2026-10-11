@@ -1187,11 +1187,32 @@ mod tests {
                                 let member = own_member(kind, c"__str__");
                                 assert_eq!(!member.is_null(), declared);
                                 if declared {
-                                    assert_eq!((*member).ob_type, &raw mut PyWrapperDescr_Type);
-                                    assert_eq!(
-                                        (*member.cast::<PyWrapperDescrObject>()).d_common.d_type,
-                                        kind
-                                    );
+                                    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+                                    if GLOBAL_BRIDGE.molt_handle_for_pyobj(member).is_some() {
+                                        // Managed exception declarations own semantic
+                                        // wrappers; their C carriers do not have the
+                                        // physical PyWrapperDescrObject layout.
+                                        let value = GLOBAL_BRIDGE
+                                            .observed_handle_for_pyobj(member)
+                                            .expect("managed declaration remains observable");
+                                        assert_eq!(
+                                            type_of_bits(py, value.bits()),
+                                            classes.wrapper_descriptor
+                                        );
+                                        let owner = refcount::OwnedPyObject::from_owned(
+                                            molt_cpython_abi::api::object::PyObject_GetAttrString(
+                                                member,
+                                                c"__objclass__".as_ptr(),
+                                            ),
+                                        );
+                                        assert_eq!(owner.as_ptr(), kind.cast());
+                                    } else {
+                                        assert_eq!((*member).ob_type, &raw mut PyWrapperDescr_Type);
+                                        assert_eq!(
+                                            (*member.cast::<PyWrapperDescrObject>()).d_common.d_type,
+                                            kind
+                                        );
+                                    }
                                 }
                             }
                         };
@@ -1208,6 +1229,7 @@ mod tests {
                         // the compiled target is published after bootstrap.
                         let initial_getattribute = own_member(list, c"__getattribute__");
                         assert!(!initial_getattribute.is_null());
+                        assert!(!own_member(list, c"__init__").is_null());
                         let initial_repr = refcount::OwnedPyObject::from_owned(
                             molt_cpython_abi::api::object::Py_NewRef(own_member(
                                 float,
