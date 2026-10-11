@@ -1476,6 +1476,13 @@ thread_local! {
     };
     static OOM_PRIOR_ROUNDTRIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static OOM_SELECTED_INSTANCE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OOM_ARRAY_HANDLE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static OOM_ARRAY_OBSERVATION: std::cell::Cell<(bool, Option<i64>, Option<i64>, usize)> = const {
+        std::cell::Cell::new((false, None, None, 0))
+    };
+    static ARRAY_INDEX_OBSERVATION: std::cell::Cell<(usize, bool)> = const {
+        std::cell::Cell::new((0, false))
+    };
     static OOM_REENTRY_NAME: std::cell::Cell<*const std::ffi::c_char> = const {
         std::cell::Cell::new(ptr::null())
     };
@@ -1489,10 +1496,14 @@ unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
     // Observing its public class leaves it selected and is valid in tp_dealloc.
     let selected = unsafe { errors::PyErr_Occurred() }.addr();
     let reentry_name = OOM_REENTRY_NAME.with(std::cell::Cell::get);
-    let locks_available = reentry_name.is_null()
-        || crate::with_gil_entry_nopanic!(py, {
-            crate::object::builders::canonical_cache_locks_available_for_test(py)
-        });
+    let array = OOM_ARRAY_HANDLE.with(std::cell::Cell::get);
+    let array_available =
+        array == 0 || crate::builtins::array_mod::array_storage_lock_available_for_test(array);
+    let locks_available = array_available
+        && (reentry_name.is_null()
+            || crate::with_gil_entry_nopanic!(py, {
+                crate::object::builders::canonical_cache_locks_available_for_test(py)
+            }));
     // Materializing an emergency may itself touch these caches, so even the
     // lawful Get/Set roundtrip waits until after the nonblocking observation.
     if locks_available && OOM_PRIOR_ROUNDTRIP.with(std::cell::Cell::get) {
@@ -1530,6 +1541,26 @@ unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
             });
         });
     }
+    if array != 0 {
+        // Try the actual mutex before reentry. A regression records failure;
+        // it cannot hang the test while holding the storage lock.
+        let (before, after) = if array_available {
+            let before = crate::obj_from_bits(crate::molt_array_len(array)).as_int();
+            crate::molt_array_append(array, MoltObject::from_int(11).bits());
+            let after = crate::obj_from_bits(crate::molt_array_len(array)).as_int();
+            (before, after)
+        } else {
+            (None, None)
+        };
+        OOM_ARRAY_OBSERVATION.with(|cell| {
+            cell.set((
+                array_available,
+                before,
+                after,
+                unsafe { errors::PyErr_Occurred() }.addr(),
+            ))
+        });
+    }
     OOM_PRIOR_RETIREMENT.with(|cell| cell.set((cell.get().0 + 1, selected)));
     unsafe { molt_cpython_abi::api::memory::PyObject_Free(object.cast()) };
 }
@@ -1540,6 +1571,7 @@ impl Drop for RestoreOomObserver {
     fn drop(&mut self) {
         OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
         OOM_REENTRY_NAME.with(|cell| cell.set(ptr::null()));
+        OOM_ARRAY_HANDLE.with(|cell| cell.set(0));
         // All declarations outlive this guard, including failed assertions.
         unsafe { errors::PyErr_Clear() };
     }
@@ -2093,5 +2125,254 @@ fn canonical_cache_allocation_failure_reentry_and_ascii_no_retry() {
                 }
             }
         });
+    });
+}
+
+unsafe extern "C" fn array_reentrant_index(_object: *mut PyObject) -> *mut PyObject {
+    let array = OOM_ARRAY_HANDLE.with(std::cell::Cell::get);
+    let available = crate::builtins::array_mod::array_storage_lock_available_for_test(array);
+    ARRAY_INDEX_OBSERVATION.with(|cell| cell.set((cell.get().0 + 1, available)));
+    if available {
+        crate::molt_array_append(array, MoltObject::from_int(11).bits());
+    }
+    unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) }
+}
+
+#[test]
+fn array_allocation_failure_releases_storage_before_prior_retirement() {
+    use super::native_test_fixture::NativeType;
+    use molt_runtime_core::OwnedRuntimeValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"ArrayAllocationPriorPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let tc = crate::alloc_string(py, b"Q");
+            assert!(!tc.is_null());
+            let tc = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(tc).bits(),
+            );
+            let original = u64::MAX.to_ne_bytes();
+            let bytes = crate::alloc_bytes(py, &original);
+            assert!(!bytes.is_null());
+            let bytes = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(bytes).bits(),
+            );
+            let slice = crate::object::builders::alloc_slice_obj(
+                py,
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+            );
+            assert!(!slice.is_null());
+            let slice = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(slice).bits(),
+            );
+            for runtime in [false, true] {
+                for operation in 0..6 {
+                    let array = OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        crate::molt_array_new(tc.bits()),
+                    );
+                    assert!(!crate::obj_from_bits(array.bits()).is_none());
+                    assert_eq!(
+                        crate::molt_array_frombytes(array.bits(), bytes.bits()),
+                        MoltObject::none().bits()
+                    );
+                    assert!(!crate::exception_pending(py));
+                    let _reset = RestoreOomObserver;
+                    install_oom_prior(&raw mut *payload_type, runtime);
+                    OOM_ARRAY_HANDLE.with(|cell| cell.set(array.bits()));
+                    OOM_ARRAY_OBSERVATION.with(|cell| cell.set((false, None, None, 0)));
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
+                    OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+                    set_tracker(Box::new(DenyRuntimeAllocation {
+                        attempts: attempts.clone(),
+                        denied_attempt: 1,
+                    }));
+                    let tracker = DenyRuntimeAllocations;
+                    let result = match operation {
+                        0 => crate::molt_array_tobytes(array.bits()),
+                        1 => crate::molt_array_tolist(array.bits()),
+                        2 => {
+                            crate::molt_array_getitem(array.bits(), MoltObject::from_int(0).bits())
+                        }
+                        3 => crate::molt_array_pop(array.bits(), MoltObject::from_int(0).bits()),
+                        4 => crate::molt_array_buffer_info(array.bits()),
+                        _ => crate::molt_array_getitem(array.bits(), slice.bits()),
+                    };
+                    let result = OwnedRuntimeValue::from_owned_bits(py.core_token(), result);
+                    drop(tracker);
+                    OOM_ARRAY_HANDLE.with(|cell| cell.set(0));
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+                    assert!(
+                        crate::obj_from_bits(result.bits()).is_none(),
+                        "operation {operation}"
+                    );
+                    assert_oom_prior_retired(1);
+                    assert_eq!(
+                        OOM_ARRAY_OBSERVATION.with(std::cell::Cell::get),
+                        (
+                            true,
+                            Some(1),
+                            Some(2),
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).addr(),
+                        ),
+                        "operation {operation}: no lock or buffer export may constrain legal retirement reentry"
+                    );
+                    assert!(
+                        attempts.get() > 1,
+                        "the displaced owner materialized the real emergency instance"
+                    );
+                    assert!(crate::exception_pending(py));
+                    let selected =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(
+                        selected.as_ptr().addr(),
+                        OOM_SELECTED_INSTANCE.with(std::cell::Cell::get)
+                    );
+                    assert!(!selected.as_ptr().is_null());
+                    drop(selected);
+                    let observed = OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        crate::molt_array_tobytes(array.bits()),
+                    );
+                    let observed_ptr = crate::obj_from_bits(observed.bits())
+                        .as_ptr()
+                        .expect("bytes result");
+                    let expected = [original.as_slice(), 11_u64.to_ne_bytes().as_slice()].concat();
+                    assert_eq!(
+                        crate::bytes_like_slice(observed_ptr),
+                        Some(expected.as_slice())
+                    );
+                    assert!(!crate::exception_pending(py));
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn array_index_and_slice_coercion_reenter_before_live_storage_selection() {
+    use super::native_test_fixture::NativeType;
+    use molt_cpython_abi::abi_types::PyNumberMethods;
+    use molt_runtime_core::OwnedRuntimeValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut slots: PyNumberMethods = std::mem::zeroed();
+            slots.nb_index = array_reentrant_index as *const () as *mut _;
+            let mut kind = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"ArrayReentrantIndex",
+            );
+            kind.tp_as_number = (&raw mut slots).cast();
+            assert_eq!(kind.ready(), 0);
+            let native = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::typeobj::PyType_GenericAlloc(&raw mut *kind, 0),
+            );
+            assert!(!native.as_ptr().is_null());
+            let index = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(native.as_ptr())
+                    .expect("index owner"),
+            );
+            let tc = crate::alloc_string(py, b"q");
+            assert!(!tc.is_null());
+            let tc = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(tc).bits(),
+            );
+            for operation in 0..6 {
+                let array = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::molt_array_new(tc.bits()),
+                );
+                assert!(!crate::obj_from_bits(array.bits()).is_none());
+                crate::molt_array_append(array.bits(), MoltObject::from_int(7).bits());
+                let _reset = RestoreOomObserver;
+                OOM_ARRAY_HANDLE.with(|cell| cell.set(array.bits()));
+                ARRAY_INDEX_OBSERVATION.with(|cell| cell.set((0, false)));
+                let result = match operation {
+                    0 => crate::molt_array_getitem(array.bits(), index.bits()),
+                    1 => crate::molt_array_setitem(
+                        array.bits(),
+                        index.bits(),
+                        MoltObject::from_int(17).bits(),
+                    ),
+                    2 => crate::molt_array_delitem(array.bits(), index.bits()),
+                    3 => crate::molt_array_pop(array.bits(), index.bits()),
+                    4 => crate::molt_array_insert(
+                        array.bits(),
+                        index.bits(),
+                        MoltObject::from_int(17).bits(),
+                    ),
+                    _ => {
+                        let slice = crate::object::builders::alloc_slice_obj(
+                            py,
+                            index.bits(),
+                            MoltObject::none().bits(),
+                            MoltObject::none().bits(),
+                        );
+                        assert!(!slice.is_null());
+                        let slice = OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            MoltObject::from_ptr(slice).bits(),
+                        );
+                        crate::molt_array_getitem(array.bits(), slice.bits())
+                    }
+                };
+                let result = OwnedRuntimeValue::from_owned_bits(py.core_token(), result);
+                OOM_ARRAY_HANDLE.with(|cell| cell.set(0));
+                assert_eq!(
+                    ARRAY_INDEX_OBSERVATION.with(std::cell::Cell::get),
+                    (1, true),
+                    "operation {operation}"
+                );
+                assert!(!crate::exception_pending(py), "operation {operation}");
+                if operation == 0 || operation == 3 {
+                    assert_eq!(crate::obj_from_bits(result.bits()).as_int(), Some(11));
+                }
+                let expected: &[i64] = match operation {
+                    0 => &[7, 11],
+                    1 => &[7, 17],
+                    2 | 3 => &[7],
+                    4 => &[7, 17, 11],
+                    _ => &[11],
+                };
+                let inspected = if operation == 5 {
+                    result.bits()
+                } else {
+                    array.bits()
+                };
+                let bytes = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::molt_array_tobytes(inspected),
+                );
+                let ptr = crate::obj_from_bits(bytes.bits())
+                    .as_ptr()
+                    .expect("bytes result");
+                let expected = expected
+                    .iter()
+                    .flat_map(|value| value.to_ne_bytes())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    crate::bytes_like_slice(ptr),
+                    Some(expected.as_slice()),
+                    "operation {operation}"
+                );
+            }
+        }
     });
 }

@@ -272,6 +272,16 @@ pub(crate) unsafe fn tracked_vec_mutation_lock<T>(ptr: *mut Vec<T>) -> TrackedVe
     }
 }
 
+// Observe the real publication lock without waiting inside a native finalizer.
+#[cfg(test)]
+pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut Vec<T>) -> bool {
+    unsafe {
+        (*owner_ptr_from_vec(ptr))
+            .mutation_lock
+            .load(Ordering::Acquire)
+    }
+}
+
 /// Return the current publication generation for tracked sequence storage.
 ///
 /// # Safety
@@ -407,7 +417,9 @@ pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*m
 /// visible through the stored Vec pointer. This keeps the tracker aligned with
 /// actual allocator capacity, including allocator overgrant, and prevents a
 /// failed over-limit reserve from leaving a larger buffer attached to the
-/// object.
+/// object. This storage phase never selects a Python error or retires Python
+/// owners. Callers must release mutation guards and borrowed storage before
+/// selecting the allocation failure, because that can run displaced finalizers.
 ///
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
@@ -464,20 +476,6 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
         (*owner).charge.buffer_bytes = actual_bytes;
     }
     true
-}
-
-pub(crate) unsafe fn tracked_vec_reserve_or_raise<T>(
-    _py: &crate::PyToken<'_>,
-    ptr: *mut Vec<T>,
-    required_len: usize,
-    _message: &str,
-) -> bool {
-    if unsafe { tracked_vec_reserve_for_len(ptr, required_len) } {
-        true
-    } else {
-        crate::record_memory_error_without_allocation(_py);
-        false
-    }
 }
 
 /// Reconstruct the owning tracked Vec allocation from the stored Vec pointer.

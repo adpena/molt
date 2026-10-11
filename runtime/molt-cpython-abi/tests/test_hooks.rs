@@ -8,6 +8,13 @@ use molt_cpython_abi::hooks::{DecodedHandleResult, hooks_or_stubs};
 use std::ptr;
 
 unsafe extern "C" fn fixture_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    // An installed producer selects unavailable capability explicitly; it is
+    // neither real OOM nor the deliberate malformed-zero producer fixture.
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetNone(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+        );
+    }
     0
 }
 
@@ -494,15 +501,20 @@ fn test_abi_transaction_rejects_malformed_first_install_before_attachment() {
     if std::env::var_os(CHILD).is_none() {
         // A fresh self-image is necessary: Rust test ordering cannot establish
         // that no sibling in this process has already installed its table.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "test_abi_transaction_rejects_malformed_first_install_before_attachment",
                 "--nocapture",
+                "--test-threads=1",
             ])
-            .env(CHILD, "1")
-            .output()
-            .expect("spawn isolated hook registration control");
+            .env(CHILD, "1");
+        let output = support::captured_runtime_children::capture(
+            &mut command,
+            "abi-hook-registration",
+            "malformed-first-install",
+        );
         assert!(
             output.status.success(),
             "child stdout={} stderr={}",

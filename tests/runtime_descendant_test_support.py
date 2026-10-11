@@ -40,6 +40,12 @@ THREAD_ADMISSION = (
     "concurrency::isolates::bootstrap_failure_tests::"
     "native_thread_admission_and_origin_retirement"
 )
+ABI_MALFORMED_HOOKS = (
+    "test_abi_transaction_rejects_malformed_first_install_before_attachment"
+)
+ABI_MISSING_TEXT = (
+    "missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error"
+)
 TRACE_CALLARGS = "trace_callargs_emits_builder_lifecycle_logs"
 TRACE_BIND_IC = "trace_call_bind_ic_emits_hit_log"
 TRACE_BIND_META = "trace_function_bind_meta_emits_summary"
@@ -88,6 +94,27 @@ CONTRACT[(COLD, "cold")] = {
     "exit_code": 0,
     "completes": True,
 }
+for _owner, _mode, _marker in (
+    (
+        ABI_MALFORMED_HOOKS,
+        "malformed-first-install",
+        "malformed-first-install-refused",
+    ),
+    (ABI_MISSING_TEXT, "missing-text-allocators", "missing-text-allocators-refused"),
+):
+    CONTRACT[(_owner, _mode)] = {
+        "role": "abi-hook-registration",
+        "child": _owner,
+        "args": ["--exact", _owner, *SERIAL],
+        "stdout": (
+            f"\nrunning 1 test\ntest {_owner} ... {_marker}\n"
+            "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 41 filtered out; finished in 0.00s\n\n"
+        ),
+        "stderr": "",
+        "exit_code": 0,
+        "completes": True,
+    }
 for _owner, _child, _stderr in (
     (
         TRACE_CALLARGS,

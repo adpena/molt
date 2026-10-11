@@ -44,6 +44,9 @@ unsafe extern "C" fn classify(bits: u64) -> u8 {
 }
 
 fn init() -> support::AbiTestThreadStateTransaction {
+    STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(false));
+    SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
+    FAILED_ALLOCATION_CALLS.with(|calls| calls.set(0));
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
     hooks.alloc_str = Some(alloc_string);
@@ -59,8 +62,8 @@ fn init() -> support::AbiTestThreadStateTransaction {
 
 #[test]
 fn test_unicode_from_string_fails_closed_on_alloc_failure() {
-    // A missing producer returns zero without selecting an error. The public
-    // boundary diagnoses that refusal; it must never publish a None placeholder.
+    // An installed malformed producer returns zero without selecting an error.
+    // The boundary diagnoses that refusal; it must never publish a None placeholder.
     // Actual allocator-selected errors are covered independently below.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -477,8 +480,8 @@ fn test_unicode_concat_fails_closed_on_alloc_failure() {
 
 #[test]
 fn native_bytearray_resize_preserves_aliases_until_last_export_releases() {
-    STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(true));
     let _abi_test = init();
+    STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(true));
     use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE, PyExc_BufferError, PyObject};
     use molt_cpython_abi::api::{buffer, errors, refcount, strings};
     unsafe {
@@ -682,10 +685,43 @@ fn string_and_bytes_constructors_forward_the_selected_failure_once() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error() {
     use molt_cpython_abi::abi_types::{PyExc_LookupError, PyExc_SystemError, PyObject};
     use molt_cpython_abi::api::{errors, object, refcount, strings};
+
+    const CHILD: &str = "MOLT_ABI_TEST_MISSING_TEXT_ALLOCATORS";
+    if std::env::var_os(CHILD).is_none() {
+        // Capability absence is an Option field of the process-owned table,
+        // not a mutable callback mode. Use the existing fresh-self-image
+        // registration control so sibling tests retain their installed table.
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1");
+        let output = support::captured_runtime_children::capture(
+            &mut command,
+            "abi-hook-registration",
+            "missing-text-allocators",
+        );
+        assert!(
+            output.status.success(),
+            "child stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("missing-text-allocators-refused")
+        );
+        return;
+    }
+    assert!(molt_cpython_abi::hooks::hooks().is_none());
 
     // This is a registered partial provider: the transaction supplies native
     // GC and class custody, but text allocation remains absent. Diagnostic
@@ -735,5 +771,46 @@ fn missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error() {
                 assert_ne!(selected, prior);
             }
         }
+    }
+    println!("missing-text-allocators-refused");
+}
+
+#[test]
+fn installed_diagnostic_allocator_zero_without_error_is_a_contract_failure() {
+    use molt_cpython_abi::abi_types::PyExc_ValueError;
+    use molt_cpython_abi::api::{errors, refcount};
+
+    // The existing installed provider deliberately returns a clean zero when
+    // no selected failure is armed. Keep the process's hook table unchanged.
+    let _abi_test = init();
+    unsafe {
+        errors::PyErr_Clear();
+        FAILED_ALLOCATION_CALLS.with(|calls| calls.set(0));
+        errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"diagnostic".as_ptr());
+        assert_eq!(
+            errors::PyErr_Occurred(),
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+        );
+        assert_eq!(FAILED_ALLOCATION_CALLS.with(std::cell::Cell::get), 1);
+        let mut selected_type = ptr::null_mut();
+        let mut selected_value = ptr::null_mut();
+        let mut selected_traceback = ptr::null_mut();
+        errors::PyErr_Fetch(
+            &mut selected_type,
+            &mut selected_value,
+            &mut selected_traceback,
+        );
+        let _type_owner = refcount::OwnedPyObject::from_owned(selected_type);
+        let _value_owner = refcount::OwnedPyObject::from_owned(selected_value);
+        let _traceback_owner = refcount::OwnedPyObject::from_owned(selected_traceback);
+        assert_eq!(
+            selected_type,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+        );
+        assert!(
+            selected_value.is_null(),
+            "malformed-producer refusal must not retry allocation"
+        );
+        assert!(selected_traceback.is_null());
     }
 }

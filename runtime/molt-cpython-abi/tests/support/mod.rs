@@ -6,6 +6,24 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
 #[allow(dead_code)]
 pub mod fake_complex;
 #[allow(dead_code)]

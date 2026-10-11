@@ -79,6 +79,14 @@ namespaces beyond their scoped static type storage. The factory now clears its
 owned heap types before releasing those declarations, with descriptor retirement
 witnesses; this test-only repair adds no work to emitted programs.
 
+The standalone ABI run at `1c61bb0ce` also compiles, with 739 passes, 41
+failures and one ignored case. Thirty-eight failures share incompatible
+process-owned fixture tables; two numeric protocol controls and one slice
+control expose native fixture declarations incorrectly registered as managed
+runtime classes. Those fixture families are being migrated through the existing
+ownership and child-process capture authorities. Production type admission
+remains strict. This result does not qualify the ABI family.
+
 The combined source correction follows explicit allocation and operation results,
 borrows managed scalar fields through their canonical layout authority, and
 normalizes descriptor suppression before owner retirement. Truth, length and
@@ -87,8 +95,18 @@ CPython's version-specific validation and retirement order. Direct callback
 fixtures distinguish their raw completion contract from strict generic callable
 validation and own unexpected results before assertions. Review also exposed
 that true allocation failure can retain an earlier exception. Its canonical
-selection, constructor propagation, and callback-safe cache publication family
-remain under repair. Ordinary dynamic identifier interning still retains strings
+selection, constructor propagation, and cache publication changes now extend
+through array, warning-filter and tracked-vector consumers. Their storage phases
+must release locks before error selection can retire displaced owners and run
+native finalizers. The tracked-vector error-raising wrapper is removed so the
+remaining callers report failure at that explicit boundary. Runtime execution
+and affected performance measurements remain required. Array byte snapshots and
+warning-filter snapshots introduce copying whose cost remains unqualified;
+they are not evidence of optimal performance. Public array extension still
+eagerly materializes iterables and loses CPython's partial-prefix behavior. That
+existing producer/consumer conformance gap remains a release obligation under
+the runtime qualification scope; this lock correction does not close it.
+Ordinary dynamic identifier interning still retains strings
 until runtime teardown; V1-20 continues to own that separate lifetime-policy
 and memory-cost obligation.
 Combined runtime, standalone ABI, native/WASM public consumers and affected

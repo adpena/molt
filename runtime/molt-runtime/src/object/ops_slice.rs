@@ -623,20 +623,9 @@ unsafe fn prepare_dataclass_class_metadata(
         if detached_values
             .try_reserve_exact((*fields).len() - logical_len)
             .is_err()
-            || !crate::object::backing::tracked_vec_reserve_or_raise(
-                py,
-                fields,
-                projection.len(),
-                "dataclass slot projection allocation failed",
-            )
+            || !crate::object::backing::tracked_vec_reserve_for_len(fields, projection.len())
         {
-            if !exception_pending(py) {
-                raise_exception::<()>(
-                    py,
-                    "MemoryError",
-                    "dataclass slot projection allocation failed",
-                );
-            }
+            crate::record_memory_error_without_allocation(py);
             return Err(());
         }
         // Publish the complete vector/projection before releasing any old

@@ -535,17 +535,13 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) -
                 raise_exception::<()>(_py, "RuntimeError", "consumed list builder");
                 return 1;
             }
-            let vec = &mut *vec_ptr;
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                vec.len().saturating_add(1),
-                "list allocation failed",
-            ) {
+            let required = (&*vec_ptr).len().saturating_add(1);
+            if !crate::object::backing::tracked_vec_reserve_for_len(vec_ptr, required) {
+                crate::record_memory_error_without_allocation(_py);
                 return 1;
             }
             inc_ref_bits(_py, val);
-            vec.push(val);
+            (&mut *vec_ptr).push(val);
             0
         })
     }
