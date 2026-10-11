@@ -486,7 +486,7 @@ pub(crate) fn prepare_wrapper_members(
             use molt_cpython_abi::abi_types;
             use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
             for entry in abi_types::builtin_static_type_runtime_cohort()
-                .filter(|entry| entry.builtin_slot_namespace)
+                .filter(|entry| entry.namespace == abi_types::StaticTypeNamespace::StaticBuiltin)
             {
                 let native = entry.type_ptr;
                 let object = native.cast::<abi_types::PyObject>();
@@ -1172,6 +1172,14 @@ mod tests {
                                 (&raw mut PyExc_AttributeError, target_minor < 14),
                                 (&raw mut PyExc_NameError, target_minor < 14),
                                 (&raw mut PyExc_Exception, false),
+                                (
+                                    molt_cpython_abi::abi_types::exc_singleton_for_builtin_name(
+                                        "ExceptionGroup",
+                                    )
+                                    .unwrap()
+                                    .cast(),
+                                    false,
+                                ),
                                 (&raw mut PyExc_ImportError, true),
                                 (&raw mut PyExc_BaseException, true),
                             ] {
@@ -1187,6 +1195,14 @@ mod tests {
                                 }
                             }
                         };
+                        let group = molt_cpython_abi::abi_types::exc_singleton_for_builtin_name(
+                            "ExceptionGroup",
+                        )
+                        .unwrap()
+                        .cast();
+                        for member in [c"__init__", c"__repr__", c"__str__", c"__getattribute__"] {
+                            assert!(own_member(group, member).is_null());
+                        }
                         exception_str_declarations(12);
                         // Independent CP 3.12 own-namespace declarations before
                         // the compiled target is published after bootstrap.
@@ -1280,6 +1296,9 @@ mod tests {
                         assert_eq!(own_member(list, c"__getattribute__").is_null(), minor >= 14);
                         assert_eq!(own_member(float, c"__repr__"), initial_repr.as_ptr());
                         exception_str_declarations(minor);
+                        for member in [c"__init__", c"__repr__", c"__str__", c"__getattribute__"] {
+                            assert!(own_member(group, member).is_null());
+                        }
                         if minor >= 14 {
                             assert_eq!((*list).tp_version_tag, 0);
                             assert!(WATCH_CALLS.load(Ordering::Relaxed) >= 2);

@@ -2491,10 +2491,17 @@ pub unsafe fn retire_builtin_static_type_runtime_state() {
 /// One process-shell inventory with distinct lifecycle and declaration policy.
 /// `bootstrap_ready` retains the existing readiness rule for rootless shells; it does not mean
 /// the shell is bound to a managed builtin class or uses CP static-builtin slots.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum StaticTypeNamespace {
+    NativeDeclarations,
+    StaticBuiltin,
+    SchemaHeapBuiltin,
+}
+
 pub struct StaticTypeRuntimeEntry {
     pub type_ptr: *mut PyTypeObject,
     bootstrap_ready: bool,
-    pub builtin_slot_namespace: bool,
+    pub namespace: StaticTypeNamespace,
 }
 
 /// Allocation-free projection of the canonical process-static shell cohort.
@@ -2504,7 +2511,7 @@ pub struct StaticTypeRuntimeEntry {
 pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRuntimeEntry> {
     type_static_ptrs()
         .map(|object| {
-            let builtin_slot_namespace = ![
+            let native_declarations = [
                 (&raw mut MoltManaged_Type).cast::<PyObject>(),
                 (&raw mut PyDateTime_DateTimeType).cast::<PyObject>(),
                 (&raw mut PyDateTime_DateType).cast::<PyObject>(),
@@ -2516,13 +2523,27 @@ pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRu
             StaticTypeRuntimeEntry {
                 type_ptr: object.cast(),
                 bootstrap_ready: true,
-                builtin_slot_namespace,
+                namespace: if native_declarations {
+                    StaticTypeNamespace::NativeDeclarations
+                } else {
+                    StaticTypeNamespace::StaticBuiltin
+                },
             }
         })
-        .chain(exc_singleton_ptrs().map(|object| StaticTypeRuntimeEntry {
-            type_ptr: object.cast(),
-            bootstrap_ready: false,
-            builtin_slot_namespace: true,
+        .chain(exc_singleton_ptrs().map(|object| {
+            let spec = exc_singleton_name(object)
+                .and_then(|name| name.strip_prefix("PyExc_"))
+                .and_then(molt_lang_obj_model::builtin_exception_spec)
+                .expect("canonical exception shell has a declaration schema");
+            StaticTypeRuntimeEntry {
+                type_ptr: object.cast(),
+                bootstrap_ready: false,
+                namespace: if spec.is_heap_type() {
+                    StaticTypeNamespace::SchemaHeapBuiltin
+                } else {
+                    StaticTypeNamespace::StaticBuiltin
+                },
+            }
         }))
         .chain(
             crate::api::typeobj::private_process_type_shells()
@@ -2530,7 +2551,7 @@ pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRu
                 .map(|type_ptr| StaticTypeRuntimeEntry {
                     type_ptr,
                     bootstrap_ready: false,
-                    builtin_slot_namespace: true,
+                    namespace: StaticTypeNamespace::StaticBuiltin,
                 }),
         )
 }
@@ -3319,19 +3340,18 @@ mod unresolved_pyobject_tests {
             .into_iter()
             .chain(crate::api::typeobj::private_process_type_shells())
         {
-            assert!(
-                cohort
-                    .iter()
-                    .any(|entry| entry.type_ptr == required && entry.builtin_slot_namespace)
-            );
+            assert!(cohort.iter().any(|entry| entry.type_ptr == required
+                && entry.namespace == StaticTypeNamespace::StaticBuiltin));
         }
         for extension in [&raw mut MoltManaged_Type, &raw mut PyDateTime_DateType] {
-            assert!(
-                cohort
-                    .iter()
-                    .any(|entry| entry.type_ptr == extension && !entry.builtin_slot_namespace)
-            );
+            assert!(cohort.iter().any(|entry| entry.type_ptr == extension
+                && entry.namespace == StaticTypeNamespace::NativeDeclarations));
         }
+        let group = exc_singleton_for_builtin_name("ExceptionGroup")
+            .unwrap()
+            .cast();
+        assert!(cohort.iter().any(|entry| entry.type_ptr == group
+            && entry.namespace == StaticTypeNamespace::SchemaHeapBuiltin));
         let mut cohort_addresses: Vec<_> =
             cohort.iter().map(|entry| entry.type_ptr as usize).collect();
         cohort_addresses.sort_unstable();

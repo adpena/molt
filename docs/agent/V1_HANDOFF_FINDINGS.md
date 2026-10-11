@@ -150,6 +150,23 @@ one shared traversal now visits descendants once across affected roots. The
 restart reproducer, version-publication rollback/watcher controls and measured
 startup policy costs remain required on the compiled composition.
 
+The optimized build at `89ef36298` fails before execution on five unresolved
+namespace references in the reserve and pending-error fixture. The successor
+uses the existing object-header and C-error-transfer authorities; a same-pattern
+source search finds no remaining instances. Further independent review corrects
+the process-owned heap builtin policy: canonical exception schema selects heap
+declarations separately from CPython's static-builtin inheritance exceptions.
+`ExceptionGroup` therefore inherits its base methods on every admitted version.
+The prepared invalidation control covers a diamond with overlapping and repeated
+roots, requiring one callback per live identity and all tags cleared first.
+
+The existing development-only allocation probe now observes and can deny Rust
+and ABI-platform C allocation. Its real public error-transfer control covers
+reserve exhaustion and reuse with positive allocation/refusal controls. It has
+not executed; direct extension libc calls and variadic-shim scratch allocations
+are outside this observation boundary. Production builds omit the probe.
+Explicit resurrection and task-admission rollback evidence remains required.
+
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an
 uncast native boolean pointer, and an unconstrained array storage-result error

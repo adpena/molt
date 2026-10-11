@@ -155,7 +155,7 @@ pub(super) fn prepare_constructed(py: &PyToken<'_>, pointer: *mut u8, class: u64
     let bits = MoltObject::from_ptr(pointer).bits();
     let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
     let already_projected =
-        unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::HEADER_FLAG_HAS_ABI_VIEW) };
+        unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) };
     let projected = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
     !projected.is_null() && (!already_projected || bridge.refresh_exception_view(bits))
 }
@@ -169,7 +169,7 @@ fn detach_and_reset(
 ) {
     let detached = unsafe { exception_detach_owned_edges(pointer) };
     let projection =
-        if unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::HEADER_FLAG_HAS_ABI_VIEW) } {
+        if unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) } {
             molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .clear_owned_c_fields(MoltObject::from_ptr(pointer).bits())
         } else {
@@ -206,11 +206,11 @@ pub(crate) unsafe fn try_recycle(py: &PyToken<'_>, pointer: *mut u8) -> bool {
     let header = unsafe { &*header_from_obj_ptr(pointer) };
     if reserve.phase.load(AtomicOrdering::Acquire) != READY
         || unsafe { object_class_bits(pointer) } != reserve.class.load(AtomicOrdering::Acquire)
-        || header.has_flag(crate::HEADER_FLAG_DEALLOCATING)
+        || header.has_flag(crate::object::HEADER_FLAG_DEALLOCATING)
     {
         return false;
     }
-    let has_view = header.has_flag(crate::HEADER_FLAG_HAS_ABI_VIEW);
+    let has_view = header.has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW);
     if reserve.c_views_ready.load(AtomicOrdering::Acquire) && !has_view {
         return false;
     }

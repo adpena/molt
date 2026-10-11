@@ -6,7 +6,9 @@
 //! heap-BigInt paths. Allocation and hook statistics come from a test-feature
 //! wrapper around the production mimalloc allocator. The wrapper is disabled
 //! during timed loops and enabled only for separate observer passes. Observed
-//! allocations are Rust global mimalloc traffic; native libc malloc is unobserved.
+//! allocation columns remain Rust global mimalloc traffic. The separate prepared
+//! MemoryError control also observes the ABI platform C allocation seam; direct
+//! extension libc and variadic-shim scratch allocations remain unobserved.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::undocumented_unsafe_blocks)]
@@ -1043,5 +1045,150 @@ fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
         (hooks.dec_ref)(order);
         (hooks.dec_ref)(bits);
     };
+    assert_no_pending_exception();
+}
+
+/// The CPython MEMERRORS_SAVE contract retains sixteen distinct free values,
+/// then returns its persistent fallback. Keep all values alive until exhaustion
+/// and use only fixed stack storage so the fixture cannot mask a runtime grow.
+unsafe fn prepared_memory_error_transfer_cycle() -> bool {
+    use molt_cpython_abi::abi_types::{PyExc_MemoryError, PyObject};
+    use molt_cpython_abi::api::{errors, refcount::Py_XDECREF};
+
+    let mut first: [*mut PyObject; 18] = [std::ptr::null_mut(); 18];
+    let mut valid = true;
+    unsafe {
+        for slot in &mut first {
+            valid &= errors::PyErr_NoMemory().is_null();
+            let taken = errors::PyErr_GetRaisedException();
+            valid &= !taken.is_null() && (*taken).ob_type == &raw mut PyExc_MemoryError;
+            valid &= errors::PyErr_Occurred().is_null();
+            errors::PyErr_SetRaisedException(taken);
+            let mut class = std::ptr::null_mut();
+            let mut traceback = std::ptr::null_mut();
+            errors::PyErr_Fetch(&raw mut class, slot, &raw mut traceback);
+            valid &= class == (&raw mut PyExc_MemoryError).cast();
+            valid &= *slot == taken && traceback.is_null();
+            valid &= errors::PyErr_Occurred().is_null();
+            Py_XDECREF(class);
+            Py_XDECREF(traceback);
+        }
+        for index in 0..16 {
+            valid &= first[index + 1..]
+                .iter()
+                .all(|later| first[index] != *later);
+        }
+        valid &= first[16] == first[17];
+        for value in first {
+            Py_XDECREF(value);
+        }
+        // Every free-pool identity must return. Holding the second batch also
+        // rejects a pool that accidentally returns one still-live value twice.
+        let mut reused: [*mut PyObject; 16] = [std::ptr::null_mut(); 16];
+        for slot in &mut reused {
+            valid &= errors::PyErr_NoMemory().is_null();
+            *slot = errors::PyErr_GetRaisedException();
+            valid &= first[..16].contains(slot) && *slot != first[16];
+        }
+        for index in 0..16 {
+            valid &= reused[index + 1..]
+                .iter()
+                .all(|later| reused[index] != *later);
+        }
+        for value in reused {
+            Py_XDECREF(value);
+        }
+        valid &= errors::PyErr_Occurred().is_null();
+    }
+    valid
+}
+
+/// Run this exact test alone with --test-threads=1: the allocator switches are
+/// process-wide and intentionally never synchronize unrelated test workers.
+#[test]
+fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_allocation() {
+    use molt_cpython_abi::api::memory::{
+        PyMem_RawCalloc, PyMem_RawFree, PyMem_RawMalloc, PyMem_RawRealloc,
+    };
+    use std::alloc::{Layout, alloc, dealloc};
+
+    initialize_runtime();
+    assert_no_pending_exception();
+    let layout = Layout::from_size_align(17, 1).unwrap();
+
+    // Sensitivity controls call the real allocator APIs, observe actual storage,
+    // and then refuse those same calls. Realloc denial preserves its old owner.
+    attestation_probe::reset();
+    attestation_probe::set_tracking(true);
+    let rust = unsafe { alloc(layout) };
+    let c = unsafe { PyMem_RawMalloc(17) };
+    let zeroed = unsafe { PyMem_RawCalloc(1, 17) };
+    let zeroed_ok = !zeroed.is_null()
+        && unsafe { std::slice::from_raw_parts(zeroed.cast::<u8>(), 17) } == [0; 17];
+    if !c.is_null() {
+        unsafe { *c.cast::<u8>() = 0xa5 };
+    }
+    let grown = unsafe { PyMem_RawRealloc(c, 33) };
+    let retained_ok = !c.is_null() && !grown.is_null() && unsafe { *grown.cast::<u8>() } == 0xa5;
+    attestation_probe::set_tracking(false);
+    let observed = attestation_probe::snapshot();
+    unsafe {
+        if !rust.is_null() {
+            dealloc(rust, layout);
+        }
+        PyMem_RawFree(zeroed);
+        PyMem_RawFree(if grown.is_null() { c } else { grown });
+    }
+    assert!(!rust.is_null() && !c.is_null() && zeroed_ok && retained_ok);
+    assert_eq!(observed.allocations, 1);
+    assert_eq!(observed.c_allocation_attempts, 3);
+
+    let old = unsafe { PyMem_RawMalloc(17) };
+    assert!(!old.is_null());
+    unsafe { *old.cast::<u8>() = 0x5a };
+    let denial = attestation_probe::deny_allocations();
+    let refused_rust = unsafe { alloc(layout) };
+    let refused_malloc = unsafe { PyMem_RawMalloc(17) };
+    let refused_calloc = unsafe { PyMem_RawCalloc(1, 17) };
+    let refused_realloc = unsafe { PyMem_RawRealloc(old, 33) };
+    drop(denial);
+    let denied_rust = attestation_probe::denied_allocations();
+    let denied_c = attestation_probe::denied_c_allocations();
+    let old_preserved = refused_realloc.is_null() && unsafe { *old.cast::<u8>() } == 0x5a;
+    unsafe {
+        if !refused_rust.is_null() {
+            dealloc(refused_rust, layout);
+        }
+        PyMem_RawFree(refused_malloc);
+        PyMem_RawFree(refused_calloc);
+        PyMem_RawFree(if refused_realloc.is_null() {
+            old
+        } else {
+            refused_realloc
+        });
+    }
+    assert!(refused_rust.is_null() && refused_malloc.is_null() && refused_calloc.is_null());
+    assert!(old_preserved);
+    assert_eq!(denied_rust, 1);
+    assert_eq!(denied_c, 3);
+
+    // First observe the prepared transport without a warmup that could silently
+    // create an omitted projection. Then repeat under actual allocator denial.
+    attestation_probe::reset();
+    attestation_probe::set_tracking(true);
+    let observed_valid = unsafe { prepared_memory_error_transfer_cycle() };
+    attestation_probe::set_tracking(false);
+    let observed = attestation_probe::snapshot();
+    assert!(observed_valid);
+    assert_eq!(observed.allocations, 0);
+    assert_eq!(observed.c_allocation_attempts, 0);
+
+    let denial = attestation_probe::deny_allocations();
+    let denied_valid = unsafe { prepared_memory_error_transfer_cycle() };
+    drop(denial);
+    assert!(denied_valid);
+    assert_eq!(attestation_probe::denied_allocations(), 0);
+    assert_eq!(attestation_probe::denied_c_allocations(), 0);
+    assert!(unsafe { prepared_memory_error_transfer_cycle() });
     assert_no_pending_exception();
 }

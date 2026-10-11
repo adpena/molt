@@ -5,6 +5,7 @@
 //! passes can count allocation traffic without enabling mimalloc's expensive
 //! debug statistics or contaminating timed samples with atomics.
 
+use molt_cpython_abi::l7_attestation::c_allocations;
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -20,6 +21,8 @@ static NUMERIC_HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Snapshot {
     pub allocations: u64,
+    /// Attempts at the ABI platform C malloc/calloc/realloc seam.
+    pub c_allocation_attempts: u64,
     pub allocated_bytes: u64,
     pub peak_live_bytes: u64,
     pub numeric_hook_calls: u64,
@@ -125,6 +128,7 @@ pub fn reset() {
         !TRACK.load(Ordering::Relaxed),
         "reset while probe is active"
     );
+    c_allocations::reset();
     ALLOCATIONS.store(0, Ordering::Relaxed);
     ALLOCATED_BYTES.store(0, Ordering::Relaxed);
     LIVE_BYTES.store(0, Ordering::Relaxed);
@@ -133,6 +137,7 @@ pub fn reset() {
 }
 
 pub fn set_tracking(enabled: bool) {
+    c_allocations::set_tracking(enabled);
     TRACK.store(enabled, Ordering::Relaxed);
 }
 
@@ -143,6 +148,7 @@ pub fn snapshot() -> Snapshot {
     );
     Snapshot {
         allocations: ALLOCATIONS.load(Ordering::Relaxed),
+        c_allocation_attempts: c_allocations::snapshot().attempts,
         allocated_bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
         peak_live_bytes: PEAK_LIVE_BYTES.load(Ordering::Relaxed),
         numeric_hook_calls: NUMERIC_HOOK_CALLS.load(Ordering::Relaxed),
@@ -157,7 +163,8 @@ pub(crate) fn record_numeric_hook() {
 }
 
 /// Scoped allocation denial for prepared, untimed native controls. Uses the
-/// existing feature-only allocator; normal guests never compile this authority.
+/// existing feature-only Rust allocator and ABI platform C allocator observer;
+/// normal guests never compile this authority.
 /// As with tracking, the harness must own the process and run a single test.
 pub struct AllocationDenial;
 
@@ -170,16 +177,19 @@ pub fn deny_allocations() -> AllocationDenial {
         !DENY_ALLOCATIONS.load(Ordering::Relaxed),
         "allocation denial already active"
     );
+    c_allocations::reset();
+    c_allocations::set_denial(true);
     DENIED_ALLOCATIONS.store(0, Ordering::Relaxed);
     DENY_ALLOCATIONS.store(true, Ordering::Relaxed);
-    TRACK.store(true, Ordering::Relaxed);
+    set_tracking(true);
     AllocationDenial
 }
 
 impl Drop for AllocationDenial {
     fn drop(&mut self) {
-        TRACK.store(false, Ordering::Relaxed);
+        set_tracking(false);
         DENY_ALLOCATIONS.store(false, Ordering::Relaxed);
+        c_allocations::set_denial(false);
     }
 }
 
@@ -189,4 +199,10 @@ pub fn denied_allocations() -> u64 {
         "denial result while probe is active"
     );
     DENIED_ALLOCATIONS.load(Ordering::Relaxed)
+}
+
+/// Denied attempts at the ABI platform C allocator; extension-owned libc
+/// allocation and the variadic shim's private scratch allocation are excluded.
+pub fn denied_c_allocations() -> u64 {
+    c_allocations::snapshot().denied
 }
