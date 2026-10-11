@@ -1,10 +1,6 @@
 use crate::SimpleIR;
 use std::collections::BTreeMap;
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;

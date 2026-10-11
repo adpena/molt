@@ -22,10 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // destructured via `index`, and never referenced again.
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn escape_analysis(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_ESCAPE_ANALYSIS").is_ok() {
         return;

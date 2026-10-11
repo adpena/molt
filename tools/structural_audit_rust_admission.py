@@ -252,6 +252,7 @@ def proven_admitted_wire_domain(
             extern_function_linkage: false,
             supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Rust),
+            lowering: Self::lowering_for(TargetKind::Rust),
             optimize_for_size: true,
             ..TargetInfo::native_release_fast()
         }
