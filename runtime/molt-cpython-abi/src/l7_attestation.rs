@@ -5,9 +5,11 @@
 //! calibration and execution control cannot drift independently.
 
 /// Observer for the existing ABI platform malloc/calloc/realloc seam. This
-/// module and every call site compile out without `l7-attestation-core`.
+/// module and every call site compile out without `allocation-observer`.
+/// Calibration-only timing images therefore do not pay an inactive observer check.
 /// It does not interpose extension-owned libc calls or the variadic shim's
 /// private scratch allocations. The harness must exclusively own the process.
+#[cfg(feature = "allocation-observer")]
 pub mod c_allocations {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

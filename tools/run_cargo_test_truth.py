@@ -11,10 +11,10 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 if __package__ in (None, ""):
     from import_file import bind_repository_imports
@@ -374,24 +374,52 @@ def package_identities_from_metadata(metadata_output: str) -> dict[str, str]:
     return identities
 
 
+def compiler_artifact_record(
+    line: str, *, source_context: Literal["compiler-only", "mixed-test-output"]
+) -> dict | None:
+    """Decode one Cargo record without losing malformed structured evidence.
+
+    Mixed test streams contain arbitrary child stdout, including JSON fragments.
+    Failed decoding cannot distinguish that text from a malformed Cargo record;
+    it never contributes an artifact. Compile-only captures have no test-output
+    producer and reject malformed structured evidence and non-object JSON.
+    """
+    if source_context not in {"compiler-only", "mixed-test-output"}:
+        raise RuntimeError(f"unknown Cargo stream source context: {source_context}")
+    try:
+        payload = loads_exact(line)
+    except ValueError as exc:
+        if source_context == "compiler-only" and line.lstrip().startswith(("{", "[")):
+            raise RuntimeError("malformed Cargo compiler evidence") from exc
+        return None
+    if not isinstance(payload, dict):
+        if source_context == "compiler-only":
+            raise RuntimeError("Cargo compiler evidence must contain JSON objects")
+        return None
+    return payload if payload.get("reason") == "compiler-artifact" else None
+
+
+def compiler_artifacts(
+    cargo_output: str, *, source_context: Literal["compiler-only", "mixed-test-output"]
+) -> Iterator[dict]:
+    for line in cargo_output.splitlines():
+        record = compiler_artifact_record(line, source_context=source_context)
+        if record is not None:
+            yield record
+
+
 def expected_test_binaries(
     cargo_output: str, package_identities: dict[str, str]
 ) -> dict[str, dict[str, str]]:
     """Read Cargo's compiler-artifact JSON as the executable authority."""
-    artifacts: list[dict] = []
-    for line in cargo_output.splitlines():
-        if not line.startswith("{"):
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("reason") != "compiler-artifact":
-            continue
-        profile = payload.get("profile")
-        if not isinstance(profile, dict) or profile.get("test") is not True:
-            continue
-        artifacts.append(payload)
+    artifacts = [
+        payload
+        for payload in compiler_artifacts(
+            cargo_output, source_context="mixed-test-output"
+        )
+        if isinstance(payload.get("profile"), dict)
+        and payload["profile"].get("test") is True
+    ]
     return expected_test_binaries_from_artifacts(artifacts, package_identities)
 
 
@@ -681,15 +709,14 @@ def run_streamed(
                 if not retain_cargo_artifacts:
                     retained.append(line)
                     continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                if payload.get("reason") == "compiler-artifact" and payload.get(
-                    "profile", {}
-                ).get("test"):
+                payload = compiler_artifact_record(
+                    line, source_context="mixed-test-output"
+                )
+                if (
+                    payload is not None
+                    and isinstance(payload.get("profile"), dict)
+                    and payload["profile"].get("test") is True
+                ):
                     cargo_test_artifacts.append(
                         {
                             "executable": payload.get("executable"),

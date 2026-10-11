@@ -2507,6 +2507,7 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
                 NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
                 SUBTYPE_CALLBACK_ERROR.with(|value| value.set(0));
                 SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(false));
+                CLASS_CALLBACK_ERROR.with(|value| value.set(None));
             }
         }
         let _reset = ResetFailure;
@@ -2519,16 +2520,33 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
             let calls = NUMERIC_CLASS_CALLS.with(Cell::get);
             let imports = NUMERIC_BYTE_IMPORTS.with(Cell::get);
             NUMERIC_RUNTIME_PENDING.with(|value| value.set(0x1234_5678));
-            assert!(abstract_number::PyNumber_Index(object.as_ptr()).is_null());
+            // CPython _PyNumber_Index returns an owned physical integer even
+            // with an incoming error; public exact normalization preserves it.
+            let indexed = refcount::OwnedPyObject::from_owned(abstract_number::PyNumber_Index(
+                object.as_ptr(),
+            ));
+            assert_eq!(indexed.as_ptr(), object.as_ptr());
             assert_eq!(NUMERIC_RUNTIME_PENDING.with(Cell::get), 0x1234_5678);
-            assert_eq!(NUMERIC_CLASS_CALLS.with(Cell::get), calls);
+            assert_eq!(NUMERIC_CLASS_CALLS.with(Cell::get), calls + 1);
             assert_eq!(NUMERIC_BYTE_IMPORTS.with(Cell::get), imports);
+            assert_eq!((*object.as_ptr()).ob_refcnt, count + 1);
+            drop(indexed);
             assert_eq!((*object.as_ptr()).ob_refcnt, count);
             assert_eq!(
                 errors::PyErr_Occurred(),
                 (&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast()
             );
-            NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
+            // A newly failing provider must replace, rather than restore,
+            // the incoming owner. This distinguishes successful preparation
+            // from swallowing the same provider's real failure.
+            CLASS_CALLBACK_ERROR.with(|value| value.set(Some((bits, failure.as_ptr() as usize))));
+            assert!(abstract_number::PyNumber_Index(object.as_ptr()).is_null());
+            assert_eq!(NUMERIC_RUNTIME_PENDING.with(Cell::get), 0);
+            assert_eq!((*object.as_ptr()).ob_refcnt, count);
+            assert_eq!(NUMERIC_BYTE_IMPORTS.with(Cell::get), imports);
+            let observed = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(observed.as_ptr(), failure.as_ptr());
+            CLASS_CALLBACK_ERROR.with(|value| value.set(None));
             let recovered = refcount::OwnedPyObject::from_owned(abstract_number::PyNumber_Index(
                 object.as_ptr(),
             ));
