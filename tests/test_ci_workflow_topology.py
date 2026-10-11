@@ -2031,6 +2031,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
         "rust": (".github/workflows/ci.yml", "rust-build-unit-smoke"),
         "wasm": (".github/workflows/molt-wasm-ci.yml", "wasm-build"),
         "formal": (".github/workflows/formal.yml", "formal-quint"),
+        "platform_portability": (".github/workflows/ci.yml", "platform-portability"),
     }
     # setup-project resolves `pinned` from config/tool_releases.toml; the
     # plan's preflight pattern must accept exactly that version.
@@ -2045,7 +2046,14 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
             if step.get("uses") == "./.github/actions/setup-project"
         ]
         assert len(setup_steps) == 1, family
-        assert setup_steps[0].get("with", {}).get("node-version") == "pinned", family
+        expected_node_setup = (
+            "${{ contains(matrix.toolchains, 'node') && 'pinned' || '' }}"
+            if family == "platform_portability"
+            else "pinned"
+        )
+        assert (
+            setup_steps[0].get("with", {}).get("node-version") == expected_node_setup
+        ), family
 
         if family in {"repository_policy", "wasm"}:
             steps = jobs[job_name]["steps"]
