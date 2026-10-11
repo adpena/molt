@@ -1305,6 +1305,7 @@ tests/differential/stdlib/inspect_getsource_basic.py
 tests/differential/stdlib/inspect_isawaitable.py
 tests/differential/stdlib/inspect_iscoroutine.py
 tests/differential/stdlib/inspect_iscoroutinefunction.py
+tests/differential/stdlib/inspect_isgenerator.py
 tests/differential/stdlib/inspect_signature_bound.py
 tests/differential/stdlib/inspect_signature_descriptor_builtins.py
 tests/differential/stdlib/inspect_signature_intrinsic_payload.py
