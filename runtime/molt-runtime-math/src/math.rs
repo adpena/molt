@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: molt-runtime-math/src/math.rs ===
 //
 // Python `math` and `statistics` module intrinsics, extracted from the

@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-runtime-xml` — XML intrinsics for the Molt runtime.
 //!
 //! Isolates the xml.etree.ElementTree and xml.sax intrinsics into a
@@ -14,6 +13,7 @@ pub mod bridge;
 #[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
 mod bridge_test_stubs;
 
+mod entities;
 pub mod intrinsics_generated;
 pub mod xml_etree;
 pub mod xml_sax;

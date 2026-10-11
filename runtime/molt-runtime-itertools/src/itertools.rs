@@ -1,19 +1,15 @@
-#![allow(dead_code, unused_imports)]
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bridge::{
-    self, ExceptionSentinel, alloc_instance_for_class, alloc_itertools_class, alloc_kwd_mark,
-    alloc_list, alloc_tuple, bridge_call_bind, bridge_callargs_expand_star, bridge_callargs_new,
-    bridge_molt_add, bridge_molt_eq, call_callable1, call_callable2, dec_ref_bits,
-    exception_pending, inc_ref_bits, index_i64_from_obj, is_truthy, missing_bits,
-    molt_iter_bridge as molt_iter, object_class_bits, object_type_id, raise_exception,
-    raise_not_iterable, seq_read_item_gil_borrowed, seq_read_item_owned, seq_read_len,
-    seq_snapshot, tuple_from_iter_bits,
+    self, alloc_instance_for_class, alloc_itertools_class, alloc_kwd_mark, alloc_list, alloc_tuple,
+    bridge_call_bind, bridge_callargs_expand_star, bridge_callargs_new, bridge_molt_add,
+    bridge_molt_eq, call_callable1, call_callable2, dec_ref_bits, exception_pending, inc_ref_bits,
+    index_i64_from_obj, is_truthy, missing_bits, molt_iter_bridge as molt_iter, object_type_id,
+    raise_exception, raise_not_iterable, seq_read_item_gil_borrowed, seq_read_item_owned,
+    seq_read_len, seq_snapshot, tuple_from_iter_bits,
 };
 use molt_runtime_core::ObjectShapeId;
 use molt_runtime_core::prelude::*;
-use molt_runtime_core::type_ids::*;
 
 // The itertools class/sentinel slots must live in the runtime's
 // per-interpreter `RuntimeState`, NOT in process-global `static AtomicU64`s.
