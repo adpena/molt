@@ -3,11 +3,15 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    install_module_view,
+    install_thread_module_view,
+)
 
 # These tests fake process data the session sentinel also reads, and resolve
 # guard limits the CI plan's exported caps would otherwise decide.
@@ -846,7 +850,13 @@ def test_sentinel_publishes_live_request_ancestry_before_termination(
     marker = tmp_path / "trip.json"
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
     monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(guard.time, "monotonic_ns", lambda: 110)
+    install_thread_module_view(
+        monkeypatch,
+        "time",
+        time,
+        guard,
+        monotonic_ns=lambda: 110,
+    )
     monkeypatch.setattr(guard, "_claim_terminated_pgid", lambda pgid: True)
     monkeypatch.setattr(
         guard.process_sentinel,
