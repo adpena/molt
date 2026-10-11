@@ -755,6 +755,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::GuardBuiltinBindings,
+        name: "guard_builtin_bindings",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellContentsGet,
         name: "types_cell_contents_get",
         type_idx: 3,
@@ -14303,6 +14308,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cell_gt" => Some(WasmRuntimeImport::CellGt),
         "cell_ge" => Some(WasmRuntimeImport::CellGe),
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
+        "guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
+        "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
         "types_cell_contents_get" => Some(WasmRuntimeImport::TypesCellContentsGet),
         "molt_types_cell_contents_get" => Some(WasmRuntimeImport::TypesCellContentsGet),
         "types_cell_contents_set" => Some(WasmRuntimeImport::TypesCellContentsSet),

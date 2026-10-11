@@ -77,6 +77,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
             dict_commit_structure(object);
+            crate::builtins::binding_guards::note_namespace_reset(py, object);
             if tracked {
                 crate::object::gc::gc_track_dict(py, object);
             }
@@ -201,6 +202,11 @@ unsafe fn dict_replace_value(
         }
         // Publish the slot and tracking state before releasing the old edge.
         dict_entries(ptr)[value_index].value = new_bits;
+        crate::builtins::binding_guards::note_namespace_rebind(
+            _py,
+            ptr,
+            dict_entries(ptr)[value_index].key,
+        );
         crate::object::gc::gc_track_dict_references(_py, ptr, &[new_bits]);
         crate::object::field_storage::debug::replacement(
             _py,
@@ -539,7 +545,7 @@ pub(crate) enum ExactStringLookup {
 /// Borrow the bytes of an exact `str`; any other object is `None`. Hashing and
 /// comparing exact `str` bytes cannot call Python.
 #[inline]
-unsafe fn exact_string_bytes<'s>(py: &PyToken<'_>, bits: u64) -> Option<&'s [u8]> {
+pub(crate) unsafe fn exact_string_bytes<'s>(py: &PyToken<'_>, bits: u64) -> Option<&'s [u8]> {
     unsafe {
         let ptr = obj_from_bits(bits).as_ptr()?;
         let class = object_class_bits(ptr);
@@ -1777,6 +1783,7 @@ unsafe fn dict_append_reserved_entry(
         }
         dict_storage(ptr).live += 1;
         dict_commit_insertion(py, ptr, key, value);
+        crate::builtins::binding_guards::note_namespace_insert(py, ptr, key);
         crate::object::field_storage::debug::dictionary(
             py,
             "dict_insert",
@@ -2311,6 +2318,7 @@ unsafe fn dict_remove_row<'a, 'py>(
         dict_table(ptr)[probe.slot] = TABLE_TOMBSTONE;
         dict_storage(ptr).live -= 1;
         dict_commit_structure(ptr);
+        crate::builtins::binding_guards::note_namespace_rebind(py, ptr, row.key);
         if dict_len(ptr) == 0 {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -2373,6 +2381,7 @@ unsafe fn dict_detach_contents(
         dict_storage(ptr).fill = 0;
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         dict_commit_structure(ptr);
+        crate::builtins::binding_guards::note_namespace_reset(_py, ptr);
         removed
     }
 }

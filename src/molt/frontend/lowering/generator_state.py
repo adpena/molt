@@ -64,6 +64,7 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "unbound_check_names",
     "exact_locals",
     "exact_class_token",
+    "_builtin_guard_arm",
 )
 
 FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS = (
@@ -195,6 +196,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.boxed_locals = {}
         self.closure_locals = set()
         self.comp_shadow_locals = set()
+        # Builtin binding guard arm being lowered (HF-79); never crosses a scope.
+        self._builtin_guard_arm = None
         self.comprehension_bindings: dict[str, ComprehensionBinding] = {}
         self.current_python_first_arg: str | MoltValue | None = None
         self.python_frame_context_active = False

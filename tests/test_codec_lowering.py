@@ -807,16 +807,54 @@ if __name__ == "__main__":
     assert "dict_get" in kinds
 
 
+def _builtin_guard_arms(ops: list[dict]) -> tuple[list[str], list[str]]:
+    """The kinds in the fast and slow arms of the first builtin binding guard."""
+    (guard,) = [
+        op
+        for op in ops
+        if op["kind"] == "call" and op.get("s_value") == "molt_guard_builtin_bindings"
+    ][:1]
+    start = next(
+        index
+        for index, op in enumerate(ops)
+        if op["kind"] == "if" and op.get("args") == [guard["out"]]
+    )
+    arms: list[list[str]] = [[], []]
+    depth = 0
+    arm = 0
+    for op in ops[start + 1 :]:
+        kind = op["kind"]
+        if kind == "if":
+            depth += 1
+        elif kind == "else" and depth == 0:
+            arm = 1
+            continue
+        elif kind == "end_if":
+            if depth == 0:
+                break
+            depth -= 1
+        arms[arm].append(kind)
+    return arms[0], arms[1]
+
+
 def test_ord_subscript_lowers_to_fused_ord_at():
     src = """
 def parse_digit(text: str, i: int) -> int:
     return ord(text[i]) - 48
 """
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir, "__main____parse_digit")
-    assert "ord_at" in kinds
-    assert "ord" not in kinds
-    assert kinds.count("index") == 0
+    ops = _ops_by_func_suffix(ir, "__main____parse_digit")
+    fast, slow = _builtin_guard_arms(ops)
+    # A function's `ord` is a live lookup (HF-79). Where the binding guard
+    # proves the runtime's builtin, ord(text[i]) fuses to ord_at; otherwise the
+    # call is the dynamic lookup and call of whatever `ord` names.
+    assert "ord_at" in fast
+    assert "ord" not in fast
+    assert "index" not in fast
+    assert "module_get_global" not in fast
+    assert "module_get_global" in slow
+    assert "index" in slow
+    assert "ord_at" not in slow
 
 
 def test_ord_slice_keeps_normal_index_then_ord_path():
