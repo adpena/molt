@@ -274,8 +274,6 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         #[cfg(unix)]
         let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
-        #[cfg(not(unix))]
-        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(&mut cmd);
         let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
@@ -304,16 +302,14 @@ pub unsafe extern "C" fn molt_process_spawn(
         attach_process_stdio(&mut child, &mut process_stdio);
 
         let pid = child.id();
-        let owned_process_group = if owns_process_group {
-            Some(pid as i32)
-        } else {
-            None
-        };
+        #[cfg(unix)]
+        let owned_process_group = owns_process_group.then_some(pid as i32);
         let registry_id = runtime_state(_py).process_registry.allocate_id();
         let state = Arc::new(ProcessState {
             registry_id,
             child: Mutex::new(child),
             pid,
+            #[cfg(unix)]
             owned_process_group,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
@@ -461,8 +457,6 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         #[cfg(unix)]
         let owns_process_group =
             configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
-        #[cfg(not(unix))]
-        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(&mut cmd);
 
@@ -483,16 +477,14 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         attach_process_stdio(&mut child, &mut process_stdio);
 
         let pid = child.id();
-        let owned_process_group = if owns_process_group {
-            Some(pid as i32)
-        } else {
-            None
-        };
+        #[cfg(unix)]
+        let owned_process_group = owns_process_group.then_some(pid as i32);
         let registry_id = runtime_state(_py).process_registry.allocate_id();
         let state = Arc::new(ProcessState {
             registry_id,
             child: Mutex::new(child),
             pid,
+            #[cfg(unix)]
             owned_process_group,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
@@ -766,7 +758,7 @@ pub(crate) struct ProcessState {
     registry_id: u64,
     child: Mutex<std::process::Child>,
     pub(crate) pid: u32,
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg(unix)]
     owned_process_group: Option<i32>,
     completion: ProcessCompletionState,
     kill_requested: AtomicBool,
@@ -1377,6 +1369,7 @@ mod process_wait_state_tests {
             registry_id: 0,
             pid: child.id(),
             child: Mutex::new(child),
+            #[cfg(unix)]
             owned_process_group: None,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
