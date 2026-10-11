@@ -4013,6 +4013,47 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
     unsafe { check_stringifier_result(result, if want_repr { "__repr__" } else { "__str__" }) }
 }
 
+/// A declaring numeric repr reads storage, never a subtype's repr override.
+/// Exact managed values keep the existing no-copy path. Managed subclass views
+/// have complete immutable C scalar storage, just like genuine native values.
+unsafe fn numeric_repr(op: *mut PyObject, declaring: *mut PyTypeObject) -> *mut PyObject {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    match crate::bridge::observe_pyobject(op) {
+        Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
+            let actual = unsafe {
+                crate::bridge::semantic_type_for_resolved(
+                    op,
+                    crate::bridge::ResolvedPyObject::ManagedMolt(value),
+                )
+            };
+            if actual.is_null() {
+                return ptr::null_mut();
+            }
+            if actual == declaring {
+                return unsafe { native_stringify(value.bits(), true) };
+            }
+        }
+        Some(crate::bridge::ResolvedPyObject::Foreign) => {}
+        None => return ptr::null_mut(),
+    }
+    let Some(value) = (unsafe { crate::api::numbers::numeric_value_from_storage(op) }) else {
+        return ptr::null_mut();
+    };
+    unsafe { native_stringify(value.bits(), true) }
+}
+
+pub(crate) unsafe extern "C" fn molt_long_repr(op: *mut PyObject) -> *mut PyObject {
+    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyLong_Type) }
+}
+
+pub(crate) unsafe extern "C" fn molt_float_repr(op: *mut PyObject) -> *mut PyObject {
+    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyFloat_Type) }
+}
+
+pub(crate) unsafe extern "C" fn molt_complex_repr(op: *mut PyObject) -> *mut PyObject {
+    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyComplex_Type) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_native_repr(op: *mut PyObject) -> *mut PyObject {
     let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);

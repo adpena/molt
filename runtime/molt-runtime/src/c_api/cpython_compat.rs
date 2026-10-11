@@ -1514,7 +1514,7 @@ pub(crate) fn new_set_from_iterable(iterable: Option<u64>, frozen: bool) -> u64 
         } else {
             molt_set_new(0)
         };
-        if exception_pending(_py) || obj_from_bits(result).is_none() {
+        if obj_from_bits(result).is_none() {
             return 0;
         }
         if let Some(iterable) = iterable {
@@ -1568,13 +1568,7 @@ pub extern "C" fn PySet_Size(set: u64) -> isize {
             );
             return -1;
         }
-        let res = molt_len(set);
-        if exception_pending(_py) {
-            return -1;
-        }
-        let n = to_i64(obj_from_bits(res)).unwrap_or(-1);
-        dec_ref_bits(_py, res);
-        n as isize
+        unsafe { crate::set_len(obj_from_bits(set).as_ptr().unwrap()) as isize }
     })
 }
 
@@ -1591,20 +1585,14 @@ pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
             );
             return -1;
         }
-        let res = crate::object::ops_set::set_contains(
+        crate::object::ops_set::set_contains(
             _py,
             set,
             key,
             crate::object::ops_set::SetContainsPolicy::ExactKey,
-        );
-        if exception_pending(_py) {
-            return -1;
-        }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        )
+        .map(i32::from)
+        .unwrap_or(-1)
     })
 }
 
@@ -1621,24 +1609,22 @@ pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
             Some(ptr) => unsafe { object_type_id(ptr) },
             None => u32::MAX,
         };
-        let res = if tid == TYPE_ID_SET {
-            molt_set_add(set, key)
+        let completed = if tid == TYPE_ID_SET {
+            unsafe {
+                set_add_in_place(
+                    _py,
+                    obj_from_bits(set).as_ptr().unwrap(),
+                    key,
+                    HashContext::SetElement,
+                )
+            }
         } else if tid == TYPE_ID_FROZENSET {
-            molt_frozenset_add(set, key)
+            crate::object::ops_set::frozenset_add(_py, set, key)
         } else {
             let _ = raise_exception::<u64>(_py, "SystemError", "PySet_Add: expected a set");
             return -1;
         };
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        if completed { 0 } else { -1 }
     })
 }
 
@@ -1655,44 +1641,31 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
                 return -1;
             }
         };
-        // The deletion owner validates and hashes the exact key once, then
-        // reports whether it removed an entry. A pending exception separates
-        // failed hashing/equality from an absent key without another lookup.
-        let removed = unsafe { set_del_in_place(_py, ptr, key) };
-        if exception_pending(_py) {
-            return -1;
-        }
-        i32::from(removed)
+        // The deletion result distinguishes absence from callback failure.
+        unsafe { set_del_in_place(_py, ptr, key) }
+            .map(i32::from)
+            .unwrap_or(-1)
     })
 }
 
 /// `PySet_Pop(set)` — remove and return an arbitrary element, or 0 on error.
 pub extern "C" fn PySet_Pop(set: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_set_pop(set);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return 0;
-        }
-        res
+    crate::with_gil_entry_nopanic!(py, {
+        crate::object::ops_set::set_pop(py, set).unwrap_or(0)
     })
 }
 
 /// `PySet_Clear(set)` — remove all elements. Returns 0 on success, -1 on error.
 pub extern "C" fn PySet_Clear(set: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_set_clear(set);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(set)
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET })
+        else {
+            raise_exception::<()>(py, "SystemError", "PySet_Clear: expected a set");
             return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
+        };
+        unsafe { set_clear_in_place(py, ptr) };
         0
     })
 }

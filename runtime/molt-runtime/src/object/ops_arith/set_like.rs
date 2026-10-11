@@ -30,8 +30,7 @@ pub(in crate::object) unsafe fn set_like_copy_bits(
         let Some(result) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        crate::object::ops::set_copy_into_empty(py, source, result);
-        if exception_pending(py) {
+        if !crate::object::ops::set_copy_into_empty(py, source, result) {
             dec_ref_bits(py, bits);
             MoltObject::none().bits()
         } else {
@@ -91,20 +90,20 @@ pub(in crate::object) unsafe fn set_like_intersection(
         };
         let mut index = 0;
         while let Some(entry) = set_pin_next(py, source, &mut index) {
-            let found = set_find_entry_in_place_with_hash(py, probe, entry.bits(), entry.hash());
-            if !exception_pending(py) && found.is_some() {
-                set_add_with_hash_in_place(py, result, entry.bits(), entry.hash());
-            }
-            if exception_pending(py) {
+            let completed =
+                match set_find_entry_in_place_with_hash(py, probe, entry.bits(), entry.hash()) {
+                    Ok(found) if found.is_some() => {
+                        set_add_with_hash_in_place(py, result, entry.bits(), entry.hash())
+                    }
+                    Ok(_) => true,
+                    Err(()) => false,
+                };
+            if !completed {
                 dec_ref_bits(py, bits);
                 drop(entry);
                 return MoltObject::none().bits();
             }
             drop(entry);
-            if exception_pending(py) {
-                dec_ref_bits(py, bits);
-                return MoltObject::none().bits();
-            }
         }
         bits
     }
@@ -141,20 +140,20 @@ pub(in crate::object) unsafe fn set_like_difference(
         };
         let mut index = 0;
         while let Some(entry) = set_pin_next(py, left, &mut index) {
-            let found = set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash());
-            if !exception_pending(py) && found.is_none() {
-                set_add_with_hash_in_place(py, result, entry.bits(), entry.hash());
-            }
-            if exception_pending(py) {
+            let completed =
+                match set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash()) {
+                    Ok(found) if found.is_none() => {
+                        set_add_with_hash_in_place(py, result, entry.bits(), entry.hash())
+                    }
+                    Ok(_) => true,
+                    Err(()) => false,
+                };
+            if !completed {
                 dec_ref_bits(py, bits);
                 drop(entry);
                 return MoltObject::none().bits();
             }
             drop(entry);
-            if exception_pending(py) {
-                dec_ref_bits(py, bits);
-                return MoltObject::none().bits();
-            }
         }
         bits
     }
@@ -216,9 +215,7 @@ pub(in crate::object) unsafe fn set_from_iter_bits(
 ) -> Option<u64> {
     let bits = molt_set_new(0);
     let ptr = obj_from_bits(bits).as_ptr()?;
-    if unsafe { crate::object::ops_set::set_update_iterable(py, ptr, other_bits, ctx) }.is_err()
-        || exception_pending(py)
-    {
+    if unsafe { crate::object::ops_set::set_update_iterable(py, ptr, other_bits, ctx) }.is_err() {
         dec_ref_bits(py, bits);
         None
     } else {

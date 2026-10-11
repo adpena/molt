@@ -2031,12 +2031,16 @@ pub(crate) unsafe fn initialize_static_type_storage() {
             bf_releasebuffer: crate::api::strings::molt_bytearray_releasebuffer as *mut c_void,
         }))
         .cast();
-        PyLong_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
-        PyLong_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        // Numeric base repr reads storage; inherited object.str consults the
+        // actual repr slot, including a native subtype override.
+        PyLong_Type.tp_repr = Some(crate::api::typeobj::molt_long_repr);
+        PyLong_Type.tp_str = Some(crate::api::typeobj::object_str);
         PyBool_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
-        PyBool_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
-        PyFloat_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
-        PyFloat_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        PyBool_Type.tp_str = Some(crate::api::typeobj::object_str);
+        PyFloat_Type.tp_repr = Some(crate::api::typeobj::molt_float_repr);
+        PyFloat_Type.tp_str = Some(crate::api::typeobj::object_str);
+        PyComplex_Type.tp_repr = Some(crate::api::typeobj::molt_complex_repr);
+        PyComplex_Type.tp_str = Some(crate::api::typeobj::object_str);
         PyUnicode_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
         PyUnicode_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
         PyNone_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);

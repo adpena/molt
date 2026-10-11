@@ -47,35 +47,36 @@ pub(crate) fn set_contains(
     container_bits: u64,
     item_bits: u64,
     policy: SetContainsPolicy,
-) -> u64 {
+) -> Result<bool, ()> {
     use crate::builtins::exceptions::ExceptionValue;
     let Some(ptr) = obj_from_bits(container_bits)
         .as_ptr()
         .filter(|&ptr| unsafe { is_set_like_type(object_type_id(ptr)) })
     else {
-        return raise_exception(
+        raise_exception::<()>(
             py,
             "TypeError",
             "set containment requires a set or frozenset",
         );
+        return Err(());
     };
     let found = if ensure_hashable(py, item_bits, HashContext::SetElement) {
         unsafe { set_find_entry(py, ptr, item_bits) }
     } else {
-        None
+        Err(())
     };
-    if !exception_pending(py) {
-        return MoltObject::from_bool(found.is_some()).bits();
+    if let Ok(found) = found {
+        return Ok(found.is_some());
     }
     let mutable = obj_from_bits(item_bits)
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET });
     if policy == SetContainsPolicy::ExactKey || mutable.is_none() {
-        return MoltObject::none().bits();
+        return Err(());
     }
     let error = ExceptionValue::adopt(py, molt_exception_last());
     if !crate::builtins::exceptions::exception_matches_builtin_name(py, error.bits(), "TypeError") {
-        return MoltObject::none().bits();
+        return Err(());
     }
     // This is the prescribed set protocol, not a retry of a failed lookup.
     clear_exception(py);
@@ -83,15 +84,10 @@ pub(crate) fn set_contains(
     let frozen = ExceptionValue::adopt(py, unsafe {
         set_like_copy_bits(py, mutable.unwrap(), TYPE_ID_FROZENSET)
     });
-    if exception_pending(py) || obj_from_bits(frozen.bits()).is_none() {
-        return MoltObject::none().bits();
+    if obj_from_bits(frozen.bits()).is_none() {
+        return Err(());
     }
-    let found = unsafe { set_find_entry(py, ptr, frozen.bits()) };
-    if exception_pending(py) {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_bool(found.is_some()).bits()
-    }
+    unsafe { set_find_entry(py, ptr, frozen.bits()).map(|found| found.is_some()) }
 }
 
 /// Specialized Python `in` shares the builtin descriptor's key policy.
@@ -99,6 +95,8 @@ pub(crate) fn set_contains(
 pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         set_contains(py, container_bits, item_bits, SetContainsPolicy::Python)
+            .map(|found| MoltObject::from_bool(found).bits())
+            .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
 #[unsafe(no_mangle)]
@@ -111,10 +109,7 @@ pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
+                    let _ = set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
                     return MoltObject::none().bits();
                 }
             }
@@ -135,10 +130,7 @@ pub extern "C" fn molt_set_add_probe(set_bits: u64, key_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    set_add_in_place(_py, ptr, key_bits, HashContext::Bare);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
+                    let _ = set_add_in_place(_py, ptr, key_bits, HashContext::Bare);
                     return MoltObject::none().bits();
                 }
             }
@@ -147,47 +139,49 @@ pub extern "C" fn molt_set_add_probe(set_bits: u64, key_bits: u64) -> u64 {
     })
 }
 
+#[must_use]
+pub(crate) fn frozenset_add(_py: &PyToken<'_>, set_bits: u64, key_bits: u64) -> bool {
+    let Some(target) = obj_from_bits(set_bits).as_ptr() else {
+        return raise_exception(
+            _py,
+            "SystemError",
+            "frozenset construction requires a frozenset",
+        );
+    };
+    let unique = unsafe {
+        if object_type_id(target) != TYPE_ID_FROZENSET {
+            false
+        } else {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .managed_handle_is_uniquely_referenced(set_bits)
+                .unwrap_or_else(|| (*header_from_obj_ptr(target)).is_uniquely_owned())
+        }
+    };
+    if !unique {
+        return raise_exception(
+            _py,
+            "SystemError",
+            "frozenset construction requires unique ownership",
+        );
+    }
+    if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
+        return false;
+    }
+    let obj = obj_from_bits(set_bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_FROZENSET {
+                return set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
+            }
+        }
+    }
+    false
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_add(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(target) = obj_from_bits(set_bits).as_ptr() else {
-            return raise_exception(
-                _py,
-                "SystemError",
-                "frozenset construction requires a frozenset",
-            );
-        };
-        let unique = unsafe {
-            if object_type_id(target) != TYPE_ID_FROZENSET {
-                false
-            } else {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .managed_handle_is_uniquely_referenced(set_bits)
-                    .unwrap_or_else(|| (*header_from_obj_ptr(target)).is_uniquely_owned())
-            }
-        };
-        if !unique {
-            return raise_exception(
-                _py,
-                "SystemError",
-                "frozenset construction requires unique ownership",
-            );
-        }
-        if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
-            return MoltObject::none().bits();
-        }
-        let obj = obj_from_bits(set_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_FROZENSET {
-                    set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
-        }
+        let _ = frozenset_add(_py, set_bits, key_bits);
         MoltObject::none().bits()
     })
 }
@@ -199,7 +193,7 @@ pub extern "C" fn molt_set_discard(set_bits: u64, key_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    set_del_in_place(_py, ptr, key_bits);
+                    let _ = set_del_in_place(_py, ptr, key_bits);
                     return MoltObject::none().bits();
                 }
             }
@@ -215,15 +209,9 @@ pub extern "C" fn molt_set_remove(set_bits: u64, key_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    if set_del_in_place(_py, ptr, key_bits) {
-                        return MoltObject::none().bits();
-                    }
-                    // set_del_in_place returns false both when the key is absent
-                    // and when ensure_hashable / set_find_entry already raised
-                    // (e.g. an unhashable key -> TypeError). Don't clobber a
-                    // pending exception with a (wrong) KeyError.
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                    match set_del_in_place(_py, ptr, key_bits) {
+                        Ok(true) | Err(()) => return MoltObject::none().bits(),
+                        Ok(false) => {}
                     }
                     // CPython: set.remove(x) on a missing key raises KeyError(x)
                     // with the missing key OBJECT as the sole arg (str(e) ==
@@ -236,20 +224,23 @@ pub extern "C" fn molt_set_remove(set_bits: u64, key_bits: u64) -> u64 {
     })
 }
 
+pub(crate) fn set_pop(py: &PyToken<'_>, set_bits: u64) -> Result<u64, ()> {
+    let Some(ptr) = obj_from_bits(set_bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET })
+    else {
+        raise_exception::<()>(py, "SystemError", "PySet_Pop: expected a set");
+        return Err(());
+    };
+    unsafe { super::ops::set_pop_owned(ptr) }.ok_or_else(|| {
+        raise_exception::<()>(py, "KeyError", "pop from an empty set");
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(set_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
-                    return super::ops::set_pop_owned(ptr).unwrap_or_else(|| {
-                        raise_exception::<_>(_py, "KeyError", "pop from an empty set")
-                    });
-                }
-            }
-        }
-        MoltObject::none().bits()
+    crate::with_gil_entry_nopanic!(py, {
+        set_pop(py, set_bits).unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
 
@@ -313,9 +304,7 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
             unsafe {
                 if object_type_id(set) == TYPE_ID_SET {
                     let result = set_intersection_bits(py, set, other_bits, TYPE_ID_SET);
-                    if !exception_pending(py)
-                        && let Some(staged) = obj_from_bits(result).as_ptr()
-                    {
+                    if let Some(staged) = obj_from_bits(result).as_ptr() {
                         super::ops::set_publish_staged(py, set, staged);
                     }
                     dec_ref_bits(py, result);
@@ -379,8 +368,7 @@ pub extern "C" fn molt_set_update_multi(set_bits: u64, others_bits: u64) -> u64 
                 return MoltObject::none().bits();
             };
             for &other_bits in others.iter() {
-                let _ = molt_set_update(set_bits, other_bits);
-                if exception_pending(_py) {
+                if set_update_iterable(_py, ptr, other_bits, HashContext::SetElement).is_err() {
                     return MoltObject::none().bits();
                 }
             }
@@ -451,9 +439,7 @@ pub extern "C" fn molt_set_intersection_update_multi(set_bits: u64, others_bits:
             unsafe {
                 if object_type_id(set) == TYPE_ID_SET {
                     let result = molt_set_intersection_multi(set_bits, others_bits);
-                    if !exception_pending(py)
-                        && let Some(staged) = obj_from_bits(result).as_ptr()
-                    {
+                    if let Some(staged) = obj_from_bits(result).as_ptr() {
                         super::ops::set_publish_staged(py, set, staged);
                     }
                     dec_ref_bits(py, result);
@@ -489,8 +475,7 @@ pub extern "C" fn molt_set_difference_update_multi(set_bits: u64, others_bits: u
                 return MoltObject::none().bits();
             };
             for &other_bits in others.iter() {
-                let _ = molt_set_difference_update(set_bits, other_bits);
-                if exception_pending(_py) {
+                if set_difference_update_iterable(_py, ptr, other_bits).is_err() {
                     return MoltObject::none().bits();
                 }
             }
@@ -532,7 +517,7 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let result_bits = set_like_copy_bits(py, set, kind);
-            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+            if obj_from_bits(result_bits).as_ptr().is_none() {
                 dec_ref_bits(py, result_bits);
                 return MoltObject::none().bits();
             }
@@ -545,7 +530,7 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
                     dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
-                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                if obj_from_bits(result_bits).as_ptr().is_none() {
                     dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
@@ -585,7 +570,7 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
                 inc_ref_bits(py, set_bits);
                 set_bits
             };
-            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+            if obj_from_bits(result_bits).as_ptr().is_none() {
                 dec_ref_bits(py, result_bits);
                 return MoltObject::none().bits();
             }
@@ -594,7 +579,7 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
                 let next = set_intersection_bits(py, result, other_bits, kind);
                 dec_ref_bits(py, result_bits);
                 result_bits = next;
-                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                if obj_from_bits(result_bits).as_ptr().is_none() {
                     dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
@@ -634,7 +619,7 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
                 inc_ref_bits(py, set_bits);
                 set_bits
             };
-            if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+            if obj_from_bits(result_bits).as_ptr().is_none() {
                 dec_ref_bits(py, result_bits);
                 return MoltObject::none().bits();
             }
@@ -648,7 +633,7 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
                     dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
-                if exception_pending(py) || obj_from_bits(result_bits).as_ptr().is_none() {
+                if obj_from_bits(result_bits).as_ptr().is_none() {
                     dec_ref_bits(py, result_bits);
                     return MoltObject::none().bits();
                 }
@@ -675,7 +660,6 @@ pub extern "C" fn molt_set_symmetric_difference(set_bits: u64, other_bits: u64) 
             };
             if set_update_iterable(py, result, other_bits, HashContext::SetElement).is_err()
                 || set_symdiff_update_iterable(py, result, set_bits).is_err()
-                || exception_pending(py)
             {
                 dec_ref_bits(py, bits);
                 MoltObject::none().bits()
@@ -720,9 +704,10 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
                         entry.hash(),
                     );
                     drop(entry);
-                    if exception_pending(py) {
-                        return MoltObject::none().bits();
-                    }
+                    let found = match found {
+                        Ok(found) => found,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
                     if found.is_some() {
                         return MoltObject::from_bool(false).bits();
                     }
@@ -759,21 +744,13 @@ pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
                     );
             }
             let bits = set_intersection_bits(py, set, other_bits, TYPE_ID_SET);
-            if exception_pending(py) {
-                dec_ref_bits(py, bits);
-                return MoltObject::none().bits();
-            }
             let Some(result) = obj_from_bits(bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
             let equal = crate::builtins::containers::set_len(result)
                 == crate::builtins::containers::set_len(set);
             dec_ref_bits(py, bits);
-            if exception_pending(py) {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_bool(equal).bits()
-            }
+            MoltObject::from_bool(equal).bits()
         }
     })
 }
@@ -869,18 +846,16 @@ pub(crate) unsafe fn set_update_iterable(
                     return Ok(());
                 }
                 if crate::builtins::containers::set_len(set) == 0 {
-                    super::ops::set_copy_into_empty(py, other, set);
-                    return if exception_pending(py) {
-                        Err(molt_runtime_core::ErrorIndicatorSet)
-                    } else {
-                        Ok(())
-                    };
+                    return super::ops::set_copy_into_empty(py, other, set)
+                        .then_some(())
+                        .ok_or(molt_runtime_core::ErrorIndicatorSet);
                 }
                 let mut index = 0;
                 while let Some(entry) = super::ops::set_pin_next(py, other, &mut index) {
-                    super::ops::set_add_with_hash_in_place(py, set, entry.bits(), entry.hash());
+                    let completed =
+                        super::ops::set_add_with_hash_in_place(py, set, entry.bits(), entry.hash());
                     drop(entry);
-                    if exception_pending(py) {
+                    if !completed {
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                 }
@@ -889,9 +864,9 @@ pub(crate) unsafe fn set_update_iterable(
             if exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict) {
                 let mut index = 0;
                 while let Some((key, hash)) = pin_dict_key(py, other, &mut index) {
-                    super::ops::set_add_with_hash_in_place(py, set, key.bits, hash);
+                    let completed = super::ops::set_add_with_hash_in_place(py, set, key.bits, hash);
                     drop(key);
-                    if exception_pending(py) {
+                    if !completed {
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                 }
@@ -902,16 +877,12 @@ pub(crate) unsafe fn set_update_iterable(
             .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         while let Some(item) = iter.next()? {
             let item = SetOwned::adopt(py, item);
-            set_add_in_place(py, set, item.bits, ctx);
-            if exception_pending(py) {
+            if !set_add_in_place(py, set, item.bits, ctx) {
                 drop(iter);
                 drop(item);
                 return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             drop(item);
-            if exception_pending(py) {
-                return Err(molt_runtime_core::ErrorIndicatorSet);
-            }
         }
         Ok(())
     }
@@ -972,32 +943,25 @@ pub(in crate::object) unsafe fn set_intersection_bits(
             if hash == u64::MAX {
                 return MoltObject::none().bits();
             }
-            let found = super::ops::set_find_entry_in_place_with_hash(py, set, key, hash);
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
+            let found = match super::ops::set_find_entry_in_place_with_hash(py, set, key, hash) {
+                Ok(found) => found,
+                Err(()) => return MoltObject::none().bits(),
+            };
             let mut complete = false;
             if found.is_some() {
-                super::ops::set_add_with_hash_in_place(py, result, key, hash);
-                if exception_pending(py) {
+                if !super::ops::set_add_with_hash_in_place(py, result, key, hash) {
                     return MoltObject::none().bits();
                 }
                 complete = crate::builtins::containers::set_len(result)
                     >= crate::builtins::containers::set_len(set);
             }
             drop(custody.key.take());
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
             if complete {
                 break;
             }
         }
         drop(custody.iter.take());
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        // Transfer the staged result only after iterator retirement succeeds.
+        // Transfer the staged result after ordinary iterator retirement.
         let result = custody.result.take().unwrap();
         let bits = result.bits;
         std::mem::forget(result);
@@ -1014,11 +978,7 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
     unsafe {
         if obj_from_bits(other_bits).as_ptr() == Some(set) {
             set_clear_in_place(py, set);
-            return if exception_pending(py) {
-                Err(molt_runtime_core::ErrorIndicatorSet)
-            } else {
-                Ok(())
-            };
+            return Ok(());
         }
         if let Some(other) = obj_from_bits(other_bits).as_ptr()
             && is_set_like_type(object_type_id(other))
@@ -1028,8 +988,7 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 > crate::builtins::containers::set_len(set)
             {
                 let bits = set_like_intersection(py, set, other, TYPE_ID_SET);
-                if exception_pending(py) {
-                    dec_ref_bits(py, bits);
+                if obj_from_bits(bits).as_ptr().is_none() {
                     return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 Some(SetOwned::adopt(py, bits))
@@ -1042,32 +1001,26 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 .unwrap_or(other);
             let mut index = 0;
             while let Some(entry) = super::ops::set_pin_next(py, source, &mut index) {
-                super::ops::set_del_with_hash_in_place(py, set, entry.bits(), entry.hash());
-                if exception_pending(py) {
+                if super::ops::set_del_with_hash_in_place(py, set, entry.bits(), entry.hash())
+                    .is_err()
+                {
                     drop(temporary);
                     drop(entry);
                     return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 drop(entry);
-                if exception_pending(py) {
-                    return Err(molt_runtime_core::ErrorIndicatorSet);
-                }
             }
         } else {
             let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits)
                 .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
             while let Some(item) = iter.next()? {
                 let item = SetOwned::adopt(py, item);
-                set_del_in_place(py, set, item.bits);
-                if exception_pending(py) {
+                if set_del_in_place(py, set, item.bits).is_err() {
                     drop(iter);
                     drop(item);
                     return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 drop(item);
-                if exception_pending(py) {
-                    return Err(molt_runtime_core::ErrorIndicatorSet);
-                }
             }
         }
         Ok(())
@@ -1103,24 +1056,19 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
                             return MoltObject::none().bits();
                         }
                     };
-                    if found.is_none() {
-                        super::ops::set_add_with_hash_in_place(
+                    if found.is_none()
+                        && !super::ops::set_add_with_hash_in_place(
                             py,
                             result,
                             entry.bits(),
                             entry.hash(),
-                        );
-                    }
-                    if exception_pending(py) {
+                        )
+                    {
                         dec_ref_bits(py, bits);
                         drop(entry);
                         return MoltObject::none().bits();
                     }
                     drop(entry);
-                    if exception_pending(py) {
-                        dec_ref_bits(py, bits);
-                        return MoltObject::none().bits();
-                    }
                 }
                 return bits;
             }
@@ -1129,8 +1077,7 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
         let Some(result) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        if set_difference_update_iterable(py, result, other_bits).is_err() || exception_pending(py)
-        {
+        if set_difference_update_iterable(py, result, other_bits).is_err() {
             dec_ref_bits(py, bits);
             MoltObject::none().bits()
         } else {
@@ -1146,14 +1093,9 @@ unsafe fn set_toggle_entry(
     hash: u64,
 ) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
     unsafe {
-        let removed = super::ops::set_del_with_hash_in_place(py, set, key, hash);
-        if exception_pending(py) {
-            return Err(molt_runtime_core::ErrorIndicatorSet);
-        }
-        if !removed {
-            super::ops::set_add_with_hash_in_place(py, set, key, hash);
-        }
-        if exception_pending(py) {
+        let removed = super::ops::set_del_with_hash_in_place(py, set, key, hash)
+            .map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
+        if !removed && !super::ops::set_add_with_hash_in_place(py, set, key, hash) {
             Err(molt_runtime_core::ErrorIndicatorSet)
         } else {
             Ok(())
@@ -1170,11 +1112,7 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
     unsafe {
         if obj_from_bits(other_bits).as_ptr() == Some(set) {
             set_clear_in_place(py, set);
-            return if exception_pending(py) {
-                Err(molt_runtime_core::ErrorIndicatorSet)
-            } else {
-                Ok(())
-            };
+            return Ok(());
         }
         if let Some(other) = obj_from_bits(other_bits).as_ptr()
             && exact_storage(py, other, TYPE_ID_DICT, builtin_classes(py).dict)
@@ -1183,9 +1121,6 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
             while let Some((key, hash)) = pin_dict_key(py, other, &mut index) {
                 set_toggle_entry(py, set, key.bits, hash)?;
                 drop(key);
-                if exception_pending(py) {
-                    return Err(molt_runtime_core::ErrorIndicatorSet);
-                }
             }
             return Ok(());
         }
@@ -1200,9 +1135,6 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
                 return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             drop(entry);
-            if exception_pending(py) {
-                return Err(molt_runtime_core::ErrorIndicatorSet);
-            }
         }
         Ok(())
     }
@@ -1216,18 +1148,13 @@ unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoin
             let item = SetOwned::adopt(py, item);
             let found = unsafe { set_find_entry(py, set, item.bits) };
             drop(item);
-            if exception_pending(py) {
-                return Err(molt_runtime_core::ErrorIndicatorSet);
-            }
+            let found = found.map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
             if found.is_some() == disjoint {
                 return Ok(false);
             }
         }
         Ok(true)
     })();
-    if exception_pending(py) {
-        return MoltObject::none().bits();
-    }
     match done {
         Ok(value) => MoltObject::from_bool(value).bits(),
         Err(molt_runtime_core::ErrorIndicatorSet) => MoltObject::none().bits(),

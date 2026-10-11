@@ -350,8 +350,7 @@ fn view_intersection(py: &PyToken<'_>, mut view: u64, mut other: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             if obj_from_bits(contains).as_bool() == Some(true) {
-                set_add_in_place(py, result_ptr, item.bits(), HashContext::SetElement);
-                if exception_pending(py) {
+                if !set_add_in_place(py, result_ptr, item.bits(), HashContext::SetElement) {
                     return MoltObject::none().bits();
                 }
             }
@@ -422,10 +421,9 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 let pair = ExceptionValue::adopt(py, MoltObject::from_ptr(pair).bits());
-                set_add_in_place(py, result_ptr, pair.bits(), HashContext::SetElement);
-            }
-            if exception_pending(py) {
-                return MoltObject::none().bits();
+                if !set_add_in_place(py, result_ptr, pair.bits(), HashContext::SetElement) {
+                    return MoltObject::none().bits();
+                }
             }
         }
         let remaining = ExceptionValue::adopt(py, molt_dict_items(temporary.bits()));

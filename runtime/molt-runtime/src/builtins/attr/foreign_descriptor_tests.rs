@@ -524,56 +524,119 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
     });
 }
 
+#[repr(C)]
+struct SelectedFailureDescriptor {
+    descriptor: Descriptor,
+    failure: *mut PyObject,
+    observed: *mut PyObject,
+}
+
+unsafe extern "C" fn selected_failure_get(
+    descriptor: *mut PyObject,
+    _receiver: *mut PyObject,
+    _owner: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        let descriptor = &mut *descriptor.cast::<SelectedFailureDescriptor>();
+        descriptor.descriptor.calls += 1;
+        let prior = errors::PyErr_GetRaisedException();
+        descriptor.observed = prior;
+        errors::PyErr_SetRaisedException(prior);
+        refcount::Py_INCREF(descriptor.failure);
+        errors::PyErr_SetRaisedException(descriptor.failure);
+        ptr::null_mut()
+    }
+}
+
+unsafe extern "C" fn selected_failure_set(
+    descriptor: *mut PyObject,
+    receiver: *mut PyObject,
+    _value: *mut PyObject,
+) -> std::os::raw::c_int {
+    unsafe { selected_failure_get(descriptor, receiver, ptr::null_mut()) };
+    -1
+}
+
 #[test]
-fn native_descriptor_failures_keep_the_original_exception_and_stop_callbacks() {
+fn native_descriptor_operations_use_their_own_status_and_exact_selected_error() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
+        errors::PyErr_SetNone((&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast());
+        let first = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!first.as_ptr().is_null());
+        errors::PyErr_SetNone((&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast());
+        let second = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!second.as_ptr().is_null());
+        let selected = |expected| {
+            let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(error.as_ptr(), expected);
+            errors::PyErr_SetRaisedException(error.into_ptr());
+        };
         let mut kind: PyTypeObject = std::mem::zeroed();
         kind.tp_name = c"FailingNativeDescriptor".as_ptr();
-        kind.tp_descr_get = Some(fail_get);
-        kind.tp_descr_set = Some(fail_set);
-        let mut descriptor = Descriptor {
-            object: PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut kind,
+        kind.tp_descr_get = Some(selected_failure_get);
+        kind.tp_descr_set = Some(set);
+        let mut descriptor = SelectedFailureDescriptor {
+            descriptor: Descriptor {
+                object: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut kind,
+                },
+                receiver: ptr::null_mut(),
+                operand: ptr::null_mut(),
+                calls: 0,
             },
-            receiver: ptr::null_mut(),
-            operand: ptr::null_mut(),
-            calls: 0,
+            failure: first.as_ptr(),
+            observed: ptr::null_mut(),
         };
         let bits = GLOBAL_BRIDGE
-            .molt_value_for_pyobj(&raw mut descriptor.object)
+            .molt_value_for_pyobj(&raw mut descriptor.descriptor.object)
             .unwrap();
+        let descriptor_owner =
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
         let owner = builtin_classes(&py).object;
         let none = MoltObject::none().bits();
         descriptor_bind(&py, bits, Some(owner), Some(none))
-            .expect_err("native descriptor failure propagates");
-        assert!(exception_pending(&py));
-        let original = crate::exception_last_bits_noinc(&py).unwrap();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-            &py,
-            original,
-            "ValueError"
-        ));
+            .expect_err("the callback's explicit failure propagates");
+        assert_eq!(descriptor.descriptor.calls, 1);
+        assert!(descriptor.observed.is_null());
+        selected(first.as_ptr());
+
+        // Each direct slot operation is independent. A successful setter runs
+        // with the pending error and leaves that exact owner selected.
+        assert_eq!(
+            descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
+            DescriptorMutationOutcome::Applied
+        );
+        assert_eq!(descriptor.descriptor.calls, 2);
+        selected(first.as_ptr());
+
+        (*descriptor.descriptor.object.ob_type).tp_descr_set = Some(selected_failure_set);
+        descriptor.failure = second.as_ptr();
         assert_eq!(
             descriptor_mutate(&py, bits, none, DescriptorMutation::Delete),
             DescriptorMutationOutcome::Error
         );
         assert_eq!(
-            descriptor.calls, 1,
-            "pending failure prevents subsequent native callbacks"
+            descriptor.descriptor.calls, 3,
+            "one invocation per operation"
         );
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
-        crate::clear_exception(&py);
+        assert_eq!(descriptor.observed, first.as_ptr());
+        selected(second.as_ptr());
+        errors::PyErr_Clear();
+
+        descriptor.failure = first.as_ptr();
         assert_eq!(
             descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
             DescriptorMutationOutcome::Error
         );
-        assert_eq!(descriptor.calls, 2);
-        assert!(exception_pending(&py));
-        crate::clear_exception(&py);
-        dec_ref_bits(&py, bits);
-        assert_eq!(descriptor.object.ob_refcnt, 1);
+        assert_eq!(descriptor.descriptor.calls, 4);
+        assert!(descriptor.observed.is_null());
+        selected(first.as_ptr());
+        errors::PyErr_Clear();
+        drop(descriptor_owner);
+        assert_eq!(descriptor.descriptor.object.ob_refcnt, 1);
     });
 }
 

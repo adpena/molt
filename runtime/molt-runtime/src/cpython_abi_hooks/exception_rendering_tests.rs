@@ -3026,6 +3026,13 @@ unsafe extern "C" fn percent_bound_result_drop(value: *mut PyObject) {
     }
 }
 
+static PERCENT_BOUND_DESCRIPTOR_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn percent_bound_descriptor_drop(value: *mut PyObject) {
+    PERCENT_BOUND_DESCRIPTOR_DROPS.fetch_add(1, Ordering::SeqCst);
+    unsafe { percent_managed_numeric_drop(value) };
+}
+
 unsafe extern "C" fn percent_bound_index_drop(value: *mut PyObject) {
     PERCENT_BOUND_INDEX_DROPS.fetch_add(1, Ordering::SeqCst);
     unsafe {
@@ -3069,7 +3076,27 @@ unsafe extern "C" fn percent_bound_get(
     }
 }
 
-unsafe fn percent_bound_class(metaclass: *mut PyTypeObject, bases: *mut PyObject) -> OwnedPyObject {
+// These heap classes can retain instances of local static fixture types. Cut
+// their namespace/MRO cycles while those declarations still live, including
+// during assertion unwind; the ordinary field owner then releases the class.
+struct PercentBoundClass(OwnedPyObject);
+
+impl PercentBoundClass {
+    fn as_ptr(&self) -> *mut PyObject {
+        self.0.as_ptr()
+    }
+}
+
+impl Drop for PercentBoundClass {
+    fn drop(&mut self) {
+        unsafe { typeobj::molt_type_clear(self.0.as_ptr()) };
+    }
+}
+
+unsafe fn percent_bound_class(
+    metaclass: *mut PyTypeObject,
+    bases: *mut PyObject,
+) -> PercentBoundClass {
     let mut slots = [
         PyType_Slot {
             slot: molt_cpython_abi::type_slots::Py_tp_new,
@@ -3087,14 +3114,14 @@ unsafe fn percent_bound_class(metaclass: *mut PyTypeObject, bases: *mut PyObject
         flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
         slots: slots.as_mut_ptr(),
     };
-    let class = unsafe {
+    let class = PercentBoundClass(unsafe {
         OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
             metaclass,
             ptr::null_mut(),
             &raw mut spec,
             bases,
         ))
-    };
+    });
     assert!(!class.as_ptr().is_null());
     class
 }
@@ -3190,7 +3217,7 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
         let mut descriptor_type =
             NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.BoundDescriptor");
         descriptor_type.tp_descr_get = Some(percent_bound_get);
-        descriptor_type.tp_dealloc = Some(percent_managed_numeric_drop);
+        descriptor_type.tp_dealloc = Some(percent_bound_descriptor_drop);
         assert_eq!(descriptor_type.ready(), 0);
         PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *callable, Ordering::SeqCst);
         let mut result_type =
@@ -3237,7 +3264,9 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
             if kind == 19 && minor >= 14 {
                 continue;
             }
+            PERCENT_BOUND_DESCRIPTOR_DROPS.store(0, Ordering::SeqCst);
             let class = percent_bound_class(ptr::null_mut(), ptr::null_mut());
+            let class_address = class.as_ptr().addr();
             let receiver =
                 OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class.as_ptr().cast(), 0));
             assert!(!receiver.as_ptr().is_null());
@@ -3282,6 +3311,7 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
                 );
             }
             drop(declaration);
+            assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 0);
             // The raw __get__ callable removes its namespace entry during its
             // call; the invocation retain is then its sole owner.
             PERCENT_BOUND_REMOVE.store(kind == 18, Ordering::SeqCst);
@@ -3430,10 +3460,23 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
                 percent_warning_policy(py, b"ignore");
             }
             PERCENT_BOUND_REMOVE.store(false, Ordering::SeqCst);
+            assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 0);
+            PERCENT_BOUND_OWNER.store(ptr::null_mut(), Ordering::SeqCst);
+            PERCENT_BOUND_NAME.store(ptr::null_mut(), Ordering::SeqCst);
+            drop(receiver);
+            drop(class);
+            assert_eq!(
+                PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst),
+                usize::from(kind != 18),
+                "fixture descriptor retirement {method:?}"
+            );
+            assert!(!crate::object::gc::native_gc_is_enrolled(class_address));
         }
         // A descriptor's self-removal makes the producer's retained descriptor
         // the final owner when binding fails, independently of invocation.
+        PERCENT_BOUND_DESCRIPTOR_DROPS.store(0, Ordering::SeqCst);
         let class = percent_bound_class(ptr::null_mut(), ptr::null_mut());
+        let class_address = class.as_ptr().addr();
         let receiver =
             OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class.as_ptr().cast(), 0));
         assert!(!receiver.as_ptr().is_null());
@@ -3460,6 +3503,7 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
         let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert_eq!(error.as_ptr(), failure.as_ptr());
         assert_eq!(PERCENT_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 1);
         assert_eq!(
             PERCENT_MANAGED_DROP_ERROR.load(Ordering::SeqCst),
             failure.as_ptr()
@@ -3468,6 +3512,10 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
         PERCENT_BOUND_OWNER.store(ptr::null_mut(), Ordering::SeqCst);
         PERCENT_BOUND_NAME.store(ptr::null_mut(), Ordering::SeqCst);
         PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        drop(receiver);
+        drop(class);
+        assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 1);
+        assert!(!crate::object::gc::native_gc_is_enrolled(class_address));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -3536,16 +3584,20 @@ fn native_reflected_comparison_owners_retire_after_error_classification() {
         let mut descriptor_type =
             NativeType::subtype(&raw mut PyBaseObject_Type, c"percent.ReflectedDescriptor");
         descriptor_type.tp_descr_get = Some(percent_bound_get);
+        descriptor_type.tp_dealloc = Some(percent_bound_descriptor_drop);
         assert_eq!(descriptor_type.ready(), 0);
         let mut metaclass = NativeType::subtype(&raw mut PyType_Type, c"percent.ReflectedMeta");
         metaclass.tp_getattro = Some(percent_reflected_getattribute);
         assert_eq!(metaclass.ready(), 0);
         PERCENT_BOUND_RESULT_TYPE.store(&raw mut *comparison_type, Ordering::SeqCst);
         PERCENT_MANAGED_FACTORY_TYPE.store(&raw mut *callable, Ordering::SeqCst);
+        PERCENT_BOUND_DESCRIPTOR_DROPS.store(0, Ordering::SeqCst);
         TEXT_CALLBACK_FAILS.store(true, Ordering::SeqCst);
         let left_class = percent_bound_class(&raw mut *metaclass, ptr::null_mut());
+        let left_class_address = left_class.as_ptr().addr();
         let bases = percent_tuple(&[left_class.as_ptr()], None);
         let right_class = percent_bound_class(&raw mut *metaclass, bases.as_ptr());
+        let right_class_address = right_class.as_ptr().addr();
         let declaration =
             OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *descriptor_type, 0));
         assert!(!declaration.as_ptr().is_null());
@@ -3593,6 +3645,21 @@ fn native_reflected_comparison_owners_retire_after_error_classification() {
         PERCENT_REFLECTED_MISSING.store(false, Ordering::SeqCst);
         PERCENT_BOUND_RESULT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
         PERCENT_MANAGED_FACTORY_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+        assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 0);
+        drop(right);
+        drop(left);
+        drop(declaration);
+        drop(right_class);
+        assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 0);
+        assert!(!crate::object::gc::native_gc_is_enrolled(
+            right_class_address
+        ));
+        drop(bases);
+        drop(left_class);
+        assert_eq!(PERCENT_BOUND_DESCRIPTOR_DROPS.load(Ordering::SeqCst), 1);
+        assert!(!crate::object::gc::native_gc_is_enrolled(
+            left_class_address
+        ));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -4480,13 +4547,17 @@ mod decimal_output_limits {
         result
     }
 
-    unsafe fn limit_failure(result: *mut PyObject) -> OwnedPyObject {
+    unsafe fn limit_failure(result: *mut PyObject, stage: &str) -> OwnedPyObject {
         unsafe {
             let result = OwnedPyObject::from_owned(result);
-            assert!(result.as_ptr().is_null());
+            assert!(
+                result.as_ptr().is_null(),
+                "{stage}: decimal conversion succeeded"
+            );
             assert_eq!(
                 errors::PyErr_ExceptionMatches((&raw mut PyExc_ValueError).cast()),
-                1
+                1,
+                "{stage}: decimal conversion did not select ValueError"
             );
             let failure = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             assert!(!failure.as_ptr().is_null());
@@ -4512,6 +4583,12 @@ mod decimal_output_limits {
             let rejected = &allowed * BigInt::from(10u8);
             for native_class in [None, Some(&raw mut PyLong_Type), Some(&raw mut *subtype)] {
                 for sign in [1i32, -1i32] {
+                    let route = match native_class {
+                        None => "managed",
+                        Some(class) if class == &raw mut PyLong_Type => "physical exact",
+                        Some(_) => "physical subtype",
+                    };
+                    let stage = format!("{route}, sign={sign}");
                     let value = &rejected * sign;
                     let integer = match native_class {
                         Some(class) => raw_integer(class, &value),
@@ -4528,15 +4605,28 @@ mod decimal_output_limits {
                         );
                     }
                     set_limit(640);
-                    limit_failure(typeobj::PyObject_Str(integer.as_ptr()));
-                    limit_failure(typeobj::PyObject_Repr(integer.as_ptr()));
+                    limit_failure(
+                        typeobj::PyObject_Str(integer.as_ptr()),
+                        &format!("{stage}: str"),
+                    );
+                    limit_failure(
+                        typeobj::PyObject_Repr(integer.as_ptr()),
+                        &format!("{stage}: repr"),
+                    );
                     for spec in [b"".as_slice(), b"d", b"n", b"+0800,d"] {
+                        let spec_label = String::from_utf8_lossy(spec);
                         let spec = OwnedPyObject::from_owned(raw_fixture(spec));
                         assert!(!spec.as_ptr().is_null());
-                        limit_failure(object::PyObject_Format(integer.as_ptr(), spec.as_ptr()));
+                        limit_failure(
+                            object::PyObject_Format(integer.as_ptr(), spec.as_ptr()),
+                            &format!("{stage}: format {spec_label:?}"),
+                        );
                     }
                     for template in [b"%d".as_slice(), b"%i", b"%u", b"%s", b"%r", b"%a"] {
-                        limit_failure(percent(template, integer.as_ptr()));
+                        limit_failure(
+                            percent(template, integer.as_ptr()),
+                            &format!("{stage}: percent {template:?}"),
+                        );
                     }
                     let hex = OwnedPyObject::from_owned(raw_fixture(b"x"));
                     assert_eq!(
@@ -4549,7 +4639,10 @@ mod decimal_output_limits {
                         if sign < 0 { 642 } else { 641 }
                     );
                     set_limit(640);
-                    limit_failure(typeobj::PyObject_Str(integer.as_ptr()));
+                    limit_failure(
+                        typeobj::PyObject_Str(integer.as_ptr()),
+                        &format!("{stage}: str after restoring limit"),
+                    );
                 }
             }
             let allowed = OwnedPyObject::from_owned(
@@ -4565,6 +4658,331 @@ mod decimal_output_limits {
             let seven = OwnedPyObject::from_owned(numbers::PyLong_FromLong(7));
             assert_eq!(take_raw(percent(b"%.800d", seven.as_ptr())).len(), 800);
             assert!(errors::PyErr_Occurred().is_null());
+        });
+    }
+
+    static SCALAR_CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn forbidden_scalar_conversion(_value: *mut PyObject) -> *mut PyObject {
+        SCALAR_CONVERSIONS.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            errors::PyErr_SetString(
+                (&raw mut PyExc_TypeError).cast(),
+                c"storage rendering invoked a conversion override".as_ptr(),
+            );
+        }
+        ptr::null_mut()
+    }
+
+    unsafe extern "C" fn integer_float_presentation(_value: *mut PyObject) -> *mut PyObject {
+        SCALAR_CONVERSIONS.fetch_add(1, Ordering::SeqCst);
+        unsafe { numbers::PyFloat_FromDouble(9.5) }
+    }
+
+    unsafe extern "C" fn scalar_repr_override(_value: *mut PyObject) -> *mut PyObject {
+        unsafe { raw_fixture(b"native-repr") }
+    }
+
+    unsafe extern "C" fn scalar_format_override(
+        _value: *mut PyObject,
+        _spec: *mut PyObject,
+    ) -> *mut PyObject {
+        unsafe { raw_fixture(b"native-format") }
+    }
+
+    unsafe fn scalar_format(value: *mut PyObject, spec: &[u8]) -> Vec<u8> {
+        unsafe {
+            let spec = OwnedPyObject::from_owned(raw_fixture(spec));
+            assert!(!spec.as_ptr().is_null());
+            take_raw(object::PyObject_Format(value, spec.as_ptr()))
+        }
+    }
+
+    unsafe fn runtime_scalar_format(
+        py: &crate::PyToken<'_>,
+        value: *mut PyObject,
+        spec: &[u8],
+    ) -> Vec<u8> {
+        unsafe {
+            let value = ExceptionValue::adopt(
+                py,
+                GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(value)
+                    .expect("native scalar ingress"),
+            );
+            let spec = ExceptionValue::adopt(
+                py,
+                crate::attr_name_bits_from_bytes(py, spec).expect("format spec"),
+            );
+            let result = crate::molt_format_builtin(value.bits(), spec.bits());
+            take_raw(GLOBAL_BRIDGE.owned_handle_to_pyobj(result))
+        }
+    }
+
+    #[test]
+    fn physical_scalar_rendering_reads_storage_without_rebinding_native_identity() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(super::super::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|_py| unsafe {
+            SCALAR_CONVERSIONS.store(0, Ordering::SeqCst);
+            let mut integer_slots: PyNumberMethods = std::mem::zeroed();
+            integer_slots.nb_int = forbidden_scalar_conversion as *const () as *mut _;
+            integer_slots.nb_index = forbidden_scalar_conversion as *const () as *mut _;
+            integer_slots.nb_float = integer_float_presentation as *const () as *mut _;
+            let mut integer_type = NativeType::subtype(&raw mut PyLong_Type, c"RenderingInteger");
+            integer_type.tp_as_number = (&raw mut integer_slots).cast();
+            assert_eq!(integer_type.ready(), 0);
+            let mut float_slots: PyNumberMethods = std::mem::zeroed();
+            float_slots.nb_float = forbidden_scalar_conversion as *const () as *mut _;
+            let mut float_type = NativeType::subtype(&raw mut PyFloat_Type, c"RenderingFloat");
+            float_type.tp_as_number = (&raw mut float_slots).cast();
+            assert_eq!(float_type.ready(), 0);
+            let mut complex_type =
+                NativeType::subtype(&raw mut PyComplex_Type, c"RenderingComplex");
+            assert_eq!(complex_type.ready(), 0);
+
+            for class in [&raw mut PyLong_Type, &raw mut *integer_type] {
+                let value = raw_integer(class, &BigInt::from(7));
+                assert!(!value.as_ptr().is_null());
+                assert_eq!(take_raw(typeobj::PyObject_Str(value.as_ptr())), b"7");
+                assert_eq!(take_raw(typeobj::PyObject_Repr(value.as_ptr())), b"7");
+                assert_eq!(scalar_format(value.as_ptr(), b""), b"7");
+                assert_eq!(scalar_format(value.as_ptr(), b"04d"), b"0007");
+                assert_eq!(runtime_scalar_format(&_py, value.as_ptr(), b"04d"), b"0007");
+                assert_eq!(scalar_format(value.as_ptr(), b"x"), b"7");
+                assert_eq!(SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
+                assert!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(value.as_ptr())
+                        .is_none()
+                );
+            }
+            for class in [&raw mut PyFloat_Type, &raw mut *float_type] {
+                let value = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class, 0));
+                assert!(!value.as_ptr().is_null());
+                (*value.as_ptr().cast::<PyFloatObject>()).ob_fval = 1.25;
+                assert_eq!(take_raw(typeobj::PyObject_Str(value.as_ptr())), b"1.25");
+                assert_eq!(take_raw(typeobj::PyObject_Repr(value.as_ptr())), b"1.25");
+                assert_eq!(scalar_format(value.as_ptr(), b""), b"1.25");
+                assert_eq!(scalar_format(value.as_ptr(), b".2f"), b"1.25");
+                assert_eq!(runtime_scalar_format(&_py, value.as_ptr(), b".2f"), b"1.25");
+                assert_eq!(SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
+                assert!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(value.as_ptr())
+                        .is_none()
+                );
+            }
+            for class in [&raw mut PyComplex_Type, &raw mut *complex_type] {
+                let value = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class, 0));
+                assert!(!value.as_ptr().is_null());
+                (*value.as_ptr().cast::<PyComplexObject>()).cval = Py_complex {
+                    real: 1.25,
+                    imag: -2.5,
+                };
+                assert_eq!(
+                    take_raw(typeobj::PyObject_Str(value.as_ptr())),
+                    b"(1.25-2.5j)"
+                );
+                assert_eq!(
+                    take_raw(typeobj::PyObject_Repr(value.as_ptr())),
+                    b"(1.25-2.5j)"
+                );
+                assert_eq!(scalar_format(value.as_ptr(), b""), b"(1.25-2.5j)");
+                assert_eq!(scalar_format(value.as_ptr(), b".2f"), b"1.25-2.50j");
+                assert_eq!(
+                    runtime_scalar_format(&_py, value.as_ptr(), b".2f"),
+                    b"1.25-2.50j"
+                );
+                assert!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(value.as_ptr())
+                        .is_none()
+                );
+            }
+            for (value, text, digits) in [
+                (
+                    (&raw mut _Py_TrueStruct).cast(),
+                    b"True".as_slice(),
+                    b"1".as_slice(),
+                ),
+                (
+                    (&raw mut _Py_FalseStruct).cast(),
+                    b"False".as_slice(),
+                    b"0".as_slice(),
+                ),
+            ] {
+                assert_eq!(take_raw(typeobj::PyObject_Str(value)), text);
+                assert_eq!(take_raw(typeobj::PyObject_Repr(value)), text);
+                assert_eq!(scalar_format(value, b""), text);
+                assert_eq!(scalar_format(value, b"d"), digits);
+                let int_repr = PyLong_Type.tp_repr.expect("int repr slot");
+                assert_eq!(take_raw(int_repr(value)), digits);
+            }
+            // Integer floating presentations use the original receiver's
+            // __float__, unlike integer digits and float's own stored payload.
+            let value = raw_integer(&raw mut *integer_type, &BigInt::from(7));
+            assert!(!value.as_ptr().is_null());
+            assert_eq!(scalar_format(value.as_ptr(), b".1f"), b"9.5");
+            assert_eq!(SCALAR_CONVERSIONS.load(Ordering::SeqCst), 1);
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(value.as_ptr())
+                    .is_none()
+            );
+            assert!(errors::PyErr_Occurred().is_null());
+        });
+    }
+
+    #[test]
+    fn native_scalar_rendering_preserves_public_overrides_and_explicit_base_semantics() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(super::super::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|_py| unsafe {
+            let mut repr_type = NativeType::subtype(&raw mut PyLong_Type, c"RenderingReprOverride");
+            repr_type.tp_repr = Some(scalar_repr_override);
+            assert_eq!(repr_type.ready(), 0);
+            let value = raw_integer(&raw mut *repr_type, &BigInt::from(7));
+            assert!(!value.as_ptr().is_null());
+            assert_eq!(
+                take_raw(typeobj::PyObject_Repr(value.as_ptr())),
+                b"native-repr"
+            );
+            assert_eq!(
+                take_raw(typeobj::PyObject_Str(value.as_ptr())),
+                b"native-repr"
+            );
+            assert_eq!(scalar_format(value.as_ptr(), b""), b"native-repr");
+            assert_eq!(scalar_format(value.as_ptr(), b"d"), b"7");
+            let base_repr = PyLong_Type.tp_repr.expect("int repr slot");
+            assert_eq!(take_raw(base_repr(value.as_ptr())), b"7");
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(value.as_ptr())
+                    .is_none()
+            );
+
+            let mut methods = [
+                PyMethodDef {
+                    ml_name: c"__format__".as_ptr(),
+                    ml_meth: Some(scalar_format_override),
+                    ml_flags: METH_O,
+                    ml_doc: ptr::null(),
+                },
+                std::mem::zeroed(),
+            ];
+            let mut format_type =
+                NativeType::subtype(&raw mut PyLong_Type, c"RenderingFormatOverride");
+            format_type.tp_methods = methods.as_mut_ptr();
+            assert_eq!(format_type.ready(), 0);
+            let value = raw_integer(&raw mut *format_type, &BigInt::from(7));
+            assert!(!value.as_ptr().is_null());
+            assert_eq!(scalar_format(value.as_ptr(), b"d"), b"native-format");
+            assert_eq!(
+                runtime_scalar_format(&_py, value.as_ptr(), b"d"),
+                b"native-format"
+            );
+            let base_format = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                (&raw mut PyLong_Type).cast(),
+                c"__format__".as_ptr(),
+            ));
+            assert!(!base_format.as_ptr().is_null());
+            let spec = OwnedPyObject::from_owned(raw_fixture(b"d"));
+            assert!(!spec.as_ptr().is_null());
+            let mut arguments = [value.as_ptr(), spec.as_ptr()];
+            assert_eq!(
+                take_raw(object::PyObject_Vectorcall(
+                    base_format.as_ptr(),
+                    arguments.as_mut_ptr(),
+                    arguments.len(),
+                    ptr::null_mut(),
+                )),
+                b"7"
+            );
+            assert!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(value.as_ptr())
+                    .is_none()
+            );
+            assert!(errors::PyErr_Occurred().is_null());
+        });
+    }
+
+    static MANAGED_SCALAR_REPRS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn managed_scalar_repr_override(_value: u64) -> u64 {
+        MANAGED_SCALAR_REPRS.fetch_add(1, Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            let text = crate::alloc_string(py, b"managed-repr");
+            if text.is_null() {
+                crate::MoltObject::none().bits()
+            } else {
+                crate::MoltObject::from_ptr(text).bits()
+            }
+        })
+    }
+
+    #[test]
+    fn numeric_base_repr_reads_projected_managed_subtype_storage() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(super::super::register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            let py = &py;
+            let classes = crate::builtin_classes(py);
+            for (base, declaring, arguments, expected) in [
+                (
+                    classes.int,
+                    &raw mut PyLong_Type,
+                    vec![crate::MoltObject::from_int(7).bits()],
+                    b"7".as_slice(),
+                ),
+                (
+                    classes.float,
+                    &raw mut PyFloat_Type,
+                    vec![crate::MoltObject::from_float(1.25).bits()],
+                    b"1.25".as_slice(),
+                ),
+                (
+                    classes.complex,
+                    &raw mut PyComplex_Type,
+                    vec![
+                        crate::MoltObject::from_float(1.25).bits(),
+                        crate::MoltObject::from_float(-2.5).bits(),
+                    ],
+                    b"(1.25-2.5j)".as_slice(),
+                ),
+            ] {
+                let (_class, instance) = percent_managed_protocol(
+                    py,
+                    base,
+                    &[(b"__repr__", managed_scalar_repr_override)],
+                    &arguments,
+                );
+                let view = OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance.bits()),
+                );
+                assert!(!view.as_ptr().is_null());
+                MANAGED_SCALAR_REPRS.store(0, Ordering::SeqCst);
+                assert_eq!(
+                    take_raw(typeobj::PyObject_Repr(view.as_ptr())),
+                    b"managed-repr"
+                );
+                assert_eq!(MANAGED_SCALAR_REPRS.load(Ordering::SeqCst), 1);
+                let repr = (*declaring).tp_repr.expect("declaring numeric repr slot");
+                assert_eq!(take_raw(repr(view.as_ptr())), expected);
+                assert_eq!(MANAGED_SCALAR_REPRS.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(view.as_ptr())
+                        .unwrap()
+                        .bits(),
+                    instance.bits()
+                );
+                assert!(errors::PyErr_Occurred().is_null());
+            }
         });
     }
 
@@ -4633,7 +5051,7 @@ mod decimal_output_limits {
             CALLBACK_LIMIT.store(700, Ordering::SeqCst);
             assert_eq!(take_raw(percent(b"%d", value.as_ptr())).len(), 660);
             CALLBACK_LIMIT.store(640, Ordering::SeqCst);
-            limit_failure(percent(b"%d", value.as_ptr()));
+            limit_failure(percent(b"%d", value.as_ptr()), "native callback live limit");
             assert_eq!(CALLBACKS.load(Ordering::SeqCst), 2);
             assert!(errors::PyErr_Occurred().is_null());
         });
@@ -4664,7 +5082,7 @@ mod decimal_output_limits {
                 let mut len = 777usize;
                 assert_eq!(export(value.bits(), &raw mut out, &raw mut len), 0);
                 assert_eq!((out, len), (sentinel, 777));
-                limit_failure(ptr::null_mut());
+                limit_failure(ptr::null_mut(), "failed bridge output publication");
             }
             // Serial is a typed hook table; exercise its real CSV consumer.
             #[cfg(feature = "stdlib_csv")]
@@ -4697,7 +5115,7 @@ mod decimal_output_limits {
                 let row = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(row_ptr).bits());
                 let rendered = crate::molt_csv_writer_writerow(writer.0, row.bits());
                 assert_eq!(rendered, crate::MoltObject::none().bits());
-                limit_failure(ptr::null_mut());
+                limit_failure(ptr::null_mut(), "failed bridge output publication");
             }
             assert!(errors::PyErr_Occurred().is_null());
         });
@@ -4912,21 +5330,19 @@ fn native_comparison_truth_status_preserves_prior_and_distinguishes_same_instanc
 }
 
 static COMPLETION_CALLS: AtomicUsize = AtomicUsize::new(0);
+static COMPLETION_MANAGED_ERROR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
 extern "C" fn completion_managed_bool(_self: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         COMPLETION_CALLS.fetch_add(1, Ordering::SeqCst);
-        if !COMPLETION_FAILS.load(Ordering::SeqCst) {
+        COMPLETION_SEEN.store(unsafe { errors::PyErr_Occurred() }, Ordering::SeqCst);
+        let failure = COMPLETION_MANAGED_ERROR.load(Ordering::SeqCst);
+        if failure.is_null() {
             return crate::MoltObject::from_bool(true).bits();
         }
-        unsafe {
-            // A real managed callback fails by returning the boxed error
-            // sentinel with the same exception object still selected.
-            let prior = errors::PyErr_GetRaisedException();
-            COMPLETION_SEEN.store(prior, Ordering::SeqCst);
-            errors::PyErr_SetRaisedException(prior);
-        }
-        let _ = py;
+        // Managed Python bodies enter with no pending error. The fixture holds
+        // this exact instance while the callback selects it as its own failure.
+        crate::record_exception(py, failure);
         crate::MoltObject::none().bits()
     })
 }
@@ -4944,18 +5360,18 @@ fn managed_comparison_result_truth_failure_keeps_the_same_exception_instance() {
                 &[(b"__bool__", completion_managed_bool)],
                 &[],
             );
-            let prior_ptr = crate::builtins::exceptions::alloc_exception(
+            let failure_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
                 "LookupError",
                 "managed comparison truth failure",
             );
-            assert!(!prior_ptr.is_null());
-            let prior = crate::builtins::exceptions::ExceptionValue::adopt(
+            assert!(!failure_ptr.is_null());
+            let failure = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
-                crate::MoltObject::from_ptr(prior_ptr).bits(),
+                crate::MoltObject::from_ptr(failure_ptr).bits(),
             );
-            let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
-            assert!(!prior_view.is_null());
+            let failure_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(failure.bits());
+            assert!(!failure_view.is_null());
             crate::inc_ref_bits(py, result.bits());
             assert!(matches!(
                 crate::object::ops_compare::comparison_value_to_bool(
@@ -4965,29 +5381,36 @@ fn managed_comparison_result_truth_failure_keeps_the_same_exception_instance() {
                 crate::object::ops_compare::CompareBoolOutcome::True
             ));
             assert_eq!(COMPLETION_CALLS.load(Ordering::SeqCst), 1);
+            assert!(COMPLETION_SEEN.load(Ordering::SeqCst).is_null());
             assert!(errors::PyErr_Occurred().is_null());
-            for runtime_prior in [false, true] {
-                COMPLETION_FAILS.store(true, Ordering::SeqCst);
-                COMPLETION_SEEN.store(ptr::null_mut(), Ordering::SeqCst);
-                COMPLETION_CALLS.store(0, Ordering::SeqCst);
-                if runtime_prior {
-                    crate::record_exception(py, prior_ptr);
-                } else {
-                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior_view));
+
+            // Clear this borrowed pointer before its owning ExceptionValue can
+            // retire, including if a callback or assertion unwinds.
+            struct HeldFailure;
+            impl Drop for HeldFailure {
+                fn drop(&mut self) {
+                    COMPLETION_MANAGED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
                 }
-                crate::inc_ref_bits(py, result.bits());
-                assert!(matches!(
-                    crate::object::ops_compare::comparison_value_to_bool(
-                        py,
-                        crate::object::ops_compare::CompareValueOutcome::Value(result.bits()),
-                    ),
-                    crate::object::ops_compare::CompareBoolOutcome::Error
-                ));
-                assert_eq!(COMPLETION_CALLS.load(Ordering::SeqCst), 1);
-                assert_eq!(COMPLETION_SEEN.load(Ordering::SeqCst), prior_view);
-                let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
-                assert_eq!(selected.as_ptr(), prior_view);
             }
+            let held_failure = HeldFailure;
+            COMPLETION_MANAGED_ERROR.store(failure_ptr, Ordering::SeqCst);
+            COMPLETION_CALLS.store(0, Ordering::SeqCst);
+            crate::inc_ref_bits(py, result.bits());
+            let outcome = crate::object::ops_compare::comparison_value_to_bool(
+                py,
+                crate::object::ops_compare::CompareValueOutcome::Value(result.bits()),
+            );
+            drop(held_failure);
+            assert!(matches!(
+                outcome,
+                crate::object::ops_compare::CompareBoolOutcome::Error
+            ));
+            assert_eq!(COMPLETION_CALLS.load(Ordering::SeqCst), 1);
+            assert!(COMPLETION_SEEN.load(Ordering::SeqCst).is_null());
+            assert!(crate::exception_pending(py));
+            let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(selected.as_ptr(), failure_view);
+            assert!(errors::PyErr_Occurred().is_null());
         }
     });
 }

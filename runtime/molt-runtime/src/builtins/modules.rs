@@ -1120,10 +1120,7 @@ fn copyreg_add_constructor(_py: &PyToken<'_>, func_bits: u64) -> Result<(), u64>
             "copyreg constructor registry unavailable",
         ));
     };
-    unsafe {
-        set_add_in_place(_py, set_ptr, func_bits, HashContext::SetElement);
-    }
-    if exception_pending(_py) {
+    if !unsafe { set_add_in_place(_py, set_ptr, func_bits, HashContext::SetElement) } {
         return Err(MoltObject::none().bits());
     }
     Ok(())

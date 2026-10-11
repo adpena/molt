@@ -139,6 +139,271 @@ fn c_api_dictionary_completion_preserves_an_existing_error() {
     });
 }
 
+#[repr(C)]
+struct CApiAggregateKey {
+    object: molt_cpython_abi::abi_types::PyObject,
+    observed: *mut molt_cpython_abi::abi_types::PyObject,
+    failure: *mut molt_cpython_abi::abi_types::PyObject,
+    calls: usize,
+    comparison: i32,
+    equality_calls: usize,
+}
+
+unsafe extern "C" fn c_api_aggregate_key_hash(
+    object: *mut molt_cpython_abi::abi_types::PyObject,
+) -> isize {
+    use molt_cpython_abi::api::{errors, refcount};
+    unsafe {
+        let key = &mut *object.cast::<CApiAggregateKey>();
+        key.calls += 1;
+        let prior = errors::PyErr_GetRaisedException();
+        key.observed = prior;
+        errors::PyErr_SetRaisedException(prior);
+        if key.failure.is_null() {
+            113
+        } else {
+            refcount::Py_INCREF(key.failure);
+            errors::PyErr_SetRaisedException(key.failure);
+            -1
+        }
+    }
+}
+
+unsafe extern "C" fn c_api_aggregate_key_equal(
+    object: *mut molt_cpython_abi::abi_types::PyObject,
+    _other: *mut molt_cpython_abi::abi_types::PyObject,
+    op: std::os::raw::c_int,
+) -> *mut molt_cpython_abi::abi_types::PyObject {
+    use molt_cpython_abi::api::{errors, refcount};
+    unsafe {
+        if op != molt_cpython_abi::api::object::Py_EQ {
+            let result = &raw mut molt_cpython_abi::abi_types::Py_NotImplemented;
+            refcount::Py_INCREF(result);
+            return result;
+        }
+        let key = &mut *object.cast::<CApiAggregateKey>();
+        key.equality_calls += 1;
+        let prior = errors::PyErr_GetRaisedException();
+        key.observed = prior;
+        errors::PyErr_SetRaisedException(prior);
+        if key.comparison < 0 {
+            refcount::Py_INCREF(key.failure);
+            errors::PyErr_SetRaisedException(key.failure);
+            std::ptr::null_mut()
+        } else {
+            let result = if key.comparison == 0 {
+                &raw mut molt_cpython_abi::abi_types::Py_False
+            } else {
+                &raw mut molt_cpython_abi::abi_types::Py_True
+            };
+            refcount::Py_INCREF(result);
+            result
+        }
+    }
+}
+
+#[test]
+fn c_api_hash_aggregate_completion_distinguishes_prior_error_from_operation_failure() {
+    use molt_cpython_abi::abi_types::{PyObject, PyType_Slot, PyType_Spec};
+    use molt_cpython_abi::api::{
+        errors, mapping,
+        refcount::{self, OwnedPyObject},
+        sequences, typeobj,
+    };
+    let _guard = CApiTestGuard::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let mut slots = [
+                PyType_Slot {
+                    slot: molt_cpython_abi::type_slots::Py_tp_hash,
+                    pfunc: c_api_aggregate_key_hash as *const () as *mut std::ffi::c_void,
+                },
+                PyType_Slot {
+                    slot: molt_cpython_abi::type_slots::Py_tp_richcompare,
+                    pfunc: c_api_aggregate_key_equal as *const () as *mut std::ffi::c_void,
+                },
+                PyType_Slot {
+                    slot: 0,
+                    pfunc: std::ptr::null_mut(),
+                },
+            ];
+            let mut spec = PyType_Spec {
+                name: c"tests.AggregateStatusKey".as_ptr(),
+                basicsize: std::mem::size_of::<CApiAggregateKey>() as i32,
+                itemsize: 0,
+                flags: 0,
+                slots: slots.as_mut_ptr(),
+            };
+            let kind = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+            assert!(!kind.as_ptr().is_null());
+            let key =
+                OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(kind.as_ptr().cast(), 0));
+            assert!(!key.as_ptr().is_null());
+            let probe =
+                OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(kind.as_ptr().cast(), 0));
+            assert!(!probe.as_ptr().is_null());
+            let dictionary = OwnedPyObject::from_owned(mapping::PyDict_New());
+            assert!(!dictionary.as_ptr().is_null());
+            let value = &raw mut molt_cpython_abi::abi_types::Py_None;
+            assert_eq!(
+                mapping::PyDict_SetItem(dictionary.as_ptr(), key.as_ptr(), value),
+                0
+            );
+            let source = OwnedPyObject::from_owned(sequences::PySet_New(dictionary.as_ptr()));
+            assert!(!source.as_ptr().is_null());
+            let mutable_key = OwnedPyObject::from_owned(sequences::PyList_New(0));
+            assert!(!mutable_key.as_ptr().is_null());
+            let zero =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0));
+            assert!(!zero.as_ptr().is_null());
+            errors::PyErr_SetNone((&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast());
+            let original = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!original.as_ptr().is_null());
+            errors::PyErr_SetNone((&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast());
+            let failure = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!failure.as_ptr().is_null());
+            let key_state = key.as_ptr().cast::<CApiAggregateKey>();
+            let selected = |expected: *mut PyObject, runtime_prior: bool| {
+                let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(observed.as_ptr(), expected);
+                errors::PyErr_SetRaisedException(observed.into_ptr());
+                if runtime_prior {
+                    assert!(crate::cpython_abi_hooks::transfer_pending_cpython_exception());
+                }
+            };
+            for runtime_prior in [false, true] {
+                refcount::Py_INCREF(original.as_ptr());
+                errors::PyErr_SetRaisedException(original.as_ptr());
+                if runtime_prior {
+                    assert!(crate::cpython_abi_hooks::transfer_pending_cpython_exception());
+                }
+                let empty = OwnedPyObject::from_owned(mapping::PyDict_New());
+                assert!(!empty.as_ptr().is_null());
+                let copy = OwnedPyObject::from_owned(mapping::PyDict_Copy(dictionary.as_ptr()));
+                assert!(!copy.as_ptr().is_null());
+                assert_eq!(mapping::PyDict_GetItem(copy.as_ptr(), key.as_ptr()), value);
+                selected(original.as_ptr(), runtime_prior);
+                for frozen in [false, true] {
+                    for input in [std::ptr::null_mut(), dictionary.as_ptr(), source.as_ptr()] {
+                        let output = OwnedPyObject::from_owned(if frozen {
+                            sequences::PyFrozenSet_New(input)
+                        } else {
+                            sequences::PySet_New(input)
+                        });
+                        assert!(
+                            !output.as_ptr().is_null(),
+                            "frozen={frozen}, runtime_prior={runtime_prior}"
+                        );
+                        assert_eq!(
+                            sequences::PySet_Size(output.as_ptr()),
+                            isize::from(!input.is_null())
+                        );
+                        selected(original.as_ptr(), runtime_prior);
+                    }
+                }
+                let target = OwnedPyObject::from_owned(sequences::PySet_New(std::ptr::null_mut()));
+                assert!(!target.as_ptr().is_null());
+                let before = (*key_state).calls;
+                assert_eq!(sequences::PySet_Add(target.as_ptr(), key.as_ptr()), 0);
+                assert_eq!((*key_state).calls, before + 1);
+                assert_eq!((*key_state).observed, original.as_ptr());
+                assert_eq!(sequences::PySet_Contains(target.as_ptr(), key.as_ptr()), 1);
+                assert_eq!(
+                    sequences::PySet_Contains(target.as_ptr(), probe.as_ptr()),
+                    0
+                );
+                assert_eq!((*key_state).observed, original.as_ptr());
+                (*key_state).comparison = 1;
+                assert_eq!(
+                    sequences::PySet_Contains(target.as_ptr(), probe.as_ptr()),
+                    1
+                );
+                selected(original.as_ptr(), runtime_prior);
+                (*key_state).comparison = -1;
+                for raised in [original.as_ptr(), failure.as_ptr()] {
+                    (*key_state).failure = raised;
+                    for operation in [
+                        sequences::PySet_Add
+                            as unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> i32,
+                        sequences::PySet_Contains,
+                        sequences::PySet_Discard,
+                    ] {
+                        refcount::Py_INCREF(original.as_ptr());
+                        errors::PyErr_SetRaisedException(original.as_ptr());
+                        selected(original.as_ptr(), runtime_prior);
+                        let before = (*key_state).equality_calls;
+                        assert_eq!(operation(target.as_ptr(), probe.as_ptr()), -1);
+                        assert_eq!((*key_state).equality_calls, before + 1);
+                        assert_eq!((*key_state).observed, original.as_ptr());
+                        selected(raised, runtime_prior);
+                        assert_eq!(sequences::PySet_Size(target.as_ptr()), 1);
+                    }
+                }
+                (*key_state).comparison = 0;
+                (*key_state).failure = std::ptr::null_mut();
+                refcount::Py_INCREF(original.as_ptr());
+                errors::PyErr_SetRaisedException(original.as_ptr());
+                selected(original.as_ptr(), runtime_prior);
+                assert_eq!(sequences::PySet_Discard(target.as_ptr(), key.as_ptr()), 1);
+                assert_eq!(sequences::PySet_Discard(target.as_ptr(), key.as_ptr()), 0);
+                selected(original.as_ptr(), runtime_prior);
+                assert_eq!(sequences::PySet_Add(target.as_ptr(), value), 0);
+                let popped = OwnedPyObject::from_owned(sequences::PySet_Pop(target.as_ptr()));
+                assert_eq!(
+                    popped.as_ptr(),
+                    value,
+                    "None is a successful owned pop result"
+                );
+                selected(original.as_ptr(), runtime_prior);
+                assert_eq!(sequences::PySet_Add(target.as_ptr(), zero.as_ptr()), 0);
+                let popped = OwnedPyObject::from_owned(sequences::PySet_Pop(target.as_ptr()));
+                assert!(!popped.as_ptr().is_null(), "zero is a successful pop value");
+                assert_eq!(
+                    molt_cpython_abi::api::numbers::PyFloat_AsDouble(popped.as_ptr()),
+                    0.0
+                );
+                selected(original.as_ptr(), runtime_prior);
+                assert_eq!(sequences::PySet_Add(target.as_ptr(), key.as_ptr()), 0);
+                assert_eq!(sequences::PySet_Clear(target.as_ptr()), 0);
+                assert_eq!(sequences::PySet_Size(target.as_ptr()), 0);
+                selected(original.as_ptr(), runtime_prior);
+                for raised in [original.as_ptr(), failure.as_ptr()] {
+                    (*key_state).failure = raised;
+                    for operation in [
+                        sequences::PySet_Add
+                            as unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> i32,
+                        sequences::PySet_Contains,
+                        sequences::PySet_Discard,
+                    ] {
+                        refcount::Py_INCREF(original.as_ptr());
+                        errors::PyErr_SetRaisedException(original.as_ptr());
+                        selected(original.as_ptr(), runtime_prior);
+                        let before = (*key_state).calls;
+                        assert_eq!(operation(target.as_ptr(), key.as_ptr()), -1);
+                        assert_eq!((*key_state).calls, before + 1);
+                        assert_eq!((*key_state).observed, original.as_ptr());
+                        selected(raised, runtime_prior);
+                        assert_eq!(sequences::PySet_Size(target.as_ptr()), 0);
+                    }
+                }
+                (*key_state).failure = std::ptr::null_mut();
+                assert_eq!(
+                    sequences::PySet_Add(target.as_ptr(), mutable_key.as_ptr()),
+                    -1
+                );
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast()
+                    ),
+                    1
+                );
+                errors::PyErr_Clear();
+            }
+        }
+    });
+}
+
 #[test]
 fn c_api_dict_set_item_string() {
     let _guard = CApiTestGuard::new();
