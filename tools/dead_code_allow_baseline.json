@@ -1,5 +1,5 @@
 {
-  "baseline_total": 95,
+  "baseline_total": 92,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -180,11 +180,6 @@
       "id": "runtime/molt-gpu/tests/support/le_bytes.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-ir/src/json_boundary.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
       "id": "runtime/molt-ir/src/tir/op_kinds_generated.rs::allow_dead_code::impl:OperandOwnership",
@@ -422,17 +417,7 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-path/src/libc_compat.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-runtime-path/src/os_ext.rs::allow_dead_code::fn:require_str",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime-platform/src/libc_compat.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
