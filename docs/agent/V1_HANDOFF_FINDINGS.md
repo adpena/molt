@@ -91,6 +91,28 @@ are removed. Production type admission remains strict. The combined ABI
 consumer execution is still required. The dedicated subtype-provider control
 does not establish numeric-to-managed-subtype injected-error composition.
 
+At `b59027959`, the standalone ABI family compiles and completes 55 test
+binaries with 760 passes, one failure and one ignored case. The migrated
+string, numeric-protocol, slice and module controls pass. A direct floating
+comparison slot assertion still fails, and the hook-registration binary aborts
+while invoking an error-selecting fixture outside an attached execution
+transaction. Both remaining consumers are under correction; the incomplete
+binary is not counted as passing.
+
+The full optimized runtime at the same source compiles and completes its
+parallel partition with 1,341 passes and 487 failures; nine of ten isolated
+cases pass. Most failures follow a class-retirement failure that makes later
+bootstrap or restart attempts fail. Fresh processes reproduce the allocation,
+aggregate-error and length-hint failures, while the class-name projection,
+runtime-restart and tracked-list growth controls pass independently. The
+allocation tests expose that emergency MemoryError has a class observation but
+no public instance-taking transport. Ordinary error publication also leaves an
+earlier C error dominant over a newly selected runtime error. These shared
+state/transport obligations require a coherent correction before another
+family-wide acceptance claim; a cascade is not evidence of hundreds of
+independent defects. The order-dependent class-name projection remains
+unqualified by its standalone pass.
+
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an
 uncast native boolean pointer, and an unconstrained array storage-result error

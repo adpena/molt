@@ -63,6 +63,13 @@ fn test_hooks_or_stubs_returns_stubs() {
 
     let str_bits = unsafe { h.alloc_str(b"hello".as_ptr(), 5) };
     assert_eq!(str_bits, 0);
+    unsafe {
+        assert_eq!(
+            molt_cpython_abi::api::errors::PyErr_Occurred(),
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+        );
+        molt_cpython_abi::api::errors::PyErr_Clear();
+    }
 
     let bytes_bits = unsafe { (h.alloc_bytes)(b"data".as_ptr(), 4) };
     assert_eq!(bytes_bits, 0);
@@ -464,11 +471,32 @@ fn test_abi_transaction_rejects_conflicting_normalized_hooks_before_attachment()
         // The rejected request never replaced either original allocator, and
         // unwinding its lock does not prevent a subsequent valid attachment.
         let installed = molt_cpython_abi::hooks::hooks().unwrap();
-        assert_eq!(unsafe { (installed.alloc_list)() }, 0);
-        assert_eq!(unsafe { installed.alloc_str(b"x".as_ptr(), 1) }, 0);
+        let original = fixture_hooks();
+        assert!(std::ptr::fn_addr_eq(
+            installed.alloc_list,
+            original.alloc_list
+        ));
+        assert!(std::ptr::fn_addr_eq(
+            installed
+                .alloc_str
+                .expect("the original optional producer remains installed"),
+            original.alloc_str.unwrap(),
+        ));
+        assert_no_execution_state();
         {
             let _transaction = init();
             assert!(object::runtime_execution_thread_is_attached());
+            // Refusal selects a real C exception. Invoke the unchanged
+            // producer only while this transaction owns its thread state.
+            assert_eq!(unsafe { (installed.alloc_list)() }, 0);
+            assert_eq!(unsafe { installed.alloc_str(b"x".as_ptr(), 1) }, 0);
+            unsafe {
+                assert_eq!(
+                    molt_cpython_abi::api::errors::PyErr_Occurred(),
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+                );
+                molt_cpython_abi::api::errors::PyErr_Clear();
+            }
             assert!(unsafe { molt_cpython_abi::api::sequences::PyList_New(0) }.is_null());
             assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -489,6 +517,13 @@ fn test_abi_transaction_accepts_identical_normalized_hooks() {
             assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
             assert_eq!(unsafe { (hooks_or_stubs().runtime_is_initialized)() }, 1);
             assert_eq!(unsafe { hooks_or_stubs().alloc_str(b"x".as_ptr(), 1) }, 0);
+            unsafe {
+                assert_eq!(
+                    molt_cpython_abi::api::errors::PyErr_Occurred(),
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+                );
+                molt_cpython_abi::api::errors::PyErr_Clear();
+            }
         }
         assert_no_execution_state();
     }
