@@ -702,7 +702,7 @@ mod tests {
     use molt_cpython_abi::abi_types::{
         PyExc_DeprecationWarning, PyExc_RuntimeWarning, PyExc_Warning,
     };
-    use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject};
+    use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject, typeobj};
     use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
     use std::cell::RefCell;
 
@@ -805,7 +805,7 @@ mod tests {
                 let error = unsafe { errors::PyErr_GetRaisedException() };
                 assert!(!error.is_null());
                 let error = unsafe { OwnedPyObject::from_owned(error) };
-                let class = unsafe { object::PyObject_Type(error.as_ptr()) };
+                let class = unsafe { typeobj::PyObject_Type(error.as_ptr()) };
                 assert!(!class.is_null());
                 let class = unsafe { OwnedPyObject::from_owned(class) };
                 let expected = if category.is_null() {
@@ -833,7 +833,7 @@ mod tests {
             let error = unsafe { errors::PyErr_GetRaisedException() };
             assert!(!error.is_null());
             let error = unsafe { OwnedPyObject::from_owned(error) };
-            let class = unsafe { object::PyObject_Type(error.as_ptr()) };
+            let class = unsafe { typeobj::PyObject_Type(error.as_ptr()) };
             assert!(!class.is_null());
             let class = unsafe { OwnedPyObject::from_owned(class) };
             assert_eq!(class.as_ptr(), custom.as_ptr());
@@ -868,7 +868,7 @@ mod tests {
             let mutated = unsafe { errors::PyErr_GetRaisedException() };
             assert!(!mutated.is_null());
             let mutated = unsafe { OwnedPyObject::from_owned(mutated) };
-            let actual_class = unsafe { object::PyObject_Type(mutated.as_ptr()) };
+            let actual_class = unsafe { typeobj::PyObject_Type(mutated.as_ptr()) };
             assert!(!actual_class.is_null());
             let actual_class = unsafe { OwnedPyObject::from_owned(actual_class) };
             assert_eq!(actual_class.as_ptr(), custom.as_ptr());

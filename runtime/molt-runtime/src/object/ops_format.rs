@@ -1165,14 +1165,14 @@ unsafe fn try_subclass_str_or_repr_override(
 
         let str_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
-        let raw_str = (match class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits) {
+        let raw_str = match class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
-        });
-        let base_str = (match class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits) {
+        };
+        let base_str = match class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
-        });
+        };
         if raw_str.is_some() && raw_str != base_str {
             return try_format_special_method(_py, ptr, "__str__");
         }
@@ -1190,14 +1190,14 @@ unsafe fn try_subclass_str_or_repr_override(
         }
         let repr_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
-        let raw_repr = (match class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits) {
+        let raw_repr = match class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
-        });
-        let base_repr = (match class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits) {
+        };
+        let base_repr = match class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
-        });
+        };
         if raw_repr.is_some() && raw_repr != base_repr {
             return try_format_special_method(_py, ptr, "__repr__");
         }

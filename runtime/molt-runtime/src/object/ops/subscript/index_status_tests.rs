@@ -59,7 +59,7 @@ fn native_mapping_slot_status_preserves_prior_and_legitimate_none() {
             let mut mapping: PyMappingMethods = std::mem::zeroed();
             mapping.mp_subscript = mapping_item as *const () as *mut _;
             let mut class = NativeType::subtype(&raw mut PyBaseObject_Type, c"NativeIndexStatus");
-            class.tp_as_mapping = &raw mut mapping;
+            class.tp_as_mapping = (&raw mut mapping).cast();
             assert_eq!(class.ready(), 0);
             let receiver =
                 OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *class, 0));

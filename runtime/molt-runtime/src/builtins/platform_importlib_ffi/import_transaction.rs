@@ -852,8 +852,8 @@ pub(super) fn importlib_transaction_package_from_globals(
     }
 
     let name_key = intern_runtime_static_name(_py, b"__name__");
-    let Some(name_bits) = (unsafe { dict_get_in_place(_py, globals_ptr, name_key) }
-        .map_err(|()| MoltObject::none().bits())?)
+    let Some(name_bits) = unsafe { dict_get_in_place(_py, globals_ptr, name_key) }
+        .map_err(|()| MoltObject::none().bits())?
     else {
         return Err(raise_exception::<_>(
             _py,

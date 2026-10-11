@@ -956,7 +956,7 @@ unsafe fn alloc_traceback_obj(
                     let span = if start_col >= 0 && end_col >= start_col {
                         end_col - start_col
                     } else {
-                        Ok(-1)
+                        -1
                     };
                     match best {
                         Some((_, best_span)) if span <= best_span => {}

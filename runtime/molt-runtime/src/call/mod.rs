@@ -7,8 +7,8 @@ pub(crate) mod type_policy;
 use crate::builtins::attr::{class_attr_lookup_raw_mro, descriptor_bind};
 use crate::{
     MoltObject, PyToken, TYPE_ID_STATICMETHOD, TYPE_ID_TYPE, builtin_classes, dec_ref_bits,
-    exception_pending, inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits,
-    object_type_id, raise_exception, raise_not_callable, runtime_state, staticmethod_func_bits,
+    inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits, object_type_id,
+    raise_exception, raise_not_callable, runtime_state, staticmethod_func_bits,
 };
 
 /// Preserve the caller's handler-stack baseline across every runtime invocation.

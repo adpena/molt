@@ -2,6 +2,7 @@
 
 from collections import ChainMap, defaultdict
 import csv
+from functools import lru_cache
 import graphlib
 import io
 import statistics
@@ -67,6 +68,26 @@ def factory():
 defaults = defaultdict(factory)
 observe("defaultdict hash", lambda: defaults[bad_hash])
 print("defaultdict no factory", factory_calls, len(defaults))
+
+for maxsize in (None, 2):
+    cache_calls = []
+
+    @lru_cache(maxsize=maxsize)
+    def cached(key):
+        cache_calls.append("called")
+        return "cached value"
+
+    cache_resident = Key()
+    cache_collision = Key()
+    cached(cache_resident)
+    cache_resident.fail_equal = True
+    before = cached.cache_info()
+    observe("lru hash " + str(maxsize), lambda: cached(bad_hash))
+    observe("lru equality " + str(maxsize), lambda: cached(cache_collision))
+    print("lru unchanged", maxsize, cache_calls, cached.cache_info() == before)
+    cache_resident.fail_equal = False
+    print("lru retained", cached(cache_resident), cached.cache_info().hits)
+    cached.cache_clear()
 
 observe("mode hash", lambda: statistics.mode([bad_hash]))
 observe("multimode hash", lambda: statistics.multimode([bad_hash]))

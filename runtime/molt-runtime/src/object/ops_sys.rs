@@ -1143,10 +1143,10 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                     if type_id == TYPE_ID_TUPLE {
                         return MoltObject::from_int(tuple_len(ptr) as i64).bits();
                     }
-                    if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                         Ok(storage) => storage,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                             return MoltObject::none().bits();
                         };

@@ -1,7 +1,7 @@
 use super::*;
-use crate::attr_name_bits_from_bytes;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use crate::object::builders::alloc_class_instance;
+use crate::{attr_name_bits_from_bytes, exception_pending};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct FieldAbi {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtins::attr::descriptor_call1;
+use crate::builtins::attr::{descriptor_call1, descriptor_has_get};
 use crate::builtins::exceptions::ExceptionValue;
 
 /// One normal attribute transaction for custom and default lookup, on ordinary

@@ -2107,7 +2107,10 @@ mod tests {
                 binds(first);
 
                 // A deleted spelling is rebound to the surviving materialization.
-                assert!(unsafe { crate::object::ops::dict_del_in_place(_py, registry, alias_key) });
+                assert_eq!(
+                    unsafe { crate::object::ops::dict_del_in_place(_py, registry, alias_key) },
+                    Ok(true)
+                );
                 assert_eq!(resolve_intrinsic_func(_py, alias, true), Ok(first));
                 dec_ref_bits(_py, first);
                 binds(first);
@@ -2236,7 +2239,10 @@ mod tests {
                 let alias = "_molt_capabilities_has";
                 let first = resolve_intrinsic_func(_py, alias, true).expect("publication");
                 let alias_key = string_bits(_py, alias);
-                assert!(unsafe { crate::object::ops::dict_del_in_place(_py, registry, alias_key) });
+                assert_eq!(
+                    unsafe { crate::object::ops::dict_del_in_place(_py, registry, alias_key) },
+                    Ok(true)
+                );
                 // Exhaust entry storage so rebinding the alias must grow it.
                 let spare = || unsafe {
                     2 * (crate::dict_entries(registry).capacity()
@@ -2425,9 +2431,12 @@ mod tests {
                 // Unbinding the anchor's registry is authoritative: resolution
                 // stops publishing and the anchor namespace is never refilled.
                 let registry_key = string_bits(_py, REGISTRY_NAME);
-                assert!(unsafe {
-                    crate::object::ops::dict_del_in_place(_py, anchor_dict, registry_key)
-                });
+                assert_eq!(
+                    unsafe {
+                        crate::object::ops::dict_del_in_place(_py, anchor_dict, registry_key)
+                    },
+                    Ok(true)
+                );
                 let private = resolve_intrinsic_func(_py, "molt_capabilities_has", true)
                     .expect("private callable");
                 assert_eq!(bound_value(_py, registry, "molt_capabilities_has"), None);

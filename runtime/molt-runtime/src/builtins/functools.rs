@@ -1581,9 +1581,14 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
                 dec_ref_bits(_py, key_bits);
                 return MoltObject::none().bits();
             }
-            if let Some((cache_key_bits, val_bits)) =
-                dict_find_entry_kv_in_place(_py, cache_ptr, key_bits)
-            {
+            let cached = match dict_find_entry_kv_in_place(_py, cache_ptr, key_bits) {
+                Ok(cached) => cached,
+                Err(()) => {
+                    dec_ref_bits(_py, key_bits);
+                    return MoltObject::none().bits();
+                }
+            };
+            if let Some((cache_key_bits, val_bits)) = cached {
                 let hits = lru_hits(self_ptr) + 1;
                 lru_set_hits(self_ptr, hits);
                 let order_ptr = lru_order_ptr(self_ptr);
@@ -1591,8 +1596,8 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
                     let order = &mut *order_ptr;
                     order.touch(cache_key_bits);
                 }
-                dec_ref_bits(_py, key_bits);
                 inc_ref_bits(_py, val_bits);
+                dec_ref_bits(_py, key_bits);
                 return val_bits;
             }
         }

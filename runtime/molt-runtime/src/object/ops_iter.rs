@@ -486,14 +486,14 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 && crate::object::ops_list::list_storage_ptr(seq_bits).is_some()
                 && !crate::object::iterable::builtin_receiver(_py, ptr)
             {
-                if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                if let Some(method) = match crate::builtins::attr::lookup_special_method(
                     _py,
                     seq_bits,
                     b"__reversed__",
                 ) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
-                }) {
+                } {
                     let result = call_callable0(_py, method);
                     dec_ref_bits(_py, method);
                     return result;
@@ -524,10 +524,10 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 dec_ref_bits(_py, rev_bits);
                 return iter_bits;
             }
-            if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+            if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                 Ok(storage) => storage,
                 Err(()) => return MoltObject::none().bits(),
-            }) {
+            } {
                 let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                     return MoltObject::none().bits();
                 };
@@ -751,10 +751,10 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if builtin_only || crate::object::iterable::builtin_receiver(_py, ptr) {
-                    if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                         Ok(storage) => storage,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let target_bits = molt_dict_keys(dict_bits);
                         if obj_from_bits(target_bits).is_none() {
                             return MoltObject::none().bits();
@@ -859,14 +859,14 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     }
                 }
                 if !builtin_only {
-                    if let Some(call_bits) = (match crate::builtins::attr::lookup_special_method(
+                    if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         iter_bits,
                         b"__iter__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let res = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {

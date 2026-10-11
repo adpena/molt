@@ -1778,10 +1778,10 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
             return float_result_bits(_py, value.re.hypot(value.im));
         }
         if let Some(method) = unsafe {
-            (match crate::builtins::attr::lookup_special_method(_py, val_bits, b"__abs__") {
+            match crate::builtins::attr::lookup_special_method(_py, val_bits, b"__abs__") {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
-            })
+            }
         } {
             let result = unsafe { call_callable0(_py, method) };
             dec_ref_bits(_py, method);

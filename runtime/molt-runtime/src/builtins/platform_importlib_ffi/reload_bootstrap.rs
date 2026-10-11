@@ -37,21 +37,30 @@ pub extern "C" fn molt_importlib_reload(
                 ));
             };
 
-            modules_bits = importlib_runtime_modules_bits(_py)?;
+            modules_bits = match importlib_runtime_modules_bits(_py) {
+                Ok(bits) => bits,
+                Err(error) => {
+                    dec_ref_bits(_py, module_name_bits);
+                    return Err(error);
+                }
+            };
             let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
                 if !obj_from_bits(module_name_bits).is_none() {
                     dec_ref_bits(_py, module_name_bits);
                 }
                 return Err(importlib_modules_runtime_error(_py));
             };
-            let in_sys_modules = unsafe { dict_get_in_place(_py, modules_ptr, module_name_bits) }
-                .is_some_and(|bits| bits == module_bits);
-            if exception_pending(_py) {
-                if !obj_from_bits(module_name_bits).is_none() {
-                    dec_ref_bits(_py, module_name_bits);
+            let in_sys_modules = match unsafe {
+                dict_get_in_place(_py, modules_ptr, module_name_bits)
+            } {
+                Ok(value) => value.is_some_and(|bits| bits == module_bits),
+                Err(()) => {
+                    if !obj_from_bits(module_name_bits).is_none() {
+                        dec_ref_bits(_py, module_name_bits);
+                    }
+                    return Err(MoltObject::none().bits());
                 }
-                return Err(MoltObject::none().bits());
-            }
+            };
             if !in_sys_modules {
                 let display = crate::object::ops_format::format_obj_str_bytes(
                     _py,

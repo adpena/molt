@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::Value as JsonValue;
 
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
-use crate::builtins::exceptions::molt_exception_last_pending;
+use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
 use crate::builtins::modules::{ExecutionMetadata, execute_compiled_module, sys_modules_dict_bits};
 use crate::object::ops_sys::runtime_target_minor;
 use crate::*;
@@ -479,6 +479,7 @@ fn importlib_find_spec_via_path_hooks(
     let result = (|| {
         let find_spec_name = intern_runtime_static_name(_py, b"find_spec");
         let hooks_iter = molt_iter(path_hooks_bits);
+        let _hooks_iter_owner = ExceptionValue::adopt(_py, hooks_iter);
         if exception_pending(_py) {
             return Err(raise_exception::<_>(
                 _py,
@@ -489,6 +490,7 @@ fn importlib_find_spec_via_path_hooks(
         let mut hooks: Vec<u64> = Vec::new();
         loop {
             let pair_bits = molt_iter_next(hooks_iter);
+            let _pair_owner = ExceptionValue::adopt(_py, pair_bits);
             let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
                 for hook_bits in hooks {
                     dec_ref_bits(_py, hook_bits);
@@ -534,17 +536,37 @@ fn importlib_find_spec_via_path_hooks(
             hooks.push(hook_bits);
         }
         for entry in search_paths {
-            let entry_bits = alloc_str_bits(_py, entry)?;
+            let entry_bits = match alloc_str_bits(_py, entry) {
+                Ok(bits) => bits,
+                Err(error) => {
+                    for hook_bits in hooks {
+                        dec_ref_bits(_py, hook_bits);
+                    }
+                    return Err(error);
+                }
+            };
             let mut finder_bits = MoltObject::none().bits();
             let mut finder_owned = false;
-            if let Some(cache_ptr) = path_importer_cache_ptr
-                && let Some(cached_bits) = unsafe { dict_get_in_place(_py, cache_ptr, entry_bits) }
-            {
-                if obj_from_bits(cached_bits).is_none() {
-                    dec_ref_bits(_py, entry_bits);
-                    continue;
+            if let Some(cache_ptr) = path_importer_cache_ptr {
+                let cached = match unsafe { dict_get_in_place(_py, cache_ptr, entry_bits) } {
+                    Ok(cached) => cached,
+                    Err(()) => {
+                        dec_ref_bits(_py, entry_bits);
+                        for hook_bits in hooks {
+                            dec_ref_bits(_py, hook_bits);
+                        }
+                        return Err(MoltObject::none().bits());
+                    }
+                };
+                if let Some(cached_bits) = cached {
+                    if obj_from_bits(cached_bits).is_none() {
+                        dec_ref_bits(_py, entry_bits);
+                        continue;
+                    }
+                    inc_ref_bits(_py, cached_bits);
+                    finder_bits = cached_bits;
+                    finder_owned = true;
                 }
-                finder_bits = cached_bits;
             }
 
             if obj_from_bits(finder_bits).is_none() {
@@ -565,8 +587,10 @@ fn importlib_find_spec_via_path_hooks(
                     }
                     finder_owned = true;
                     if let Some(cache_ptr) = path_importer_cache_ptr {
-                        unsafe { dict_set_in_place(_py, cache_ptr, entry_bits, finder_bits) };
-                        if exception_pending(_py) {
+                        let stored = unsafe {
+                            dict_set_in_place(_py, cache_ptr, entry_bits, finder_bits)
+                        };
+                        if !stored {
                             if finder_owned && !obj_from_bits(finder_bits).is_none() {
                                 dec_ref_bits(_py, finder_bits);
                             }

@@ -27,11 +27,10 @@ pub extern "C" fn molt_module_getattribute(module: u64, name: u64) -> u64 {
         if string_obj_to_owned(obj_from_bits(name)).is_none() {
             return crate::builtins::attr::raise_attr_name_type_error(py, name);
         }
-        if let Some(value) = unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name) } {
-            return value;
-        }
-        if exception_pending(py) {
-            return MoltObject::none().bits();
+        match unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name) } {
+            Ok(Some(value)) => return value,
+            Ok(None) => {}
+            Err(()) => return MoltObject::none().bits(),
         }
         let attribute = string_obj_to_owned(obj_from_bits(name)).unwrap();
         let module_name = unsafe { module_name_bits(ptr) };

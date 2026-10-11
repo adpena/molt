@@ -102,8 +102,8 @@ fn env_from_bits_wasm(
             let pair_ptr = obj_from_bits(pair.bits())
                 .as_ptr()
                 .expect("dict-items pair");
-            let values = tuple_elements(pair_ptr);
-            let (key_bits, val_bits) = (values[0], values[1]);
+            let (key_bits, val_bits) =
+                crate::object::seq_access::tuple_pair(pair_ptr).expect("dict-items pair");
             let key = string_from_bits_wasm(_py, key_bits, "env key")?;
             let value = string_from_bits_wasm(_py, val_bits, "env value")?;
             if key == "MOLT_ENV_OVERLAY" && value == "1" {

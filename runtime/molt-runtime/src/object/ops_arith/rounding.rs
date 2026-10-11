@@ -33,10 +33,10 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
         }
     }
     let method = unsafe {
-        (match crate::builtins::attr::lookup_special_method(py, value, b"__round__") {
+        match crate::builtins::attr::lookup_special_method(py, value, b"__round__") {
             Ok(value) => value,
             Err(()) => return MoltObject::none().bits(),
-        })
+        }
     };
     if let Some(method) = method {
         // The lookup returned an owned bound callable; the caller retains all

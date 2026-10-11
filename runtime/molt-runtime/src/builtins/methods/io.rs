@@ -8,8 +8,15 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
         classes.buffered_writer, classes.buffered_random, classes.text_io_wrapper,
         classes.bytes_io, classes.string_io];
     let owner = if owners.contains(&owner) { owner } else {
-        let pointer = obj_from_bits(owner).as_ptr()?;
-        unsafe { class_mro_view(_py, pointer).iter().copied().find(|candidate| owners.contains(candidate))? }
+        let Some(pointer) = obj_from_bits(owner).as_ptr() else {
+            return Ok(None);
+        };
+        let Some(owner) = (unsafe {
+            class_mro_view(_py, pointer).iter().copied().find(|candidate| owners.contains(candidate))
+        }) else {
+            return Ok(None);
+        };
+        owner
     };
 
 }, {

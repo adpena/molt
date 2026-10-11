@@ -66,9 +66,9 @@ use crate::object::code_layout::code_slots;
 use crate::object::layout::{CO_OPTIMIZED, code_flags};
 use crate::{
     FRAME_STACK, MoltHeader, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_STRING,
-    alloc_dict_with_pairs, alloc_object, dec_ref_bits, dict_del_in_place, dict_get_in_place,
-    dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
-    missing_bits, obj_from_bits, object_mark_has_ptrs, object_type_id, raise_exception,
+    alloc_dict_with_pairs, alloc_object, dec_ref_bits, dict_del_in_place, dict_set_in_place,
+    exception_pending, header_from_obj_ptr, inc_ref_bits, is_missing_bits, missing_bits,
+    obj_from_bits, object_mark_has_ptrs, object_type_id, raise_exception,
 };
 
 const WORD: usize = std::mem::size_of::<u64>();

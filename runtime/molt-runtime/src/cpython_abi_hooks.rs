@@ -1664,7 +1664,7 @@ unsafe extern "C" fn hook_object_set_item(
     key_bits: u64,
     value: *const u64,
 ) -> c_int {
-    with_gil(|py| {
+    with_gil(|_| {
         let result = if value.is_null() {
             crate::object::ops::molt_del_index(obj_bits, key_bits)
         } else {
@@ -1863,19 +1863,16 @@ fn sys_module_attr_borrowed(
                 crate::PtrDropGuard::new(MoltObject::from_bits(name).as_ptr().unwrap());
             let value =
                 crate::object::accessors::instance_attribute_lookup(&py, module_ptr, name, None);
-
-            if crate::exception_pending(&py) {
-                if let Some(bits) = value {
+            match value {
+                Ok(Some(bits)) => {
+                    // This temporary owner came from the shared lookup. The
+                    // interpreter namespace still owns the selected dictionary edge.
                     dec_ref_bits(&py, bits);
+                    BorrowedHandleResult::ok(bits)
                 }
-                return BorrowedHandleResult::error();
+                Ok(None) => BorrowedHandleResult::missing(),
+                Err(()) => BorrowedHandleResult::error(),
             }
-            value.map_or_else(BorrowedHandleResult::missing, |bits| {
-                // This temporary owner came from the shared lookup. The
-                // interpreter namespace still owns the selected dictionary edge.
-                dec_ref_bits(&py, bits);
-                BorrowedHandleResult::ok(bits)
-            })
         };
         if policy == molt_cpython_abi::hooks::SysLookupPolicy::PySysGetObject
             && crate::object::ops_sys::runtime_target_at_least(&py, 3, 13)
@@ -9832,7 +9829,8 @@ mod tests {
             // The sibling import API deliberately propagates; it must not use
             // PySys_GetObject's suppression or unraisable reporting policy.
             let modules_name = crate::attr_name_bits_from_bytes(&py, b"modules").unwrap();
-            crate::dict_del_in_place(&py, dict, modules_name);
+            crate::dict_del_in_place(&py, dict, modules_name)
+                .expect("sys namespace deletion must succeed whether or not modules is present");
             let (modules_key, modules_class) = sys_lookup_key(&py);
             crate::object::ops::dict_set_with_hash_in_place(
                 &py,
@@ -9899,7 +9897,7 @@ mod tests {
             ))
             .as_ptr()
             .unwrap();
-            let _ = crate::dict_del_in_place(&py, dict, key);
+            assert_eq!(crate::dict_del_in_place(&py, dict, key), Ok(true));
             assert!(
                 molt_cpython_abi::api::sys::PySys_GetObject(c"molt_namespace_probe".as_ptr())
                     .is_null()

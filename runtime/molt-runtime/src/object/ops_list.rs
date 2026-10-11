@@ -424,7 +424,7 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
         }
         let mut index = 0;
         while let Some(item) = storage.item(index) {
-            let equal = eq_bool_from_bits(py, item.bits(), val_bits);
+            let equal = unsafe { eq_bool_from_bits(py, item.bits(), val_bits) };
             drop(item);
             let Some(equal) = equal else {
                 return MoltObject::none().bits();
@@ -912,7 +912,7 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
         }
         let (mut index, mut count) = (0, 0);
         while let Some(item) = storage.item(index) {
-            let equal = eq_bool_from_bits(py, item.bits(), val_bits);
+            let equal = unsafe { eq_bool_from_bits(py, item.bits(), val_bits) };
             drop(item);
             let Some(equal) = equal else {
                 return MoltObject::none().bits();
@@ -976,7 +976,7 @@ pub extern "C" fn molt_list_index_range(
             let Some(item) = storage.item(start as usize) else {
                 break;
             };
-            let equal = eq_bool_from_bits(_py, item.bits(), val_bits);
+            let equal = unsafe { eq_bool_from_bits(_py, item.bits(), val_bits) };
             drop(item);
             let Some(equal) = equal else {
                 return MoltObject::none().bits();

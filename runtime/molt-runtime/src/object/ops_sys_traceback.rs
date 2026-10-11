@@ -104,18 +104,18 @@ pub(crate) fn traceback_frames(
         }) else {
             break;
         };
-        let line = (match traceback_attribute(py, current.bits(), line_name) {
+        let line = match traceback_attribute(py, current.bits(), line_name) {
             Ok(value) => value,
             Err(()) => return Vec::new(),
-        });
-        let next = (match traceback_attribute(py, current.bits(), next_name) {
+        };
+        let next = match traceback_attribute(py, current.bits(), next_name) {
             Ok(value) => value,
             Err(()) => return Vec::new(),
-        });
-        let info = (match traceback_frame_info(py, frame.bits()) {
+        };
+        let info = match traceback_frame_info(py, frame.bits()) {
             Ok(value) => value,
             Err(()) => return Vec::new(),
-        });
+        };
         let (filename, frame_line, name) =
             info.unwrap_or_else(|| (b"<unknown>".to_vec(), 0, b"<module>".to_vec()));
         let lineno = line
@@ -1019,10 +1019,10 @@ pub(crate) fn traceback_payload_from_frame_chain(
         }) else {
             break;
         };
-        let back = (match traceback_attribute(py, current.bits(), back_name) {
+        let back = match traceback_attribute(py, current.bits(), back_name) {
             Ok(value) => value,
             Err(()) => return Vec::new(),
-        });
+        };
         let line = traceback_source_line_native(py, &filename, lineno);
         out.push(TracebackPayloadFrame {
             filename,

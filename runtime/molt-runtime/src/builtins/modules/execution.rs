@@ -523,7 +523,8 @@ fn restore_sys_modules_swap(_py: &PyToken<'_>, swap: Option<SysModulesSwap>) {
             dict_set_in_place(_py, swap.modules_ptr, swap.key_bits, bits);
             dec_ref_bits(_py, bits);
         } else {
-            dict_del_in_place(_py, swap.modules_ptr, swap.key_bits);
+            // The caller captures any cleanup failure after this restoration.
+            let _ = dict_del_in_place(_py, swap.modules_ptr, swap.key_bits);
         }
     }
     dec_ref_bits(_py, swap.key_bits);
@@ -720,12 +721,10 @@ pub(super) fn module_metadata_override_bits(
         }
         MetadataOverride::Existing => unsafe {
             let dict_ptr = module_dict_ptr(_py, module_bits)?;
-            let Some(bits) = dict_get_in_place(_py, dict_ptr, attr_bits) else {
-                return if exception_pending(_py) {
-                    Err(MoltObject::none().bits())
-                } else {
-                    Ok(None)
-                };
+            let Some(bits) = dict_get_in_place(_py, dict_ptr, attr_bits)
+                .map_err(|()| MoltObject::none().bits())?
+            else {
+                return Ok(None);
             };
             inc_ref_bits(_py, bits);
             Ok(Some((bits, true)))
