@@ -1128,6 +1128,11 @@ def test_native_cache_shape_and_symbols_share_one_generation(tmp_path, monkeypat
             target_triple="x86_64-unknown-linux-gnu", symbols=("application",)
         )
     )
+    # Age the first generation. Linux stamps file times from a coarse clock, so
+    # a same-size rewrite in the same tick as the first write keeps both times,
+    # and the in-process reader finishes well inside one tick.
+    stamp = artifact.stat()
+    os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns - 60 * 10**9))
     contract = BackendArtifactContract(
         BackendArtifactKind.NATIVE_OBJECT, "x86_64-unknown-linux-gnu"
     )
