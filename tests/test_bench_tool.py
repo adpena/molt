@@ -1907,6 +1907,7 @@ def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path,
     assert bench_tool.measure_runtime(["probe"]) is None
 
 
+@pytest.mark.usefixtures("scratch_bench_checkout")
 def test_bench_env_shares_the_warm_target_unless_a_session_is_pinned(
     tmp_path: Path,
 ) -> None:

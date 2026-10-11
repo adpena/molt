@@ -733,6 +733,8 @@ def test_cli_check_deterministic_warn_json(tmp_path: Path) -> None:
             "--deterministic",
             "--deterministic-warn",
             "--json",
+            "--output",
+            str(tmp_path / "type_facts.json"),
             str(script),
         ]
     )
