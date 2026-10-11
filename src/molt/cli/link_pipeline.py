@@ -14,7 +14,7 @@ from molt.artifact_publication import discard_staged_output
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import link_fingerprints
 from molt.cli.backend_cache import (
-    _stage_shared_stdlib_object_for_link,
+    _validate_shared_stdlib_output_for_link,
 )
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
@@ -159,24 +159,21 @@ def _prepare_native_link(
         phase_starts["link"] = time.perf_counter()
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
+    # Shared stdlib bytes already belong to this build. Cache retention cannot
+    # invalidate a required input after backend preparation/admission.
     if stdlib_obj_path is not None:
-        # Admission and snapshotting are one locked transaction. A prior probe
-        # cannot authorize a later read, even when the cache lives in this build.
         try:
-            link_stdlib_obj = _stage_shared_stdlib_object_for_link(
+            _validate_shared_stdlib_output_for_link(
                 stdlib_obj_path,
                 stdlib_object_cache_key=stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
                 stdlib_module_symbols=stdlib_module_symbols,
-                artifacts_root=artifacts_root,
                 target_triple=target.triple,
             )
         except OSError as exc:
-            # Built-in formatting preserves staging cleanup notes at the real
-            # text/JSON consumer boundary without expanding a traceback tree.
             detail = "".join(traceback.format_exception_only(exc)).rstrip()
             return None, _fail(
-                f"Failed to stage shared stdlib archive for native link: {detail}",
+                f"Failed to admit shared stdlib archive for native link: {detail}",
                 json_output,
                 command="build",
             )

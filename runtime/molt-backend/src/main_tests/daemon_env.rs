@@ -15,6 +15,17 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let output = tmp_dir.join("out.a");
     let stdlib = tmp_dir.join("stdlib.a");
+    let stdlib_key = "a".repeat(64);
+    let optional = tmp_dir
+        .join("cache/shared-stdlib")
+        .join(&stdlib_key)
+        .join("stdlib.a");
+    let manifest = serde_json::json!({
+        "schema": "stdlib-manifest-v2-archive", "artifact_kind": "archive",
+        "cache_key": stdlib_key, "cache_variant": "test",
+        "compiler_fingerprint": "test", "target_triple": null,
+    })
+    .to_string();
     // The main application object emits the per-app callable resolver, which
     // requires the linked runtime staticlib's `molt_*` callable-symbol set
     // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
@@ -27,13 +38,15 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
     std::fs::write(&runtime_symbols, "molt_init_sys\nmolt_main\n")
         .expect("write runtime callable symbol set");
-    let request = serde_json::json!({
+    let mut request_json = serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "config_digest": "daemon-test",
         "env": {
             "MOLT_ENTRY_MODULE": "demo",
             "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
-            "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
+            "MOLT_STDLIB_CACHE_KEY": stdlib_key,
+            "MOLT_STDLIB_CACHE_ENTRY": optional.to_string_lossy(),
+            "MOLT_STDLIB_CACHE_MANIFEST": manifest,
             "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
             "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
@@ -43,8 +56,8 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "is_wasm": false,
             "native_output_kind": "archive",
             "output": output.to_string_lossy(),
-            "cache_key": "",
-            "function_cache_key": "",
+            "cache_key": "module",
+            "function_cache_key": "function",
             "ir": {
                 "functions": [
                     {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
@@ -59,7 +72,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     });
 
     let request = DaemonRequest::from_json_bytes(
-        serde_json::to_string(&request)
+        serde_json::to_string(&request_json)
             .expect("serialize request")
             .as_bytes(),
     )
@@ -196,6 +209,87 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     assert_native_archive_members(&bytes, 1);
     let stdlib_bytes = std::fs::read(&stdlib).expect("read shared stdlib archive");
     assert_native_archive_members(&stdlib_bytes, 1);
+    assert!(!result.cached);
+    assert_eq!(std::fs::read(&optional).unwrap(), stdlib_bytes);
+    let extensions = ["key", "manifest.json", "partition.json", "sha256"];
+    let sidecars: Vec<_> = extensions
+        .iter()
+        .map(|ext| {
+            let bytes = std::fs::read(stdlib.with_extension(ext)).expect("read required sidecar");
+            assert_eq!(std::fs::read(optional.with_extension(ext)).unwrap(), bytes);
+            bytes
+        })
+        .collect();
+
+    // A new owned destination forces real warm archive hydration in the same daemon.
+    let warm_stdlib = tmp_dir.join("warm-stdlib.a");
+    let warm_output = tmp_dir.join("warm-app.a");
+    request_json["env"]["MOLT_STDLIB_OBJ"] = warm_stdlib.to_string_lossy().as_ref().into();
+    request_json["jobs"][0]["output"] = warm_output.to_string_lossy().as_ref().into();
+    let run_request = |value: &serde_json::Value, cache: &mut DaemonCache| {
+        let parsed = DaemonRequest::from_json_bytes(&serde_json::to_vec(value).unwrap())
+            .expect("parse repeated daemon request");
+        compile_single_job(parsed.jobs.unwrap().into_iter().next().unwrap(), cache)
+    };
+    let warm = run_request(&request_json, &mut cache);
+    assert!(warm.ok, "warm compile failed: {:?}", warm.message);
+    assert!(!warm.cached);
+    assert_eq!(std::fs::read(&warm_stdlib).unwrap(), stdlib_bytes);
+    for (ext, expected) in extensions.iter().zip(&sidecars) {
+        assert_eq!(
+            &std::fs::read(warm_stdlib.with_extension(ext)).unwrap(),
+            expected
+        );
+    }
+    // Native daemon cache publication requires an already-admitted required
+    // archive at request entry. Compile once with that established owner.
+    let admitted_output = tmp_dir.join("admitted-app.a");
+    request_json["jobs"][0]["output"] = admitted_output.to_string_lossy().as_ref().into();
+    let admitted = run_request(&request_json, &mut cache);
+    assert!(
+        admitted.ok && !admitted.cached,
+        "admitted compile: {:?}",
+        admitted.message
+    );
+    let warm_app_bytes = std::fs::read(&admitted_output).unwrap();
+    assert_native_archive_members(&warm_app_bytes, 1);
+
+    // Returned compile releases cache custody. Evict only the optional generation;
+    // probe-only reuse must still produce the real application from daemon memory.
+    std::fs::remove_dir_all(optional.parent().unwrap()).expect("evict optional archive");
+    request_json["jobs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("ir");
+    request_json["jobs"][0]["probe_cache_only"] = true.into();
+    for (name, omit_optional) in [("evicted", false), ("omitted", true)] {
+        if omit_optional {
+            request_json["env"]
+                .as_object_mut()
+                .unwrap()
+                .remove("MOLT_STDLIB_CACHE_ENTRY");
+        }
+        let destination = tmp_dir.join(format!("{name}.a"));
+        request_json["jobs"][0]["output"] = destination.to_string_lossy().as_ref().into();
+        let hit = run_request(&request_json, &mut cache);
+        assert!(
+            hit.ok && hit.cached && !hit.needs_ir,
+            "{name}: {:?}",
+            hit.message
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), warm_app_bytes);
+        assert_eq!(std::fs::read(&warm_stdlib).unwrap(), stdlib_bytes);
+        for (ext, expected) in extensions.iter().zip(&sidecars) {
+            assert_eq!(
+                &std::fs::read(warm_stdlib.with_extension(ext)).unwrap(),
+                expected
+            );
+        }
+        assert!(!optional.exists());
+        if omit_optional {
+            assert!(std::env::var_os("MOLT_STDLIB_CACHE_ENTRY").is_none());
+        }
+    }
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 

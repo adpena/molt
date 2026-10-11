@@ -40,7 +40,7 @@ def test_cli_link_pipeline_authority_is_single_home() -> None:
 
 @pytest.mark.parametrize("location", ["external", "same-root", "missing"])
 @pytest.mark.parametrize("json_output", [False, True])
-def test_every_configured_stdlib_uses_locked_snapshot_admission(
+def test_required_build_owned_stdlib_is_validated_without_late_cache_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -56,7 +56,6 @@ def test_every_configured_stdlib_uses_locked_snapshot_admission(
 
     def stage(path: Path, **kwargs):
         admitted.append(path)
-        assert kwargs["artifacts_root"] == artifacts
         assert kwargs["stdlib_object_cache_key"] == "expected"
         error = OSError("snapshot admission rejected the generation")
         error.add_note(
@@ -64,7 +63,7 @@ def test_every_configured_stdlib_uses_locked_snapshot_admission(
         )
         raise error
 
-    monkeypatch.setattr(link_pipeline, "_stage_shared_stdlib_object_for_link", stage)
+    monkeypatch.setattr(link_pipeline, "_validate_shared_stdlib_output_for_link", stage)
     prepared, failure = link_pipeline._prepare_native_link(
         output_artifact=artifacts / "app.a",
         resolved_capability_policy=None,

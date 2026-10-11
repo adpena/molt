@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import contextlib
-from contextlib import contextmanager
-import functools
 import hashlib
 import json
 import os
-from pathlib import Path
 import time
-from dataclasses import dataclass
-from typing import Any, Collection, Generator, Mapping, Sequence, cast
 import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Collection, Generator, Mapping, Sequence, cast
+
+from molt.default_paths import (
+    validate_required_stdlib_output,
+    backend_cache_artifact_filename,
+    shared_stdlib_cache_entry,
+    shared_stdlib_publish_lock_path,
+)
 
 from molt.backend_environment import compilation_diagnostics_requested
+from molt.cli import function_references as _function_references
+from molt.cli import native_symbol_inspection as _native_symbols
 from molt.cli.artifact_sync import (
     _artifact_sync_state_matches,
     _artifact_sync_state_path,
@@ -24,19 +32,23 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
     _link_failure_wants_copy,
 )
-from molt.file_locks import (
-    _acquire_file_lock,
-    _parse_lock_timeout,
-    _release_file_lock,
-)
-from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
     BackendArtifactValidationError,
 )
+from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
-from molt.default_paths import _default_molt_cache
+from molt.cli.models import (
+    _ModuleGraphMetadata,
+    _SharedStdlibCacheValidationToken,
+)
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+from molt.file_locks import (
+    _acquire_file_lock,
+    _release_file_lock,
+    _shared_cache_lock,
+)
 from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -44,14 +56,6 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from molt.cli import native_symbol_inspection as _native_symbols
-from molt.cli import function_references as _function_references
-from molt.cli.models import (
-    _ModuleGraphMetadata,
-    _SharedStdlibCacheValidationToken,
-)
-from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
-
 
 _emitted_name_matches_module_symbol = (
     _function_references.emitted_name_matches_module_symbol
@@ -261,35 +265,6 @@ def _shared_stdlib_native_symbol_closure_issue(
             issues.append(f"unresolved stdlib module references: {preview}{suffix}")
 
     return "; ".join(issues) if issues else None
-
-
-@functools.lru_cache(maxsize=64)
-def _shared_cache_lock_dir_cached(cache_root_str: str) -> Path:
-    return Path(cache_root_str) / "locks"
-
-
-@contextmanager
-def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
-    if cache_root is None:
-        cache_root = _default_molt_cache()
-    lock_dir = _shared_cache_lock_dir_cached(os.fspath(cache_root))
-    lock_path = lock_dir / f"{name}.lock"
-    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
-    lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
-    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
-    handle = _acquire_file_lock(
-        lock_path,
-        timeout_s=lock_timeout,
-        timeout_message=(
-            "Timed out waiting for shared cache lock "
-            f"{lock_path} after {timeout_label}. "
-            "Check for stale molt build/backend helper processes."
-        ),
-    )
-    try:
-        yield
-    finally:
-        _release_file_lock(handle)
 
 
 def _immutable_publish_lock_name(dst: Path) -> str:
@@ -620,10 +595,9 @@ def _backend_cache_artifact_path(
     )
     if not source_key:
         return None
-    filename_key = source_key.replace("|artifact:", ".artifact-").replace(
-        "|stdlib:", ".stdlib-"
+    return cache_root / backend_cache_artifact_filename(
+        source_key, artifact_contract.suffix
     )
-    return cache_root / f"{filename_key}{artifact_contract.suffix}"
 
 
 def _try_cached_backend_candidates(
@@ -747,12 +721,21 @@ def _try_cached_backend_candidates(
             stage_start,
         )
         stage_start = time.perf_counter()
-        if artifact_contract.is_native and _native_object_has_unresolved_module_chunks(
-            candidate,
-            stdlib_object_path,
-            target_triple=artifact_contract.target_triple,
-            identity=candidate_identity,
-        ):
+        try:
+            unresolved_chunks = (
+                artifact_contract.is_native
+                and _native_object_has_unresolved_module_chunks(
+                    candidate,
+                    stdlib_object_path,
+                    target_triple=artifact_contract.target_triple,
+                    identity=candidate_identity,
+                )
+            )
+        except _native_symbols.NativeSymbolArtifactError:
+            # Optional candidate vanished/changed after admission. Reader/tool
+            # operational failures remain errors, not cache-miss retries.
+            continue
+        if unresolved_chunks:
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
                 "backend_cache_try_unresolved_chunks",
@@ -890,6 +873,13 @@ def _stage_backend_output_and_caches(
     artifact_contract: BackendArtifactContract,
 ) -> str | None:
     artifact_contract.validate_shared_stdlib(enabled=bool(stdlib_object_cache_key))
+    if any(
+        destination is not None
+        and backend_output.expanduser().absolute()
+        == destination.expanduser().absolute()
+        for destination in (cache_path, function_cache_path)
+    ):
+        return "Backend output must be build-owned, not an evictable cache destination"
     try:
         staged_identity = _validate_backend_cache_artifact(
             backend_output, artifact_contract=artifact_contract
@@ -901,20 +891,16 @@ def _stage_backend_output_and_caches(
 
     staged_source = backend_output
     if cache_path is not None:
-        if backend_output != cache_path:
-            try:
-                staged_identity = _publish_immutable_backend_cache_artifact(
-                    backend_output,
-                    cache_path,
-                    artifact_contract=artifact_contract,
-                    warnings=warnings,
-                    identity=staged_identity,
-                )
-                staged_source = staged_identity.path
-            except OSError as exc:
-                return f"Failed to publish backend cache output: {exc}"
-        else:
-            staged_source = cache_path
+        try:
+            _publish_immutable_backend_cache_artifact(
+                backend_output,
+                cache_path,
+                artifact_contract=artifact_contract,
+                warnings=warnings,
+                identity=staged_identity,
+            )
+        except OSError as exc:
+            return f"Failed to publish backend cache output: {exc}"
 
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -1023,10 +1009,6 @@ def _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path: Path) -> Pat
     return stdlib_object_path.with_suffix(".symbol-contract.json")
 
 
-def _shared_stdlib_publish_lock_path(stdlib_object_path: Path) -> Path:
-    return stdlib_object_path.with_name(f"{stdlib_object_path.name}.publish.lock")
-
-
 def _shared_stdlib_manifest(
     *,
     cache_key: str | None,
@@ -1051,7 +1033,7 @@ def _shared_stdlib_manifest(
 
 @contextmanager
 def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Generator[None]:
-    lock_path = _shared_stdlib_publish_lock_path(stdlib_object_path)
+    lock_path = shared_stdlib_publish_lock_path(stdlib_object_path)
     handle = _acquire_file_lock(
         lock_path,
         timeout_s=None,
@@ -1063,22 +1045,45 @@ def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Generator[None]:
         _release_file_lock(handle)
 
 
-def _stage_shared_stdlib_object_for_link(
+def _validate_shared_stdlib_output_for_link(
+    path: Path,
+    *,
+    stdlib_object_cache_key: str | None,
+    stdlib_object_manifest: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
+    target_triple: str | None = None,
+) -> None:
+    try:
+        validate_required_stdlib_output(path)
+    except ValueError as error:
+        raise OSError(str(error)) from error
+    if not _shared_stdlib_cache_matches_key_locked(
+        path,
+        stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols=stdlib_module_symbols,
+        target_triple=target_triple,
+    ):
+        raise OSError(f"Required build-owned stdlib archive failed admission: {path}")
+
+
+def _hydrate_shared_stdlib_archive(
     stdlib_object_path: Path,
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
     stdlib_module_symbols: Collection[str] | None = None,
-    artifacts_root: Path,
+    output_path: Path,
     target_triple: str | None = None,
-) -> Path:
-    # A stable build-owned destination keeps the linker off the mutable cache
-    # generation, including when the source itself lives under artifacts_root.
-    staged_stdlib_obj = artifacts_root / "shared-stdlib-link" / stdlib_object_path.name
-    if staged_stdlib_obj.resolve() == stdlib_object_path.resolve():
-        raise OSError(
-            f"Shared stdlib link snapshot aliases its source: {stdlib_object_path}"
-        )
+) -> Path | None:
+    # Admission transfers the complete immutable generation into build custody
+    # before releasing its cache stripe. Later compiler/link work uses this copy.
+    staged_stdlib_obj = output_path
+    try:
+        validate_required_stdlib_output(output_path, stdlib_object_path)
+    except ValueError as error:
+        raise OSError(str(error)) from error
+    stdlib_object_path = stdlib_object_path.resolve()
     staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
     staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
     staged_manifest_path = _stdlib_object_manifest_sidecar_path(staged_stdlib_obj)
@@ -1093,38 +1098,32 @@ def _stage_shared_stdlib_object_for_link(
         stdlib_object_path
     )
     source_digest_path = _stdlib_object_digest_sidecar_path(stdlib_object_path)
-    try:
-        with _shared_stdlib_cache_lock(stdlib_object_path):
-            generation = _shared_stdlib_cache_generation_token(
-                stdlib_object_path,
-                stdlib_object_cache_key,
-                stdlib_object_manifest=stdlib_object_manifest,
-                stdlib_module_symbols=stdlib_module_symbols,
-                target_triple=target_triple,
-            )
-            if generation is None:
-                raise OSError(
-                    "Shared stdlib cache contract mismatch during staging: "
-                    f"generation unavailable for {stdlib_object_path}"
-                )
-            identities = {entry.path: entry for entry in generation[1]}
-            if not _shared_stdlib_cache_matches_key(
-                stdlib_object_path,
-                stdlib_object_cache_key,
-                stdlib_object_manifest=stdlib_object_manifest,
-                stdlib_module_symbols=stdlib_module_symbols,
-                target_triple=target_triple,
-            ):
-                raise OSError(
-                    "Shared stdlib cache contract mismatch during staging: "
-                    + _shared_stdlib_cache_mismatch_detail(
-                        stdlib_object_path,
-                        stdlib_object_cache_key,
-                        stdlib_object_manifest=stdlib_object_manifest,
-                        stdlib_module_symbols=stdlib_module_symbols,
-                        target_triple=target_triple,
-                    )
-                )
+    with (
+        _shared_stdlib_cache_lock(stdlib_object_path),
+        _shared_stdlib_cache_lock(staged_stdlib_obj),
+    ):
+        generation = _shared_stdlib_cache_generation_token(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+        )
+        if generation is None:
+            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+            return None
+        identities = {entry.path: entry for entry in generation[1]}
+        if not _shared_stdlib_cache_matches_key(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+        ):
+            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+            return None
+
+        try:
 
             def copy_snapshot(source: Path, destination: Path) -> None:
                 identity = identities.get(source.expanduser().absolute())
@@ -1172,12 +1171,14 @@ def _stage_shared_stdlib_object_for_link(
                     "Shared stdlib cache contract mismatch during staging: "
                     f"missing object digest sidecar for {stdlib_object_path}"
                 )
-    except OSError as exc:
-        try:
-            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
-        except OSError as cleanup_error:
-            exc.add_note(f"Shared stdlib staging cleanup also failed: {cleanup_error}")
-        raise
+        except OSError as exc:
+            try:
+                _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+            except OSError as cleanup_error:
+                exc.add_note(
+                    f"Shared stdlib staging cleanup also failed: {cleanup_error}"
+                )
+            raise
     return staged_stdlib_obj
 
 
@@ -1920,8 +1921,8 @@ def _stdlib_object_cache_path(
     if cache_path is None or stdlib_cache_key is None:
         return None
     cache_root = cache_path.parent
-    cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root / f"stdlib_shared_{stdlib_cache_key}.a"
+    entry_root, _lock = shared_stdlib_cache_entry(cache_root, stdlib_cache_key)
+    return entry_root / "stdlib.a"
 
 
 def _validate_shared_stdlib_cache_contract(

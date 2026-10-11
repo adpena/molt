@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
+import json
 import os
-from pathlib import Path
+import socket
+import subprocess
 import sys
 import time
+from itertools import product
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
 
 from molt.cli.wasm_link_cache import (
     _locked_wasm_link_cache_entry,
     _publish_wasm_link_cache_entry,
     _wasm_link_cache_entry,
 )
-
+from tests.process_guard_common import (
+    close_owned_test_process,
+    run_custody_subject_process,
+    start_owned_test_process,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MOLT_CACHE_PRUNE = REPO_ROOT / "tools" / "molt_cache_prune.py"
@@ -20,15 +30,9 @@ WASM_BYTES = b"\x00asm\x01\x00\x00\x00cache-entry"
 
 
 def _load_molt_cache_prune():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_molt_cache_prune", MOLT_CACHE_PRUNE
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    from molt import cache_eviction
+
+    return cache_eviction
 
 
 def _cache_key(label: str) -> str:
@@ -143,13 +147,13 @@ def test_pruner_breaks_equal_mtime_ties_by_normalized_key_path(tmp_path: Path) -
     assert second.root.exists()
 
 
-def test_budget_comes_from_flags_then_projected_env_then_dx_defaults() -> None:
+def test_budget_comes_from_flags_then_projected_env_then_canonical_defaults() -> None:
     module = _load_molt_cache_prune()
-    from molt import dx
+    from molt import default_paths
 
     assert module.resolve_budget(None, None, {}) == (
-        float(dx.DEFAULT_MOLT_CACHE_MAX_GB),
-        int(dx.DEFAULT_MOLT_CACHE_MAX_AGE_DAYS),
+        float(default_paths.DEFAULT_MOLT_CACHE_MAX_GB),
+        int(default_paths.DEFAULT_MOLT_CACHE_MAX_AGE_DAYS),
     )
     projected = {"MOLT_CACHE_MAX_GB": "7.5", "MOLT_CACHE_MAX_AGE_DAYS": "3"}
     assert module.resolve_budget(None, None, projected) == (7.5, 3)
@@ -166,8 +170,10 @@ def test_pruner_never_evicts_the_selected_home_or_bin(
     tools = cache_root / "home" / "target-root" / "toolchains" / "tool"
     tools.parent.mkdir(parents=True)
     tools.write_bytes(b"provisioned tool state")
-    stale = cache_root / "stale-entry"
-    stale.mkdir()
+    from molt.default_paths import shared_stdlib_cache_entry
+
+    stale, _lock = shared_stdlib_cache_entry(cache_root, "a" * 64)
+    stale.mkdir(parents=True)
     (stale / "payload").write_bytes(b"evictable")
     old = time.time() - 30 * 86400
     for path in (tools, tools.parent, cache_root / "home", stale / "payload", stale):
@@ -177,22 +183,815 @@ def test_pruner_never_evicts_the_selected_home_or_bin(
 
     assert not stale.exists()
     assert tools.read_bytes() == b"provisioned tool state"
-    assert summary["protected_state"] == [str((cache_root / "home").resolve())]
+    assert set(summary["protected_state"]) == {
+        str((cache_root / name).resolve()) for name in ("home", "locks")
+    }
 
 
-def test_pruner_evicts_a_cache_home_that_is_not_selected(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_pruner_preserves_unowned_native_names_and_does_not_follow_links(tmp_path):
     module = _load_molt_cache_prune()
-    cache_root = tmp_path / "cache"
-    unselected = cache_root / "home"
-    unselected.mkdir(parents=True)
-    (unselected / "payload").write_bytes(b"old build output")
-    selected = tmp_path / "selected-home"
-    monkeypatch.setenv("MOLT_HOME", str(selected))
-    monkeypatch.setenv("MOLT_BIN", str(selected / "bin"))
+    cache = tmp_path / "cache"
+    namespace = cache / "shared-stdlib"
+    namespace.mkdir(parents=True)
+    (namespace / "_molt_generated_old.py").write_bytes(b"old flat namespace")
+    (namespace / ".DS_Store").write_bytes(b"unknown metadata")
+    (namespace / "unknown-directory").mkdir()
+    outside = tmp_path / "unrelated"
+    outside.mkdir()
+    protected = outside / "owner-data"
+    protected.write_bytes(b"outside cache")
+    try:
+        (namespace / "link").symlink_to(outside, target_is_directory=True)
+        (namespace / "dangling").symlink_to(tmp_path / "absent")
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    result = module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
+    assert result["entries_removed"] == 0
+    assert result["entries_failed"] == 0
+    assert len(list(namespace.iterdir())) == 5
+    assert protected.read_bytes() == b"outside cache"
 
-    summary = module._prune(cache_root, max_bytes=0, max_age_days=None, dry_run=False)
 
-    assert not unselected.exists()
-    assert summary["protected_state"] == []
+def test_pruner_accepts_entries_vanished_after_directory_listing(tmp_path, monkeypatch):
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    namespace = cache / "shared-stdlib"
+    stale = namespace / ("a" * 64)
+    stale.mkdir(parents=True)
+    real_children = module._children
+
+    def race(path):
+        children = real_children(path)
+        if path == namespace:
+            stale.rmdir()
+        return children
+
+    monkeypatch.setattr(module, "_children", race)
+    result = module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
+    assert result["entries_removed"] == result["entries_failed"] == 0
+    assert (cache / "locks" / "prune.lock").is_file()
+
+
+def _snapshot_tree(root: Path):
+    result = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        payload = (
+            ("symlink", os.readlink(path))
+            if path.is_symlink()
+            else ("file", path.read_bytes())
+            if path.is_file()
+            else ("directory", None)
+        )
+        result[str(path.relative_to(root))] = (
+            info.st_dev,
+            info.st_ino,
+            info.st_mtime_ns,
+            payload,
+        )
+    return result
+
+
+def _run_pruner(cache: Path, *, dry_run: bool = False):
+    command = [
+        sys.executable,
+        "-B",
+        str(MOLT_CACHE_PRUNE),
+        "--cache-dir",
+        str(cache),
+        "--max-gb",
+        "0",
+        "--max-age-days",
+        "0",
+    ]
+    if dry_run:
+        command.append("--dry-run")
+    completed = run_custody_subject_process(
+        command, capture_output=True, text=True, timeout=30
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return completed.stdout
+
+
+@pytest.mark.parametrize("existing_locks", [False, True])
+def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_locks):
+    from molt.default_paths import (
+        native_stdlib_object_cache_entry,
+        shared_stdlib_cache_entry,
+    )
+
+    cache = tmp_path / "cache"
+    stdlib, stdlib_lock = shared_stdlib_cache_entry(cache, "b" * 64)
+    wasm = _cache_entry(cache, "cc-dry-run")
+    native, native_lock = native_stdlib_object_cache_entry(cache, "d" * 64)
+    for root in (stdlib, wasm.root, native):
+        root.mkdir(parents=True)
+        (root / "payload").write_bytes(b"reclaimable")
+    if existing_locks:
+        for lock in (
+            stdlib_lock,
+            wasm.lock,
+            native_lock,
+        ):
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_bytes(b"unchanged advisory contents")
+    before = _snapshot_tree(cache)
+    output = _run_pruner(cache, dry_run=True)
+    assert "removed.entries=3" in output
+    assert _snapshot_tree(cache) == before
+
+
+def test_pruner_cli_imports_only_light_cache_authorities(tmp_path):
+    code = r"""import builtins, json, runpy, sys, time
+# Guard bootstrap may already own heavy modules before the subject starts.
+baseline = set(sys.modules)
+def forbidden(name):
+    return name in ('molt.cli', 'molt.frontend', 'molt.dx') or name.startswith(
+        ('molt.cli.', 'molt.frontend.', 'molt.dx.'))
+original_import = builtins.__import__
+def light_import(name, globals=None, locals=None, fromlist=(), level=0):
+    requested = [name] + [name + '.' + item for item in (fromlist or ())]
+    assert not any(forbidden(item) for item in requested), requested
+    return original_import(name, globals, locals, fromlist, level)
+builtins.__import__ = light_import
+# Sensitivity includes cached imports: preloading dx must not conceal a new dependency.
+for statement in ('import molt.dx', 'from molt import dx', 'import molt.cli'):
+    try:
+        exec(statement, {})
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('import oracle missed ' + statement)
+started = time.perf_counter()
+sys.argv = [sys.argv[1], '--cache-dir', sys.argv[2], '--dry-run']
+try:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+except SystemExit as exit:
+    assert exit.code == 0
+finally:
+    builtins.__import__ = original_import
+unexpected = [name for name in set(sys.modules) - baseline if forbidden(name)]
+assert unexpected == [], unexpected
+print(json.dumps({'elapsed_seconds': time.perf_counter() - started,
+                  'loaded_modules': len(sys.modules)}))
+"""
+    cache = tmp_path / "nonexistent"
+    completed = run_custody_subject_process(
+        [sys.executable, "-B", "-c", code, str(MOLT_CACHE_PRUNE), str(cache)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    measurement = json.loads(completed.stdout.splitlines()[-1])
+    assert measurement["elapsed_seconds"] >= 0
+    assert not cache.exists()
+
+
+_CACHE_OWNER_CODE = r"""
+import json, os, socket, sys
+from pathlib import Path
+mode, cache, project, port = sys.argv[1:]
+cache, project = Path(cache), Path(project)
+os.environ['MOLT_CACHE'] = str(cache)
+os.environ['MOLT_MAX_CONCURRENT_BUILDS'] = '1'
+from molt.default_paths import shared_cache_lock_path, shared_stdlib_publish_lock_path
+
+def barrier(entry, lock):
+    # The OS lock is held before the child announces readiness. Timeouts bound
+    # both directions; elapsed time is never the evidence of readiness.
+    with socket.create_connection(('127.0.0.1', int(port)), timeout=20) as channel:
+        channel.sendall((json.dumps({'entry': str(entry) if entry else None,
+                                    'lock': str(lock)}) + '\n').encode())
+        assert channel.recv(1) == b'R'
+
+if mode == 'slot':
+    from molt.cli.cargo_execution import _build_slot, _build_slot_dir
+    with _build_slot() as index:
+        assert index == 0
+        barrier(None, _build_slot_dir() / 'slot-0.lock')
+elif mode == 'stdlib':
+    from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
+    from molt.file_publication import staged_file_path
+    archive = _stdlib_object_cache_path(cache / 'program.o', 'a' * 64)
+    with _shared_stdlib_cache_lock(archive):
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(b'shared archive generation')
+        for suffix in ('.count', '.key', '.manifest.json', '.partition.json',
+                       '.sha256', '.symbol-contract.json', '.symbols.json'):
+            archive.with_suffix(suffix).write_bytes(suffix.encode())
+        staged_file_path(archive).write_bytes(b'in-flight publication')
+        barrier(archive.parent, shared_stdlib_publish_lock_path(archive))
+else:
+    raise AssertionError(mode)
+print('RELEASED')
+"""
+
+
+@contextmanager
+def _active_cache_owner(mode: str, cache: Path, project: Path):
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(30)
+        process = start_owned_test_process(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                _CACHE_OWNER_CODE,
+                mode,
+                str(cache),
+                str(project),
+                str(server.getsockname()[1]),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        channel = None
+        try:
+            channel, _address = server.accept()
+            channel.settimeout(30)
+            with channel.makefile("rb") as stream:
+                ready = json.loads(stream.readline())
+            yield ready
+            channel.sendall(b"R")
+            stdout, stderr = process.communicate(timeout=30)
+            assert process.returncode == 0, stdout + stderr
+            assert stdout.strip() == "RELEASED"
+        finally:
+            if channel is not None:
+                channel.close()
+            close_owned_test_process(process)
+
+
+def _assert_external_lock_availability(lock: Path, available: bool):
+    code = r"""import sys
+from pathlib import Path
+from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+handle = _try_acquire_file_lock(Path(sys.argv[1]), create=False)
+try:
+    assert (handle is not None) == (sys.argv[2] == 'available')
+finally:
+    if handle is not None:
+        _release_file_lock(handle)
+"""
+    result = run_custody_subject_process(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            code,
+            str(lock),
+            "available" if available else "busy",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("mode", ["slot", "stdlib"])
+def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
+    tmp_path, monkeypatch, mode
+):
+    from molt.default_paths import shared_stdlib_cache_entry
+
+    cache = tmp_path / "cache"
+    project = tmp_path / "project"
+    namespace = project / "ns_pkg"
+    namespace.mkdir(parents=True)
+    (project / "main.py").write_text("import ns_pkg.leaf\nprint(ns_pkg.leaf.VALUE)\n")
+    (namespace / "leaf.py").write_text("VALUE = 7\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "active-planner"\nversion = "0.1.0"\n'
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(cache))
+    monkeypatch.delenv("MOLT_HOME", raising=False)
+    monkeypatch.delenv("MOLT_BIN", raising=False)
+    retained = [cache / "locks" / "neighbor.state", cache / "home" / "bin" / "molt"]
+    for path in retained:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"durable owner state")
+    snapshots = {path: (path.stat().st_ino, path.read_bytes()) for path in retained}
+    with _active_cache_owner(mode, cache, project) as ready:
+        lock = Path(ready["lock"])
+        entry = Path(ready["entry"]) if ready["entry"] else None
+        os.utime(lock, (1, 1))
+        lock_before = lock.stat()
+        entry_before = _snapshot_tree(entry) if entry else None
+        first_byte = "00" if entry is None or entry.name[:2] != "00" else "ff"
+        inactive, _name = shared_stdlib_cache_entry(cache, first_byte * 32)
+        inactive.mkdir(parents=True)
+        (inactive / "stale.py").write_bytes(b"old generation")
+        unknown = cache / "shared-stdlib" / ".DS_Store"
+        unknown.write_bytes(b"harmless unknown child")
+        unknown_before = (unknown.stat().st_ino, unknown.read_bytes())
+        retired_flat = cache / ("stdlib_shared_" + "b" * 64 + ".a")
+        retired_flat.write_bytes(b"legacy active writer may still own this")
+        output = _run_pruner(cache)
+        assert not inactive.exists() and retired_flat.exists()
+        assert (unknown.stat().st_ino, unknown.read_bytes()) == unknown_before
+        assert "failed.entries=0" in output
+        if entry is not None:
+            assert "busy.entries=1" in output
+            assert _snapshot_tree(entry) == entry_before
+        assert (lock.stat().st_dev, lock.stat().st_ino, lock.stat().st_mtime_ns) == (
+            lock_before.st_dev,
+            lock_before.st_ino,
+            lock_before.st_mtime_ns,
+        )
+        for path, expected in snapshots.items():
+            assert (path.stat().st_ino, path.read_bytes()) == expected
+        _assert_external_lock_availability(lock, False)
+        before_dry_run = _snapshot_tree(cache)
+        _run_pruner(cache, dry_run=True)
+        assert _snapshot_tree(cache) == before_dry_run
+    _assert_external_lock_availability(lock, True)
+    output = _run_pruner(cache)
+    assert "busy.entries=0" in output
+    assert entry is None or not entry.exists()
+    assert lock.stat().st_ino == lock_before.st_ino
+    assert all(
+        (path.stat().st_ino, path.read_bytes()) == snapshots[path] for path in retained
+    )
+
+
+def test_pruner_removes_abandoned_stdlib_stages_without_archive(tmp_path):
+    from molt.cli.backend_cache import _stdlib_object_cache_path
+    from molt.file_publication import staged_file_path
+
+    cache = tmp_path / "cache"
+    archive = _stdlib_object_cache_path(cache / "program.o", "a" * 64)
+    assert archive is not None
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    stage = staged_file_path(archive)
+    stage.write_bytes(b"abandoned unpublished generation")
+    assert not archive.exists()
+    output = _run_pruner(cache)
+    assert "removed.entries=1" in output
+    assert not stage.exists() and not archive.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "wasm_link",
+        "wasm_link/runtime_tree_shake",
+        "wasm_link/runtime_tree_shake/schema",
+        "shared-stdlib",
+        "native-stdlib-objects-v1",
+    ],
+)
+def test_pruner_does_not_traverse_namespace_symlinks(tmp_path, relative):
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "valuable").write_bytes(b"unrelated ownership")
+    link = cache / relative
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    result = module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
+    assert result["entries_removed"] == 0
+    assert link.is_symlink()
+    assert (outside / "valuable").read_bytes() == b"unrelated ownership"
+
+
+def test_legacy_standalone_index_matches_original_name_predicate():
+    module = _load_molt_cache_prune()
+    # Exercise empty components, overlapping stems and leading-dot stages.
+    # Each singleton matters: a second owner must not mask an overbroad match.
+    stems = {
+        ".".join(parts)
+        for width in (1, 2, 3)
+        for parts in product(("", "a", "b"), repeat=width)
+    }
+    stems.update(("foo.bar", ".foo.bar", "foo..bar", "é.λ"))
+    names = stems | {
+        prefix + stem + suffix
+        for stem in stems
+        for prefix in ("", ".")
+        for suffix in (".", ".key", ".a.123.tmp", "neighbor.key")
+    }
+    for owners in [*((stem,) for stem in sorted(stems)), tuple(sorted(stems))]:
+        index = module._LegacyStandaloneNames()
+        for stem in owners:
+            index.add(stem)
+        for name in names:
+            expected = any(
+                name == stem or name.startswith((stem + ".", "." + stem + "."))
+                for stem in owners
+            )
+            assert index.protects(name) == expected, (owners, name)
+
+
+def test_mixed_legacy_native_writers_are_not_eviction_candidates(tmp_path):
+    from molt.default_paths import shared_stdlib_cache_entry
+
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    legacy_archive = "a" * 64 + ".artifact-" + "c" * 64 + ".a"
+    legacy = [
+        cache / ("stdlib_shared_" + "a" * 64 + ".a"),
+        cache / (".stdlib_shared_" + "a" * 64 + ".a.123.456.objects.tmp") / "job.json",
+        cache / "native-stdlib-objects-v1" / "ab" / ("ab" * 32 + ".entry"),
+        cache / "native-stdlib-objects-v1" / "ab" / ("ab" * 32 + ".entry.publish.lock"),
+        cache / "explicit.a",
+        cache / "explicit.a.publish.lock",
+        cache / "explicit.sha256",
+        cache / legacy_archive,
+        cache / (legacy_archive + ".publish.lock"),
+        cache / ("." + legacy_archive + ".123.tmp"),
+    ]
+    for path in legacy:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"possibly active old producer")
+    identity = {path: (path.stat().st_ino, path.read_bytes()) for path in legacy}
+    entry, _ = shared_stdlib_cache_entry(cache, "f" * 64)
+    entry.mkdir(parents=True)
+    (entry / "stdlib.a").write_bytes(b"inactive current generation")
+    neighbor = cache / ("a" * 64 + ".artifact-" + "d" * 64 + ".a")
+    neighbor.write_bytes(b"completed current artifact without legacy owner")
+    result = module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
+    assert result["entries_removed"] == 2
+    assert not neighbor.exists()
+    assert not entry.exists()
+    assert identity == {
+        path: (path.stat().st_ino, path.read_bytes()) for path in legacy
+    }
+    assert result["legacy_native_state"]
+
+
+@pytest.mark.parametrize("family", ["module_analysis", "module_lowering"])
+def test_frontend_retention_evicts_old_immutable_leaves_to_budget(tmp_path, family):
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    root = cache / family
+    root.mkdir(parents=True)
+    old, recent, staging = (root / name for name in ("a.json", "b.json", ".b.tmp"))
+    old.write_bytes(b"0123456789")
+    recent.write_bytes(b"abcdefghij")
+    staging.write_bytes(b"live atomic publication")
+    os.utime(old, (1, 1))
+    os.utime(recent, (2, 2))
+    result = module._prune(cache, max_bytes=10, max_age_days=None, dry_run=False)
+    assert result["bytes_remaining"] == 10
+    assert not old.exists()
+    assert recent.read_bytes() == b"abcdefghij"
+    assert staging.read_bytes() == b"live atomic publication"
+
+
+@pytest.fixture
+def retention_queue(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from tools.proof_queue_pkg import cache_retention, scheduling, state
+
+    repo = tmp_path / "source"
+    (repo / "tools").mkdir(parents=True)
+    (repo / "tools/proof_queue.py").write_text("# source queue boundary\n")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    logs = tmp_path / "runs"
+    logs.mkdir()
+    args = Namespace(
+        repo_root=str(repo),
+        db=str(tmp_path / "queue.sqlite3"),
+        logs_root=str(logs),
+        queue_size=2,
+    )
+    conn = state._connect(Path(args.db))
+    scheduling._insert_run(
+        conn,
+        run_id="completed-proof",
+        logical_id="runtime.control",
+        reason="independent parent evidence",
+        command=[sys.executable, "-c", "pass"],
+        cwd=repo,
+        resource_family="python",
+        contention_key="python:control",
+        scopes=[],
+        git_snapshot={"head": "previous-proof-admission"},
+        log_path=logs / "parent.log",
+        summary_json=logs / "parent.json",
+    )
+    state._update_run(
+        conn,
+        "completed-proof",
+        status="passed",
+        returncode=0,
+        finished_at=state._utc_now(),
+    )
+    launches = []
+    monkeypatch.setattr(
+        cache_retention.runner,
+        "_dispatch_detached_runner",
+        lambda *args, **kwargs: launches.append(kwargs["run_id"]),
+    )
+    # Admission must reuse recorded queue facts; no repository or cache walk.
+    monkeypatch.setattr(
+        state, "_git_snapshot", lambda *_args: pytest.fail("admission scanned source")
+    )
+    monkeypatch.setattr(
+        _load_molt_cache_prune(),
+        "_collect_entries",
+        lambda *_args: pytest.fail("admission scanned cache"),
+    )
+    env = {
+        "MOLT_CACHE": str(cache),
+        "MOLT_CACHE_PRUNE": "1",
+        "MOLT_CACHE_MAX_GB": "30",
+        "MOLT_CACHE_MAX_AGE_DAYS": "30",
+    }
+    try:
+        yield cache_retention, args, conn, env, launches
+    finally:
+        conn.close()
+
+
+def test_queue_retention_coalesces_pending_work_and_preserves_parent(retention_queue):
+    module, args, conn, env, launches = retention_queue
+    parent = tuple(
+        conn.execute(
+            "SELECT * FROM proof_runs WHERE run_id='completed-proof'"
+        ).fetchone()
+    )
+    first = module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+    second = module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+    assert first and second == first
+    rows = conn.execute(
+        "SELECT * FROM proof_runs WHERE logical_id=?", (module.LOGICAL_ID,)
+    ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "queued"
+    assert json.loads(row["command_json"])[1:3] == ["-m", "molt.cache_eviction"]
+    assert json.loads(row["env_json"])["MOLT_CACHE"] == env["MOLT_CACHE"]
+    assert launches == [first, first]  # queued capacity refusal is retried, no new row
+    assert (
+        tuple(
+            conn.execute(
+                "SELECT * FROM proof_runs WHERE run_id='completed-proof'"
+            ).fetchone()
+        )
+        == parent
+    )
+    assert (
+        module.schedule_after_proof(args, conn, completed_run_id=first, environ=env)
+        is None
+    )
+
+
+def test_queue_retention_busy_custody_never_waits_or_inventories(retention_queue):
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    module, args, conn, env, launches = retention_queue
+    lock = _try_acquire_file_lock(Path(env["MOLT_CACHE"]) / "locks/prune.lock")
+    assert lock is not None
+    try:
+        assert (
+            module.schedule_after_proof(
+                args, conn, completed_run_id="completed-proof", environ=env
+            )
+            is None
+        )
+        assert not launches
+    finally:
+        _release_file_lock(lock)
+    assert module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+
+
+def test_queue_retention_database_contention_is_nonblocking_and_recoverable(
+    retention_queue, capsys
+):
+    import sqlite3
+
+    module, args, conn, env, launches = retention_queue
+    original_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    with sqlite3.connect(args.db) as owner:
+        owner.execute("BEGIN IMMEDIATE")
+        assert (
+            module.schedule_after_proof(
+                args, conn, completed_run_id="completed-proof", environ=env
+            )
+            is None
+        )
+        assert "proof result unchanged" in capsys.readouterr().err
+        assert not launches
+        owner.rollback()
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == original_timeout
+    assert module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+
+
+def test_queue_retention_throttles_failed_attempt_and_obeys_optout(
+    retention_queue, monkeypatch
+):
+    module, args, conn, env, launches = retention_queue
+    now = time.time()
+    monkeypatch.setattr(module.time, "time", lambda: now)
+    first = module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+    assert first
+    conn.execute(
+        "UPDATE proof_runs SET status='failed', returncode=2 WHERE run_id=?", (first,)
+    )
+    conn.commit()
+    assert (
+        module.schedule_after_proof(
+            args, conn, completed_run_id="completed-proof", environ=env
+        )
+        is None
+    )
+    monkeypatch.setattr(
+        module.time, "time", lambda: now + module.AUTOMATIC_PRUNE_INTERVAL_SECONDS
+    )
+    assert (
+        module.schedule_after_proof(
+            args,
+            conn,
+            completed_run_id="completed-proof",
+            environ={**env, "MOLT_CACHE_PRUNE": "0"},
+        )
+        is None
+    )
+    second = module.schedule_after_proof(
+        args, conn, completed_run_id="completed-proof", environ=env
+    )
+    assert second and second != first
+
+
+def test_queue_retention_pending_lookup_uses_index_not_history_scan(retention_queue):
+    module, args, conn, env, _launches = retention_queue
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        assert module.schedule_after_proof(
+            args, conn, completed_run_id="completed-proof", environ=env
+        )
+    finally:
+        conn.set_trace_callback(None)
+    # Explain the query actually executed by admission against the canonical
+    # schema, not a separately maintained spelling or a mocked SQL consumer.
+    query = next(
+        sql
+        for sql in statements
+        if sql.startswith("SELECT run_id, status FROM proof_runs WHERE contention_key")
+    )
+    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
+    assert any("SEARCH proof_runs USING INDEX" in step for step in plan), plan
+    assert not any(
+        "SCAN proof_runs" in step or "TEMP B-TREE" in step for step in plan
+    ), plan
+
+
+def test_pruner_selects_completed_backend_files_and_preserves_mutable_namespaces(
+    tmp_path,
+):
+    from molt.default_paths import backend_cache_artifact_filename
+    from molt.file_publication import staged_file_path
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    completed = cache / backend_cache_artifact_filename(
+        "a" * 64 + "|artifact:" + "b" * 64, ".a"
+    )
+    completed.write_bytes(b"completed immutable archive")
+    stage = staged_file_path(completed, purpose="backend-cache")
+    stage.write_bytes(b"live unpublished archive")
+    protected = [stage]
+    for namespace in ("runtime_wasm_generations", "vendor", "f" * 64):
+        payload = cache / namespace / "live-stage"
+        payload.parent.mkdir()
+        payload.write_bytes(b"producer-owned state")
+        protected.append(payload)
+    before = {path: (path.stat().st_ino, path.read_bytes()) for path in protected}
+    result = _load_molt_cache_prune()._prune(
+        cache, max_bytes=0, max_age_days=0, dry_run=False
+    )
+    assert result["entries_removed"] == 1
+    assert not completed.exists()
+    assert {
+        path: (path.stat().st_ino, path.read_bytes()) for path in protected
+    } == before
+
+
+def test_required_backend_output_survives_eviction_after_each_cache_publication(
+    tmp_path, monkeypatch
+):
+    from molt.cli import backend_cache
+    from molt.cli.backend_artifact_contract import (
+        BackendArtifactContract,
+        BackendArtifactKind,
+    )
+
+    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    source = tmp_path / "private.rs"
+    payload = b'fn main() { println!("required output"); }\n'
+    source.write_bytes(payload)
+    cache = tmp_path / "cache"
+    module = backend_cache._backend_cache_artifact_path(
+        cache, "a" * 64, stdlib_object_cache_key=None, artifact_contract=contract
+    )
+    function = backend_cache._backend_cache_artifact_path(
+        cache, "b" * 64, stdlib_object_cache_key=None, artifact_contract=contract
+    )
+    real_publish = backend_cache._publish_immutable_backend_cache_artifact
+    published = []
+
+    def publish_then_evict(src, dst, **kwargs):
+        identity = real_publish(src, dst, **kwargs)
+        published.append(dst)
+        result = _load_molt_cache_prune()._prune(
+            cache, max_bytes=0, max_age_days=0, dry_run=False
+        )
+        assert result["entries_removed"] == 1
+        assert not dst.exists()
+        return identity
+
+    monkeypatch.setattr(
+        backend_cache, "_publish_immutable_backend_cache_artifact", publish_then_evict
+    )
+    output = tmp_path / "output.rs"
+    error = backend_cache._stage_backend_output_and_caches(
+        tmp_path,
+        source,
+        output,
+        cache_path=module,
+        cache_key="a" * 64,
+        stdlib_object_cache_key=None,
+        function_cache_path=function,
+        warnings=[],
+        output_already_synced=False,
+        state_path=tmp_path / "state.json",
+        artifact_contract=contract,
+    )
+    assert error is None
+    assert published == [module, function]
+    assert output.read_bytes() == payload
+    assert not source.exists()  # Producer cleanup happens only after both transfers.
+
+
+@pytest.mark.parametrize(
+    "relative,allowed",
+    [
+        ("home/build/app/shared-stdlib-link/key/stdlib.a", True),
+        ("wasm_link/schema/key/owned.a", False),
+        ("module_lowering/entry.json", False),
+        ("unclassified/owned.a", False),
+    ],
+)
+def test_required_archive_custody_uses_durable_home_not_eligibility_registry(
+    tmp_path, relative, allowed
+):
+    from molt.default_paths import validate_required_stdlib_output
+
+    root = tmp_path / "cache"
+    source = root / "shared-stdlib" / ("a" * 64) / "stdlib.a"
+    output = root / relative
+    if allowed:
+        validate_required_stdlib_output(output, source)
+    else:
+        with pytest.raises(ValueError, match="canonical cache/home"):
+            validate_required_stdlib_output(output, source)
+    validate_required_stdlib_output(tmp_path / "outside" / "owned.a", source)
+
+
+def test_canonical_home_physical_target_remains_protected_when_selected_home_changes(
+    tmp_path, monkeypatch
+):
+    from molt.default_paths import (
+        protected_cache_roots,
+        validate_required_stdlib_output,
+    )
+
+    root = tmp_path / "cache"
+    target = root / "module_lowering"
+    target.mkdir(parents=True)
+    (root / "home").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("MOLT_HOME", str(tmp_path / "different-home"))
+    owned = target / "required.json"
+    owned.write_bytes(b"required output")
+    source = root / "shared-stdlib" / ("a" * 64) / "stdlib.a"
+    validate_required_stdlib_output(owned, source)
+    assert root / "module_lowering" in protected_cache_roots(root)
+    _load_molt_cache_prune()._prune(root, max_bytes=0, max_age_days=0, dry_run=False)
+    assert owned.read_bytes() == b"required output"
+    # Removing canonical home protection exposes the same real eligible leaf.
+    # This control prevents a non-eligible nested fixture from passing vacuously.
+    (root / "home").unlink()
+    _load_molt_cache_prune()._prune(root, max_bytes=0, max_age_days=0, dry_run=False)
+    assert not owned.exists()

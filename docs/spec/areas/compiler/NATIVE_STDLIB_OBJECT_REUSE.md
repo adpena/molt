@@ -55,9 +55,28 @@ stdlib compiler path is removed.
 
 ## Admission and publication
 
-Constituent generations live under `native-stdlib-objects-v1` beside the shared
-archive, partitioned by their complete input digest. The existing stdlib
-publication lock owns each input generation. A single atomic envelope retains
+The canonical archive and sidecars live in
+`<cache>/shared-stdlib/<archive-key>/stdlib.a`. Constituent generations live in
+`<cache>/native-stdlib-objects-v1/<input-digest>/object.entry`, independently of
+an archive generation. Persistent bounded lock stripes in `<cache>/locks/`
+serialize each archive or constituent generation across publishers, readers
+and retention. Explicit standalone archive paths retain their adjacent
+publication lock. Compilation workspaces belong to guard or suite scratch;
+only immutable entries and their publication stages live in the cache.
+`MOLT_STDLIB_OBJ` names the required build-owned archive. The CLI hydrates it
+under cache custody before local or daemon cache admission; a backend archive
+miss produces it before publishing the optional `MOLT_STDLIB_CACHE_ENTRY`.
+Rust cache reuse transfers archive and sidecars under the same cache stripe.
+The linker consumes this owned generation directly, so eviction after the
+transfer cannot invalidate an in-flight build. The optional cache destination
+is request transport, not persistent daemon state or codegen identity. It must
+use the canonical shared-stdlib archive path. Required output is admitted
+outside that cache root or under its universally protected canonical home
+(including the home symlink target); a selected environment-specific home or
+bin exception alone does not promise custody across later maintenance runs.
+Hydration never invalidates the destination on lock-admission failure, and
+failed-copy cleanup remains inside destination publication custody.
+A single atomic constituent envelope retains
 schema, input digest, output digest, exact length and object bytes. Publication
 uses `molt_artifact_publish`; object validation uses the same target/format
 contract as archive assembly. There is no separate sidecar generation to mix.

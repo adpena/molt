@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-from molt.cli.runtime_build_python import BuildPythonAdmission
-
-from molt.cli.native_symbol_inspection import (
-    NativeSymbolInspectionError,
-)
-
 import os
 import subprocess
 import sys
@@ -18,15 +12,14 @@ from typing import Any, Callable, ContextManager, Mapping
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import CodegenBackend
 from molt.capability_manifest import ResolvedRuntimePolicy
-from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
     _backend_daemon_skip_output_sync_flags,
     _read_artifact_sync_state,
-    _shared_cache_lock,
     _stage_backend_output_and_caches,
     _temporary_backend_output_path,
     _try_cached_backend_candidates,
@@ -50,12 +43,14 @@ from molt.cli.backend_execution import (
     _read_backend_daemon_identity,
     _start_backend_daemon,
 )
-from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
+from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
+from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     ENTRY_OVERRIDE_ENV,
 )
+from molt.cli.installed_runtime_contract import InstalledRuntimeError
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     BuildProfile,
@@ -70,30 +65,35 @@ from molt.cli.models import (
     _PreparedBackendSetup,
     _RuntimeArtifactState,
 )
+from molt.cli.native_link_plan import NativeArtifactKind
+from molt.cli.native_symbol_inspection import (
+    NativeSymbolInspectionError,
+)
 from molt.cli.output import (
     fail as _fail,
+)
+from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
-from molt.cli.installed_runtime_contract import InstalledRuntimeError
-from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
-from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
-from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.native_link_plan import NativeArtifactKind
+from molt.cli.runtime_build_python import BuildPythonAdmission
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
+from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
     native_runtime_codegen_environment,
 )
+from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
-from molt.target_python import TargetPythonVersion
 from molt.cli.wasm_codegen_layout import (
     WasmCodegenLayout,
     prepare_wasm_codegen_layout,
 )
+from molt.file_locks import _shared_cache_lock
+from molt.target_python import TargetPythonVersion
 
 _BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
 
@@ -718,6 +718,15 @@ def _execute_backend_compile(
     # catalog for every request, so each request carries this build's
     # selection; the daemon's startup environment cannot carry it.
     daemon_request_environment = codegen.environment(os.environ)
+    # The requested stdlib output belongs to this build. Cache publication is a
+    # separate optional destination, transported per request, never daemon state.
+    daemon_request_environment.pop("MOLT_STDLIB_CACHE_ENTRY", None)
+    backend_env = dict(backend_env)
+    backend_env.pop("MOLT_STDLIB_CACHE_ENTRY", None)
+    if cache_setup.stdlib_cache_entry_path is not None:
+        entry = str(cache_setup.stdlib_cache_entry_path)
+        daemon_request_environment["MOLT_STDLIB_CACHE_ENTRY"] = entry
+        backend_env["MOLT_STDLIB_CACHE_ENTRY"] = entry
     try:
         if (
             cache_setup.artifact_contract.is_native

@@ -11,22 +11,29 @@ use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileE
 #[cfg(windows)]
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
-use super::super::super::io_limits::ensure_output_parent_dir;
 use super::paths::stdlib_cache_publish_lock_path;
 
-#[cfg(unix)]
-pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
-    stdlib_path: &Path,
-    body: impl FnOnce() -> io::Result<T>,
-) -> io::Result<T> {
-    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or_default())?;
-    let lock_path = stdlib_cache_publish_lock_path(stdlib_path);
+#[cfg(any(unix, windows))]
+fn open_publication_lock(stdlib_path: &Path) -> io::Result<(PathBuf, File)> {
+    let lock_path = stdlib_cache_publish_lock_path(stdlib_path)?;
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = File::options()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(&lock_path)?;
+    Ok((lock_path, file))
+}
+
+#[cfg(unix)]
+pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
+    stdlib_path: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let (lock_path, file) = open_publication_lock(stdlib_path)?;
     let lock_rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if lock_rc != 0 {
         return Err(io::Error::last_os_error());
@@ -46,14 +53,7 @@ pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
     stdlib_path: &Path,
     body: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or_default())?;
-    let lock_path = stdlib_cache_publish_lock_path(stdlib_path);
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
+    let (lock_path, file) = open_publication_lock(stdlib_path)?;
     let mut overlapped = OVERLAPPED::default();
     let lock_rc = unsafe {
         LockFileEx(

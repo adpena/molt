@@ -14,8 +14,8 @@ pub(crate) use prepare::{NativeStdlibCachePrepare, prepare_native_application_ar
 #[cfg(any(unix, test))]
 pub(crate) use publish::shared_stdlib_cache_matches;
 pub(crate) use publish::{
-    admit_or_invalidate_shared_stdlib_cache, publish_shared_stdlib_cache_archive,
-    stdlib_cache_temp_publish_path,
+    admit_or_invalidate_shared_stdlib_cache, canonical_stdlib_cache_root,
+    publish_shared_stdlib_cache_archive, resolved_archive_path, validate_required_stdlib_output,
 };
 #[cfg(test)]
 pub(crate) use publish::{

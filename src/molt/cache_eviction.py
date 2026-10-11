@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import stat
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal, TypedDict
+
+from molt.default_paths import (
+    DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
+    DEFAULT_MOLT_CACHE_MAX_GB,
+    NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
+    SHARED_STDLIB_CACHE_DIRECTORY,
+    WASM_LINK_CACHE_DIRECTORY,
+    WASM_LINK_CACHE_FAMILIES,
+    _default_molt_cache,
+    cache_control_root,
+    protected_cache_roots,
+    is_backend_cache_artifact_name,
+    native_stdlib_object_cache_entry,
+    shared_stdlib_cache_entry,
+    wasm_link_cache_paths,
+)
+
+from molt.file_publication import is_staged_file_path
+
+from molt.file_locks import (
+    _file_lock_owned_operation,
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
+
+
+def _default_cache_root() -> Path:
+    return _default_molt_cache()
+
+
+@dataclass
+class CacheEntry:
+    path: Path
+    size_bytes: int
+    mtime: float
+    lock_path: Path | None = None
+
+
+class PruneCompleted(TypedDict):
+    status: Literal["completed"]
+    cache_root: str
+    entries_before: int
+    inventory_elapsed_seconds: float
+    elapsed_seconds: float
+    entries_removed: int
+    entries_remaining: int
+    entries_busy: int
+    entries_failed: int
+    bytes_before: int
+    bytes_remaining: int
+    bytes_removed: int
+    bytes_removed_human: str
+    protected_state: list[str]
+    legacy_native_state: list[str]
+
+
+class PruneBusy(TypedDict):
+    status: Literal["busy"]
+    cache_root: str
+
+
+def _format_bytes(size: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+    return f"{size}B"
+
+
+def _entry_size_bytes(path: Path) -> int:
+    if path.is_symlink():
+        return 0
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_symlink() or not child.is_file():
+            continue
+        try:
+            total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _children(path: Path) -> list[Path]:
+    # Two cleanup consumers may legitimately remove the same entry between
+    # discovery steps. Other I/O failures remain operational failures.
+    try:
+        return list(path.iterdir())
+    except FileNotFoundError:
+        return []
+
+
+def _is_direct_directory(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _legacy_native_entry(path: Path) -> bool:
+    # Old compilation scratch is not covered by its final publication lock.
+    # Never use age/PID/open-file absence as permission to remove a live writer.
+    # These names are no longer produced or read by the current cache protocol.
+    name = path.name
+    return (
+        name.startswith(("stdlib_shared_", ".stdlib_shared_"))
+        or name == "native-stdlib-objects"
+        or name.endswith(".publish.lock")
+        or name.endswith(".objects.tmp")
+    )
+
+
+@dataclass(slots=True)
+class _LegacyStandaloneNames:
+    """Ephemeral dot-component index of adjacent legacy publication owners."""
+
+    children: dict[str, _LegacyStandaloneNames] = field(default_factory=dict)
+    terminal: bool = False
+
+    def add(self, stem: str) -> None:
+        node = self
+        for component in stem.split("."):
+            child = node.children.get(component)
+            if child is None:
+                child = _LegacyStandaloneNames()
+                node.children[component] = child
+            node = child
+        node.terminal = True
+
+    def _matches(self, components: list[str], *, exact: bool) -> bool:
+        node = self
+        for component in components:
+            if node.terminal:
+                return True
+            child = node.children.get(component)
+            if child is None:
+                return False
+            node = child
+        return exact and node.terminal
+
+    def protects(self, name: str) -> bool:
+        if not self.children:
+            return False
+        components = name.split(".")
+        return self._matches(components, exact=True) or (
+            name.startswith(".") and self._matches(components[1:], exact=False)
+        )
+
+
+def _collect_entries(cache_root: Path) -> list[CacheEntry]:
+    cache_root = cache_root.resolve(strict=False)
+    entries: list[CacheEntry] = []
+    protected = protected_cache_roots(cache_root)
+    if cache_root in protected:
+        return entries
+
+    def append(path: Path, lock: Path | None = None) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        entries.append(
+            CacheEntry(path, _entry_size_bytes(path), metadata.st_mtime, lock)
+        )
+
+    children = _children(cache_root)
+    standalone_names = _LegacyStandaloneNames()
+    for child in children:
+        if child.name.endswith(".publish.lock"):
+            standalone_names.add(Path(child.name.removesuffix(".publish.lock")).stem)
+    for child in children:
+        if (
+            child.absolute() in protected
+            or is_staged_file_path(child)
+            or _legacy_native_entry(child)
+            or standalone_names.protects(child.name)
+        ):
+            continue
+        if child.name in {
+            "module_analysis",
+            "module_lowering",
+        } and _is_direct_directory(child):
+            # Published JSON leaves are immutable; readers copy on hydration and
+            # treat disappearance as a cache miss. Staging files remain owned.
+            for leaf in _children(child):
+                if leaf.suffix == ".json" and leaf.is_file() and not leaf.is_symlink():
+                    append(leaf)
+            continue
+        if child.name in {
+            SHARED_STDLIB_CACHE_DIRECTORY,
+            NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
+        } and _is_direct_directory(child):
+            for entry_root in _children(child):
+                if (
+                    child.name == NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY
+                    and len(entry_root.name) == 2
+                    and all(c in "0123456789abcdef" for c in entry_root.name)
+                ):
+                    # Previous producers used flat files plus adjacent locks in
+                    # a two-hex shard. They do not share current entry stripes.
+                    continue
+                try:
+                    if child.name == SHARED_STDLIB_CACHE_DIRECTORY:
+                        _root, lock = shared_stdlib_cache_entry(
+                            cache_root, entry_root.name
+                        )
+                    else:
+                        _root, lock = native_stdlib_object_cache_entry(
+                            cache_root, entry_root.name
+                        )
+                except ValueError:
+                    # No immutable-entry protocol owns unknown names.
+                    continue
+                append(entry_root, lock)
+            continue
+        if child.name == WASM_LINK_CACHE_DIRECTORY and _is_direct_directory(child):
+            for family_root in _children(child):
+                if (
+                    family_root.name not in WASM_LINK_CACHE_FAMILIES
+                    or not _is_direct_directory(family_root)
+                ):
+                    continue
+                for schema_root in _children(family_root):
+                    if schema_root.name == ".locks":
+                        continue
+                    try:
+                        wasm_link_cache_paths(
+                            child, family_root.name, schema_root.name, "0" * 64
+                        )
+                    except ValueError:
+                        continue
+                    if not _is_direct_directory(schema_root):
+                        continue
+                    for entry_root in _children(schema_root):
+                        try:
+                            _root, lock = wasm_link_cache_paths(
+                                child,
+                                family_root.name,
+                                schema_root.name,
+                                entry_root.name,
+                            )
+                        except ValueError:
+                            continue
+                        append(entry_root, lock)
+            continue
+        if (
+            is_backend_cache_artifact_name(child.name)
+            and child.is_file()
+            and not child.is_symlink()
+        ):
+            append(child)
+        # Unknown namespaces may own live mutable stages or persistent controls.
+        # Their root is never an inferred recursive eviction unit.
+    return entries
+
+
+def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
+    lock_handle = None
+    try:
+        if entry.lock_path is not None:
+            try:
+                lock_handle = _try_acquire_file_lock(
+                    entry.lock_path, create=not dry_run
+                )
+            except FileNotFoundError:
+                if not dry_run:
+                    raise
+                # No lock existed at observation time. A dry-run forecasts
+                # eviction; it grants no capability for a later deletion.
+            else:
+                if lock_handle is None:
+                    return "busy"
+        if dry_run:
+            return "removed"
+        if _is_direct_directory(entry.path):
+            try:
+                shutil.rmtree(entry.path, ignore_errors=False)
+            except FileNotFoundError:
+                pass
+        else:
+            entry.path.unlink(missing_ok=True)
+        return "failed" if entry.path.exists() or entry.path.is_symlink() else "removed"
+    except OSError:
+        return "failed"
+    finally:
+        if lock_handle is not None:
+            _release_file_lock(lock_handle)
+
+
+def _eviction_order(entry: CacheEntry) -> tuple[float, str]:
+    normalized_path = os.path.normcase(os.path.normpath(os.fspath(entry.path)))
+    return entry.mtime, normalized_path
+
+
+def _prune_locked(
+    cache_root: Path,
+    *,
+    max_bytes: int | None,
+    max_age_days: int | None,
+    dry_run: bool,
+) -> PruneCompleted:
+    started = time.monotonic()
+    entries = _collect_entries(cache_root)
+    inventory_elapsed = time.monotonic() - started
+    before_bytes = sum(item.size_bytes for item in entries)
+    remaining = {entry.path: entry for entry in entries}
+    removed: list[CacheEntry] = []
+    attempted: set[Path] = set()
+    busy = failures = 0
+
+    def remove(entry: CacheEntry) -> bool:
+        nonlocal busy, failures
+        attempted.add(entry.path)
+        outcome = _remove_entry(entry, dry_run)
+        if outcome == "removed":
+            removed.append(entry)
+            remaining.pop(entry.path)
+            return True
+        busy += outcome == "busy"
+        failures += outcome == "failed"
+        return False
+
+    if max_age_days is not None and max_age_days >= 0:
+        cutoff = time.time() - (max_age_days * 86400)
+        for entry in entries:
+            if entry.mtime < cutoff:
+                remove(entry)
+
+    total = sum(item.size_bytes for item in remaining.values())
+    if max_bytes is not None and max_bytes >= 0 and total > max_bytes:
+        for entry in sorted(remaining.values(), key=_eviction_order):
+            if total <= max_bytes:
+                break
+            if entry.path not in attempted and remove(entry):
+                total -= entry.size_bytes
+
+    removed_bytes = sum(item.size_bytes for item in removed)
+    return {
+        "status": "completed",
+        "cache_root": str(cache_root),
+        "entries_before": len(entries),
+        "inventory_elapsed_seconds": inventory_elapsed,
+        "elapsed_seconds": time.monotonic() - started,
+        "entries_removed": len(removed),
+        "entries_remaining": len(remaining),
+        "entries_busy": busy,
+        "entries_failed": failures,
+        "bytes_before": before_bytes,
+        "bytes_remaining": sum(item.size_bytes for item in remaining.values()),
+        "bytes_removed": removed_bytes,
+        "bytes_removed_human": _format_bytes(removed_bytes),
+        "protected_state": [str(path) for path in protected_cache_roots(cache_root)],
+        "legacy_native_state": [
+            str(path) for path in _children(cache_root) if _legacy_native_entry(path)
+        ]
+        + [
+            str(path)
+            for path in (
+                _children(cache_root / NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY)
+                if _is_direct_directory(
+                    cache_root / NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY
+                )
+                else []
+            )
+            if len(path.name) == 2 and all(c in "0123456789abcdef" for c in path.name)
+        ],
+    }
+
+
+def resolve_budget(
+    max_gb: float | None,
+    max_age_days: int | None,
+    environ: Mapping[str, str],
+) -> tuple[float, int]:
+    """Return the cache budget: flags, then the projected env, then canonical user-state defaults.
+
+    RunContext projects MOLT_CACHE_MAX_GB and MOLT_CACHE_MAX_AGE_DAYS from the
+    default_paths, so the pruner and every DX entry point share one budget.
+    """
+    gb = (
+        max_gb
+        if max_gb is not None
+        else float(environ.get("MOLT_CACHE_MAX_GB") or DEFAULT_MOLT_CACHE_MAX_GB)
+    )
+    days = (
+        max_age_days
+        if max_age_days is not None
+        else int(
+            environ.get("MOLT_CACHE_MAX_AGE_DAYS") or DEFAULT_MOLT_CACHE_MAX_AGE_DAYS
+        )
+    )
+    return gb, days
+
+
+# One shared admission interval, not one scan per object or compiler process.
+AUTOMATIC_PRUNE_INTERVAL_SECONDS = 300.0
+
+
+def _prune(
+    cache_root: Path,
+    *,
+    max_bytes: int | None,
+    max_age_days: int | None,
+    dry_run: bool,
+) -> PruneCompleted | PruneBusy:
+    """Serialize inventory/eviction across every entry point without waiting.
+
+    The persistent control lock also records the last completed inventory. No
+    extra registry is needed. Dry runs neither create nor update control state.
+    """
+    lock_path = cache_control_root(cache_root) / "prune.lock"
+    try:
+        handle = _try_acquire_file_lock(lock_path, create=not dry_run)
+    except FileNotFoundError:
+        if not dry_run:
+            raise
+        return _prune_locked(
+            cache_root, max_bytes=max_bytes, max_age_days=max_age_days, dry_run=True
+        )
+    if handle is None:
+        return {"status": "busy", "cache_root": str(cache_root)}
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
+            result = _prune_locked(
+                cache_root,
+                max_bytes=max_bytes,
+                max_age_days=max_age_days,
+                dry_run=dry_run,
+            )
+            if not dry_run:
+                handle.file.seek(0)
+                handle.file.write(str(time.time()).encode("ascii"))
+                handle.file.truncate()
+                handle.file.flush()
+            return result
+    finally:
+        _release_file_lock(handle)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Prune Molt cache entries by age and/or total size."
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Cache root to prune (default: MOLT_CACHE or platform default).",
+    )
+    parser.add_argument(
+        "--max-gb",
+        type=float,
+        default=None,
+        help="Maximum cache size in GiB after pruning.",
+    )
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=None,
+        help="Delete inactive cache entries older than this age (days).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute what would be removed without deleting files.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    cache_root = (
+        Path(args.cache_dir).expanduser().resolve()
+        if args.cache_dir
+        else _default_cache_root()
+    )
+
+    max_gb, max_age_days = resolve_budget(args.max_gb, args.max_age_days, os.environ)
+
+    max_bytes = int(max_gb * (1024**3))
+    result = _prune(
+        cache_root,
+        max_bytes=max_bytes,
+        max_age_days=max_age_days,
+        dry_run=args.dry_run,
+    )
+
+    print(f"cache_root={cache_root}")
+    if result["status"] != "completed":
+        print(f"prune.status={result['status']}")
+        return 0
+    print(f"policy.max_gb={max_gb}")
+    print(f"policy.max_age_days={max_age_days}")
+    print(f"evictable.before={_format_bytes(result['bytes_before'])}")
+    print(f"evictable.after={_format_bytes(result['bytes_remaining'])}")
+    print(f"protected_state.roots={len(result['protected_state'])}")
+    print(f"legacy_native.protected={len(result['legacy_native_state'])}")
+    print(f"inventory.elapsed_s={result['inventory_elapsed_seconds']:.6f}")
+    print(f"prune.elapsed_s={result['elapsed_seconds']:.6f}")
+    print(f"remaining.entries={result['entries_remaining']}")
+    print(f"busy.entries={result['entries_busy']}")
+    print(f"failed.entries={result['entries_failed']}")
+    print(f"removed.entries={result['entries_removed']}")
+    print(f"removed.bytes={result['bytes_removed_human']}")
+    print(f"dry_run={args.dry_run}")
+    return 1 if result["entries_failed"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

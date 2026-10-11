@@ -34,10 +34,10 @@ from tests.native_artifact_fixtures import native_relocatable_object
     )
 )
 def link_target(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    # Staging admits the archive by its real symbols. The in-process reader
+    # Admission checks the archive by its real symbols. The in-process reader
     # reads every object format on every host, so no target cell skips.
     target_triple: str = request.param
-    # Retain production link planning; these snapshot tests do not discover or
+    # Retain production link planning; these owned-archive tests do not discover or
     # execute a compiler, nor content-identify installed linker tools.
     monkeypatch.setattr(
         native_link_command,
@@ -57,11 +57,11 @@ def stdlib_archive(link_target: str) -> bytes:
     )
 
 
-def _assert_snapshot_link_operand(
-    command: list[str], *, staged: Path, source: Path, target_triple: str
+def _assert_owned_link_operand(
+    command: list[str], *, owned: Path, excluded: Path, target_triple: str
 ) -> None:
     target = resolve_native_target_spec(target_triple)
-    for path, expected in ((staged, True), (source, False)):
+    for path, expected in ((owned, True), (excluded, False)):
         operand = native_artifact_link_arguments(
             path, kind=NativeArtifactKind.ARCHIVE, target=target
         )
@@ -118,10 +118,43 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     )
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib_shared.a"
-    stdlib_obj.write_bytes(stdlib_archive)
-    stdlib_manifest = _write_complete_stdlib_contract(
-        stdlib_obj, "stdlib-key", link_target
+    from molt.cache_eviction import _prune
+    from molt.cli.backend_cache import _hydrate_shared_stdlib_archive
+
+    cache_key = "a" * 64
+    cache_root = tmp_path / "cache"
+    optional = cache_root / "shared-stdlib" / cache_key / "stdlib.a"
+    optional.parent.mkdir(parents=True)
+    optional.write_bytes(stdlib_archive)
+    stdlib_manifest = _write_complete_stdlib_contract(optional, cache_key, link_target)
+    assert (
+        _hydrate_shared_stdlib_archive(
+            optional,
+            stdlib_object_cache_key=cache_key,
+            stdlib_object_manifest=stdlib_manifest,
+            stdlib_module_symbols=("sys",),
+            output_path=stdlib_obj,
+            target_triple=link_target,
+        )
+        == stdlib_obj
     )
+    owned_files = [stdlib_obj] + [
+        sidecar(stdlib_obj)
+        for sidecar in (
+            cli._stdlib_object_key_sidecar_path,
+            cli._stdlib_object_manifest_sidecar_path,
+            cli._stdlib_object_partition_manifest_sidecar_path,
+            cli._stdlib_object_digest_sidecar_path,
+        )
+    ]
+    owned_bytes = {path: path.read_bytes() for path in owned_files}
+    assert (
+        _prune(cache_root, max_bytes=0, max_age_days=0, dry_run=False)[
+            "entries_removed"
+        ]
+        == 1
+    )
+    assert not optional.exists()
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -168,23 +201,31 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         link_timeout=None,
         warnings=[],
         stdlib_obj_path=stdlib_obj,
-        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_cache_key=cache_key,
         stdlib_object_manifest=stdlib_manifest,
     )
 
     assert error is None
     assert prepared is not None
     staged_stdlib = artifacts_root / "shared-stdlib-link" / stdlib_obj.name
-    _assert_snapshot_link_operand(
+    _assert_owned_link_operand(
         captured_link_cmd,
-        staged=staged_stdlib,
-        source=stdlib_obj,
+        owned=stdlib_obj,
+        excluded=staged_stdlib,
         target_triple=link_target,
     )
-    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes() == stdlib_archive
+    assert not staged_stdlib.exists()
+    assert stdlib_obj.read_bytes() == stdlib_archive
+    assert {path: path.read_bytes() for path in owned_files} == owned_bytes
+    _assert_owned_link_operand(
+        captured_link_cmd,
+        owned=stdlib_obj,
+        excluded=optional,
+        target_triple=link_target,
+    )
 
 
-def test_prepare_native_link_snapshots_same_root_stdlib_input(
+def test_prepare_native_link_uses_owned_same_root_stdlib_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     link_target: str,
@@ -255,10 +296,11 @@ def test_prepare_native_link_snapshots_same_root_stdlib_input(
     assert error is None
     assert prepared is not None
     staged_stdlib = artifacts_root / "shared-stdlib-link" / stdlib_obj.name
-    _assert_snapshot_link_operand(
+    _assert_owned_link_operand(
         captured_link_cmd,
-        staged=staged_stdlib,
-        source=stdlib_obj,
+        owned=stdlib_obj,
+        excluded=staged_stdlib,
         target_triple=link_target,
     )
-    assert staged_stdlib.read_bytes() == stdlib_obj.read_bytes() == stdlib_archive
+    assert not staged_stdlib.exists()
+    assert stdlib_obj.read_bytes() == stdlib_archive
