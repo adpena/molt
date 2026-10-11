@@ -2024,6 +2024,25 @@ def test_mixed_archive_binds_llvm_nm_tables_only_to_bitcode_members(
     assert facts.members[1].symbols.undefined == {"root"}
     key = next(iter(native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE))
     assert key.reader_identity[1] != "in-process:molt.native_symbol_table"
+    # A malformed bitcode table fails the reader ladder with a typed error.
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    _bitcode_tool(
+        monkeypatch,
+        stdout="object.o:\n0000 T invented_native\nobject.o:\n0000 ? unknown\n",
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "other"
+    )
+    with pytest.raises(
+        native_symbol_inspection.NativeSymbolInspectionError,
+        match="unsupported symbol type",
+    ) as caught:
+        native_symbol_inspection._native_archive_global_symbol_facts(
+            path, target_triple=_ELF
+        )
+    assert not isinstance(
+        caught.value, native_symbol_inspection.NativeSymbolArtifactError
+    )
 
 
 @pytest.mark.parametrize(
