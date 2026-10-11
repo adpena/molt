@@ -116,7 +116,35 @@ THREAD_ADMISSION = (
     "concurrency::isolates::bootstrap_failure_tests::"
     "native_thread_admission_and_origin_retirement"
 )
+ABI_MALFORMED_HOOKS = (
+    "test_abi_transaction_rejects_malformed_first_install_before_attachment"
+)
+ABI_MISSING_TEXT = (
+    "missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error"
+)
 OWNERS: Mapping[str, Owner] = {
+    ABI_MALFORMED_HOOKS: Owner(
+        "abi-hook-registration",
+        ABI_MALFORMED_HOOKS,
+        {
+            "malformed-first-install": Outcome(
+                0,
+                True,
+                stdout_markers=("malformed-first-install-refused\n",),
+            )
+        },
+    ),
+    ABI_MISSING_TEXT: Owner(
+        "abi-hook-registration",
+        ABI_MISSING_TEXT,
+        {
+            "missing-text-allocators": Outcome(
+                0,
+                True,
+                stdout_markers=("missing-text-allocators-refused\n",),
+            )
+        },
+    ),
     ISOLATE_OWNER: Owner(
         "isolate-owner-lifetime",
         ISOLATE_OWNER,

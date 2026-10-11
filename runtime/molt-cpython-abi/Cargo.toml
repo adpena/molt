@@ -46,6 +46,11 @@ molt-runtime-platform = { path = "../molt-runtime-platform" }
 # path stamps the right builtin ob_type) via MoltObject::from_ptr.
 molt-lang-obj-model = { path = "../molt-obj-model" }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Shared self-image capture retains source/image-bound child receipts.
+serde_json = { workspace = true }
+sha2 = "0.11"
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
 

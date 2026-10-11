@@ -40,7 +40,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         let Some(next) = crate::object::backing::tracked_vec_box_from_slice(current, current.len())
         else {
             drop(read_guard);
-            let _ = raise_exception::<u64>(py, "MemoryError", "list allocation failed");
+            crate::record_memory_error_without_allocation(py);
             return None;
         };
         unsafe {
@@ -80,7 +80,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             return false;
         }
         if self.detached.try_reserve(indices.len()).is_err() {
-            let _ = raise_exception::<u64>(self.py, "MemoryError", "list allocation failed");
+            crate::record_memory_error_without_allocation(self.py);
             return false;
         }
         let mut removed_edges = 0usize;
@@ -107,7 +107,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             return false;
         }
         if self.detached.try_reserve(indices.len()).is_err() {
-            let _ = raise_exception::<u64>(self.py, "MemoryError", "list allocation failed");
+            crate::record_memory_error_without_allocation(self.py);
             return false;
         }
         let removed_edges =
@@ -133,14 +133,8 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             );
             return false;
         };
-        if !unsafe {
-            crate::object::backing::tracked_vec_reserve_or_raise(
-                self.py,
-                self.next,
-                total,
-                "list allocation failed",
-            )
-        } {
+        if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(self.next, total) } {
+            crate::record_memory_error_without_allocation(self.py);
             return false;
         }
         for _ in 1..count {
@@ -172,17 +166,10 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             .saturating_add(items.len());
         let mut removed = Vec::new();
         if removed.try_reserve_exact(removed_len).is_err()
-            || !unsafe {
-                crate::object::backing::tracked_vec_reserve_or_raise(
-                    self.py,
-                    self.next,
-                    required,
-                    "list slice allocation failed",
-                )
-            }
+            || !unsafe { crate::object::backing::tracked_vec_reserve_for_len(self.next, required) }
             || self.detached.try_reserve(removed_len).is_err()
         {
-            let _ = raise_exception::<u64>(self.py, "MemoryError", "list slice allocation failed");
+            crate::record_memory_error_without_allocation(self.py);
             return false;
         }
         for &item in items {
@@ -301,7 +288,7 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
             return None;
         }
         let Some(detached) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(0) else {
-            let _ = raise_exception::<u64>(py, "MemoryError", "list sort allocation failed");
+            crate::record_memory_error_without_allocation(py);
             return None;
         };
         let base = unsafe { seq_vec_ptr(ptr) };
@@ -487,18 +474,12 @@ pub(crate) unsafe fn insert_with_projection(
     }
     let Some(required) = len.checked_add(1) else {
         drop(mutation_guard);
-        let _ = raise_exception::<u64>(py, "MemoryError", "list is too large");
+        crate::record_memory_error_without_allocation(py);
         return false;
     };
-    if !unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            base,
-            required,
-            "list allocation failed",
-        )
-    } {
+    if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(base, required) } {
         drop(mutation_guard);
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     inc_ref_bits(py, item);
@@ -880,7 +861,7 @@ pub(crate) unsafe fn replace_range_with_projection(
         .checked_sub(removed_len)
         .and_then(|base| base.checked_add(items.len()))
     else {
-        let _ = raise_exception::<u64>(py, "MemoryError", "list slice allocation failed");
+        crate::record_memory_error_without_allocation(py);
         return false;
     };
     if future_pointers.is_some_and(|pointers| pointers.len() != result_len) {
@@ -931,18 +912,12 @@ pub(crate) unsafe fn replace_range_with_projection(
     let required = result_len;
     let mut removed = Vec::new();
     if removed.try_reserve_exact(removed_len).is_err() {
-        let _ = raise_exception::<u64>(py, "MemoryError", "list slice allocation failed");
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     let vec_ptr = unsafe { seq_vec_ptr(ptr) };
-    if !unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            vec_ptr,
-            required,
-            "list slice allocation failed",
-        )
-    } {
+    if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(vec_ptr, required) } {
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     for &item in items {
@@ -977,24 +952,22 @@ pub(crate) unsafe fn replace_range_with_projection(
 /// Reserve without publishing a content mutation or invalidating ABI views.
 pub(crate) unsafe fn reserve_additional(py: &PyToken<'_>, ptr: *mut u8, additional: usize) -> bool {
     let base = unsafe { seq_vec_ptr(ptr) };
-    let _guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
+    let guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
     let Some(required) = (unsafe { (&*base).len() }).checked_add(additional) else {
-        raise_exception::<()>(py, "MemoryError", "list is too large");
+        drop(guard);
+        crate::record_memory_error_without_allocation(py);
         return false;
     };
     let before = unsafe { (&*base).capacity() };
-    let admitted = unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            base,
-            required,
-            "list allocation failed",
-        )
-    };
+    let admitted = unsafe { crate::object::backing::tracked_vec_reserve_for_len(base, required) };
     if admitted && unsafe { (&*base).capacity() } != before {
         // Observable even if an iterator subsequently yields nothing: CPython
         // changes allocated=-1 when its nonzero length hint reserves storage.
         unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
+    }
+    drop(guard);
+    if !admitted {
+        crate::record_memory_error_without_allocation(py);
     }
     admitted
 }
@@ -1073,7 +1046,7 @@ pub(crate) unsafe fn replace_indices_with_projection(
 
     let mut removed = Vec::new();
     if removed.try_reserve_exact(indices.len()).is_err() {
-        let _ = raise_exception::<u64>(py, "MemoryError", "list allocation failed");
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     for &item in items {
@@ -1201,7 +1174,7 @@ pub(crate) unsafe fn remove_indices_with_projection(
 
     let mut removed = Vec::new();
     if removed.try_reserve_exact(indices.len()).is_err() {
-        let _ = raise_exception::<u64>(py, "MemoryError", "list allocation failed");
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     let vec_ptr = unsafe { seq_vec_ptr(ptr) };
@@ -1254,14 +1227,8 @@ pub(crate) unsafe fn repeat(py: &PyToken<'_>, ptr: *mut u8, count: usize) -> boo
         return txn.repeat(count) && unsafe { txn.commit() };
     }
     let vec_ptr = unsafe { seq_vec_ptr(ptr) };
-    if !unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            vec_ptr,
-            total,
-            "list allocation failed",
-        )
-    } {
+    if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(vec_ptr, total) } {
+        crate::record_memory_error_without_allocation(py);
         return false;
     }
     let values = unsafe { &mut *vec_ptr };
@@ -1551,6 +1518,153 @@ mod tests {
                 );
             }
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+        });
+    }
+    thread_local! {
+        static RESERVE_TARGET: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static RESERVE_OBSERVATION: std::cell::Cell<(usize, bool, usize, usize, usize)> =
+            const { std::cell::Cell::new((0, false, 0, 0, 0)) };
+    }
+
+    unsafe extern "C" fn reserve_prior_retired(
+        _capsule: *mut molt_cpython_abi::abi_types::PyObject,
+    ) {
+        use molt_cpython_abi::api::errors;
+        crate::with_gil_entry_nopanic!(py, {
+            let target = RESERVE_TARGET.with(std::cell::Cell::get);
+            let ptr = obj_from_bits(target).as_ptr().unwrap();
+            let base = unsafe { seq_vec_ptr(ptr) };
+            let unlocked =
+                !unsafe { crate::object::backing::tracked_vec_mutation_is_locked_for_test(base) };
+            let before = unsafe { errors::PyErr_Occurred() }.addr();
+            let len = unsafe { list_len(ptr) };
+            if unlocked {
+                // A legal reentrant mutation uses the actual production guard.
+                // Checking first makes the old implementation fail, not hang.
+                unsafe { clear(py, ptr) };
+            }
+            let after = unsafe { errors::PyErr_Occurred() }.addr();
+            RESERVE_OBSERVATION.with(|seen| {
+                seen.set((seen.get().0 + 1, unlocked, before, after, len));
+            });
+        });
+    }
+
+    struct RestoreReserveObserver;
+    impl Drop for RestoreReserveObserver {
+        fn drop(&mut self) {
+            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            RESERVE_TARGET.with(|target| target.set(0));
+        }
+    }
+
+    #[test]
+    fn list_growth_failure_retires_prior_after_unlocking_without_partial_mutation() {
+        use crate::builtins::exceptions::ExceptionValue;
+        use molt_cpython_abi::abi_types::{PyExc_MemoryError, PyExc_ValueError, PyTuple_Type};
+        use molt_cpython_abi::api::{capsule, errors, refcount::OwnedPyObject, sequences, typeobj};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                assert_eq!(typeobj::PyType_Ready(&raw mut PyTuple_Type), 0);
+                assert_eq!(typeobj::PyType_Ready(&raw mut PyExc_ValueError), 0);
+                for projected in [false, true] {
+                    for operation in 0..3 {
+                        for runtime_prior in [false, true] {
+                            let ptr = alloc_list(py, &[MoltObject::from_int(7).bits()]);
+                            assert!(!ptr.is_null());
+                            let list = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
+                            let reset = RestoreReserveObserver;
+                            RESERVE_TARGET.with(|target| target.set(list.bits()));
+                            let capacity = (&*seq_vec_ptr(ptr)).capacity();
+                            while list_len(ptr) < capacity {
+                                assert!(append(py, ptr, MoltObject::from_int(7).bits()));
+                            }
+                            let _view = if projected {
+                                let view = OwnedPyObject::from_owned(
+                                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                                        .borrowed_handle_to_new_pyobj(list.bits()),
+                                );
+                                assert!(!view.as_ptr().is_null());
+                                Some(view)
+                            } else {
+                                None
+                            };
+                            let payload = OwnedPyObject::from_owned(capsule::PyCapsule_New(
+                                std::ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+                                std::ptr::null(),
+                                Some(reserve_prior_retired),
+                            ));
+                            assert!(!payload.as_ptr().is_null());
+                            let args = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                                &raw mut PyTuple_Type,
+                                1,
+                            ));
+                            assert!(!args.as_ptr().is_null());
+                            assert_eq!(
+                                sequences::PyTuple_SetItem(args.as_ptr(), 0, payload.into_ptr()),
+                                0
+                            );
+                            let prior =
+                                OwnedPyObject::from_owned(errors::molt_native_exception_new(
+                                    &raw mut PyExc_ValueError,
+                                    args.as_ptr(),
+                                    std::ptr::null_mut(),
+                                ));
+                            assert!(!prior.as_ptr().is_null());
+                            drop(args);
+                            errors::PyErr_SetRaisedException(prior.into_ptr());
+                            if runtime_prior {
+                                assert!(
+                                    crate::cpython_abi_hooks::transfer_pending_cpython_exception()
+                                );
+                            }
+                            RESERVE_OBSERVATION.with(|seen| seen.set((0, false, 0, 0, 0)));
+                            crate::resource::set_tracker(Box::new(
+                                crate::resource::LimitedTracker::new(
+                                    &crate::resource::ResourceLimits {
+                                        max_memory: Some(0),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ));
+                            let accepted = match operation {
+                                0 => insert_with_projection(
+                                    py,
+                                    ptr,
+                                    0,
+                                    MoltObject::from_int(9).bits(),
+                                    std::ptr::null_mut(),
+                                ),
+                                1 => reserve_additional(py, ptr, 1),
+                                _ => reserve_additional(py, ptr, usize::MAX),
+                            };
+                            assert!(
+                                !accepted,
+                                "projected={projected}, operation={operation}, runtime_prior={runtime_prior}"
+                            );
+                            let expected = (&raw mut PyExc_MemoryError).addr();
+                            assert_eq!(
+                                RESERVE_OBSERVATION.with(std::cell::Cell::get),
+                                (1, true, expected, expected, capacity),
+                                "projected={projected}, operation={operation}, runtime_prior={runtime_prior}",
+                            );
+                            assert_eq!(errors::PyErr_Occurred().addr(), expected);
+                            assert_eq!(
+                                list_len(ptr),
+                                0,
+                                "only the admitted destructor cleared the list"
+                            );
+                            if let Some(view) = &_view {
+                                assert_eq!(sequences::PyList_Size(view.as_ptr()), 0);
+                            }
+                            drop(reset);
+                        }
+                    }
+                }
+            }
         });
     }
 }

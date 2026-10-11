@@ -892,38 +892,38 @@ unsafe fn reserve_hash_storage<E: HashRow>(
         let live = (*storage).live;
         let extent = (*entries).len();
         let Some(next_live) = live.checked_add(added) else {
-            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+            crate::record_memory_error_without_allocation(py);
+            return false;
         };
         let Some(next_fill) = (*storage).fill.checked_add(added) else {
-            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+            crate::record_memory_error_without_allocation(py);
+            return false;
         };
         let load_full = match (next_fill.checked_mul(10), (*table).len().checked_mul(7)) {
             (Some(fill), Some(limit)) => fill >= limit,
-            _ => return raise_exception(py, "MemoryError", "hash storage capacity overflow"),
+            _ => {
+                crate::record_memory_error_without_allocation(py);
+                return false;
+            }
         };
         let compact = load_full || (extent > live && extent - live >= live);
         let capacity = if compact {
             let Some(capacity) = checked_dict_table_capacity(next_live) else {
-                return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+                crate::record_memory_error_without_allocation(py);
+                return false;
             };
             capacity
         } else {
             (*table).len()
         };
         let Some(required) = (if compact { live } else { extent }).checked_add(added) else {
-            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+            crate::record_memory_error_without_allocation(py);
+            return false;
         };
-        if !crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            entries,
-            required,
-            "hash entries allocation failed",
-        ) || !crate::object::backing::tracked_vec_reserve_or_raise(
-            py,
-            table,
-            capacity,
-            "hash index allocation failed",
-        ) {
+        if !crate::object::backing::tracked_vec_reserve_for_len(entries, required)
+            || !crate::object::backing::tracked_vec_reserve_for_len(table, capacity)
+        {
+            crate::record_memory_error_without_allocation(py);
             return false;
         }
         if compact {

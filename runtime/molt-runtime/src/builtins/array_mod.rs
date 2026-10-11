@@ -23,13 +23,14 @@ use crate::object::memoryview::{
 };
 use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
-use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
+use crate::object::ops_sys::{DecodedSlice, collect_slice_indices, slice_error};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_list, alloc_string,
-    alloc_tuple, dec_ref_bits, inc_ref_bits, instance_dict_bits, int_bits_from_i64,
-    is_missing_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
-    slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64,
+    MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_string, alloc_tuple,
+    inc_ref_bits, instance_dict_bits, int_bits_from_i64, is_missing_bits, obj_from_bits,
+    object_class_bits, object_type_id, raise_exception, slice_start_bits, slice_step_bits,
+    slice_stop_bits, to_f64, to_i64,
 };
+use molt_runtime_core::OwnedRuntimeValue;
 
 // ---------------------------------------------------------------------------
 // Typecode metadata
@@ -345,13 +346,6 @@ impl ArrayHandle {
         Ok(sz)
     }
 
-    fn push_elem(&mut self, elem: ArrayElem) -> Result<(), &'static str> {
-        let mut encoded = [0_u8; 8];
-        let len = self.encode_elem_into(elem, &mut encoded)?;
-        self.data.extend_from_slice(&encoded[..len]);
-        Ok(())
-    }
-
     fn set_elem(&mut self, idx: usize, elem: ArrayElem) -> Result<(), &'static str> {
         let sz = self.typecode.itemsize();
         let offset = idx.checked_mul(sz).ok_or("index overflow")?;
@@ -377,17 +371,6 @@ impl ArrayHandle {
         Ok(elem)
     }
 
-    fn insert_at(&mut self, idx: usize, elem: ArrayElem) -> Result<(), &'static str> {
-        let sz = self.typecode.itemsize();
-        let clamped = idx.min(self.len());
-        let offset = clamped * sz;
-        let mut encoded = [0_u8; 8];
-        let len = self.encode_elem_into(elem, &mut encoded)?;
-        self.data
-            .splice(offset..offset, encoded[..len].iter().copied());
-        Ok(())
-    }
-
     fn resize_blocked(&self) -> bool {
         self.exports.is_exported()
     }
@@ -400,7 +383,8 @@ impl ArrayHandle {
 // is an `Arc<Mutex<ArrayHandle>>`. `Mutex` provides the interior mutability the
 // `array` mutators need while satisfying the `Send + Sync` bound the native
 // handle mechanism requires. The runtime executes under the GIL so there is no
-// real contention; the lock is held only for the duration of one intrinsic.
+// real contention. The lock protects only primitive storage work: Python
+// coercion, result allocation and exception selection happen after it is released.
 // ---------------------------------------------------------------------------
 
 type ArrayCell = Mutex<ArrayHandle>;
@@ -443,33 +427,107 @@ fn array_bits(_py: &PyToken<'_>, handle: ArrayHandle) -> u64 {
     bits
 }
 
-/// Run `f` with an exclusive lock on the array backing `bits`, raising a
-/// `TypeError` for an invalid handle. The closure returns the result bits.
-fn with_array_mut<F>(_py: &PyToken<'_>, bits: u64, f: F) -> u64
-where
-    F: FnOnce(&PyToken<'_>, &mut ArrayHandle) -> u64,
-{
-    let Some(cell) = array_arc_from_bits(bits) else {
-        return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
-    };
+// No error selection or Python-owned value may cross this storage phase. In
+// particular, selecting OOM can retire an old exception and reenter the array.
+#[derive(Clone, Copy)]
+enum ArrayStorageError {
+    Exception(&'static str, &'static str),
+    Allocation,
+    ExtendedSlice { replacement: usize, expected: usize },
+}
+
+impl ArrayStorageError {
+    fn raise(self, py: &PyToken<'_>) -> u64 {
+        match self {
+            Self::Exception(kind, message) => raise_exception::<u64>(py, kind, message),
+            Self::Allocation => {
+                crate::record_memory_error_without_allocation(py);
+                MoltObject::none().bits()
+            }
+            Self::ExtendedSlice {
+                replacement,
+                expected,
+            } => raise_exception::<u64>(
+                py,
+                "ValueError",
+                &format!(
+                    "attempt to assign array of size {} to extended slice of size {}",
+                    replacement, expected,
+                ),
+            ),
+        }
+    }
+}
+
+fn array_cell(py: &PyToken<'_>, bits: u64) -> Result<Arc<ArrayCell>, u64> {
+    array_arc_from_bits(bits)
+        .ok_or_else(|| raise_exception::<u64>(py, "TypeError", "invalid array handle"))
+}
+
+fn with_array_storage<T>(
+    cell: &ArrayCell,
+    f: impl FnOnce(&mut ArrayHandle) -> Result<T, ArrayStorageError>,
+) -> Result<T, ArrayStorageError> {
     let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    f(_py, &mut guard)
+    f(&mut guard)
 }
 
-fn array_resize_error(_py: &PyToken<'_>) -> u64 {
-    raise_exception::<u64>(
-        _py,
-        "BufferError",
-        "cannot resize an array that is exporting buffers",
-    )
+fn array_status(py: &PyToken<'_>, result: Result<(), ArrayStorageError>) -> u64 {
+    match result {
+        Ok(()) => MoltObject::none().bits(),
+        Err(error) => error.raise(py),
+    }
 }
 
-fn ensure_array_resizable(_py: &PyToken<'_>, handle: &ArrayHandle) -> Result<(), u64> {
+fn ensure_array_resizable(handle: &ArrayHandle) -> Result<(), ArrayStorageError> {
     if handle.resize_blocked() {
-        Err(array_resize_error(_py))
+        Err(ArrayStorageError::Exception(
+            "BufferError",
+            "cannot resize an array that is exporting buffers",
+        ))
     } else {
         Ok(())
     }
+}
+
+fn storage_elem(tc: Typecode, bits: u64) -> Result<ArrayElem, ArrayStorageError> {
+    elem_from_bits_unraised(tc, bits)
+        .map_err(|message| ArrayStorageError::Exception("TypeError", message))
+}
+
+fn copy_array_bytes(bytes: &[u8]) -> Result<Vec<u8>, ArrayStorageError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len())
+        .map_err(|_| ArrayStorageError::Allocation)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
+
+fn decode_array_slice(py: &PyToken<'_>, index: u64) -> Result<Option<DecodedSlice>, u64> {
+    let Some(ptr) = obj_from_bits(index).as_ptr() else {
+        return Ok(None);
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_SLICE {
+            return Ok(None);
+        }
+        DecodedSlice::decode(
+            py,
+            obj_from_bits(slice_start_bits(ptr)),
+            obj_from_bits(slice_stop_bits(ptr)),
+            obj_from_bits(slice_step_bits(ptr)),
+        )
+        .map(Some)
+        .map_err(|error| slice_error(py, error))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn array_storage_lock_available_for_test(bits: u64) -> bool {
+    let Some(cell) = array_arc_from_bits(bits) else {
+        return false;
+    };
+    cell.try_lock().is_ok()
 }
 
 /// Resolve the actual typed array handle from sealed physical storage. Buffer
@@ -624,26 +682,19 @@ fn elem_from_bits_unraised(tc: Typecode, value_bits: u64) -> Result<ArrayElem, &
     Err("an integer is required")
 }
 
-fn elem_from_bits(_py: &PyToken<'_>, tc: Typecode, value_bits: u64) -> Result<ArrayElem, u64> {
-    elem_from_bits_unraised(tc, value_bits)
-        .map_err(|message| raise_exception::<u64>(_py, "TypeError", message))
-}
-
-fn elem_to_bits(_py: &PyToken<'_>, elem: ArrayElem) -> u64 {
-    match elem {
-        ArrayElem::Int(v) => int_bits_from_i64(_py, v),
+fn elem_to_bits(py: &PyToken<'_>, elem: ArrayElem) -> Option<u64> {
+    let bits = match elem {
+        ArrayElem::Int(v) => int_bits_from_i64(py, v),
         ArrayElem::Uint(v) => {
             if v <= i64::MAX as u64 {
-                int_bits_from_i64(_py, v as i64)
+                int_bits_from_i64(py, v as i64)
             } else {
-                // Encode as bigint via string conversion path.
-                use num_bigint::BigInt;
-                let big = BigInt::from(v);
-                crate::int_bits_from_bigint(_py, big)
+                crate::int_bits_from_bigint(py, num_bigint::BigInt::from(v))
             }
         }
         ArrayElem::Float(v) => MoltObject::from_float(v).bits(),
-    }
+    };
+    (!obj_from_bits(bits).is_none()).then_some(bits)
 }
 
 fn typecode_from_obj(
@@ -698,673 +749,719 @@ pub extern "C" fn molt_array_new(typecode_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let tc = match typecode_from_obj(_py, typecode_bits, false) {
+    crate::with_gil_entry_nopanic!(py, {
+        let tc = match typecode_from_obj(py, typecode_bits, false) {
             Ok(tc) => tc,
-            Err(exc) => return exc,
+            Err(error) => return error,
         };
         let mut handle = ArrayHandle::new(tc);
-
-        let items_obj = obj_from_bits(items_bits);
-        let Some(list_ptr) = items_obj.as_ptr() else {
-            return array_bits(_py, handle);
+        let Some(list_ptr) = obj_from_bits(items_bits).as_ptr() else {
+            return array_bits(py, handle);
         };
-        let converted = unsafe {
+        let result = unsafe {
             crate::object::seq_access::with_borrowed(list_ptr, |seq| {
-                for &elem_bits in seq {
-                    let elem = elem_from_bits(_py, tc, elem_bits)?;
-                    if let Err(msg) = handle.push_elem(elem) {
-                        return Err(raise_exception::<u64>(_py, "OverflowError", msg));
-                    }
+                for &bits in seq {
+                    let elem = storage_elem(tc, bits)?;
+                    let mut encoded = [0; 8];
+                    let size = handle
+                        .encode_elem_into(elem, &mut encoded)
+                        .map_err(|message| {
+                            ArrayStorageError::Exception("OverflowError", message)
+                        })?;
+                    handle
+                        .data
+                        .try_reserve(size)
+                        .map_err(|_| ArrayStorageError::Allocation)?;
+                    handle.data.extend_from_slice(&encoded[..size]);
                 }
                 Ok(())
             })
         };
-        if let Err(exc) = converted {
-            return exc;
+        if let Err(error) = result {
+            return error.raise(py);
         }
-        array_bits(_py, handle)
+        array_bits(py, handle)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let tc = handle.typecode;
-            let elem = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
-            if let Err(exc) = ensure_array_resizable(_py, handle) {
-                return exc;
-            }
-            if let Err(msg) = handle.push_elem(elem) {
-                return raise_exception::<u64>(_py, "OverflowError", msg);
-            }
-            MoltObject::none().bits()
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                let elem = storage_elem(handle.typecode, value_bits)?;
+                let mut encoded = [0; 8];
+                let size = handle
+                    .encode_elem_into(elem, &mut encoded)
+                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))?;
+                ensure_array_resizable(handle)?;
+                handle
+                    .data
+                    .try_reserve(size)
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                handle.data.extend_from_slice(&encoded[..size]);
+                Ok(())
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let mut allocation_failed = false;
-        let result = with_array_mut(_py, handle_bits, |_py, handle| {
-            let tc = handle.typecode;
-            let items_obj = obj_from_bits(items_bits);
-            let Some(list_ptr) = items_obj.as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            // Collect first to avoid partial mutation on error.
-            let itemsize = handle.typecode.itemsize();
-            let encoded = unsafe {
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let Some(list_ptr) = obj_from_bits(items_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let result =
+            with_array_storage(&cell, |handle| unsafe {
+                // The existing list-input transaction stays atomic. Its borrowed
+                // input and the array lock end before any error is selected.
                 crate::object::seq_access::with_borrowed(list_ptr, |seq| {
-                    let Some(additional_bytes) = seq.len().checked_mul(itemsize) else {
-                        return Err(("OverflowError", "array is too large"));
-                    };
-                    let Some(final_len) = handle.data.len().checked_add(additional_bytes) else {
-                        return Err(("OverflowError", "array is too large"));
-                    };
-                    let mut encoded: Vec<u8> = Vec::new();
-                    if encoded.try_reserve_exact(additional_bytes).is_err() {
-                        return Err(("MemoryError", "out of memory"));
+                    let additional = seq.len().checked_mul(handle.typecode.itemsize()).ok_or(
+                        ArrayStorageError::Exception("OverflowError", "array is too large"),
+                    )?;
+                    handle.data.len().checked_add(additional).ok_or(
+                        ArrayStorageError::Exception("OverflowError", "array is too large"),
+                    )?;
+                    let mut encoded = Vec::new();
+                    encoded
+                        .try_reserve_exact(additional)
+                        .map_err(|_| ArrayStorageError::Allocation)?;
+                    for &bits in seq {
+                        let elem = storage_elem(handle.typecode, bits)?;
+                        let mut item = [0; 8];
+                        let size = handle
+                            .encode_elem_into(elem, &mut item)
+                            .map_err(|message| {
+                                ArrayStorageError::Exception("OverflowError", message)
+                            })?;
+                        encoded.extend_from_slice(&item[..size]);
                     }
-                    for &elem_bits in seq {
-                        let elem = elem_from_bits_unraised(tc, elem_bits)
-                            .map_err(|message| ("TypeError", message))?;
-                        let mut item = [0_u8; 8];
-                        match handle.encode_elem_into(elem, &mut item) {
-                            Ok(len) => encoded.extend_from_slice(&item[..len]),
-                            Err(message) => return Err(("OverflowError", message)),
-                        }
+                    if !encoded.is_empty() {
+                        ensure_array_resizable(handle)?;
                     }
-                    Ok((encoded, final_len))
+                    handle
+                        .data
+                        .try_reserve_exact(encoded.len())
+                        .map_err(|_| ArrayStorageError::Allocation)?;
+                    handle.data.extend_from_slice(&encoded);
+                    Ok(())
                 })
-            };
-            let (encoded, final_len) = match encoded {
-                Ok(encoded) => encoded,
-                Err(("MemoryError", _)) => {
-                    allocation_failed = true;
-                    return MoltObject::none().bits();
-                }
-                Err((kind, message)) => return raise_exception::<u64>(_py, kind, message),
-            };
-            if !encoded.is_empty()
-                && let Err(exc) = ensure_array_resizable(_py, handle)
-            {
-                return exc;
-            }
-            if final_len > handle.data.capacity()
-                && handle
-                    .data
-                    .try_reserve_exact(final_len - handle.data.len())
-                    .is_err()
-            {
-                allocation_failed = true;
-                return MoltObject::none().bits();
-            }
-            handle.data.extend_from_slice(&encoded);
-            MoltObject::none().bits()
-        });
-        // The handle mutex and borrowed input slice are gone before selecting
-        // OOM: retiring the previous error may legally reenter this array.
-        if allocation_failed {
-            crate::record_memory_error_without_allocation(_py);
-        }
-        result
+            });
+        array_status(py, result)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(cell) = array_arc_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
         };
-        let Some(count) = repeat_count_from_bits(_py, count_bits) else {
+        let Some(count) = repeat_count_from_bits(py, count_bits) else {
             return MoltObject::none().bits();
         };
-        let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut out = ArrayHandle::new(guard.typecode);
-        if count <= 0 || guard.data.is_empty() {
-            drop(guard);
-            return array_bits(_py, out);
+        let result = with_array_storage(&cell, |handle| {
+            let mut out = ArrayHandle::new(handle.typecode);
+            if count <= 0 || handle.data.is_empty() {
+                return Ok(out);
+            }
+            let repeat = usize::try_from(count).map_err(|_| ArrayStorageError::Allocation)?;
+            let total = handle
+                .data
+                .len()
+                .checked_mul(repeat)
+                .ok_or(ArrayStorageError::Allocation)?;
+            out.data
+                .try_reserve_exact(total)
+                .map_err(|_| ArrayStorageError::Allocation)?;
+            for _ in 0..repeat {
+                out.data.extend_from_slice(&handle.data);
+            }
+            Ok(out)
+        });
+        match result {
+            Ok(out) => array_bits(py, out),
+            Err(error) => error.raise(py),
         }
-        let repeat = match usize::try_from(count) {
-            Ok(value) => value,
-            Err(_) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        let item_count = guard.len();
-        let total_items = match item_count.checked_mul(repeat) {
-            Some(total) => total,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        let total_bytes = match total_items.checked_mul(guard.typecode.itemsize()) {
-            Some(total) => total,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        out.data.reserve(total_bytes);
-        for _ in 0..repeat {
-            out.data.extend_from_slice(&guard.data);
-        }
-        drop(guard);
-        array_bits(_py, out)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(cell) = array_arc_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
         };
-        let Some(count) = repeat_count_from_bits(_py, count_bits) else {
+        let Some(count) = repeat_count_from_bits(py, count_bits) else {
             return MoltObject::none().bits();
         };
-        let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if count <= 0 {
-            if !guard.data.is_empty()
-                && let Err(exc) = ensure_array_resizable(_py, &guard)
-            {
-                return exc;
-            }
-            guard.data.clear();
-            return MoltObject::none().bits();
-        }
-        let repeat = match usize::try_from(count) {
-            Ok(value) => value,
-            Err(_) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        if repeat == 1 || guard.data.is_empty() {
-            return MoltObject::none().bits();
-        }
-        if let Err(exc) = ensure_array_resizable(_py, &guard) {
-            return exc;
-        }
-        let snapshot = guard.data.clone();
-        let total_len = match snapshot.len().checked_mul(repeat) {
-            Some(total) => total,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        guard.data.reserve(total_len.saturating_sub(snapshot.len()));
-        for _ in 1..repeat {
-            guard.data.extend_from_slice(&snapshot);
-        }
-        MoltObject::none().bits()
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                if count <= 0 {
+                    if !handle.data.is_empty() {
+                        ensure_array_resizable(handle)?;
+                    }
+                    handle.data.clear();
+                    return Ok(());
+                }
+                let repeat = usize::try_from(count).map_err(|_| ArrayStorageError::Allocation)?;
+                if repeat == 1 || handle.data.is_empty() {
+                    return Ok(());
+                }
+                ensure_array_resizable(handle)?;
+                let snapshot = copy_array_bytes(&handle.data)?;
+                let total = snapshot
+                    .len()
+                    .checked_mul(repeat)
+                    .ok_or(ArrayStorageError::Allocation)?;
+                handle
+                    .data
+                    .try_reserve_exact(total - snapshot.len())
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                for _ in 1..repeat {
+                    handle.data.extend_from_slice(&snapshot);
+                }
+                Ok(())
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(cell) = array_arc_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
         };
-        let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let handle = &*guard;
-        let index_obj = obj_from_bits(index_bits);
-        if let Some(slice_ptr) = index_obj.as_ptr() {
-            unsafe {
-                if crate::object_type_id(slice_ptr) == TYPE_ID_SLICE {
-                    let len = handle.len() as isize;
-                    let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                    let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                    let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                    let (start, stop, step) =
-                        match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
-                            Ok(value) => value,
-                            Err(err) => return slice_error(_py, err),
-                        };
-                    let itemsize = handle.typecode.itemsize();
-                    let mut out = ArrayHandle::new(handle.typecode);
-                    if step == 1 {
-                        let start_byte = start as usize * itemsize;
-                        let stop_byte = stop as usize * itemsize;
+        let slice = match decode_array_slice(py, index_bits) {
+            Ok(slice) => slice,
+            Err(error) => return error,
+        };
+        if let Some(slice) = slice {
+            let result = with_array_storage(&cell, |handle| {
+                let (start, stop, step) = slice.adjust(handle.len() as isize);
+                let mut out = ArrayHandle::new(handle.typecode);
+                let size = handle.typecode.itemsize();
+                if step == 1 {
+                    let stop = stop.max(start);
+                    out.data = copy_array_bytes(
+                        &handle.data[start as usize * size..stop as usize * size],
+                    )?;
+                } else {
+                    let indices = collect_slice_indices(start, stop, step);
+                    out.data
+                        .try_reserve_exact(indices.len() * size)
+                        .map_err(|_| ArrayStorageError::Allocation)?;
+                    for index in indices {
                         out.data
-                            .extend_from_slice(&handle.data[start_byte..stop_byte]);
-                    } else {
-                        for idx in collect_slice_indices(start, stop, step) {
-                            let start_byte = idx * itemsize;
-                            let end_byte = start_byte + itemsize;
-                            out.data
-                                .extend_from_slice(&handle.data[start_byte..end_byte]);
-                        }
+                            .extend_from_slice(&handle.data[index * size..(index + 1) * size]);
                     }
-                    drop(guard);
-                    return array_bits(_py, out);
                 }
-            }
+                Ok(out)
+            });
+            return match result {
+                Ok(out) => array_bits(py, out),
+                Err(error) => error.raise(py),
+            };
         }
-        let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
+        let Some(index) = array_subscript_index_from_bits(py, index_bits) else {
             return MoltObject::none().bits();
         };
-        let len = handle.len() as i64;
-        let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
-        if idx < 0 || idx >= len {
-            return raise_exception::<u64>(_py, "IndexError", "array index out of range");
+        let result = with_array_storage(&cell, |handle| {
+            let len = handle.len() as i64;
+            let index = if index < 0 { len + index } else { index };
+            if index < 0 || index >= len {
+                return Err(ArrayStorageError::Exception(
+                    "IndexError",
+                    "array index out of range",
+                ));
+            }
+            handle
+                .read_elem(index as usize)
+                .ok_or(ArrayStorageError::Exception(
+                    "IndexError",
+                    "array index out of range",
+                ))
+        });
+        match result {
+            Ok(elem) => elem_to_bits(py, elem).unwrap_or_else(|| MoltObject::none().bits()),
+            Err(error) => error.raise(py),
         }
-        let Some(elem) = handle.read_elem(idx as usize) else {
-            return raise_exception::<u64>(_py, "IndexError", "array index out of range");
-        };
-        elem_to_bits(_py, elem)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(cell) = array_arc_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
         };
-        let index_obj = obj_from_bits(index_bits);
-
-        // Slice assignment: the right-hand side is another array handle. Resolve
-        // its data BEFORE taking the destination lock so two distinct handles
-        // never deadlock, and a self-assignment (`a[:] = a`) reuses the single
-        // lock via the snapshot below.
-        let is_slice = unsafe {
-            index_obj
-                .as_ptr()
-                .map(|p| crate::object_type_id(p) == TYPE_ID_SLICE)
-                .unwrap_or(false)
+        let slice = match decode_array_slice(py, index_bits) {
+            Ok(slice) => slice,
+            Err(error) => return error,
         };
-        if is_slice {
-            let slice_ptr = index_obj.as_ptr().unwrap();
-            let tc = {
-                let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.typecode
-            };
+        if let Some(slice) = slice {
             let Some(value_cell) = array_arc_from_bits(value_bits) else {
                 return raise_exception::<u64>(
-                    _py,
+                    py,
                     "TypeError",
                     &format!(
                         "can only assign array (not \"{}\") to array slice",
-                        crate::class_name_for_error(crate::type_of_bits(_py, value_bits))
+                        crate::class_name_for_error(crate::type_of_bits(py, value_bits)),
                     ),
                 );
             };
-            let (replacement, value_tc) = {
-                let value_guard = value_cell
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                (value_guard.data.clone(), value_guard.typecode)
+            let replacement = with_array_storage(&value_cell, |other| {
+                Ok((copy_array_bytes(&other.data)?, other.typecode))
+            });
+            let (replacement, value_tc) = match replacement {
+                Ok(value) => value,
+                Err(error) => return error.raise(py),
             };
-            if value_tc != tc {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "bad argument type for built-in operation",
-                );
-            }
-            let itemsize = tc.itemsize();
-            let replacement_len = replacement.len() / itemsize;
-
-            let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let len = guard.len() as isize;
-            let (start_obj, stop_obj, step_obj) = unsafe {
-                (
-                    obj_from_bits(slice_start_bits(slice_ptr)),
-                    obj_from_bits(slice_stop_bits(slice_ptr)),
-                    obj_from_bits(slice_step_bits(slice_ptr)),
-                )
-            };
-            let (start, stop, step) =
-                match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
-                    Ok(value) => value,
-                    Err(err) => return slice_error(_py, err),
-                };
-            if step == 1 {
-                let old_len = (stop - start).max(0) as usize;
-                if replacement_len != old_len
-                    && let Err(exc) = ensure_array_resizable(_py, &guard)
-                {
-                    return exc;
-                }
-                let start_byte = start as usize * itemsize;
-                let stop_byte = stop as usize * itemsize;
-                guard.data.splice(start_byte..stop_byte, replacement);
-                return MoltObject::none().bits();
-            }
-            let indices = collect_slice_indices(start, stop, step);
-            if indices.len() != replacement_len {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    &format!(
-                        "attempt to assign array of size {} to extended slice of size {}",
-                        replacement_len,
-                        indices.len()
-                    ),
-                );
-            }
-            for (slot_idx, idx) in indices.iter().copied().enumerate() {
-                let src_start = slot_idx * itemsize;
-                let src_end = src_start + itemsize;
-                let dst_start = idx * itemsize;
-                let dst_end = dst_start + itemsize;
-                guard.data[dst_start..dst_end].copy_from_slice(&replacement[src_start..src_end]);
-            }
-            return MoltObject::none().bits();
+            return array_status(
+                py,
+                with_array_storage(&cell, |handle| {
+                    if value_tc != handle.typecode {
+                        return Err(ArrayStorageError::Exception(
+                            "TypeError",
+                            "bad argument type for built-in operation",
+                        ));
+                    }
+                    let (start, stop, step) = slice.adjust(handle.len() as isize);
+                    let size = handle.typecode.itemsize();
+                    let replacement_len = replacement.len() / size;
+                    if step == 1 {
+                        let stop = stop.max(start);
+                        let removed = (stop - start) as usize;
+                        if replacement_len != removed {
+                            ensure_array_resizable(handle)?;
+                        }
+                        let additional = replacement.len().saturating_sub(removed * size);
+                        handle
+                            .data
+                            .try_reserve_exact(additional)
+                            .map_err(|_| ArrayStorageError::Allocation)?;
+                        handle
+                            .data
+                            .splice(start as usize * size..stop as usize * size, replacement);
+                    } else {
+                        let indices = collect_slice_indices(start, stop, step);
+                        if indices.len() != replacement_len {
+                            return Err(ArrayStorageError::ExtendedSlice {
+                                replacement: replacement_len,
+                                expected: indices.len(),
+                            });
+                        }
+                        for (source, index) in indices.into_iter().enumerate() {
+                            handle.data[index * size..(index + 1) * size]
+                                .copy_from_slice(&replacement[source * size..(source + 1) * size]);
+                        }
+                    }
+                    Ok(())
+                }),
+            );
         }
-
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let tc = handle.typecode;
-            let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
-                return MoltObject::none().bits();
-            };
-            let len = handle.len() as i64;
-            let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
-            if idx < 0 || idx >= len {
-                return raise_exception::<u64>(
-                    _py,
-                    "IndexError",
-                    "array assignment index out of range",
-                );
-            }
-            let elem = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
-            if let Err(msg) = handle.set_elem(idx as usize, elem) {
-                return raise_exception::<u64>(_py, "OverflowError", msg);
-            }
-            MoltObject::none().bits()
-        })
+        let Some(index) = array_subscript_index_from_bits(py, index_bits) else {
+            return MoltObject::none().bits();
+        };
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                let len = handle.len() as i64;
+                let index = if index < 0 { len + index } else { index };
+                if index < 0 || index >= len {
+                    return Err(ArrayStorageError::Exception(
+                        "IndexError",
+                        "array assignment index out of range",
+                    ));
+                }
+                let elem = storage_elem(handle.typecode, value_bits)?;
+                handle
+                    .set_elem(index as usize, elem)
+                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let index_obj = obj_from_bits(index_bits);
-            unsafe {
-                if let Some(slice_ptr) = index_obj.as_ptr()
-                    && crate::object_type_id(slice_ptr) == TYPE_ID_SLICE
-                {
-                    let len = handle.len() as isize;
-                    let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                    let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                    let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                    let (start, stop, step) =
-                        match normalize_slice_indices(_py, len, start_obj, stop_obj, step_obj) {
-                            Ok(value) => value,
-                            Err(err) => return slice_error(_py, err),
-                        };
-                    let itemsize = handle.typecode.itemsize();
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let slice = match decode_array_slice(py, index_bits) {
+            Ok(slice) => slice,
+            Err(error) => return error,
+        };
+        if let Some(slice) = slice {
+            return array_status(
+                py,
+                with_array_storage(&cell, |handle| {
+                    let (start, stop, step) = slice.adjust(handle.len() as isize);
+                    let size = handle.typecode.itemsize();
                     if step == 1 {
                         if start < stop {
-                            if let Err(exc) = ensure_array_resizable(_py, handle) {
-                                return exc;
-                            }
-                            let start_byte = start as usize * itemsize;
-                            let stop_byte = stop as usize * itemsize;
-                            handle.data.drain(start_byte..stop_byte);
+                            ensure_array_resizable(handle)?;
+                            handle
+                                .data
+                                .drain(start as usize * size..stop as usize * size);
                         }
-                        return MoltObject::none().bits();
+                    } else {
+                        let mut indices = collect_slice_indices(start, stop, step);
+                        if !indices.is_empty() {
+                            ensure_array_resizable(handle)?;
+                        }
+                        indices.sort_unstable_by(|a, b| b.cmp(a));
+                        for index in indices {
+                            handle.data.drain(index * size..(index + 1) * size);
+                        }
                     }
-                    let mut indices = collect_slice_indices(start, stop, step);
-                    if !indices.is_empty()
-                        && let Err(exc) = ensure_array_resizable(_py, handle)
-                    {
-                        return exc;
-                    }
-                    indices.sort_unstable_by(|a, b| b.cmp(a));
-                    for idx in indices {
-                        let start_byte = idx * itemsize;
-                        let end_byte = start_byte + itemsize;
-                        handle.data.drain(start_byte..end_byte);
-                    }
-                    return MoltObject::none().bits();
+                    Ok(())
+                }),
+            );
+        }
+        let Some(index) = array_subscript_index_from_bits(py, index_bits) else {
+            return MoltObject::none().bits();
+        };
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                let len = handle.len() as i64;
+                let index = if index < 0 { len + index } else { index };
+                if index < 0 || index >= len {
+                    return Err(ArrayStorageError::Exception(
+                        "IndexError",
+                        "array assignment index out of range",
+                    ));
                 }
-            }
-            let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
-                return MoltObject::none().bits();
-            };
-            let len = handle.len() as i64;
-            let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
-            if idx < 0 || idx >= len {
-                return raise_exception::<u64>(
-                    _py,
-                    "IndexError",
-                    "array assignment index out of range",
-                );
-            }
-            if let Err(exc) = ensure_array_resizable(_py, handle) {
-                return exc;
-            }
-            if let Err(msg) = handle.remove_at(idx as usize) {
-                return raise_exception::<u64>(_py, "IndexError", msg);
-            }
-            MoltObject::none().bits()
-        })
+                ensure_array_resizable(handle)?;
+                handle
+                    .remove_at(index as usize)
+                    .map(|_| ())
+                    .map_err(|message| ArrayStorageError::Exception("IndexError", message))
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            int_bits_from_i64(_py, handle.len() as i64)
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let value = with_array_storage(&cell, |handle| Ok(handle.len()));
+        match value {
+            Ok(value) => int_bits_from_i64(py, value as i64),
+            Err(error) => error.raise(py),
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let ch = handle.typecode.as_char();
-            let s = ch.to_string();
-            let ptr = alloc_string(_py, s.as_bytes());
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let value = with_array_storage(&cell, |handle| Ok(handle.typecode.as_char() as u8));
+        let byte = match value {
+            Ok(byte) => byte,
+            Err(error) => return error.raise(py),
+        };
+        let ptr = alloc_string(py, &[byte]);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
             MoltObject::from_ptr(ptr).bits()
-        })
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_itemsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            int_bits_from_i64(_py, handle.typecode.itemsize() as i64)
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let value = with_array_storage(&cell, |handle| Ok(handle.typecode.itemsize()));
+        match value {
+            Ok(value) => int_bits_from_i64(py, value as i64),
+            Err(error) => error.raise(py),
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let ptr = alloc_bytes(_py, &handle.data);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        // alloc_bytes may select OOM and reenter this array. Own primitive bytes
+        // across that call; an exported-buffer pin would change resize behavior.
+        let bytes = match with_array_storage(&cell, |handle| copy_array_bytes(&handle.data)) {
+            Ok(bytes) => bytes,
+            Err(error) => return error.raise(py),
+        };
+        let ptr = alloc_bytes(py, &bytes);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
             MoltObject::from_ptr(ptr).bits()
-        })
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let data_obj = obj_from_bits(data_bits);
-            let Some(data_ptr) = data_obj.as_ptr() else {
-                return raise_exception::<u64>(_py, "TypeError", "a bytes-like object is required");
-            };
-            let data_slice = unsafe {
-                let Some(slice) = crate::bytes_like_slice(data_ptr) else {
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "a bytes-like object is required",
-                    );
-                };
-                slice.to_vec()
-            };
-            let sz = handle.typecode.itemsize();
-            if data_slice.len() % sz != 0 {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "bytes length not a multiple of item size",
-                );
-            }
-            if !data_slice.is_empty()
-                && let Err(exc) = ensure_array_resizable(_py, handle)
-            {
-                return exc;
-            }
-            handle.data.extend_from_slice(&data_slice);
-            MoltObject::none().bits()
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let data = unsafe {
+            obj_from_bits(data_bits)
+                .as_ptr()
+                .and_then(|ptr| crate::bytes_like_slice(ptr))
+                .ok_or(ArrayStorageError::Exception(
+                    "TypeError",
+                    "a bytes-like object is required",
+                ))
+                .and_then(copy_array_bytes)
+        };
+        let data = match data {
+            Ok(data) => data,
+            Err(error) => return error.raise(py),
+        };
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                if data.len() % handle.typecode.itemsize() != 0 {
+                    return Err(ArrayStorageError::Exception(
+                        "ValueError",
+                        "bytes length not a multiple of item size",
+                    ));
+                }
+                if !data.is_empty() {
+                    ensure_array_resizable(handle)?;
+                }
+                handle
+                    .data
+                    .try_reserve(data.len())
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                handle.data.extend_from_slice(&data);
+                Ok(())
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let n = handle.len();
-            let mut elems: Vec<u64> = Vec::with_capacity(n);
-            for i in 0..n {
-                let Some(elem) = handle.read_elem(i) else {
-                    return raise_exception::<u64>(_py, "RuntimeError", "array data corrupted");
-                };
-                elems.push(elem_to_bits(_py, elem));
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
+            let mut elems = Vec::new();
+            elems
+                .try_reserve_exact(handle.len())
+                .map_err(|_| ArrayStorageError::Allocation)?;
+            for index in 0..handle.len() {
+                elems.push(handle.read_elem(index).ok_or(ArrayStorageError::Exception(
+                    "RuntimeError",
+                    "array data corrupted",
+                ))?);
             }
-            let list_ptr = alloc_list(_py, &elems);
-            // dec_ref the element bits since alloc_list increments them.
-            for b in &elems {
-                dec_ref_bits(_py, *b);
-            }
-            if list_ptr.is_null() {
+            Ok(elems)
+        });
+        let elems = match result {
+            Ok(elems) => elems,
+            Err(error) => return error.raise(py),
+        };
+        let list = crate::object::builders::alloc_list_with_capacity(py, &[], elems.len());
+        if list.is_null() {
+            return MoltObject::none().bits();
+        }
+        let owner = unsafe {
+            OwnedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::from_ptr(list).bits())
+        };
+        for elem in elems {
+            let Some(bits) = elem_to_bits(py, elem) else {
                 return MoltObject::none().bits();
+            };
+            unsafe {
+                crate::object::list_mutation::append_owned_unpublished(list, bits);
             }
-            MoltObject::from_ptr(list_ptr).bits()
-        })
+        }
+        owner.into_bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let addr = handle.data.as_ptr() as usize as i64;
-            let length = handle.len() as i64;
-            let addr_bits = int_bits_from_i64(_py, addr);
-            let len_bits = int_bits_from_i64(_py, length);
-            let tuple_ptr = alloc_tuple(_py, &[addr_bits, len_bits]);
-            dec_ref_bits(_py, addr_bits);
-            dec_ref_bits(_py, len_bits);
-            if tuple_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(tuple_ptr).bits()
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
+            Ok((handle.data.as_ptr() as usize as i64, handle.len() as i64))
+        });
+        let (addr, length) = match result {
+            Ok(pair) => pair,
+            Err(error) => return error.raise(py),
+        };
+        let Some(addr) = elem_to_bits(py, ArrayElem::Int(addr)) else {
+            return MoltObject::none().bits();
+        };
+        let addr = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), addr) };
+        let Some(length) = elem_to_bits(py, ArrayElem::Int(length)) else {
+            return MoltObject::none().bits();
+        };
+        let length = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), length) };
+        let tuple = alloc_tuple(py, &[addr.bits(), length.bits()]);
+        if tuple.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple).bits()
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        // Clinic coerces the index before the implementation checks emptiness.
+        let Some(index) = array_index_arg_from_bits(py, index_bits) else {
+            return MoltObject::none().bits();
+        };
+        let result = with_array_storage(&cell, |handle| {
             let len = handle.len() as i64;
             if len == 0 {
-                return raise_exception::<u64>(_py, "IndexError", "pop from empty array");
+                return Err(ArrayStorageError::Exception(
+                    "IndexError",
+                    "pop from empty array",
+                ));
             }
-            let Some(idx_raw) = array_index_arg_from_bits(_py, index_bits) else {
-                return MoltObject::none().bits();
-            };
-            let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
-            if idx < 0 || idx >= len {
-                return raise_exception::<u64>(_py, "IndexError", "pop index out of range");
+            let index = if index < 0 { len + index } else { index };
+            if index < 0 || index >= len {
+                return Err(ArrayStorageError::Exception(
+                    "IndexError",
+                    "pop index out of range",
+                ));
             }
-            if let Err(exc) = ensure_array_resizable(_py, handle) {
-                return exc;
+            let elem = handle
+                .read_elem(index as usize)
+                .ok_or(ArrayStorageError::Exception(
+                    "IndexError",
+                    "pop index out of range",
+                ))?;
+            Ok((index as usize, elem))
+        });
+        let (index, elem) = match result {
+            Ok(value) => value,
+            Err(error) => return error.raise(py),
+        };
+        // CPython materializes the result before deleting its slot. A failed
+        // materialization must not remove an element.
+        let Some(bits) = elem_to_bits(py, elem) else {
+            return MoltObject::none().bits();
+        };
+        let value = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) };
+        let result = with_array_storage(&cell, |handle| {
+            // Allocation may have reentered. The original deletion slice is
+            // clamped to the current size, as array_del_slice does.
+            if index < handle.len() {
+                ensure_array_resizable(handle)?;
+                handle
+                    .remove_at(index)
+                    .map_err(|message| ArrayStorageError::Exception("IndexError", message))?;
             }
-            match handle.remove_at(idx as usize) {
-                Ok(elem) => elem_to_bits(_py, elem),
-                Err(msg) => raise_exception::<u64>(_py, "IndexError", msg),
-            }
-        })
+            Ok(())
+        });
+        if let Err(error) = result {
+            return error.raise(py);
+        }
+        value.into_bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let tc = handle.typecode;
-            let Some(idx_raw) = array_index_arg_from_bits(_py, index_bits) else {
-                return MoltObject::none().bits();
-            };
-            let elem = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
-            let len = handle.len() as i64;
-            let idx = if idx_raw < 0 {
-                (len + idx_raw).max(0) as usize
-            } else {
-                idx_raw.min(len) as usize
-            };
-            if let Err(exc) = ensure_array_resizable(_py, handle) {
-                return exc;
-            }
-            if let Err(msg) = handle.insert_at(idx, elem) {
-                return raise_exception::<u64>(_py, "OverflowError", msg);
-            }
-            MoltObject::none().bits()
-        })
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let Some(index) = array_index_arg_from_bits(py, index_bits) else {
+            return MoltObject::none().bits();
+        };
+        array_status(
+            py,
+            with_array_storage(&cell, |handle| {
+                let elem = storage_elem(handle.typecode, value_bits)?;
+                let mut encoded = [0; 8];
+                let size = handle
+                    .encode_elem_into(elem, &mut encoded)
+                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))?;
+                let len = handle.len() as i64;
+                let index = if index < 0 {
+                    (len + index).max(0)
+                } else {
+                    index.min(len)
+                } as usize;
+                ensure_array_resizable(handle)?;
+                handle
+                    .data
+                    .try_reserve(size)
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                handle
+                    .data
+                    .splice(index * size..index * size, encoded[..size].iter().copied());
+                Ok(())
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
             let tc = handle.typecode;
-            let target = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
+            let target = storage_elem(tc, value_bits)?;
             let n = handle.len();
             let mut found: Option<usize> = None;
             for i in 0..n {
@@ -1385,25 +1482,28 @@ pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
             }
             match found {
                 Some(idx) => {
-                    if let Err(exc) = ensure_array_resizable(_py, handle) {
-                        return exc;
-                    }
+                    ensure_array_resizable(handle)?;
                     let _ = handle.remove_at(idx);
-                    MoltObject::none().bits()
+                    Ok(())
                 }
-                None => {
-                    raise_exception::<u64>(_py, "ValueError", "array.remove(x): x not in array")
-                }
+                None => Err(ArrayStorageError::Exception(
+                    "ValueError",
+                    "array.remove(x): x not in array",
+                )),
             }
-        })
+        });
+        array_status(py, result)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
-            let _ = _py;
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
             let sz = handle.typecode.itemsize();
             let n = handle.len();
             let mut left = 0usize;
@@ -1417,34 +1517,36 @@ pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
                 left += 1;
                 right -= 1;
             }
-            MoltObject::none().bits()
-        })
+            Ok(())
+        });
+        array_status(py, result)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
             let tc = handle.typecode;
-            let target = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
+            let target = storage_elem(tc, value_bits)?;
             // SIMD fast path for byte typecodes: use memchr for O(n/16) counting
             if matches!(tc, Typecode::UB) {
                 if let ArrayElem::Uint(v) = target {
                     if v <= 255 {
                         let needle = v as u8;
                         let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
-                        return int_bits_from_i64(_py, count);
+                        return Ok(count);
                     }
                 } else if let ArrayElem::Int(v) = target
                     && (0..=255).contains(&v)
                 {
                     let needle = v as u8;
                     let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
-                    return int_bits_from_i64(_py, count);
+                    return Ok(count);
                 }
             }
             if matches!(tc, Typecode::B)
@@ -1453,7 +1555,7 @@ pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
             {
                 let needle = v as u8; // Two's complement byte
                 let count = memchr::memchr_iter(needle, &handle.data).count() as i64;
-                return int_bits_from_i64(_py, count);
+                return Ok(count);
             }
 
             let mut count = 0i64;
@@ -1472,44 +1574,47 @@ pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
                     }
                 }
             }
-            int_bits_from_i64(_py, count)
-        })
+            Ok(count)
+        });
+        match result {
+            Ok(value) => int_bits_from_i64(py, value),
+            Err(error) => error.raise(py),
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
+    crate::with_gil_entry_nopanic!(py, {
+        let cell = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let result = with_array_storage(&cell, |handle| {
             let tc = handle.typecode;
-            let target = match elem_from_bits(_py, tc, value_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
+            let target = storage_elem(tc, value_bits)?;
             // SIMD fast path for byte typecodes: use memchr for O(n/16) search
             if matches!(tc, Typecode::UB) {
                 if let ArrayElem::Uint(v) = target {
                     if v <= 255 {
                         if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
-                            return int_bits_from_i64(_py, pos as i64);
+                            return Ok(pos as i64);
                         }
-                        return raise_exception::<u64>(
-                            _py,
+                        return Err(ArrayStorageError::Exception(
                             "ValueError",
                             "array.index(x): x not in array",
-                        );
+                        ));
                     }
                 } else if let ArrayElem::Int(v) = target
                     && (0..=255).contains(&v)
                 {
                     if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
-                        return int_bits_from_i64(_py, pos as i64);
+                        return Ok(pos as i64);
                     }
-                    return raise_exception::<u64>(
-                        _py,
+                    return Err(ArrayStorageError::Exception(
                         "ValueError",
                         "array.index(x): x not in array",
-                    );
+                    ));
                 }
             }
             if matches!(tc, Typecode::B)
@@ -1517,9 +1622,12 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                 && (-128..=127).contains(&v)
             {
                 if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
-                    return int_bits_from_i64(_py, pos as i64);
+                    return Ok(pos as i64);
                 }
-                return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                return Err(ArrayStorageError::Exception(
+                    "ValueError",
+                    "array.index(x): x not in array",
+                ));
             }
 
             for i in 0..handle.len() {
@@ -1533,11 +1641,18 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                         _ => false,
                     };
                     if matches {
-                        return int_bits_from_i64(_py, i as i64);
+                        return Ok(i as i64);
                     }
                 }
             }
-            raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array")
-        })
+            Err(ArrayStorageError::Exception(
+                "ValueError",
+                "array.index(x): x not in array",
+            ))
+        });
+        match result {
+            Ok(value) => int_bits_from_i64(py, value),
+            Err(error) => error.raise(py),
+        }
     })
 }

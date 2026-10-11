@@ -632,67 +632,54 @@ pub extern "C" fn molt_warnings_resetwarnings() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_warnings_filters_get() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = WARNINGS_STATE.lock().unwrap();
-        let mut tuple_bits: Vec<u64> = Vec::with_capacity(state.filters.len());
-
-        for filter in &state.filters {
-            let action_ptr = alloc_string(_py, filter.action.as_bytes());
-            if action_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+        // Filter rows contain only native strings and an integer. Snapshot
+        // them while locked; runtime allocation and error retirement may
+        // reenter resetwarnings/filterwarnings and must run after unlocking.
+        let filters = WARNINGS_STATE.lock().unwrap().filters.clone();
+        let list_ptr = crate::object::builders::alloc_list_with_capacity(_py, &[], filters.len());
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let list = ExceptionValue::adopt(_py, MoltObject::from_ptr(list_ptr).bits());
+        for filter in &filters {
+            let mut text: [ExceptionValue<'_, '_>; 4] =
+                std::array::from_fn(|_| ExceptionValue::adopt(_py, MoltObject::none().bits()));
+            for (index, value) in [
+                filter.action.as_str(),
+                filter.message.as_str(),
+                filter.category.as_str(),
+                filter.module.as_str(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if index != 0 && value.is_empty() {
+                    continue;
+                }
+                let ptr = alloc_string(_py, value.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                text[index] = ExceptionValue::adopt(_py, MoltObject::from_ptr(ptr).bits());
             }
-            let action_bits = MoltObject::from_ptr(action_ptr).bits();
-
-            let message_bits = if filter.message.is_empty() {
-                MoltObject::none().bits()
-            } else {
-                let ptr = alloc_string(_py, filter.message.as_bytes());
-                if ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(ptr).bits()
-            };
-
-            let category_bits = if filter.category.is_empty() {
-                MoltObject::none().bits()
-            } else {
-                let ptr = alloc_string(_py, filter.category.as_bytes());
-                if ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(ptr).bits()
-            };
-
-            let module_bits = if filter.module.is_empty() {
-                MoltObject::none().bits()
-            } else {
-                let ptr = alloc_string(_py, filter.module.as_bytes());
-                if ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(ptr).bits()
-            };
-
-            let lineno_bits = MoltObject::from_int(filter.lineno).bits();
-
             let elems = [
-                action_bits,
-                message_bits,
-                category_bits,
-                module_bits,
-                lineno_bits,
+                text[0].bits(),
+                text[1].bits(),
+                text[2].bits(),
+                text[3].bits(),
+                MoltObject::from_int(filter.lineno).bits(),
             ];
             let tuple_ptr = alloc_tuple(_py, &elems);
             if tuple_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+                return MoltObject::none().bits();
             }
-            tuple_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+            let tuple = ExceptionValue::adopt(_py, MoltObject::from_ptr(tuple_ptr).bits());
+            if !crate::object::ops_list::molt_list_append_with_projection(list.bits(), tuple.bits(), std::ptr::null_mut())
+            {
+                return MoltObject::none().bits();
+            }
         }
-
-        let list_ptr = alloc_list(_py, &tuple_bits);
-        if list_ptr.is_null() {
-            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-        }
-        MoltObject::from_ptr(list_ptr).bits()
+        list.into_bits()
     })
 }
 
@@ -941,6 +928,163 @@ mod tests {
                 )
             });
             CALLBACK_ERROR.with(|value| value.set(0));
+        });
+    }
+
+    thread_local! {
+        static FILTER_REENTRY: std::cell::Cell<(usize, bool, usize, usize)> = const {
+            std::cell::Cell::new((0, false, 0, 0))
+        };
+    }
+
+    unsafe extern "C" fn warning_prior_payload_drop(
+        object: *mut molt_cpython_abi::abi_types::PyObject,
+    ) {
+        let before = unsafe { errors::PyErr_Occurred() }.addr();
+        // Detect the old deadlock without hanging the test process. Only enter
+        // the real public mutations after observing that the mutex is free.
+        let unlocked = WARNINGS_STATE.try_lock().is_ok();
+        if unlocked {
+            let none = MoltObject::none().bits();
+            molt_warnings_resetwarnings();
+            molt_warnings_simplefilter(none, none, MoltObject::from_int(0).bits(), none);
+        }
+        let after = unsafe { errors::PyErr_Occurred() }.addr();
+        FILTER_REENTRY.with(|seen| seen.set((seen.get().0 + 1, unlocked, before, after)));
+        unsafe { molt_cpython_abi::api::memory::PyObject_Free(object.cast()) };
+    }
+
+    struct RestoreWarningTracker;
+    impl Drop for RestoreWarningTracker {
+        fn drop(&mut self) {
+            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+        }
+    }
+
+    #[test]
+    fn warning_filter_allocation_failure_retires_prior_after_unlocking() {
+        use crate::cpython_abi_hooks::native_test_fixture::NativeType;
+        use molt_cpython_abi::abi_types::{PyExc_MemoryError, PyExc_ValueError, PyTuple_Type};
+        use molt_cpython_abi::api::sequences;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let mut payload_type = NativeType::subtype(
+                    &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                    c"WarningFilterPriorPayload",
+                );
+                payload_type.tp_dealloc = Some(warning_prior_payload_drop);
+                assert_eq!(payload_type.ready(), 0);
+                // Clear pending owners before the native declaration dies on
+                // either success or panic.
+                let _reset = ResetWarnings;
+                assert_eq!(typeobj::PyType_Ready(&raw mut PyTuple_Type), 0);
+                assert_eq!(typeobj::PyType_Ready(&raw mut PyExc_ValueError), 0);
+                for runtime_prior in [false, true] {
+                    set_action(py, b"always");
+                    let payload = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                        &raw mut *payload_type,
+                        0,
+                    ));
+                    assert!(!payload.as_ptr().is_null());
+                    let args = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                        &raw mut PyTuple_Type,
+                        1,
+                    ));
+                    assert!(!args.as_ptr().is_null());
+                    assert_eq!(
+                        sequences::PyTuple_SetItem(args.as_ptr(), 0, payload.into_ptr()),
+                        0
+                    );
+                    let prior = OwnedPyObject::from_owned(errors::molt_native_exception_new(
+                        &raw mut PyExc_ValueError,
+                        args.as_ptr(),
+                        std::ptr::null_mut(),
+                    ));
+                    assert!(!prior.as_ptr().is_null());
+                    drop(args);
+                    errors::PyErr_SetRaisedException(prior.into_ptr());
+                    if runtime_prior {
+                        assert!(crate::cpython_abi_hooks::transfer_pending_cpython_exception());
+                    }
+                    FILTER_REENTRY.with(|seen| seen.set((0, false, 0, 0)));
+                    crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
+                        &crate::resource::ResourceLimits {
+                            max_memory: Some(0),
+                            ..Default::default()
+                        },
+                    )));
+                    let denied = RestoreWarningTracker;
+                    let result = ExceptionValue::adopt(py, molt_warnings_filters_get());
+                    assert!(obj_from_bits(result.bits()).is_none());
+                    let expected = (&raw mut PyExc_MemoryError).addr();
+                    assert_eq!(
+                        FILTER_REENTRY.with(std::cell::Cell::get),
+                        (1, true, expected, expected)
+                    );
+                    assert_eq!(errors::PyErr_Occurred().addr(), expected);
+                    {
+                        let state = WARNINGS_STATE.lock().unwrap();
+                        assert_eq!(state.filters.len(), 1);
+                        assert_eq!(state.filters[0].action, "default");
+                    }
+                    drop(denied);
+                    errors::PyErr_Clear();
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn warning_filter_snapshot_preserves_order_and_complete_rows() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        let _reset = ResetWarnings;
+        crate::with_gil_entry_nopanic!(py, {
+            set_action(py, b"always");
+            let action = ExceptionValue::adopt(py, alloc_string_result(py, "ignore"));
+            let message = ExceptionValue::adopt(py, alloc_string_result(py, "message.*"));
+            let category = ExceptionValue::adopt(py, alloc_string_result(py, "UserWarning"));
+            let module = ExceptionValue::adopt(py, alloc_string_result(py, "package.*"));
+            molt_warnings_filterwarnings(
+                action.bits(),
+                message.bits(),
+                category.bits(),
+                module.bits(),
+                MoltObject::from_int(17).bits(),
+                MoltObject::from_bool(true).bits(),
+            );
+            let result = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            assert!(!exception_pending(py));
+            let ptr = obj_from_bits(result.bits()).as_ptr().unwrap();
+            let rows =
+                unsafe { crate::object::seq_access::snapshot(py, ptr, "filter snapshot test") }
+                    .unwrap();
+            assert_eq!(rows.len(), 2);
+            for (bits, expected) in rows.iter().zip([
+                ("always", None, Some("Warning"), None, 0),
+                (
+                    "ignore",
+                    Some("message.*"),
+                    Some("UserWarning"),
+                    Some("package.*"),
+                    17,
+                ),
+            ]) {
+                let tuple = obj_from_bits(*bits).as_ptr().unwrap();
+                unsafe {
+                    crate::object::seq_access::with_immutable_tuple_slice(tuple, |fields| {
+                        assert_eq!(fields.len(), 5);
+                        assert_eq!(string_from_bits(py, fields[0]).as_deref(), Some(expected.0));
+                        assert_eq!(string_from_bits(py, fields[1]).as_deref(), expected.1);
+                        assert_eq!(string_from_bits(py, fields[2]).as_deref(), expected.2);
+                        assert_eq!(string_from_bits(py, fields[3]).as_deref(), expected.3);
+                        assert_eq!(to_i64(obj_from_bits(fields[4])), Some(expected.4));
+                    })
+                }
+                .unwrap();
+            }
         });
     }
 }

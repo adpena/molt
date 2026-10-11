@@ -61,6 +61,8 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         ([support.DISCOVERY], 1),
         ([support.ISOLATE_OWNER], 3),
         ([support.THREAD_ADMISSION], 21),
+        ([support.ABI_MALFORMED_HOOKS], 1),
+        ([support.ABI_MISSING_TEXT], 1),
     ],
     ids=[
         "parallel-trap-cold",
@@ -71,6 +73,8 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         "discovery-diagnostic",
         "isolated-heap-retirement",
         "native-thread-admission",
+        "abi-malformed-first-hooks",
+        "abi-missing-text-allocators",
     ],
 )
 def test_completed_owners_with_bound_children_verify(tmp_path, owners, children):
@@ -583,6 +587,14 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
     }
     expected.update(
         {
+            (support.ABI_MALFORMED_HOOKS, "malformed-first-install"): (
+                ("malformed-first-install-refused\n",),
+                (),
+            ),
+            (support.ABI_MISSING_TEXT, "missing-text-allocators"): (
+                ("missing-text-allocators-refused\n",),
+                (),
+            ),
             (support.EXIT, "no-lease"): (
                 ("shutdown callbacks verified before process exit: no-lease\n",),
                 (),

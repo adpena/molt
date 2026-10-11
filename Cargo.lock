@@ -2817,6 +2817,8 @@ dependencies = [
  "molt-runtime-platform",
  "once_cell",
  "parking_lot",
+ "serde_json",
+ "sha2 0.11.0",
  "unicode-properties",
  "windows-sys 0.61.2",
 ]
