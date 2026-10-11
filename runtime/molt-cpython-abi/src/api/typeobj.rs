@@ -1606,8 +1606,18 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
         // Static builtin slots survive runtime retirement; their dictionaries
         // do not. Rebuilding must not turn inherited slots into declarations.
         // Reuse the canonical teardown cohort, never all non-heap native types.
-        let static_builtin = crate::abi_types::builtin_static_type_runtime_cohort()
-            .any(|entry| entry.type_ptr == tp && entry.builtin_slot_namespace);
+        use crate::abi_types::StaticTypeNamespace;
+        let declaration_policy = crate::abi_types::builtin_static_type_runtime_cohort()
+            .find(|entry| entry.type_ptr == tp)
+            .and_then(|entry| match entry.namespace {
+                StaticTypeNamespace::NativeDeclarations => None,
+                StaticTypeNamespace::StaticBuiltin => Some(policy),
+                // Process-owned heap builtins do not acquire CPython's manual
+                // static inheritance exceptions on any target version.
+                StaticTypeNamespace::SchemaHeapBuiltin => {
+                    Some(BuiltinSlotNamespacePolicy::PairedInheritance)
+                }
+            });
         for def in SLOT_WRAPPER_DEFS {
             // Mutation-only declarations (__getattr__/__new__) have their own
             // Python publication protocols and no physical wrapper adapter.
@@ -1618,7 +1628,9 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
             if wrapped.is_null() || wrapped == def.base.function {
                 continue;
             }
-            if static_builtin && !builtin_slot_is_declared(tp, def.slot, wrapped, policy) {
+            if let Some(policy) = declaration_policy
+                && !builtin_slot_is_declared(tp, def.slot, wrapped, policy)
+            {
                 continue;
             }
             let name = def.base.name;
@@ -6143,6 +6155,113 @@ pub(crate) mod subclass_registry_tests {
         );
         for ty in &mut types {
             unregister_type_address((&raw mut **ty).addr());
+        }
+    }
+
+    #[test]
+    fn prepared_namespace_invalidation_deduplicates_overlapping_diamond_roots() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+
+        struct Observations {
+            nodes: [*mut PyTypeObject; 4],
+            order: [usize; 4],
+            calls: usize,
+            coherent: bool,
+            retained: bool,
+        }
+        #[repr(C)]
+        struct WatchedType {
+            ty: PyTypeObject,
+            observations: *mut Observations,
+            index: usize,
+        }
+        unsafe extern "C" fn observe(object: *mut PyObject) -> c_int {
+            let watched = unsafe { &*object.cast::<WatchedType>() };
+            let observations = unsafe { &mut *watched.observations };
+            observations.coherent &= observations.nodes.iter().all(|&node| unsafe {
+                (*node).tp_flags & Py_TPFLAGS_VALID_VERSION_TAG == 0 && (*node).tp_version_tag == 0
+            });
+            observations.retained &= watched.ty.ob_base.ob_base.ob_refcnt == 2;
+            if let Some(slot) = observations.order.get_mut(observations.calls) {
+                *slot = watched.index;
+            }
+            observations.calls += 1;
+            0
+        }
+        // Keep graph storage and registration cleanup lexical even if an
+        // assertion fails; later watcher tests must not inherit stale addresses.
+        struct Graph {
+            types: [Box<WatchedType>; 4],
+            watcher: c_int,
+        }
+        impl Drop for Graph {
+            fn drop(&mut self) {
+                for kind in &mut self.types {
+                    unregister_type_address((&raw mut kind.ty).addr());
+                }
+                unsafe { PyType_ClearWatcher(self.watcher) };
+            }
+        }
+
+        let mut observations = Box::new(Observations {
+            nodes: [ptr::null_mut(); 4],
+            order: [usize::MAX; 4],
+            calls: 0,
+            coherent: true,
+            retained: true,
+        });
+        let watcher = unsafe { PyType_AddWatcher(Some(observe)) };
+        assert!(watcher >= 0);
+        let mut graph = Graph {
+            types: [0, 1, 2, 3].map(|index| {
+                Box::new(WatchedType {
+                    ty: *blank_type(1),
+                    observations: &raw mut *observations,
+                    index,
+                })
+            }),
+            watcher,
+        };
+        let nodes = std::array::from_fn(|index| &raw mut graph.types[index].ty);
+        observations.nodes = nodes;
+        let [root, left, right, leaf] = nodes;
+        for &node in &nodes {
+            unsafe { (*node).tp_watched = 1 << watcher };
+        }
+        for (base, child) in [(root, left), (root, right), (left, leaf), (right, leaf)] {
+            unsafe { register_subclass(base, child) };
+        }
+
+        let publication = unsafe { TypeNamespaceInvalidation::prepare(&[left, root, right, left]) };
+        assert_eq!(
+            observations.calls, 0,
+            "preparation must not notify watchers"
+        );
+        for &node in &nodes {
+            unsafe {
+                assert_ne!((*node).tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+                assert_eq!((*node).tp_version_tag, 41);
+                assert_eq!((*node).ob_base.ob_base.ob_refcnt, 1);
+            }
+        }
+        unsafe { publication.commit() };
+        assert_eq!(observations.calls, 4, "each live identity is notified once");
+        assert_eq!(observations.order, [3, 1, 2, 0], "subclasses precede bases");
+        assert!(
+            observations.coherent,
+            "every tag clears before the first watcher"
+        );
+        assert!(
+            observations.retained,
+            "each watcher observes a retained type"
+        );
+        for &node in &nodes {
+            unsafe {
+                assert_eq!((*node).tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+                assert_eq!((*node).tp_version_tag, 0);
+                assert_eq!((*node).ob_base.ob_base.ob_refcnt, 1);
+            }
         }
     }
 

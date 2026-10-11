@@ -96,7 +96,9 @@ and test stubs use the canonical version constant.
 Process-static type storage has one cohort with separate lifecycle-readiness and
 builtin-namespace policies. Private buffer and sequence-iterator shells join
 both policies; datetime extension types and the internal managed carrier keep
-extension declaration rules. Runtime restart rebuilds namespaces without
+extension declaration rules. The canonical exception schema identifies
+process-owned heap builtins; they retain their own declarations without the
+static-builtin manual-inheritance exceptions. Runtime restart rebuilds namespaces without
 redeclaring inherited builtin slots. Target Python 3.12/3.13 retain CPython's
 manual-inheritance exceptions; 3.14 uses its paired hash/comparison rule.
 Initial compiled-target publication stages any changed declarations in the

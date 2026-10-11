@@ -4,6 +4,60 @@
 //! compile it into both the ABI-boundary and runtime-backed harnesses so sample
 //! calibration and execution control cannot drift independently.
 
+/// Observer for the existing ABI platform malloc/calloc/realloc seam. This
+/// module and every call site compile out without `l7-attestation-core`.
+/// It does not interpose extension-owned libc calls or the variadic shim's
+/// private scratch allocations. The harness must exclusively own the process.
+pub mod c_allocations {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static TRACK: AtomicBool = AtomicBool::new(false);
+    static DENY: AtomicBool = AtomicBool::new(false);
+    static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    static DENIED: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct Snapshot {
+        pub attempts: u64,
+        pub denied: u64,
+    }
+
+    pub fn reset() {
+        assert!(!TRACK.load(Ordering::Relaxed), "C allocation probe active");
+        ATTEMPTS.store(0, Ordering::Relaxed);
+        DENIED.store(0, Ordering::Relaxed);
+    }
+
+    pub fn set_tracking(enabled: bool) {
+        TRACK.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn set_denial(enabled: bool) {
+        assert!(!TRACK.load(Ordering::Relaxed), "C allocation probe active");
+        DENY.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn snapshot() -> Snapshot {
+        assert!(!TRACK.load(Ordering::Relaxed), "C allocation probe active");
+        Snapshot {
+            attempts: ATTEMPTS.load(Ordering::Relaxed),
+            denied: DENIED.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(crate) fn record_attempt() -> bool {
+        if !TRACK.load(Ordering::Relaxed) {
+            return false;
+        }
+        ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        let denied = DENY.load(Ordering::Relaxed);
+        if denied {
+            DENIED.fetch_add(1, Ordering::Relaxed);
+        }
+        denied
+    }
+}
+
 #[cfg(windows)]
 use std::ffi::c_void;
 
