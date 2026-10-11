@@ -2358,6 +2358,13 @@ struct MoltSeqIterObject {
 static mut MOLT_SEQITER_TYPE: PyTypeObject = unsafe { std::mem::zeroed() };
 static MOLT_SEQITER_TYPE_INIT: std::sync::Once = std::sync::Once::new();
 
+/// The process-owned sequence-iterator shell, without initializing it. Any
+/// lazy `PyType_Ready` of it (an extension call or a type-attribute read)
+/// gives it runtime roots, so it retires with each runtime.
+pub(crate) fn sequence_iterator_type_shell() -> *mut PyTypeObject {
+    &raw mut MOLT_SEQITER_TYPE
+}
+
 /// Lazily initialize and return the shared sequence-iterator type object. Only
 /// the `tp_iter`/`tp_iternext`/`tp_dealloc` slots are load-bearing; the type is
 /// consumed solely by `PyIter_Next` (which reads `tp_iternext`).
