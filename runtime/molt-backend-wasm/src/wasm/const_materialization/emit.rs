@@ -182,7 +182,7 @@ fn emit_literal_materialization(
             }));
             func.instruction(&Instruction::LocalSet(out_local));
         }
-        OwnedLiteralPayloadKind::BigintDecimal => {
+        OwnedLiteralPayloadKind::BigintBytes => {
             func.instruction(&Instruction::LocalGet(scratch.ptr_local));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::LocalGet(scratch.len_local));

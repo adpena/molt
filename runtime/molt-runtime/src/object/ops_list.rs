@@ -6,7 +6,8 @@ use super::ops_compare::{CompareBoolOutcome, CompareOp, rich_compare_op_bool};
 use crate::*;
 use molt_obj_model::MoltObject;
 
-mod timsort;
+use super::list_storage::ListStorage;
+use molt_obj_model::timsort;
 
 /// Physical list storage is the receiver contract for every list descriptor.
 /// A Python MRO alone cannot make a TYPE_ID_OBJECT payload safe to reinterpret.
@@ -19,17 +20,12 @@ pub(crate) fn list_storage_ptr(bits: u64) -> Option<*mut u8> {
     })
 }
 
-pub(crate) fn list_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> Option<*mut u8> {
-    if let Some(ptr) = list_storage_ptr(bits) {
-        return Some(ptr);
-    }
-    let received = type_name(py, obj_from_bits(bits));
-    raise_exception::<()>(
-        py,
-        "TypeError",
-        &format!("descriptor '{method}' requires a 'list' object but received a '{received}'"),
-    );
-    None
+pub(crate) fn list_receiver<'a, 'py>(
+    py: &'a PyToken<'py>,
+    bits: u64,
+    method: &str,
+) -> Option<ListStorage<'a, 'py>> {
+    ListStorage::admit(py, bits, method)
 }
 
 #[derive(Clone, Copy)]
@@ -147,8 +143,11 @@ pub(crate) fn molt_list_append_with_projection(
     item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
 ) -> bool {
     crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "append").is_none() {
+        let Some(storage) = list_receiver(_py, list_bits, "append") else {
             return false;
+        };
+        if storage.native().is_some() {
+            return storage.append(val_bits);
         }
         let obj = obj_from_bits(list_bits);
         if let Some(ptr) = obj.as_ptr() {
@@ -167,10 +166,10 @@ pub(crate) fn molt_list_append_with_projection(
                     && (has_abi_view || !item_ptr.is_null())
                 {
                     promote_specialized_list_to_list(_py, ptr);
-                    if exception_pending(_py) {
+                    tid = object_type_id(ptr);
+                    if tid != TYPE_ID_LIST {
                         return false;
                     }
-                    tid = object_type_id(ptr);
                 }
                 if tid == TYPE_ID_LIST_INT {
                     if let Some(int_val) = crate::object::layout::InlineListInt::from_bits(val_bits)
@@ -224,54 +223,38 @@ pub(crate) fn molt_list_append_with_projection(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "pop").is_none() {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = list_receiver(py, list_bits, "pop") else {
+            return MoltObject::none().bits();
+        };
+        let mut index = index_ssize_from_obj(py, index_bits);
+        if exception_pending(py) || !storage.promote() {
             return MoltObject::none().bits();
         }
-        let obj = obj_from_bits(list_bits);
-        let index_obj = obj_from_bits(index_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, ptr);
-                if object_type_id(ptr) == TYPE_ID_LIST {
-                    let len = list_len(ptr) as i64;
-                    if len == 0 {
-                        return raise_exception::<_>(_py, "IndexError", "pop from empty list");
-                    }
-                    let mut idx = if index_obj.is_none() {
-                        len - 1
-                    } else {
-                        // CPython raises "'<type>' object cannot be interpreted as
-                        // an integer" (version-stable across 3.12/3.13/3.14) when
-                        // the pop index lacks a usable __index__.
-                        let pop_idx_msg = format!(
-                            "'{}' object cannot be interpreted as an integer",
-                            type_name(_py, index_obj)
-                        );
-                        index_i64_from_obj(_py, index_bits, &pop_idx_msg)
-                    };
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if idx < 0 {
-                        idx += len;
-                    }
-                    if idx < 0 || idx >= len {
-                        return raise_exception::<_>(_py, "IndexError", "pop index out of range");
-                    }
-                    return crate::object::list_mutation::pop(_py, ptr, idx as usize)
-                        .unwrap_or_else(|| MoltObject::none().bits());
-                }
-            }
+        let Some(len) = storage.len() else {
+            return MoltObject::none().bits();
+        };
+        if len == 0 {
+            return raise_exception(py, "IndexError", "pop from empty list");
         }
-        MoltObject::none().bits()
+        if index < 0 {
+            index += len as i64;
+        }
+        if index < 0 || index as usize >= len {
+            return raise_exception(py, "IndexError", "pop index out of range");
+        }
+        storage.pop(index as isize)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "extend").is_none() {
+        let Some(storage) = list_receiver(_py, list_bits, "extend") else {
+            return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            let _ = storage.extend(other_bits);
             return MoltObject::none().bits();
         }
         let list_obj = obj_from_bits(list_bits);
@@ -380,33 +363,21 @@ pub(crate) fn molt_list_insert_with_projection(
     val_bits: u64,
     item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
 ) -> bool {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "insert").is_none() {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = list_receiver(py, list_bits, "insert") else {
+            return false;
+        };
+        let index = index_ssize_from_obj(py, index_bits);
+        if exception_pending(py) || !storage.promote() {
             return false;
         }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(list_ptr) = list_obj.as_ptr() {
+        if let Some(list_ptr) = storage.managed() {
             unsafe {
-                promote_specialized_list_to_list(_py, list_ptr);
-                if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    // CPython raises "'<type>' object cannot be interpreted as an
-                    // integer" (version-stable across 3.12/3.13/3.14) when the
-                    // insert index lacks a usable __index__.
-                    let insert_idx_msg = format!(
-                        "'{}' object cannot be interpreted as an integer",
-                        type_name(_py, obj_from_bits(index_bits))
-                    );
-                    let idx = index_i64_from_obj(_py, index_bits, &insert_idx_msg);
-                    if exception_pending(_py) {
-                        return false;
-                    }
-                    return insert_at_native_index_with_projection(
-                        _py, list_ptr, idx, val_bits, item_ptr,
-                    );
-                }
+                insert_at_native_index_with_projection(py, list_ptr, index, val_bits, item_ptr)
             }
+        } else {
+            storage.insert(index as isize, val_bits)
         }
-        false
     })
 }
 
@@ -444,63 +415,41 @@ pub(crate) unsafe fn insert_at_native_index_with_projection(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "remove").is_none() {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = list_receiver(py, list_bits, "remove") else {
+            return MoltObject::none().bits();
+        };
+        if !storage.promote() {
             return MoltObject::none().bits();
         }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(list_ptr) = list_obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, list_ptr);
-                if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let mut idx = 0usize;
-                    loop {
-                        let len = list_len(list_ptr);
-                        if idx >= len {
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "list.remove(x): x not in list",
-                            );
-                        }
-                        let Some(elem) = crate::object::seq_access::pin_item(_py, list_ptr, idx)
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        let elem_bits = elem.bits();
-                        let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        };
-                        drop(elem);
-                        if eq {
-                            let live_len = list_len(list_ptr);
-                            let low = idx.min(live_len);
-                            let high = idx.saturating_add(1).min(live_len);
-                            if !crate::object::list_mutation::replace_range(
-                                _py,
-                                list_ptr,
-                                low,
-                                high,
-                                &[],
-                            ) {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::none().bits();
-                        }
-                        idx = idx.saturating_add(1);
-                    }
-                }
+        let mut index = 0;
+        while let Some(item) = storage.item(index) {
+            let equal = eq_bool_from_bits(py, item.bits(), val_bits);
+            drop(item);
+            let Some(equal) = equal else {
+                return MoltObject::none().bits();
+            };
+            if equal {
+                let _ = storage.remove_at(index);
+                return MoltObject::none().bits();
             }
+            index += 1;
         }
-        MoltObject::none().bits()
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        raise_exception(py, "ValueError", "list.remove(x): x not in list")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "clear").is_none() {
+        let Some(storage) = list_receiver(_py, list_bits, "clear") else {
+            return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            let _ = storage.clear();
             return MoltObject::none().bits();
         }
         let list_obj = obj_from_bits(list_bits);
@@ -543,8 +492,11 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "copy").is_none() {
+        let Some(storage) = list_receiver(_py, list_bits, "copy") else {
             return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            return storage.copy();
         }
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
@@ -592,95 +544,122 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "reverse").is_none() {
+    crate::with_gil_entry_nopanic!(py, {
+        let _ = reverse_in_place(py, list_bits);
+        MoltObject::none().bits()
+    })
+}
+
+pub(crate) fn reverse_in_place(py: &PyToken<'_>, list_bits: u64) -> bool {
+    let Some(storage) = list_receiver(py, list_bits, "reverse") else {
+        return false;
+    };
+    if !storage.promote() {
+        return false;
+    }
+    if let Some(ptr) = storage.managed() {
+        unsafe { crate::object::list_mutation::reverse(py, ptr) }
+    } else {
+        storage.reverse()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = list_receiver(py, list_bits, "sort") else {
             return MoltObject::none().bits();
-        }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(list_ptr) = list_obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, list_ptr);
-                if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    if !crate::object::list_mutation::reverse(_py, list_ptr) {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::none().bits();
-                }
-            }
+        };
+        let reverse = is_truthy(py, obj_from_bits(reverse_bits));
+        if !exception_pending(py) {
+            let _ = sort_storage(py, storage, key_bits, reverse);
         }
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "sort").is_none() {
-            return MoltObject::none().bits();
-        }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(list_ptr) = list_obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, list_ptr);
-                if object_type_id(list_ptr) != TYPE_ID_LIST {
-                    return MoltObject::none().bits();
-                }
-                let use_key = !obj_from_bits(key_bits).is_none();
-                let reverse = is_truthy(_py, obj_from_bits(reverse_bits));
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let len = list_len(list_ptr);
-                let mut items: Vec<SortItem> = Vec::new();
-                let mut ordered_values: Vec<u64> = Vec::new();
-                if items.try_reserve_exact(len).is_err()
-                    || ordered_values.try_reserve_exact(len).is_err()
-                {
-                    return raise_exception::<_>(_py, "MemoryError", "list sort allocation failed");
-                }
-                let Some(sort_txn) =
-                    crate::object::list_mutation::ListSortTxn::begin(_py, list_ptr)
-                else {
-                    return MoltObject::none().bits();
-                };
-                // Keys are computed in list order while the list is published
-                // empty, as CPython's `list.sort` computes them.
-                for (original_index, &val_bits) in sort_txn.values().iter().enumerate() {
-                    let key_val_bits = if use_key {
-                        let res_bits = call_callable1(_py, key_bits, val_bits);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, res_bits);
-                            // CPython releases the computed keys last to first.
-                            for item in items.drain(..).rev() {
-                                dec_ref_bits(_py, item.key_bits);
-                            }
-                            ordered_values.extend_from_slice(sort_txn.values());
-                            let _ = sort_txn.finish(&ordered_values, 0..len);
-                            return MoltObject::none().bits();
+/// Explicit completion for direct C operations; an admitted prior exception
+/// is independent of this sort's result. Python wrappers convert arguments
+/// before entering this same mutation authority.
+pub(crate) fn sort_in_place(
+    _py: &PyToken<'_>,
+    list_bits: u64,
+    key_bits: u64,
+    reverse: bool,
+) -> bool {
+    let Some(storage) = list_receiver(_py, list_bits, "sort") else {
+        return false;
+    };
+    sort_storage(_py, storage, key_bits, reverse)
+}
+
+fn sort_storage(
+    _py: &PyToken<'_>,
+    storage: ListStorage<'_, '_>,
+    key_bits: u64,
+    reverse: bool,
+) -> bool {
+    if storage.native().is_some() {
+        return storage.sort(key_bits, reverse);
+    }
+    if let Some(list_ptr) = storage.managed() {
+        unsafe {
+            promote_specialized_list_to_list(_py, list_ptr);
+            if object_type_id(list_ptr) != TYPE_ID_LIST {
+                return false;
+            }
+            let use_key = !obj_from_bits(key_bits).is_none();
+            let len = list_len(list_ptr);
+            let mut items: Vec<SortItem> = Vec::new();
+            let mut ordered_values: Vec<u64> = Vec::new();
+            if items.try_reserve_exact(len).is_err()
+                || ordered_values.try_reserve_exact(len).is_err()
+            {
+                return raise_exception::<_>(_py, "MemoryError", "list sort allocation failed");
+            }
+            let Some(sort_txn) = crate::object::list_mutation::ListSortTxn::begin(_py, list_ptr)
+            else {
+                return false;
+            };
+            // Keys are computed in list order while the list is published
+            // empty, as CPython's `list.sort` computes them.
+            for (original_index, &val_bits) in sort_txn.values().iter().enumerate() {
+                let key_val_bits = if use_key {
+                    let res_bits = call_callable1(_py, key_bits, val_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, res_bits);
+                        // CPython releases the computed keys last to first.
+                        for item in items.drain(..).rev() {
+                            dec_ref_bits(_py, item.key_bits);
                         }
-                        res_bits
-                    } else {
-                        val_bits
-                    };
-                    items.push(SortItem {
-                        key_bits: key_val_bits,
-                        value_bits: val_bits,
-                        original_index,
-                    });
-                }
-                // A stable descending sort, as CPython makes it: reverse, sort
-                // ascending, reverse back.
-                if reverse {
-                    items.reverse();
-                }
-                // Run detection changed in CPython 3.13, and with it the
-                // comparisons a sort makes.
-                let runs = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
-                    timsort::RunDetection::WeaklyDescending
+                        ordered_values.extend_from_slice(sort_txn.values());
+                        sort_txn.finish(&ordered_values, 0..len);
+                        return false;
+                    }
+                    res_bits
                 } else {
-                    timsort::RunDetection::StrictlyDescending
+                    val_bits
                 };
-                let sorted = timsort::timsort(&mut items, runs, |left, right| {
+                items.push(SortItem {
+                    key_bits: key_val_bits,
+                    value_bits: val_bits,
+                    original_index,
+                });
+            }
+            // A stable descending sort, as CPython makes it: reverse, sort
+            // ascending, reverse back.
+            if reverse {
+                items.reverse();
+            }
+            // Run detection changed in CPython 3.13, and with it the
+            // comparisons a sort makes.
+            let runs = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+                timsort::RunDetection::WeaklyDescending
+            } else {
+                timsort::RunDetection::StrictlyDescending
+            };
+            let sorted =
+                timsort::timsort(&mut items, runs, |left, right| {
                     match rich_compare_op_bool(
                         _py,
                         obj_from_bits(left.key_bits),
@@ -692,55 +671,48 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                         CompareBoolOutcome::NotComparable | CompareBoolOutcome::Error => Err(()),
                     }
                 });
-                if use_key {
-                    // In their sorted order, before the result is reversed back.
-                    for item in &items {
-                        dec_ref_bits(_py, item.key_bits);
-                    }
-                }
-                if reverse {
-                    items.reverse();
-                }
-                ordered_values.extend(items.iter().map(|item| item.value_bits));
-                let mutated = sort_txn
-                    .finish(
-                        &ordered_values,
-                        items.iter().map(|item| item.original_index),
-                    )
-                    .unwrap_or(false);
-                match sorted {
-                    // A failed comparison's exception is pending, and the list
-                    // keeps the permutation the sort had reached.
-                    Err(timsort::TimsortError::Compare) => {}
-                    Err(timsort::TimsortError::Memory) => {
-                        return raise_exception::<_>(
-                            _py,
-                            "MemoryError",
-                            "list sort allocation failed",
-                        );
-                    }
-                    Ok(()) if mutated => {
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "list modified during sort",
-                        );
-                    }
-                    Ok(()) => {}
-                }
-                return MoltObject::none().bits();
+            if matches!(sorted, Err(timsort::TimsortError::Memory)) {
+                // CPython selects merge-allocation failure before retiring
+                // keys or callback-added values.
+                let _ = raise_exception::<u64>(_py, "MemoryError", "list sort allocation failed");
             }
+            if use_key {
+                // In their sorted order, before the result is reversed back.
+                for item in &items {
+                    dec_ref_bits(_py, item.key_bits);
+                }
+            }
+            let mutated = sorted.is_ok() && sort_txn.was_mutated();
+            if mutated {
+                // Key destruction is part of the mutation window. Select
+                // this error while the original list is still detached;
+                // restoration then retires added values under that error.
+                let _ = raise_exception::<u64>(_py, "ValueError", "list modified during sort");
+            }
+            if reverse {
+                items.reverse();
+            }
+            ordered_values.extend(items.iter().map(|item| item.value_bits));
+            sort_txn.finish(
+                &ordered_values,
+                items.iter().map(|item| item.original_index),
+            );
+            return sorted.is_ok() && !mutated;
         }
-        MoltObject::none().bits()
-    })
+    }
+    false
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(list_ptr) = list_receiver(_py, list_bits, "__add__") else {
+        let Some(storage) = list_receiver(_py, list_bits, "__add__") else {
             return MoltObject::none().bits();
         };
+        if storage.native().is_some() || super::list_storage::native_list(other_bits).is_some() {
+            return storage.concat(other_bits);
+        }
+        let list_ptr = storage.managed().unwrap();
         unsafe {
             promote_specialized_list_to_list(_py, list_ptr);
             if exception_pending(_py) {
@@ -795,7 +767,7 @@ fn list_repeat_method(
         ListRepeatMode::Copy => "__mul__",
         ListRepeatMode::InPlace => "__imul__",
     };
-    let Some(list_ptr) = list_receiver(py, list_bits, method) else {
+    let Some(storage) = list_receiver(py, list_bits, method) else {
         return MoltObject::none().bits();
     };
     // Explicit sequence descriptors use the repeat slot directly. Reflected
@@ -803,6 +775,10 @@ fn list_repeat_method(
     let Some(count) = super::ops_arith::sequence_repeat_count(py, count_bits) else {
         return MoltObject::none().bits();
     };
+    if storage.native().is_some() {
+        return storage.repeat(count as isize, matches!(mode, ListRepeatMode::InPlace));
+    }
+    let list_ptr = storage.managed().unwrap();
     let result = match mode {
         ListRepeatMode::Copy => repeat_sequence(py, list_ptr, count),
         ListRepeatMode::InPlace => super::ops_arith::repeat_sequence_in_place(py, list_ptr, count),
@@ -840,8 +816,11 @@ pub(crate) extern "C" fn list_iadd_slot(list_bits: u64, other_bits: u64) -> u64 
 
 pub(crate) extern "C" fn list_getitem_slot(list_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if list_receiver(py, list_bits, "__getitem__").is_none() {
+        let Some(storage) = list_receiver(py, list_bits, "__getitem__") else {
             return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            return storage.getitem(key_bits);
         }
         crate::object::ops::molt_getitem_builtin(list_bits, key_bits)
     })
@@ -849,7 +828,11 @@ pub(crate) extern "C" fn list_getitem_slot(list_bits: u64, key_bits: u64) -> u64
 
 pub(crate) extern "C" fn list_setitem_slot(list_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if list_receiver(py, list_bits, "__setitem__").is_none() {
+        let Some(storage) = list_receiver(py, list_bits, "__setitem__") else {
+            return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            let _ = storage.assign(key_bits, Some(value_bits));
             return MoltObject::none().bits();
         }
         let _ = crate::object::ops::molt_setitem_builtin(list_bits, key_bits, value_bits);
@@ -859,7 +842,11 @@ pub(crate) extern "C" fn list_setitem_slot(list_bits: u64, key_bits: u64, value_
 
 pub(crate) extern "C" fn list_delitem_slot(list_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if list_receiver(py, list_bits, "__delitem__").is_none() {
+        let Some(storage) = list_receiver(py, list_bits, "__delitem__") else {
+            return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            let _ = storage.assign(key_bits, None);
             return MoltObject::none().bits();
         }
         let _ = crate::object::ops::molt_delitem_builtin(list_bits, key_bits);
@@ -878,8 +865,14 @@ pub(crate) extern "C" fn list_iter_slot(list_bits: u64) -> u64 {
 
 pub(crate) extern "C" fn list_len_slot(list_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if list_receiver(py, list_bits, "__len__").is_none() {
+        let Some(storage) = list_receiver(py, list_bits, "__len__") else {
             return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            return storage
+                .len()
+                .map(|len| int_bits_from_i64(py, len as i64))
+                .unwrap_or_else(|| MoltObject::none().bits());
         }
         crate::object::ops_sys::molt_len_builtin(list_bits)
     })
@@ -887,8 +880,11 @@ pub(crate) extern "C" fn list_len_slot(list_bits: u64) -> u64 {
 
 pub(crate) extern "C" fn list_contains_slot(list_bits: u64, item_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if list_receiver(py, list_bits, "__contains__").is_none() {
+        let Some(storage) = list_receiver(py, list_bits, "__contains__") else {
             return MoltObject::none().bits();
+        };
+        if storage.native().is_some() {
+            return storage.contains(item_bits);
         }
         crate::object::ops::molt_contains_builtin(list_bits, item_bits)
     })
@@ -907,34 +903,27 @@ pub(crate) extern "C" fn list_reversed_slot(list_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "count").is_none() {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = list_receiver(py, list_bits, "count") else {
+            return MoltObject::none().bits();
+        };
+        if !storage.promote() {
             return MoltObject::none().bits();
         }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(ptr) = list_obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, ptr);
-                if object_type_id(ptr) == TYPE_ID_LIST {
-                    let mut count = 0i64;
-                    let mut idx = 0usize;
-                    while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
-                        let elem_bits = elem.bits();
-                        let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        };
-                        drop(elem);
-                        if eq {
-                            count += 1;
-                        }
-                        idx += 1;
-                    }
-                    return MoltObject::from_int(count).bits();
-                }
-            }
+        let (mut index, mut count) = (0, 0);
+        while let Some(item) = storage.item(index) {
+            let equal = eq_bool_from_bits(py, item.bits(), val_bits);
+            drop(item);
+            let Some(equal) = equal else {
+                return MoltObject::none().bits();
+            };
+            count += i64::from(equal);
+            index += 1;
         }
-        MoltObject::none().bits()
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(py, count)
     })
 }
 
@@ -946,94 +935,76 @@ pub extern "C" fn molt_list_index_range(
     stop_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if list_receiver(_py, list_bits, "index").is_none() {
+        let Some(storage) = list_receiver(_py, list_bits, "index") else {
+            return MoltObject::none().bits();
+        };
+        let missing = missing_bits(_py);
+        let err = "slice indices must be integers or have an __index__ method";
+        let mut start = if start_bits == missing {
+            0
+        } else {
+            let Some(value) =
+                crate::builtins::numbers::index_ssize_clamped_from_obj(_py, start_bits, err)
+            else {
+                return MoltObject::none().bits();
+            };
+            value
+        };
+        let mut stop = if stop_bits == missing {
+            isize::MAX
+        } else {
+            let Some(value) =
+                crate::builtins::numbers::index_ssize_clamped_from_obj(_py, stop_bits, err)
+            else {
+                return MoltObject::none().bits();
+            };
+            value
+        };
+        if !storage.promote() {
             return MoltObject::none().bits();
         }
-        let list_obj = obj_from_bits(list_bits);
-        if let Some(ptr) = list_obj.as_ptr() {
-            unsafe {
-                promote_specialized_list_to_list(_py, ptr);
-                if object_type_id(ptr) == TYPE_ID_LIST {
-                    let missing = missing_bits(_py);
-                    let err = "slice indices must be integers or have an __index__ method";
-                    let mut start = if start_bits == missing {
-                        0
-                    } else {
-                        let Some(value) = crate::builtins::numbers::index_ssize_clamped_from_obj(
-                            _py, start_bits, err,
-                        ) else {
-                            return MoltObject::none().bits();
-                        };
-                        value as i64
-                    };
-                    let mut stop = if stop_bits == missing {
-                        isize::MAX as i64
-                    } else {
-                        let Some(value) = crate::builtins::numbers::index_ssize_clamped_from_obj(
-                            _py, stop_bits, err,
-                        ) else {
-                            return MoltObject::none().bits();
-                        };
-                        value as i64
-                    };
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    // Index conversion may itself mutate the list. Normalize
-                    // negative bounds against its current size, then retain
-                    // the requested stop: equality may append a later match.
-                    let len = list_len(ptr) as i64;
-                    if start < 0 {
-                        start = (start + len).max(0);
-                    }
-                    if stop < 0 {
-                        stop = (stop + len).max(0);
-                    }
-                    if start < stop {
-                        let mut idx = start;
-                        while idx < stop {
-                            let elem =
-                                match crate::object::seq_access::pin_item(_py, ptr, idx as usize) {
-                                    Some(elem) => elem,
-                                    None => break,
-                                };
-                            let elem_bits = elem.bits();
-                            let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            drop(elem);
-                            if eq {
-                                return MoltObject::from_int(idx).bits();
-                            }
-                            idx += 1;
-                        }
-                    }
-                    // CPython 3.12/3.13 raise ValueError("<repr(x)> is not in
-                    // list") and propagate any exception x.__repr__ raises; 3.14
-                    // reverted to the static "list.index(x): x not in list" and
-                    // does not call __repr__.
-                    if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "list.index(x): x not in list",
-                        );
-                    }
-                    let repr_bits = crate::molt_repr_from_obj(val_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let rendered =
-                        crate::object::ops_format::string_obj_to_owned(obj_from_bits(repr_bits))
-                            .unwrap_or_default();
-                    dec_ref_bits(_py, repr_bits);
-                    let msg = format!("{rendered} is not in list");
-                    return raise_exception::<_>(_py, "ValueError", &msg);
-                }
-            }
+        let Some(len) = storage.len() else {
+            return MoltObject::none().bits();
+        };
+        if start < 0 {
+            start = (start + len as isize).max(0);
         }
-        MoltObject::none().bits()
+        if stop < 0 {
+            stop = (stop + len as isize).max(0);
+        }
+        while start < stop {
+            let Some(item) = storage.item(start as usize) else {
+                break;
+            };
+            let equal = eq_bool_from_bits(_py, item.bits(), val_bits);
+            drop(item);
+            let Some(equal) = equal else {
+                return MoltObject::none().bits();
+            };
+            if equal {
+                return int_bits_from_i64(_py, start as i64);
+            }
+            start += 1;
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        // CPython 3.12/3.13 raise ValueError("<repr(x)> is not in
+        // list") and propagate any exception x.__repr__ raises; 3.14
+        // reverted to the static "list.index(x): x not in list" and
+        // does not call __repr__.
+        if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+            return raise_exception::<_>(_py, "ValueError", "list.index(x): x not in list");
+        }
+        let repr_bits = crate::molt_repr_from_obj(val_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let rendered = crate::object::ops_format::string_obj_to_owned(obj_from_bits(repr_bits))
+            .unwrap_or_default();
+        dec_ref_bits(_py, repr_bits);
+        let msg = format!("{rendered} is not in list");
+        return raise_exception::<_>(_py, "ValueError", &msg);
     })
 }
 

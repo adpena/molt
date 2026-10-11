@@ -980,8 +980,31 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
                 name,
                 "__molt_gpu_descriptor__",
                 replacement_bits,
-            );
+            )
+            .expect("raw descriptor metadata assignment succeeds");
             assert!(!crate::exception_pending(py));
+            // The transport reports mutation completion independently of an
+            // admitted incoming error; it must not turn success into failure.
+            let prior_ptr = crate::builtins::exceptions::alloc_exception(
+                py, "LookupError", "GPU metadata transport prior",
+            );
+            assert!(!prior_ptr.is_null());
+            let prior = crate::builtins::exceptions::ExceptionValue::adopt(
+                py, MoltObject::from_ptr(prior_ptr).bits(),
+            );
+            let prior_view = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .handle_to_borrowed_pyobj(prior.bits());
+            assert!(!prior_view.is_null());
+            crate::record_exception(py, prior_ptr);
+            let transport_status = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
+                function, name, b"__molt_gpu_descriptor__".as_ptr(),
+                b"__molt_gpu_descriptor__".len(), replacement_bits,
+            );
+            let observed = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::errors::PyErr_GetRaisedException(),
+            );
+            assert_eq!(transport_status, 0);
+            assert_eq!(observed.as_ptr(), prior_view);
             let selected = crate::gpu_bridge::__molt_gpu_kernel_descriptor(callable);
             let _selected_owner = crate::PtrDropGuard::preserving(
                 obj_from_bits(selected).as_ptr().expect("descriptor"),

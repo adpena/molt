@@ -648,7 +648,11 @@ def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) 
     [
         ("CONST", 1, 1),
         ("CONST_INT", "2", 2),
-        ("CONST_BIGINT", "123456789123456789123456789", 123456789123456789123456789),
+        (
+            "CONST_BIGINT",
+            bytes.fromhex("661efdf2e3b19f7c045f15"),
+            123456789123456789123456789,
+        ),
         ("CONST_BOOL", 1, True),
         ("CONST_FLOAT", 1, 1.0),
     ],

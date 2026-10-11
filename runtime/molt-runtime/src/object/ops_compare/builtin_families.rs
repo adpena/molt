@@ -98,9 +98,23 @@ impl BuiltinComparison {
     }
 
     pub(crate) fn invoke(self, py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) -> u64 {
+        match self.invoke_value(py, left, right, op) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::NotComparable => not_implemented_bits(py),
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+        }
+    }
+
+    pub(crate) fn invoke_value(
+        self,
+        py: &PyToken<'_>,
+        left: u64,
+        right: u64,
+        op: RichCompareOp,
+    ) -> CompareValueOutcome {
         let left = obj_from_bits(left);
         if !self.accepts(left) {
-            return raise_exception(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!(
@@ -110,12 +124,9 @@ impl BuiltinComparison {
                     type_name(py, left),
                 ),
             );
+            return CompareValueOutcome::Error;
         }
-        match self.compare(py, left, obj_from_bits(right), op) {
-            CompareValueOutcome::Value(bits) => bits,
-            CompareValueOutcome::NotComparable => not_implemented_bits(py),
-            CompareValueOutcome::Error => MoltObject::none().bits(),
-        }
+        self.compare(py, left, obj_from_bits(right), op)
     }
 
     pub(crate) fn invoke_contains(self, py: &PyToken<'_>, view: u64, item: u64) -> u64 {

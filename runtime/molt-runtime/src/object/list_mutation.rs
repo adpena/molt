@@ -349,18 +349,22 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         unsafe { &*self.detached }
     }
 
-    /// Restore the sorted permutation and return whether callbacks mutated the
-    /// temporarily empty live list.
+    /// Read the live-list publication generation without entering a callback
+    /// or allocating. The sort caller selects its outcome before restoration
+    /// can retire callback-added owners.
+    pub(crate) fn was_mutated(&self) -> bool {
+        crate::gil_assert();
+        (unsafe { crate::object::backing::tracked_vec_mutation_epoch(self.base) })
+            != self.sort_epoch
+    }
+
+    /// Restore the sorted permutation before retiring callback-added owners.
     ///
     /// # Safety
     /// `ordered_values` must be a permutation of `values()`, and
     /// `projection_order` must map each destination slot to the corresponding
     /// original source slot exactly once.
-    pub(crate) unsafe fn finish<I>(
-        mut self,
-        ordered_values: &[u64],
-        projection_order: I,
-    ) -> Option<bool>
+    pub(crate) unsafe fn finish<I>(mut self, ordered_values: &[u64], projection_order: I)
     where
         I: IntoIterator<Item = usize>,
     {
@@ -383,8 +387,6 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
             eprintln!("molt fatal: list storage identity changed during sort");
             std::process::abort();
         }
-        let mutated =
-            unsafe { crate::object::backing::tracked_vec_mutation_epoch(live) } != self.sort_epoch;
         unsafe { crate::object::backing::tracked_vec_swap_contents(live, self.detached) };
         unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(live) };
         let contains_refs =
@@ -412,7 +414,6 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         }
         drop(callback_values);
         self.finished = true;
-        Some(mutated)
     }
 }
 
@@ -981,14 +982,21 @@ pub(crate) unsafe fn reserve_additional(py: &PyToken<'_>, ptr: *mut u8, addition
         raise_exception::<()>(py, "MemoryError", "list is too large");
         return false;
     };
-    unsafe {
+    let before = unsafe { (&*base).capacity() };
+    let admitted = unsafe {
         crate::object::backing::tracked_vec_reserve_or_raise(
             py,
             base,
             required,
             "list allocation failed",
         )
+    };
+    if admitted && unsafe { (&*base).capacity() } != before {
+        // Observable even if an iterator subsequently yields nothing: CPython
+        // changes allocated=-1 when its nonzero length hint reserves storage.
+        unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
     }
+    admitted
 }
 
 pub(crate) unsafe fn extend_from_slice(py: &PyToken<'_>, ptr: *mut u8, items: &[u64]) -> bool {
@@ -1010,6 +1018,16 @@ pub(crate) unsafe fn replace_indices(
     indices: &[usize],
     items: &[u64],
 ) -> bool {
+    unsafe { replace_indices_with_projection(py, ptr, indices, items, None) }
+}
+
+pub(crate) unsafe fn replace_indices_with_projection(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    indices: &[usize],
+    items: &[u64],
+    future_pointers: Option<&[*mut molt_cpython_abi::abi_types::PyObject]>,
+) -> bool {
     crate::gil_assert();
     if ptr.is_null()
         || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
@@ -1018,14 +1036,24 @@ pub(crate) unsafe fn replace_indices(
         return false;
     }
     let len = unsafe { list_len(ptr) };
-    if indices.iter().any(|&index| index >= len) {
+    if future_pointers.is_some_and(|pointers| pointers.len() != len)
+        || indices.iter().any(|&index| index >= len)
+    {
         return false;
     }
     if indices.is_empty() {
         return true;
     }
     if indices.len() == 1 {
-        return unsafe { replace_one(py, ptr, indices[0], items[0]) };
+        return unsafe {
+            replace_one_with_projection(
+                py,
+                ptr,
+                indices[0],
+                items[0],
+                future_pointers.map_or(std::ptr::null_mut(), |pointers| pointers[indices[0]]),
+            )
+        };
     }
     if unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW
         != 0
@@ -1033,7 +1061,14 @@ pub(crate) unsafe fn replace_indices(
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
-        return txn.set_indices(indices, items) && unsafe { txn.commit() };
+        if !txn.set_indices(indices, items) {
+            return false;
+        }
+        return if let Some(pointers) = future_pointers {
+            unsafe { txn.commit_with_pyobjs(pointers) }
+        } else {
+            unsafe { txn.commit() }
+        };
     }
 
     let mut removed = Vec::new();
@@ -1118,11 +1153,24 @@ fn detach_ascending_indices(
 /// Extended-slice deletion releases in ascending storage order regardless of
 /// slice direction. Publication precedes every removed-edge release.
 pub(crate) unsafe fn remove_indices(py: &PyToken<'_>, ptr: *mut u8, indices: &[usize]) -> bool {
+    unsafe { remove_indices_with_projection(py, ptr, indices, None) }
+}
+
+pub(crate) unsafe fn remove_indices_with_projection(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    indices: &[usize],
+    future_pointers: Option<&[*mut molt_cpython_abi::abi_types::PyObject]>,
+) -> bool {
     crate::gil_assert();
     if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
         return false;
     }
-    if !valid_removal_indices(unsafe { list_len(ptr) }, indices) {
+    let len = unsafe { list_len(ptr) };
+    if !valid_removal_indices(len, indices) {
+        return false;
+    }
+    if future_pointers.is_some_and(|pointers| pointers.len() != len - indices.len()) {
         return false;
     }
     if indices.is_empty() {
@@ -1141,7 +1189,14 @@ pub(crate) unsafe fn remove_indices(py: &PyToken<'_>, ptr: *mut u8, indices: &[u
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
-        return txn.remove_indices(indices) && unsafe { txn.commit() };
+        if !txn.remove_indices(indices) {
+            return false;
+        }
+        return if let Some(pointers) = future_pointers {
+            unsafe { txn.commit_with_pyobjs(pointers) }
+        } else {
+            unsafe { txn.commit() }
+        };
     }
 
     let mut removed = Vec::new();

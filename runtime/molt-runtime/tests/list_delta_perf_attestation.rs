@@ -312,7 +312,7 @@ fn append_pop_case(item_pointer: *mut PyObject, item_bits: u64) -> Value {
     let list_pointer = list.pointer;
     let list_bits = list.bits;
     let base_len = physical_len(list_pointer);
-    let none_bits = MoltObject::none().bits();
+    let last_index_bits = MoltObject::from_int(-1).bits();
     let runtime_hooks = hooks().expect("runtime hooks");
     measure(
         "list.delta.append_pop",
@@ -330,7 +330,7 @@ fn append_pop_case(item_pointer: *mut PyObject, item_bits: u64) -> Value {
                 unsafe { (runtime_hooks.list_append)(list_bits, item_bits, std::ptr::null_mut()) };
             let append_identity = physical_len(list_pointer) == base_len + 1
                 && physical_item(list_pointer, base_len) == item_pointer;
-            let popped = molt_runtime::molt_list_pop(list_bits, none_bits);
+            let popped = molt_runtime::molt_list_pop(list_bits, last_index_bits);
             let valid = append_status == 0
                 && append_identity
                 && popped == item_bits

@@ -409,7 +409,7 @@ POINT to doc 26 (`/Users/adpena/Projects/molt/docs/design/foundation/26_real-asy
 #### 10b. BigInt boundary (the 2^46 history)
 
 The `Repr` lattice / overflow_peel / ValueRange arc is the substrate. Current state:
-- `ConstBigInt`: first-class TIR opcode (ops.rs:174), correctly materializes via `molt_bigint_from_str`.
+- `ConstBigInt`: first-class TIR opcode with a canonical signed big-endian byte payload, materialized via `molt_bigint_from_bytes` independently of decimal conversion limits.
 - `RawI64Safe` / `MaybeBigInt` (representation_plan.rs): the P0/P1 work described in MEMORY.md.
 - `overflow_peel` (passes/overflow_peel.rs): dual-loop rewrite for accumulator loops; fires on native; WASM/LLVM keep boxed carrier until `RawI64Full` lattice extension.
 - Bug #15 (bench_sum IV cliff): not yet fully resolved — `overflow_peel` fires on native but the bug is open for WASM/LLVM.

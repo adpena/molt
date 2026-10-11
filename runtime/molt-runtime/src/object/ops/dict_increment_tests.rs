@@ -16,14 +16,19 @@ extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
         unsafe {
             dict_clear_in_place(py, ptr);
             for index in 0..64 {
-                dict_set_in_place(
+                assert!(dict_set_in_place(
                     py,
                     ptr,
                     MoltObject::from_int(index).bits(),
                     MoltObject::from_int(index + 100).bits(),
-                );
+                ));
             }
-            dict_set_in_place(py, ptr, key, MoltObject::from_int(40).bits());
+            assert!(dict_set_in_place(
+                py,
+                ptr,
+                key,
+                MoltObject::from_int(40).bits()
+            ));
             // The selected arithmetic receiver must remain alive even when
             // clearing the dictionary releases its original last owner.
             assert_ne!(
@@ -121,7 +126,8 @@ fn missing_target(py: &PyToken<'_>) -> u64 {
 
 fn int_value(py: &PyToken<'_>, dictionary: u64, word: &str) -> Option<i64> {
     let key = MoltObject::from_ptr(alloc_string(py, word.as_bytes())).bits();
-    let value = unsafe { dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key) };
+    let value =
+        unsafe { dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key).unwrap() };
     dec_ref_bits(py, key);
     value.and_then(|bits| to_i64(obj_from_bits(bits)))
 }
@@ -156,7 +162,10 @@ fn in_place_increment_arithmetic_reentry_reacquires_mapping() {
                     _ => MoltObject::from_int(42).bits(),
                 };
                 let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
-                assert_eq!(unsafe { dict_get_in_place(py, ptr, key) }, Some(expected));
+                assert_eq!(
+                    unsafe { dict_get_in_place(py, ptr, key).unwrap() },
+                    Some(expected)
+                );
                 assert_eq!(
                     unsafe {
                         dict_live_entries(ptr)
@@ -194,7 +203,7 @@ fn in_place_increment_missing_key_reverse_addition_rechecks_after_callback_inser
             let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
             assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
             assert_eq!(
-                unsafe { dict_get_in_place(py, ptr, key) },
+                unsafe { dict_get_in_place(py, ptr, key).unwrap() },
                 Some(MoltObject::from_int(42).bits())
             );
             assert_eq!(
@@ -506,7 +515,9 @@ fn increment_scalar_result_respects_inline_carrier_boundary() {
                     }
                 }
                 let result = unsafe {
-                    dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key).unwrap()
+                    dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key)
+                        .unwrap()
+                        .unwrap()
                 };
                 assert_eq!(to_i64(obj_from_bits(result)), Some(current + delta));
                 assert!(
@@ -549,7 +560,10 @@ fn increment_lanes_never_mutate_frozen_layout_maps() {
                 let (_, ok) = split_increment(py, "item", sep, dictionary, one, missing_target(py));
                 assert!(!ok);
             }
-            assert_eq!(unsafe { dict_get_in_place(py, ptr, key) }, Some(value));
+            assert_eq!(
+                unsafe { dict_get_in_place(py, ptr, key).unwrap() },
+                Some(value)
+            );
             for bits in [dictionary, key] {
                 dec_ref_bits(py, bits);
             }

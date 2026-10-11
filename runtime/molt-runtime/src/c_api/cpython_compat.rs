@@ -1,7 +1,7 @@
 //! CPython-compatible `Py*` C API runtime helpers.
 //!
-//! These functions remain Rust-callable test helpers. The exported C symbol
-//! authority lives in `molt-cpython-abi`.
+//! Boxed-handle operations shared by runtime hooks and runtime tests. The
+//! exported pointer-based C symbol authority lives in `molt-cpython-abi`.
 
 use super::*;
 
@@ -71,15 +71,10 @@ pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
     })
 }
 
-/// `PyIter_Check(obj)` — return 1 if `obj` is an iterator, 0 otherwise.
-pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if unsafe { is_iterator_bits(_py, obj) } {
-            1
-        } else {
-            0
-        }
-    })
+/// Internal boxed iterator predicate. Keep completion explicit; the exported
+/// pointer-based PyIter_Check contract is owned by molt-cpython-abi.
+pub fn PyIter_Check(obj: u64) -> Result<bool, ()> {
+    crate::with_gil_entry_nopanic!(_py, { unsafe { is_iterator_bits(_py, obj) } })
 }
 
 // ---------------------------------------------------------------------------
@@ -352,8 +347,11 @@ pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
             return -1;
         };
         unsafe {
-            dict_set_in_place(_py, ptr, key, val);
-            if exception_pending(_py) { -1 } else { 0 }
+            if dict_set_in_place(_py, ptr, key, val) {
+                0
+            } else {
+                -1
+            }
         }
     })
 }
@@ -366,7 +364,7 @@ pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
             let Some(ptr) = c_dict_pointer(_py, dict) else {
                 return 0;
             };
-            unsafe { dict_get_in_place(_py, ptr, key).unwrap_or(0) }
+            unsafe { dict_get_in_place(_py, ptr, key).ok().flatten().unwrap_or(0) }
         })
     })
 }
@@ -414,20 +412,9 @@ pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
         };
         unsafe {
             match dict_get_in_place(_py, ptr, key) {
-                Some(_) => {
-                    if exception_pending(_py) {
-                        -1
-                    } else {
-                        1
-                    }
-                }
-                None => {
-                    if exception_pending(_py) {
-                        -1
-                    } else {
-                        0
-                    }
-                }
+                Ok(Some(_)) => 1,
+                Ok(None) => 0,
+                Err(()) => -1,
             }
         }
     })
@@ -908,37 +895,27 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
             return 0;
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        // Inline dict fast-path to avoid triple-nested with_gil_entry!
-        // (this fn → molt_getitem_method → molt_index) which overflows
-        // the 2MB debug-mode thread stack.
-        let res = if let Some(obj_ptr) = obj_from_bits(o).as_ptr() {
+        let res = if let Some(obj_ptr) = obj_from_bits(o).as_ptr()
+            && unsafe { crate::object::object_is_exact_builtin_dict(_py, obj_ptr) }
+        {
             unsafe {
-                if crate::object::object_type_id(obj_ptr) == 204
-                /* TYPE_ID_DICT */
-                {
-                    if let Some(val) = crate::object::ops::dict_get_in_place(_py, obj_ptr, key_bits)
-                    {
-                        inc_ref_bits(_py, val);
-                        val
-                    } else {
-                        let _ = raise_exception::<u64>(_py, "KeyError", "key not found");
-                        MoltObject::none().bits()
+                match crate::object::ops::dict_get_in_place(_py, obj_ptr, key_bits) {
+                    Ok(Some(value)) => {
+                        inc_ref_bits(_py, value);
+                        Ok(value)
                     }
-                } else {
-                    molt_getitem_method(o, key_bits)
+                    Ok(None) => {
+                        raise_key_error_with_key::<()>(_py, key_bits);
+                        Err(())
+                    }
+                    Err(()) => Err(()),
                 }
             }
         } else {
-            molt_getitem_method(o, key_bits)
+            crate::object::ops::index_impl(o, key_bits, false, true)
         };
         dec_ref_bits(_py, key_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return 0;
-        }
-        res
+        res.unwrap_or(0)
     })
 }
 
@@ -1313,9 +1290,14 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_SetAttr(obj, name, value)` — set obj.name = value. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let result = molt_set_attr_name(obj, name, value);
-        dec_ref_bits(_py, result);
-        if exception_pending(_py) { -1 } else { 0 }
+        let completed = crate::builtins::attributes::mutate_attr_name(
+            _py,
+            obj,
+            name,
+            crate::builtins::attr::DescriptorMutation::Set(value),
+            molt_cpython_abi::hooks::AttributeMutation::Normal,
+        );
+        if completed.is_ok() { 0 } else { -1 }
     })
 }
 
@@ -1374,9 +1356,14 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let result = molt_del_attr_name(obj, name);
-        dec_ref_bits(_py, result);
-        if exception_pending(_py) { -1 } else { 0 }
+        let completed = crate::builtins::attributes::mutate_attr_name(
+            _py,
+            obj,
+            name,
+            crate::builtins::attr::DescriptorMutation::Delete,
+            molt_cpython_abi::hooks::AttributeMutation::Normal,
+        );
+        if completed.is_ok() { 0 } else { -1 }
     })
 }
 
@@ -1845,20 +1832,14 @@ pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
         let Some(storage) = c_dict_pointer(_py, dict) else {
             return -1;
         };
-        let dict = MoltObject::from_ptr(storage).bits();
-        // Use molt_dict_pop with no default — raises KeyError if missing
-        let res = molt_dict_pop(dict, key, none_bits(), MoltObject::from_bool(false).bits());
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
+        match unsafe { crate::object::ops::dict_del_in_place(_py, storage, key) } {
+            Ok(true) => 0,
+            Ok(false) => {
+                raise_key_error_with_key::<()>(_py, key);
+                -1
             }
-            return -1;
+            Err(()) => -1,
         }
-        // Successfully popped; discard the value
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
     })
 }
 
@@ -1904,17 +1885,15 @@ pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
             return -1;
         };
         let a = MoltObject::from_ptr(storage).bits();
-        let res = molt_dict_update(a, b);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let completed = unsafe {
+            crate::object::ops_dict::dict_update_apply(
+                _py,
+                a,
+                crate::object::ops_dict::dict_update_set_in_place,
+                b,
+            )
+        };
+        if completed { 0 } else { -1 }
     })
 }
 
@@ -1926,13 +1905,7 @@ pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
         };
         let dict = MoltObject::from_ptr(storage).bits();
         let res = molt_dict_copy(dict);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return 0;
-        }
-        res
+        if obj_from_bits(res).is_none() { 0 } else { res }
     })
 }
 
@@ -1942,54 +1915,49 @@ pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
 
 /// `PyList_Insert(list, index, item)` — insert item at index. Returns 0 on success, -1 on error.
 pub extern "C" fn PyList_Insert(list: u64, index: isize, item: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = MoltObject::from_int(index as i64).bits();
-        let res = molt_list_insert(list, idx_bits, item);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(storage) = crate::object::ops_list::list_receiver(py, list, "insert") else {
+            return -1;
+        };
+        if !storage.promote() {
             return -1;
         }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let inserted = if let Some(ptr) = storage.managed() {
+            unsafe {
+                crate::object::ops_list::insert_at_native_index_with_projection(
+                    py,
+                    ptr,
+                    index as i64,
+                    item,
+                    std::ptr::null_mut(),
+                )
+            }
+        } else {
+            storage.insert(index, item)
+        };
+        if inserted { 0 } else { -1 }
     })
 }
 
 /// `PyList_Sort(list)` — sort the list in place. Returns 0 on success, -1 on error.
 pub extern "C" fn PyList_Sort(list: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // molt_list_sort(list, key, reverse) — pass None key, False reverse
-        let res = molt_list_sort(list, none_bits(), MoltObject::from_bool(false).bits());
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return -1;
+    crate::with_gil_entry_nopanic!(py, {
+        if crate::object::ops_list::sort_in_place(py, list, none_bits(), false) {
+            0
+        } else {
+            -1
         }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
     })
 }
 
 /// `PyList_Reverse(list)` — reverse the list in place. Returns 0 on success, -1 on error.
 pub extern "C" fn PyList_Reverse(list: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_list_reverse(list);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return -1;
+    crate::with_gil_entry_nopanic!(py, {
+        if crate::object::ops_list::reverse_in_place(py, list) {
+            0
+        } else {
+            -1
         }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
     })
 }
 

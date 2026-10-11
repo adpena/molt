@@ -408,10 +408,14 @@ fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
 
 /// # Safety
 /// - `ptr` must be null or valid for `len_bits` bytes.
+/// - Nonempty data must be immutable compiler-emitted storage whose lifetime
+///   spans this runtime generation. The pointer and length are cache identity.
+/// - The compiler IR admission authority must have validated minimal signed
+///   big-endian bytes. This internal materializer is not a public byte parser.
 ///
-/// Invalid input or failed materialization returns None with a pending exception.
+/// Invalid extent or failed materialization returns None with a pending exception.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_bigint_from_bytes(ptr: *const u8, len_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
@@ -422,11 +426,11 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
                     "integer literal byte length is too large",
                 );
             };
-            if ptr.is_null() {
+            if ptr.is_null() || len == 0 {
                 return raise_exception::<_>(
                     _py,
                     "ValueError",
-                    "integer literal input pointer is null",
+                    "integer literal requires nonempty signed bytes",
                 );
             }
             let data_key = ptr as usize;
@@ -436,37 +440,14 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
                 return bits;
             }
             let bytes = std::slice::from_raw_parts(ptr, len);
-            let text = match std::str::from_utf8(bytes) {
-                Ok(val) => val,
-                Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
-                }
-            };
-            let bits = if let Some(i) = parse_simple_ascii_decimal_i64(text) {
-                int_bits_from_i64(_py, i)
+            // The compiler admits minimal signed big-endian bytes. Reuse the
+            // Python int.from_bytes / C byte-array decoder: internal constants
+            // never pass through the user-facing decimal digit policy.
+            let parsed = crate::builtins::numbers::bigint_from_bytes(bytes, false, true);
+            let bits = if let Some(i) = bigint_to_inline(&parsed) {
+                MoltObject::from_int(i).bits()
             } else {
-                let (parsed, _base_used) = match parse_int_from_str(
-                    text,
-                    10,
-                    crate::builtins::sys_ext::current_int_max_str_digits(_py),
-                ) {
-                    Ok(val) => val,
-                    Err(error) => {
-                        if let Some(message) = int_digit_limit_message(error) {
-                            return raise_exception::<_>(_py, "ValueError", &message);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid literal for int()",
-                        );
-                    }
-                };
-                if let Some(i) = bigint_to_inline(&parsed) {
-                    MoltObject::from_int(i).bits()
-                } else {
-                    bigint_bits(_py, parsed)
-                }
+                bigint_bits(_py, parsed)
             };
             if !obj_from_bits(bits).is_none() {
                 const_data_literal_insert(_py, ConstDataLiteralKind::BigInt, data_key, len, bits);
@@ -563,8 +544,16 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
         let float_bits = if as_float_extended(obj_from_bits(float_bits)).is_some() {
             float_bits
         } else {
-            let Some(value) = crate::builtins::numbers::float_storage_value(_py, float_bits) else {
-                return MoltObject::none().bits();
+            let value = match crate::builtins::numbers::float_storage_value(_py, float_bits) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "SystemError",
+                        "float conversion returned no float storage",
+                    );
+                }
+                Err(()) => return MoltObject::none().bits(),
             };
             let projected = float_result_bits(_py, value);
             projected_owner = obj_from_bits(projected)
@@ -590,10 +579,7 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
         }) else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, float_bits);
-        }
-        if exception_pending(_py) {
+        if unsafe { object_field_init_ptr_raw(_py, inst_ptr, offset, float_bits) }.is_err() {
             return MoltObject::none().bits();
         }
         instance_owner.release();
@@ -850,20 +836,20 @@ pub(crate) extern "C" fn complex_complex(bits: u64) -> u64 {
     })
 }
 
-fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> bool {
+fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
     if complex_ptr_from_bits(bits).is_some()
         || crate::object::ops::as_float_extended(obj_from_bits(bits)).is_some()
         || obj_from_bits(bits).is_int()
         || obj_from_bits(bits).is_bool()
         || bigint_ptr_from_bits(bits).is_some()
     {
-        return true;
+        return Ok(true);
     }
     unsafe {
-        if crate::builtins::attr::has_special_method(py, bits, b"__float__") {
-            return true;
+        if crate::builtins::attr::has_special_method(py, bits, b"__float__")? {
+            return Ok(true);
         }
-        !exception_pending(py) && crate::builtins::attr::has_special_method(py, bits, b"__index__")
+        crate::builtins::attr::has_special_method(py, bits, b"__index__")
     }
 }
 
@@ -908,9 +894,12 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         // owned through result validation and any deprecation-warning callback.
         let mut real_bits = val_bits;
         let mut real_owner = None;
-        if let Some(method) =
-            unsafe { crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") }
-        {
+        if let Some(method) = unsafe {
+            (match crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") {
+                Ok(value) => value,
+                Err(()) => return MoltObject::none().bits(),
+            })
+        } {
             let result = unsafe { call_callable0(py, method) };
             dec_ref_bits(py, method);
             if exception_pending(py) {
@@ -938,17 +927,15 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 return MoltObject::none().bits();
             }
             real_bits = result;
-        } else if exception_pending(py) {
-            return MoltObject::none().bits();
         }
 
         // CPython admits both numeric argument kinds before running __float__
         // or __index__, so an invalid imaginary argument cannot trigger a real
         // conversion callback as a side effect.
-        if !complex_number_admitted(py, real_bits) {
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
+        if !match complex_number_admitted(py, real_bits) {
+            Ok(admitted) => admitted,
+            Err(()) => return MoltObject::none().bits(),
+        } {
             return raise_exception::<_>(
                 py,
                 "TypeError",
@@ -958,10 +945,12 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 ),
             );
         }
-        if has_imag && !complex_number_admitted(py, imag_bits) {
-            if exception_pending(py) {
-                return MoltObject::none().bits();
+        if has_imag
+            && !match complex_number_admitted(py, imag_bits) {
+                Ok(admitted) => admitted,
+                Err(()) => return MoltObject::none().bits(),
             }
+        {
             return raise_exception::<_>(
                 py,
                 "TypeError",
@@ -1116,10 +1105,7 @@ pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> 
         }) else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, int_bits);
-        }
-        if exception_pending(_py) {
+        if unsafe { object_field_init_ptr_raw(_py, inst_ptr, offset, int_bits) }.is_err() {
             return MoltObject::none().bits();
         }
         instance_owner.release();
@@ -1706,15 +1692,14 @@ mod int_literal_tests {
     fn bigint_literal_invalid_inputs_return_none_with_pending_exception() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            static INVALID_DECIMAL: &[u8] = b"invalid-bigint-literal";
-            static INVALID_UTF8: &[u8] = &[0xff];
+            static BYTES: &[u8] = &[0xff];
             for (ptr, len) in [
                 (std::ptr::null(), 0),
                 (std::ptr::null(), u64::MAX),
-                (INVALID_DECIMAL.as_ptr(), INVALID_DECIMAL.len() as u64),
-                (INVALID_UTF8.as_ptr(), INVALID_UTF8.len() as u64),
+                (BYTES.as_ptr(), 0),
+                (BYTES.as_ptr(), u64::MAX),
             ] {
-                let bits = unsafe { super::molt_bigint_from_str(ptr, len) };
+                let bits = unsafe { super::molt_bigint_from_bytes(ptr, len) };
                 assert_eq!(bits, crate::MoltObject::none().bits());
                 assert!(crate::exception_pending(py));
                 crate::clear_exception(py);
@@ -1723,7 +1708,51 @@ mod int_literal_tests {
     }
 
     #[test]
-    fn bigint_literal_budget_failures_cover_i64_and_large_decimal_materialization() {
+    fn binary_integer_literals_ignore_live_decimal_policy_on_cold_and_warm_cache() {
+        use crate::builtins::exceptions::ExceptionValue;
+        use crate::builtins::sys_ext::{
+            current_int_max_str_digits, molt_sys_set_int_max_str_digits,
+        };
+        struct RestoreLimit(usize);
+        impl Drop for RestoreLimit {
+            fn drop(&mut self) {
+                molt_sys_set_int_max_str_digits(crate::MoltObject::from_int(self.0 as i64).bits());
+            }
+        }
+        static PAYLOAD: [u8; 401] = {
+            let mut bytes = [0u8; 401];
+            bytes[0] = 1;
+            bytes
+        };
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let _restore = RestoreLimit(current_int_max_str_digits(py));
+            let expected = BigInt::from(1u8) << 3200usize;
+            for first_limit in [640, 0] {
+                crate::const_data_cache::clear_const_data_literal_caches(py);
+                molt_sys_set_int_max_str_digits(crate::MoltObject::from_int(first_limit).bits());
+                let cold = ExceptionValue::adopt(py, unsafe {
+                    super::molt_bigint_from_bytes(PAYLOAD.as_ptr(), PAYLOAD.len() as u64)
+                });
+                assert!(!crate::exception_pending(py));
+                assert_eq!(
+                    crate::builtins::numbers::index_bigint_integral_bits(cold.bits()),
+                    Some(expected.clone())
+                );
+                for next_limit in [0, 640] {
+                    molt_sys_set_int_max_str_digits(crate::MoltObject::from_int(next_limit).bits());
+                    let warm = ExceptionValue::adopt(py, unsafe {
+                        super::molt_bigint_from_bytes(PAYLOAD.as_ptr(), PAYLOAD.len() as u64)
+                    });
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(warm.bits(), cold.bits());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn bigint_literal_budget_failures_cover_i64_and_arbitrary_width_materialization() {
         use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
         struct RestoreTracker;
         impl Drop for RestoreTracker {
@@ -1733,11 +1762,11 @@ mod int_literal_tests {
         }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            // One takes the ASCII-i64 shortcut, one the arbitrary-precision parser;
-            // both must propagate allocation failure through bigint_bits.
+            // Both full-width and arbitrary-width binary literals must propagate
+            // allocation failure through bigint_bits.
             let payloads: [&[u8]; 2] = [
-                b"9123456709876543210",
-                b"953170286449503927614875310629784503162907451638209",
+                &[0x7e, 0x9d, 0x67, 0x35, 0x2a, 0x14, 0x06, 0xea],
+                &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ];
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
@@ -1746,7 +1775,7 @@ mod int_literal_tests {
             let reset = RestoreTracker;
             for bytes in payloads {
                 let bits =
-                    unsafe { super::molt_bigint_from_str(bytes.as_ptr(), bytes.len() as u64) };
+                    unsafe { super::molt_bigint_from_bytes(bytes.as_ptr(), bytes.len() as u64) };
                 assert_eq!(bits, crate::MoltObject::none().bits());
                 assert!(crate::exception_pending(py));
                 crate::clear_exception(py);
@@ -1754,7 +1783,7 @@ mod int_literal_tests {
             drop(reset);
             for bytes in payloads {
                 let bits =
-                    unsafe { super::molt_bigint_from_str(bytes.as_ptr(), bytes.len() as u64) };
+                    unsafe { super::molt_bigint_from_bytes(bytes.as_ptr(), bytes.len() as u64) };
                 let ptr = crate::obj_from_bits(bits)
                     .as_ptr()
                     .expect("owned bigint result");

@@ -53,7 +53,7 @@ impl RustBackend {
                     "MoltValue::Str(PythonString::from_utf8_surrogatepass(&{bytes:?}).expect(\"admitted Python text\"))"
                 ))
             }
-            SimpleLiteral::Owned(OwnedLiteralPayloadKind::BigintDecimal, _) => literal
+            SimpleLiteral::Owned(OwnedLiteralPayloadKind::BigintBytes, _) => literal
                 .exact_integer_value(i64::MAX as u128 + 1)
                 .and_then(|value| i64::try_from(value).ok())
                 .map(|value| format!("MoltValue::Int({value}i64)"))

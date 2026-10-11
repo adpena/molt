@@ -47,7 +47,10 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
         let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
         dec_ref_bits(_py, field_names_name);
-        let field_names_bits = field_names_bits?;
+        let field_names_bits = match field_names_bits {
+            Ok(bits) => bits?,
+            Err(()) => return Some(MoltObject::none().bits()),
+        };
         let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
             return Some(raise_exception::<_>(
                 _py,
@@ -76,10 +79,15 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         let values_bits = MoltObject::from_ptr(values_ptr).bits();
         let flags_bits =
             if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
-                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                    .unwrap_or_else(|| MoltObject::from_int(0).bits());
+                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name);
                 dec_ref_bits(_py, flags_name);
-                bits
+                match bits {
+                    Ok(bits) => bits.unwrap_or_else(|| MoltObject::from_int(0).bits()),
+                    Err(()) => {
+                        dec_ref_bits(_py, values_bits);
+                        return Some(MoltObject::none().bits());
+                    }
+                }
             } else {
                 MoltObject::from_int(0).bits()
             };
@@ -333,8 +341,7 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
     unsafe {
         for pair in pairs.chunks(2) {
             if pair.len() == 2 {
-                dict_set_in_place(_py, ptr, pair[0], pair[1]);
-                if exception_pending(_py) {
+                if !dict_set_in_place(_py, ptr, pair[0], pair[1]) {
                     dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                     return std::ptr::null_mut();
                 }

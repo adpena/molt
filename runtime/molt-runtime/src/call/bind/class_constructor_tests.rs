@@ -92,20 +92,25 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                     copied_bits
                 );
                 for key in [class_key, dict_key] {
-                    assert_eq!(dict_get_in_place(_py, copied, key), None);
+                    assert_eq!(
+                        dict_get_in_place(_py, copied, key).expect("dictionary lookup succeeds"),
+                        None
+                    );
                     assert!(
-                        dict_get_in_place(_py, prepared, key).is_some(),
+                        dict_get_in_place(_py, prepared, key)
+                            .expect("dictionary lookup succeeds")
+                            .is_some(),
                         "type construction must not mutate the supplied namespace"
                     );
                 }
                 crate::dict_set_in_place(_py, prepared, value_key, MoltObject::from_int(2).bits());
                 assert_eq!(
-                    dict_get_in_place(_py, copied, value_key),
+                    dict_get_in_place(_py, copied, value_key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(1).bits())
                 );
                 crate::dict_set_in_place(_py, copied, value_key, MoltObject::from_int(3).bits());
                 assert_eq!(
-                    dict_get_in_place(_py, copied, value_key),
+                    dict_get_in_place(_py, copied, value_key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(3).bits())
                 );
                 // Drop the caller's class reference first: the class cell still owns it.
@@ -164,7 +169,7 @@ fn type_call_invalid_cell_releases_copied_namespace_payload() {
                     before
                 );
                 assert_eq!(
-                    dict_get_in_place(_py, ns, key),
+                    dict_get_in_place(_py, ns, key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(1).bits())
                 );
                 for bits in [ns_bits, payload_bits, name, key, payload_key] {
@@ -220,7 +225,10 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                     );
                     crate::molt_exception_clear();
                     assert_eq!(crate::object::cells::cell_value_bits(cell), marker);
-                    assert_eq!(dict_get_in_place(_py, ns, qualname), Some(marker));
+                    assert_eq!(
+                        dict_get_in_place(_py, ns, qualname).expect("dictionary lookup succeeds"),
+                        Some(marker)
+                    );
                     for bits in [
                         result, error, ns_bits, bases_bits, cell_bits, name, qualname, cell_key,
                     ] {
@@ -255,8 +263,10 @@ extern "C" fn record_set_name(_descriptor: u64, owner: u64, name: u64) -> i64 {
             );
             if name_text == "first" {
                 let second = crate::attr_name_bits_from_bytes(_py, b"second").unwrap();
-                crate::dict_del_in_place(_py, obj_from_bits(owner_dict).as_ptr().unwrap(), second);
-                crate::dict_del_in_place(_py, obj_from_bits(prepared).as_ptr().unwrap(), second);
+                crate::dict_del_in_place(_py, obj_from_bits(owner_dict).as_ptr().unwrap(), second)
+                    .expect("owner namespace deletion succeeds");
+                crate::dict_del_in_place(_py, obj_from_bits(prepared).as_ptr().unwrap(), second)
+                    .expect("prepared namespace deletion succeeds");
                 dec_ref_bits(_py, second);
             }
             MoltObject::none().bits()
@@ -283,8 +293,9 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
             assert!(!super_ptr.is_null());
             let super_bits = MoltObject::from_ptr(super_ptr).bits();
             let key = crate::attr_name_bits_from_bytes(py, b"__init_subclass__").unwrap();
-            let descriptor =
-                crate::builtins::methods::object_method_bits(py, "__init_subclass__").unwrap();
+            let descriptor = crate::builtins::methods::object_method_bits(py, "__init_subclass__")
+                .expect("method lookup succeeds")
+                .unwrap();
             let descriptor_ptr = obj_from_bits(descriptor).as_ptr().unwrap();
             // Native descriptor identity is its declared Python class, not a
             // managed classmethod wrapper around the portable function payload.
@@ -297,8 +308,14 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                 crate::call::function::function_metadata_bits(py, descriptor_ptr, b"__objclass__"),
                 builtins.object
             );
-            assert!(crate::builtins::attr::descriptor_has_get(py, descriptor));
-            assert!(!crate::builtins::attr::descriptor_is_data(py, descriptor));
+            assert!(
+                crate::builtins::attr::descriptor_has_get(py, descriptor)
+                    .expect("operation succeeds")
+            );
+            assert!(
+                !crate::builtins::attr::descriptor_is_data(py, descriptor)
+                    .expect("operation succeeds")
+            );
             assert!(callable_matches_runtime_symbol(
                 Some(descriptor),
                 fn_key!(molt_object_init_subclass)

@@ -51,16 +51,11 @@ unsafe fn asyncio_required_method(py: &PyToken<'_>, object: u64, name: &[u8]) ->
         // AttributeError deliberately raised by the descriptor itself.
         let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name);
         dec_ref_bits(py, name);
-        if exception_pending(py) {
-            if let Some(method) = method {
-                dec_ref_bits(py, method);
-            }
-            return None;
+        match method {
+            Ok(Some(method)) => Some(method),
+            Ok(None) => raise_exception::<Option<u64>>(py, "TypeError", "object is not awaitable"),
+            Err(()) => None,
         }
-        if method.is_none() {
-            return raise_exception::<Option<u64>>(py, "TypeError", "object is not awaitable");
-        }
-        method
     }
 }
 
@@ -149,16 +144,22 @@ pub(crate) unsafe fn asyncio_call_method0_allow_missing(
     _py: &PyToken<'_>,
     obj_bits: u64,
     method: &[u8],
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
-        let obj_ptr = obj_from_bits(obj_bits).as_ptr()?;
-        let method_name_bits = attr_name_bits_from_bytes(_py, method)?;
-        let method_bits = attr_lookup_ptr_allow_missing(_py, obj_ptr, method_name_bits);
-        dec_ref_bits(_py, method_name_bits);
-        let method_bits = method_bits?;
+        let Some(method_bits) = asyncio_attr_lookup_allow_missing(_py, obj_bits, method)? else {
+            return Ok(None);
+        };
         let out = call_callable0(_py, method_bits);
+        // The generic call transfers an owned result even on failure. Capture
+        // its status before retiring either owner, then release failed results.
+        let failed = exception_pending(_py);
         dec_ref_bits(_py, method_bits);
-        Some(out)
+        if failed {
+            dec_ref_bits(_py, out);
+            Err(())
+        } else {
+            Ok(Some(out))
+        }
     }
 }
 
@@ -166,10 +167,12 @@ pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
     _py: &PyToken<'_>,
     obj_bits: u64,
     name: &[u8],
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
-        let obj_ptr = obj_from_bits(obj_bits).as_ptr()?;
-        let name_bits = attr_name_bits_from_bytes(_py, name)?;
+        let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
+            return Ok(None);
+        };
+        let name_bits = attr_name_bits_from_bytes(_py, name).ok_or(())?;
         let result = attr_lookup_ptr_allow_missing(_py, obj_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
         result
@@ -204,13 +207,13 @@ pub(crate) unsafe fn asyncio_method_truthy(
 
 pub(crate) unsafe fn asyncio_waiters_pop_front(_py: &PyToken<'_>, waiters_bits: u64) -> u64 {
     unsafe {
-        if let Some(bits) = asyncio_call_method0_allow_missing(_py, waiters_bits, b"popleft") {
-            return bits;
+        match asyncio_call_method0_allow_missing(_py, waiters_bits, b"popleft") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => {
+                asyncio_call_method1(_py, waiters_bits, b"pop", MoltObject::from_int(0).bits())
+            }
+            Err(()) => MoltObject::none().bits(),
         }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        asyncio_call_method1(_py, waiters_bits, b"pop", MoltObject::from_int(0).bits())
     }
 }
 
@@ -322,6 +325,104 @@ mod exception_dispatch_tests {
             for bits in [instance, name, descriptor, getter, class] {
                 dec_ref_bits(py, bits);
             }
+        });
+    }
+
+    static FALLBACK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn failing_runtime_descriptor(_instance: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            raise_exception::<u64>(py, "RuntimeError", "waiter descriptor failure")
+        })
+    }
+
+    extern "C" fn record_fallback(_instance: u64, _index: u64) -> u64 {
+        FALLBACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        MoltObject::from_int(17).bits()
+    }
+
+    #[test]
+    fn optional_async_lookup_stops_before_fallback_on_descriptor_error() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = class(py, b"FailingWaiterQueue", builtin_classes(py).object);
+            let _class_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), class)
+            };
+            let getter =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        failing_runtime_descriptor as *const (),
+                    ),
+                    1,
+                ))
+                .bits();
+            let _getter_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), getter)
+            };
+            let fallback =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(record_fallback as *const ()),
+                    2,
+                ))
+                .bits();
+            let _fallback_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), fallback)
+            };
+            let none = MoltObject::none().bits();
+            let descriptor = crate::builtins::types::molt_property_new(getter, none, none);
+            let _descriptor_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), descriptor)
+            };
+            let popleft = attr_name_bits_from_bytes(py, b"popleft").unwrap();
+            let _popleft_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), popleft)
+            };
+            let pop = attr_name_bits_from_bytes(py, b"pop").unwrap();
+            let _pop_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), pop)
+            };
+            crate::molt_set_attr_name(class, popleft, descriptor);
+            crate::molt_set_attr_name(class, pop, fallback);
+            assert!(!exception_pending(py));
+            let instance = unsafe {
+                crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+            };
+            let _instance_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), instance)
+            };
+            let missing =
+                unsafe { asyncio_attr_lookup_allow_missing(py, instance, b"not_present") }.map(
+                    |value| {
+                        value.map(|bits| unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                py.core_token(),
+                                bits,
+                            )
+                        })
+                    },
+                );
+            assert!(matches!(missing, Ok(None)));
+            assert!(!exception_pending(py));
+            FALLBACK_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+            let result = unsafe { asyncio_waiters_pop_front(py, instance) };
+            let _result_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), result)
+            };
+            assert_eq!(result, none);
+            assert_eq!(FALLBACK_CALLS.load(std::sync::atomic::Ordering::Relaxed), 0);
+            let exception = molt_exception_last_pending();
+            let _exception_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
+            };
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "RuntimeError",
+            ));
+            clear_exception(py);
         });
     }
 }

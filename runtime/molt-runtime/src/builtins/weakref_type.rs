@@ -17,17 +17,19 @@ use crate::{
     type_name,
 };
 
-fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Option<String> {
-    let name_attr = attr_name_bits_from_bytes(_py, b"__name__")?;
+fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Result<Option<String>, ()> {
+    let name_attr = attr_name_bits_from_bytes(_py, b"__name__").ok_or(())?;
     let name_bits = unsafe { attr_lookup_ptr(_py, target_ptr, name_attr) };
     dec_ref_bits(_py, name_attr);
-    let name_bits = name_bits?;
+    let Some(name_bits) = name_bits? else {
+        return Ok(None);
+    };
     let name = obj_from_bits(name_bits)
         .as_ptr()
         .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
         .and_then(|_| string_obj_to_owned(obj_from_bits(name_bits)));
     dec_ref_bits(_py, name_bits);
-    name
+    Ok(name)
 }
 
 fn weakref_receiver(_py: &crate::PyToken<'_>, self_bits: u64, method: &str) -> Option<*mut u8> {
@@ -201,17 +203,16 @@ fn weakref_richcompare(
     let left = crate::object::weakref::weakref_peek_owned(_py, self_bits);
     let right = crate::object::weakref::weakref_peek_owned(_py, other_bits);
     let result = if let (Some(left), Some(right)) = (left, right) {
-        let name_bits = if is_ne {
-            crate::intern_static_name(_py, &crate::runtime_state(_py).interned.ne_name, b"__ne__")
+        let operation = if is_ne {
+            molt_obj_model::sequence_compare::RichCompareOp::Ne
         } else {
-            crate::intern_static_name(_py, &crate::runtime_state(_py).interned.eq_name, b"__eq__")
+            molt_obj_model::sequence_compare::RichCompareOp::Eq
         };
         match crate::object::ops_compare::rich_compare_value(
             _py,
             obj_from_bits(left),
             obj_from_bits(right),
-            name_bits,
-            name_bits,
+            operation,
         ) {
             crate::object::ops_compare::CompareValueOutcome::Value(bits) => bits,
             crate::object::ops_compare::CompareValueOutcome::Error => MoltObject::none().bits(),
@@ -243,7 +244,7 @@ pub extern "C" fn molt_weakref_hash(self_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let hash = crate::object::weakref::weakref_cached_hash_or_compute(_py, self_bits);
-        if exception_pending(_py) {
+        if hash == -1 {
             MoltObject::none().bits()
         } else {
             int_bits_from_i64(_py, hash)
@@ -273,14 +274,18 @@ pub extern "C" fn molt_weakref_repr(self_bits: u64) -> u64 {
                 "<weakref at 0x{:x}; to '{}' at 0x{:x}>",
                 self_ptr as usize, target_name, target_ptr as usize
             );
-            if let Some(name) = referent_name(_py, target_ptr) {
+            let referent = match referent_name(_py, target_ptr) {
+                Ok(value) => value,
+                Err(()) => {
+                    dec_ref_bits(_py, target_bits);
+                    return MoltObject::none().bits();
+                }
+            };
+            if let Some(name) = referent {
                 text.pop();
                 text.push_str(" (");
                 text.push_str(&name);
                 text.push_str(")>");
-            } else if exception_pending(_py) {
-                dec_ref_bits(_py, target_bits);
-                return MoltObject::none().bits();
             }
             text
         } else {

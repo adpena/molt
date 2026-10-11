@@ -2305,12 +2305,9 @@ unsafe fn set_object_attr_bytes(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = unsafe { object_setattr_raw(_py, obj_ptr, name_bits, name_str, val_bits) };
+    let completed = unsafe { object_setattr_raw(_py, obj_ptr, name_bits, name_str, val_bits) };
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        return Err(out);
-    }
-    Ok(())
+    completed.map_err(|()| MoltObject::none().bits())
 }
 
 unsafe fn object_attr_bits(

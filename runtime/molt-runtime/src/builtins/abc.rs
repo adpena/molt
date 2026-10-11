@@ -77,10 +77,14 @@ fn dict_set_str_key(
             dec_ref_bits(_py, key_bits);
             return Err(MoltObject::none().bits());
         }
-        crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+        let succeeded = crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+        dec_ref_bits(_py, key_bits);
+        if succeeded {
+            Ok(())
+        } else {
+            Err(MoltObject::none().bits())
+        }
     }
-    dec_ref_bits(_py, key_bits);
-    Ok(())
 }
 
 fn iter_type(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<u64, u64> {
@@ -323,38 +327,37 @@ fn abc_counter_inc(_py: &crate::PyToken<'_>) -> u64 {
         + 1
 }
 
-fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> u64 {
+fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> Result<u64, u64> {
     let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
-        return MoltObject::none().bits();
+        return Ok(MoltObject::none().bits());
     };
     unsafe {
         if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-            return MoltObject::none().bits();
+            return Ok(MoltObject::none().bits());
         }
         let dict_bits = class_dict_bits(cls_ptr);
         let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) else {
-            return MoltObject::none().bits();
+            return Ok(MoltObject::none().bits());
         };
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return MoltObject::none().bits();
+            return Ok(MoltObject::none().bits());
         }
-        let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
-            return MoltObject::none().bits();
-        };
-        let out = dict_get_in_place(_py, dict_ptr, name_bits)
-            .unwrap_or_else(|| MoltObject::none().bits());
+        let name_bits =
+            attr_name_bits_from_bytes(_py, name).ok_or_else(|| MoltObject::none().bits())?;
+        let out = dict_get_in_place(_py, dict_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
-        out
+        out.map(|value| value.unwrap_or_else(|| MoltObject::none().bits()))
+            .map_err(|()| MoltObject::none().bits())
     }
 }
 
 const ABC_DIRECT_SUBCLASSES_ATTR: &[u8] = b"_molt_abc_direct_subclasses";
 
-fn abc_has_state(_py: &crate::PyToken<'_>, cls_bits: u64) -> bool {
-    !obj_from_bits(abc_state_attr(_py, cls_bits, b"_abc_registry")).is_none()
+fn abc_has_state(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<bool, u64> {
+    Ok(!obj_from_bits(abc_state_attr(_py, cls_bits, b"_abc_registry")?).is_none())
 }
 
-fn abc_direct_subclasses_attr(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+fn abc_direct_subclasses_attr(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<u64, u64> {
     abc_state_attr(_py, cls_bits, ABC_DIRECT_SUBCLASSES_ATTR)
 }
 
@@ -371,10 +374,10 @@ fn abc_register_direct_subclass_with_bases(
         }
         let bases_bits = class_bases_bits(cls_ptr);
         for base_bits in class_bases_vec(bases_bits) {
-            if !abc_has_state(_py, base_bits) {
+            if !abc_has_state(_py, base_bits)? {
                 continue;
             }
-            let direct_bits = abc_direct_subclasses_attr(_py, base_bits);
+            let direct_bits = abc_direct_subclasses_attr(_py, base_bits)?;
             if obj_from_bits(direct_bits).is_none() {
                 continue;
             }
@@ -384,9 +387,13 @@ fn abc_register_direct_subclass_with_bases(
     Ok(())
 }
 
-fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64) -> u64 {
+fn class_lookup_mro_attr(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    name_bits: u64,
+) -> Result<u64, u64> {
     let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
-        return MoltObject::none().bits();
+        return Ok(MoltObject::none().bits());
     };
     unsafe {
         if object_type_id(cls_ptr) == TYPE_ID_TYPE {
@@ -394,8 +401,9 @@ fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64
             if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits)
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
                 && let Some(value_bits) = dict_get_in_place(_py, dict_ptr, name_bits)
+                    .map_err(|()| MoltObject::none().bits())?
             {
-                return value_bits;
+                return Ok(value_bits);
             }
         }
     }
@@ -418,12 +426,14 @@ fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 continue;
             }
-            if let Some(value_bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                return value_bits;
+            if let Some(value_bits) = dict_get_in_place(_py, dict_ptr, name_bits)
+                .map_err(|()| MoltObject::none().bits())?
+            {
+                return Ok(value_bits);
             }
         }
     }
-    MoltObject::none().bits()
+    Ok(MoltObject::none().bits())
 }
 
 fn abc_collect_abstractmethods_frozenset(
@@ -451,7 +461,7 @@ fn abc_collect_abstractmethods_frozenset(
             continue;
         }
         let iter_result = for_each_iter_value(_py, base_abstracts, |name_bits| {
-            let value_bits = class_lookup_mro_attr(_py, cls_bits, name_bits);
+            let value_bits = class_lookup_mro_attr(_py, cls_bits, name_bits)?;
             if is_abstract_value(_py, value_bits)? {
                 set_add(_py, abstracts_bits, name_bits)?;
             }
@@ -566,7 +576,7 @@ fn abc_update_abstractmethods_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> R
 }
 
 fn abc_sync_negative_cache_version(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
-    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache");
+    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache")?;
     if !obj_from_bits(neg_cache_bits).is_none() {
         set_clear(_py, neg_cache_bits)?;
     }
@@ -576,7 +586,7 @@ fn abc_sync_negative_cache_version(_py: &crate::PyToken<'_>, cls_bits: u64) -> R
 }
 
 fn abc_ensure_init(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
-    let registry = abc_state_attr(_py, cls_bits, b"_abc_registry");
+    let registry = abc_state_attr(_py, cls_bits, b"_abc_registry")?;
     if obj_from_bits(registry).is_none() {
         return abc_init_impl(_py, cls_bits);
     }
@@ -611,10 +621,10 @@ fn abc_subclasscheck_impl_inner(
     }
     abc_ensure_init(_py, cls_bits)?;
 
-    let cache_bits = abc_state_attr(_py, cls_bits, b"_abc_cache");
-    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache");
-    let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry");
-    let neg_ver_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version");
+    let cache_bits = abc_state_attr(_py, cls_bits, b"_abc_cache")?;
+    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache")?;
+    let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry")?;
+    let neg_ver_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version")?;
     if obj_from_bits(cache_bits).is_none()
         || obj_from_bits(neg_cache_bits).is_none()
         || obj_from_bits(registry_bits).is_none()
@@ -695,7 +705,7 @@ fn abc_subclasscheck_impl_inner(
             registry_hit = true;
             return Ok(IterVisit::Break);
         }
-        if abc_has_state(_py, rcls_bits)
+        if abc_has_state(_py, rcls_bits)?
             && abc_subclasscheck_impl_inner(_py, rcls_bits, subclass_bits, depth + 1)?
         {
             registry_hit = true;
@@ -708,7 +718,7 @@ fn abc_subclasscheck_impl_inner(
         return Ok(true);
     }
 
-    let subclasses_bits = abc_direct_subclasses_attr(_py, cls_bits);
+    let subclasses_bits = abc_direct_subclasses_attr(_py, cls_bits)?;
     if !obj_from_bits(subclasses_bits).is_none() {
         let mut subclass_hit = false;
         for_each_iter_value(_py, subclasses_bits, |scls_bits| {
@@ -716,7 +726,7 @@ fn abc_subclasscheck_impl_inner(
                 subclass_hit = true;
                 return Ok(IterVisit::Break);
             }
-            if abc_has_state(_py, scls_bits)
+            if abc_has_state(_py, scls_bits)?
                 && abc_subclasscheck_impl_inner(_py, scls_bits, subclass_bits, depth + 1)?
             {
                 subclass_hit = true;
@@ -1012,7 +1022,10 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
                 "Refusing to create an inheritance cycle",
             );
         }
-        let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry");
+        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
         if let Err(bits) = set_add(_py, registry_bits, subclass_bits) {
             return bits;
         }
@@ -1071,10 +1084,22 @@ pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry");
-        let cache_bits = abc_state_attr(_py, cls_bits, b"_abc_cache");
-        let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache");
-        let neg_ver_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version");
+        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_cache") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let neg_cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let neg_ver_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
         let tuple_ptr = alloc_tuple(
             _py,
             &[registry_bits, cache_bits, neg_cache_bits, neg_ver_bits],
@@ -1092,7 +1117,10 @@ pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry");
+        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
         if let Err(bits) = set_clear(_py, registry_bits) {
             return bits;
         }
@@ -1110,8 +1138,14 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let cache_bits = abc_state_attr(_py, cls_bits, b"_abc_cache");
-        let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache");
+        let cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_cache") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let neg_cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
         if let Err(bits) = set_clear(_py, cache_bits) {
             return bits;
         }
@@ -1219,7 +1253,12 @@ pub extern "C" fn molt_abc_bootstrap() -> u64 {
                     dec_ref_bits(_py, key_bits);
                     return MoltObject::none().bits();
                 }
-                crate::dict_set_in_place(_py, dict_ptr, key_bits, fn_bits);
+                if !crate::dict_set_in_place(_py, dict_ptr, key_bits, fn_bits) {
+                    dec_ref_bits(_py, fn_bits);
+                    dec_ref_bits(_py, key_bits);
+                    dec_ref_bits(_py, dict_bits);
+                    return MoltObject::none().bits();
+                }
             }
             dec_ref_bits(_py, fn_bits);
             dec_ref_bits(_py, key_bits);

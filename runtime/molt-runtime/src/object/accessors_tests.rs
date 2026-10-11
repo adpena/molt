@@ -98,7 +98,7 @@ fn empty_fields_and_both_float_zeros_remain_distinct_across_backing_transitions(
                     assert!(
                         !(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_PTRS)
                     );
-                    assert!(!object_field_delete_ptr_raw(_py, ptr, 0));
+                    assert!(!object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                     let class = object_class_bits(ptr);
                     let mut referents = Vec::new();
                     crate::object::heap_lifecycle::visit_owned_values(_py, ptr, &mut |bits| {
@@ -131,19 +131,23 @@ fn empty_fields_and_both_float_zeros_remain_distinct_across_backing_transitions(
                     );
                     let dict = materialize_dict(_py, object);
                     let dict_ptr = obj_from_bits(dict).as_ptr().unwrap();
-                    assert_eq!(dict_get_in_place(_py, dict_ptr, field), Some(value));
+                    assert_eq!(
+                        dict_get_in_place(_py, dict_ptr, field).unwrap(),
+                        Some(value)
+                    );
                     assert_eq!((abi.get)(handle, 0), value);
                     assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
-                    assert!(object_field_delete_ptr_raw(_py, ptr, 0));
-                    assert!(!object_field_delete_ptr_raw(_py, ptr, 0));
+                    assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
+                    assert!(!object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                     assert_eq!((abi.get)(handle, 0), MoltObject::from_int(7).bits());
-                    field_storage::replace_dictionary(_py, ptr, None);
+                    field_storage::replace_dictionary(_py, ptr, None).unwrap();
                     (abi.set)(handle, 0, value);
                     assert_eq!((abi.get)(handle, 0), value);
-                    assert!(object_field_delete_ptr_raw(_py, ptr, 0));
+                    assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                     let empty = materialize_dict(_py, object);
                     assert_eq!(
-                        dict_get_in_place(_py, obj_from_bits(empty).as_ptr().unwrap(), field),
+                        dict_get_in_place(_py, obj_from_bits(empty).as_ptr().unwrap(), field)
+                            .unwrap(),
                         None
                     );
                     for bits in [dict, empty] {
@@ -181,7 +185,7 @@ fn stack_constructor_shares_empty_field_and_payload_extent_authority() {
             assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_PTRS));
             molt_object_field_init(stack, 0, MoltObject::from_float(0.0).bits());
             assert_eq!(molt_object_field_get(stack, 0), 0);
-            assert!(object_field_delete_ptr_raw(_py, ptr, 0));
+            assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
             assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
         }
         inc_ref_bits(_py, stack);
@@ -495,9 +499,17 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
                     *obj_from_bits(object).as_ptr().unwrap().cast::<u64>()
                 ));
                 (abi.set)(handle, 0, value);
-                assert_eq!(dict_get_in_place(_py, dict_ptr, field), Some(value));
+                assert_eq!(
+                    dict_get_in_place(_py, dict_ptr, field).unwrap(),
+                    Some(value)
+                );
                 // Python can edit __dict__ independently of an inline slot.
-                dict_set_in_place(_py, dict_ptr, field, MoltObject::from_int(9).bits());
+                assert!(dict_set_in_place(
+                    _py,
+                    dict_ptr,
+                    field,
+                    MoltObject::from_int(9).bits()
+                ));
                 assert_eq!((abi.get)(handle, 0), MoltObject::from_int(9).bits());
                 assert_eq!(
                     refcount(value),
@@ -505,10 +517,13 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
                     "no hidden inline owner survives dictionary replacement"
                 );
                 (abi.set)(handle, 0, value);
-                assert_eq!(dict_get_in_place(_py, dict_ptr, field), Some(value));
+                assert_eq!(
+                    dict_get_in_place(_py, dict_ptr, field).unwrap(),
+                    Some(value)
+                );
                 (abi.set)(handle, 0, MoltObject::none().bits());
                 assert_eq!(
-                    dict_get_in_place(_py, dict_ptr, field),
+                    dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(MoltObject::none().bits())
                 );
                 assert!(is_missing_bits(
@@ -597,22 +612,22 @@ fn dictionary_materialization_moves_one_owner_and_preserves_none_and_deletions()
             assert_eq!(refcount(value), 2);
             dec_ref_bits(_py, again);
             unsafe {
-                assert!(crate::dict_del_in_place(_py, dict_ptr, field));
+                assert!(crate::dict_del_in_place(_py, dict_ptr, field).unwrap());
                 assert_eq!(refcount(value), 1);
-                let absent = object_field_get_ptr_raw(_py, ptr, 0);
+                let absent = object_field_get_ptr_raw(_py, ptr, 0).unwrap();
                 assert!(is_missing_bits(_py, absent));
                 dec_ref_bits(_py, absent);
                 let again = materialize_dict(_py, object);
-                assert_eq!(dict_get_in_place(_py, dict_ptr, field), None);
+                assert_eq!(dict_get_in_place(_py, dict_ptr, field).unwrap(), None);
                 dec_ref_bits(_py, again);
                 (abi.set)(handle, 0, MoltObject::none().bits());
                 assert_eq!(
-                    dict_get_in_place(_py, dict_ptr, field),
+                    dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(MoltObject::none().bits())
                 );
                 assert_eq!((abi.get)(handle, 0), MoltObject::none().bits());
-                assert!(object_field_delete_ptr_raw(_py, ptr, 0));
-                assert!(!object_field_delete_ptr_raw(_py, ptr, 0));
+                assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
+                assert!(!object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
             }
             for bits in [dict, object, field, value] {
                 dec_ref_bits(_py, bits);
@@ -636,25 +651,26 @@ fn replacing_and_resetting_dictionary_never_reacquires_retired_inline_owners() {
         .bits();
         unsafe {
             molt_object_field_init(object, 0, old);
-            field_storage::replace_dictionary(_py, ptr, Some(replacement));
+            field_storage::replace_dictionary(_py, ptr, Some(replacement)).unwrap();
             assert_eq!(refcount(old), 1);
             assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
             assert_eq!(
                 molt_object_field_get(object, 0),
                 MoltObject::from_int(8).bits()
             );
-            field_storage::replace_dictionary(_py, ptr, None);
+            field_storage::replace_dictionary(_py, ptr, None).unwrap();
             assert_eq!(instance_dict_bits(ptr), 0);
             assert_eq!(
-                dict_get_in_place(_py, obj_from_bits(replacement).as_ptr().unwrap(), field),
+                dict_get_in_place(_py, obj_from_bits(replacement).as_ptr().unwrap(), field)
+                    .unwrap(),
                 Some(MoltObject::from_int(8).bits())
             );
-            let absent = object_field_get_ptr_raw(_py, ptr, 0);
+            let absent = object_field_get_ptr_raw(_py, ptr, 0).unwrap();
             assert!(is_missing_bits(_py, absent));
             dec_ref_bits(_py, absent);
             let reset = materialize_dict(_py, object);
             assert_eq!(
-                dict_get_in_place(_py, obj_from_bits(reset).as_ptr().unwrap(), field),
+                dict_get_in_place(_py, obj_from_bits(reset).as_ptr().unwrap(), field).unwrap(),
                 None
             );
             dec_ref_bits(_py, reset);
@@ -686,7 +702,7 @@ extern "C" fn observe_and_replace_field(_weak: u64) -> u64 {
             let ptr = obj_from_bits(object).as_ptr().unwrap();
             let dict = obj_from_bits(instance_dict_bits(ptr)).as_ptr().unwrap();
             CALLBACK_SEEN_DICT.store(
-                dict_get_in_place(_py, dict, field).unwrap(),
+                dict_get_in_place(_py, dict, field).unwrap().unwrap(),
                 Ordering::SeqCst,
             );
             molt_object_field_set(object, 0, MoltObject::from_int(77).bits())

@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
-description = "Math/numeric module group for the Molt runtime (math, cmath, fractions, colorsys, random, decimal)"
+description = "Math/numeric module group for the Molt runtime (math, cmath, fractions, random, decimal)"
 
 [dependencies]
 # Core runtime types used by the math implementations

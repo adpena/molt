@@ -94,7 +94,9 @@ fn asyncio_child_watcher_add_impl(
     }
     let entry_bits = bits_from_ptr(entry_ptr);
     unsafe {
-        dict_set_in_place(_py, callbacks_ptr, pid_key_bits, entry_bits);
+        // This public None-returning setter has no success continuation;
+        // cleanup and the same boxed sentinel follow either completion.
+        let _completed = dict_set_in_place(_py, callbacks_ptr, pid_key_bits, entry_bits);
     }
     dec_ref_bits(_py, pid_key_bits);
     dec_ref_bits(_py, entry_bits);
@@ -114,7 +116,10 @@ fn asyncio_child_watcher_remove_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid
     let pid_key_bits = MoltObject::from_int(pid).bits();
     let removed = unsafe { dict_del_in_place(_py, callbacks_ptr, pid_key_bits) };
     dec_ref_bits(_py, pid_key_bits);
-    MoltObject::from_bool(removed).bits()
+    match removed {
+        Ok(removed) => MoltObject::from_bool(removed).bits(),
+        Err(()) => MoltObject::none().bits(),
+    }
 }
 
 fn asyncio_child_watcher_clear_impl(_py: &PyToken<'_>, callbacks_bits: u64) -> u64 {
@@ -138,18 +143,17 @@ fn asyncio_child_watcher_pop_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid_bi
         Err(bits) => return bits,
     };
     let pid_key_bits = MoltObject::from_int(pid).bits();
-    let entry_bits = unsafe { dict_get_in_place(_py, callbacks_ptr, pid_key_bits) };
-    let out_bits = if let Some(bits) = entry_bits {
-        inc_ref_bits(_py, bits);
-        unsafe {
-            dict_del_in_place(_py, callbacks_ptr, pid_key_bits);
-        }
-        bits
-    } else {
-        MoltObject::none().bits()
-    };
+    let removed =
+        unsafe { crate::object::ops::dict_del_deferred(_py, callbacks_ptr, pid_key_bits) };
     dec_ref_bits(_py, pid_key_bits);
-    out_bits
+    match removed {
+        Ok(Some(removed)) => {
+            let [key, value] = removed.into_owned_storage();
+            dec_ref_bits(_py, key);
+            value
+        }
+        Ok(None) | Err(()) => MoltObject::none().bits(),
+    }
 }
 
 #[unsafe(no_mangle)]

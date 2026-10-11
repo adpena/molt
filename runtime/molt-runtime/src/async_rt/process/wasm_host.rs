@@ -10,56 +10,32 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
-fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, String> {
-    let obj = obj_from_bits(bits);
-    if let Some(text) = string_obj_to_owned(obj) {
-        return Ok(text);
+fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> {
+    use crate::builtins::io_path_utils::{PathFlavor, fspath_bits_with_flavor};
+    let (path, flavor) = fspath_bits_with_flavor(_py, bits)?;
+    let _owner = obj_from_bits(path).as_ptr().map(crate::PtrDropGuard::new);
+    match flavor {
+        PathFlavor::Str => string_obj_to_owned(obj_from_bits(path)).ok_or_else(|| {
+            raise_exception::<u64>(_py, "SystemError", "path conversion returned invalid text")
+        }),
+        PathFlavor::Bytes => unsafe {
+            let ptr = obj_from_bits(path).as_ptr().expect("validated bytes path");
+            let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+            std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+                raise_exception::<u64>(_py, "TypeError", &format!("{label} bytes must be utf-8"))
+            })
+        },
     }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTES {
-                let len = bytes_len(ptr);
-                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                let text = std::str::from_utf8(bytes)
-                    .map_err(|_| format!("{label} bytes must be utf-8"))?;
-                return Ok(text.to_string());
-            }
-            let fspath_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.fspath_name, b"__fspath__");
-            if let Some(call_bits) = attr_lookup_ptr(_py, ptr, fspath_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return Err(format!("{label} __fspath__ failed"));
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(text) = string_obj_to_owned(res_obj) {
-                    dec_ref_bits(_py, res_bits);
-                    return Ok(text);
-                }
-                if let Some(res_ptr) = res_obj.as_ptr()
-                    && object_type_id(res_ptr) == TYPE_ID_BYTES
-                {
-                    let len = bytes_len(res_ptr);
-                    let bytes = std::slice::from_raw_parts(bytes_data(res_ptr), len);
-                    let text = std::str::from_utf8(bytes)
-                        .map_err(|_| format!("{label} bytes must be utf-8"))?;
-                    dec_ref_bits(_py, res_bits);
-                    return Ok(text.to_string());
-                }
-                dec_ref_bits(_py, res_bits);
-            }
-        }
-    }
-    let obj_type = class_name_for_error(type_of_bits(_py, bits));
-    Err(format!("{label} must be str or bytes, not {obj_type}"))
 }
 
-fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>, String> {
+fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>, u64> {
     let obj = obj_from_bits(args_bits);
     if obj.is_none() {
-        return Err("args must be a sequence".to_string());
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "args must be a sequence",
+        ));
     }
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
@@ -71,7 +47,7 @@ fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>,
                     "process argument snapshot allocation failed",
                 )
             }) else {
-                return Err("process argument snapshot allocation failed".to_string());
+                return Err(MoltObject::none().bits());
             };
             let mut args = Vec::with_capacity(elems.len());
             for &elem in elems.iter() {
@@ -87,23 +63,47 @@ fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>,
 fn env_from_bits_wasm(
     _py: &PyToken<'_>,
     env_bits: u64,
-) -> Result<(Option<Vec<(String, String)>>, bool), String> {
+) -> Result<(Option<Vec<(String, String)>>, bool), u64> {
     let obj = obj_from_bits(env_bits);
     if obj.is_none() {
         return Ok((None, false));
     }
     let Some(ptr) = obj.as_ptr() else {
-        return Err("env must be a dict".to_string());
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "env must be a dict",
+        ));
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
-            return Err("env must be a dict".to_string());
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "env must be a dict",
+            ));
         }
+        let items_bits = crate::molt_dict_items(env_bits);
+        let items =
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), items_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let mut entries = crate::object::iterable::OwnedIterator::new(_py, items.bits())
+            .ok_or_else(|| MoltObject::none().bits())?;
+        drop(items);
         let mut out = Vec::with_capacity(dict_len(ptr));
         let mut overlay = false;
-        for row in dict_live_entries(ptr) {
-            let key_bits = row.key;
-            let val_bits = row.value;
+        while let Some(pair_bits) = entries.next().map_err(|_| MoltObject::none().bits())? {
+            // The real dict-items iterator checks mutation and owns this pair
+            // through both conversions; no backing borrow survives a callback.
+            let pair =
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), pair_bits);
+            let pair_ptr = obj_from_bits(pair.bits())
+                .as_ptr()
+                .expect("dict-items pair");
+            let values = tuple_elements(pair_ptr);
+            let (key_bits, val_bits) = (values[0], values[1]);
             let key = string_from_bits_wasm(_py, key_bits, "env key")?;
             let value = string_from_bits_wasm(_py, val_bits, "env value")?;
             if key == "MOLT_ENV_OVERLAY" && value == "1" {
@@ -116,7 +116,7 @@ fn env_from_bits_wasm(
     }
 }
 
-fn cwd_from_bits_wasm(_py: &PyToken<'_>, cwd_bits: u64) -> Result<Option<String>, String> {
+fn cwd_from_bits_wasm(_py: &PyToken<'_>, cwd_bits: u64) -> Result<Option<String>, u64> {
     let obj = obj_from_bits(cwd_bits);
     if obj.is_none() {
         return Ok(None);
@@ -225,19 +225,19 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         let args = match argv_from_bits_wasm(_py, args_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         if args.is_empty() {
             return raise_exception::<_>(_py, "ValueError", "args must not be empty");
         }
         let (mut env_entries, mut overlay) = match env_from_bits_wasm(_py, env_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         super::child_resources::enforce_child_resource_env_entries(&mut env_entries, &mut overlay);
         let cwd = match cwd_from_bits_wasm(_py, cwd_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
         let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");

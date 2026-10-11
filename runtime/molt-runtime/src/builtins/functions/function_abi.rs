@@ -486,22 +486,22 @@ fn molt_func_new_builtin_raw_impl(
 /// Resolve a public builtin name from the executing/canonical builtins
 /// namespace. Provider declarations construct objects only during publication;
 /// deletion or replacement of a public alias never triggers materialization.
-pub(crate) fn lookup_builtin_name(py: &crate::PyToken<'_>, python_name: &str) -> Option<u64> {
-    let namespace = crate::builtins::frames::frame_effective_builtins_bits(py, 0);
-    if exception_pending(py) {
-        return None;
-    }
+pub(crate) fn lookup_builtin_name(
+    py: &crate::PyToken<'_>,
+    python_name: &str,
+) -> Result<Option<u64>, ()> {
+    let namespace = crate::builtins::frames::frame_effective_builtins_bits(py, 0)?;
     // A custom mapping callback may replace the interpreter publication. Keep
     // the selected namespace alive through lookup and result acquisition.
     inc_ref_bits(py, namespace);
     let owner = obj_from_bits(namespace)
         .as_ptr()
         .map(crate::PtrDropGuard::new);
-    let name = attr_name_bits_from_bytes(py, python_name.as_bytes())?;
+    let name = attr_name_bits_from_bytes(py, python_name.as_bytes()).ok_or(())?;
     let value = crate::builtins::modules::lookup_builtin_global(py, name, namespace);
     dec_ref_bits(py, name);
     drop(owner);
-    value.ok().flatten()
+    value
 }
 
 /// The exact provider module owns the published callable and its immutable
@@ -768,14 +768,15 @@ pub extern "C" fn molt_func_new_builtin_named(
         // explicit executable runtime symbol. Only the former resolves the
         // active namespace; raw targets cannot refill a missing public alias.
         if wasm_callables::python_builtin_function_info(&name).is_some() {
-            if let Some(func_bits) = lookup_builtin_name(_py, &name) {
+            let resolved = match lookup_builtin_name(_py, &name) {
+                Ok(value) => value,
+                Err(()) => return MoltObject::none().bits(),
+            };
+            if let Some(func_bits) = resolved {
                 if trace {
                     eprintln!("molt builtin_func named: resolved python builtin {}", name);
                 }
                 return func_bits;
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
             }
             return raise_exception(_py, "NameError", &format!("name '{name}' is not defined"));
         }
@@ -878,9 +879,11 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 "cannot create a Python function from opaque runtime-context code",
             );
         }
-        let Some(globals_ptr) =
-            crate::builtins::frames::globals_namespace_storage_ptr(_py, args[1])
-        else {
+        let globals = match crate::builtins::frames::globals_namespace_storage_ptr(_py, args[1]) {
+            Ok(storage) => storage,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let Some(globals_ptr) = globals else {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -999,7 +1002,10 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             callable_identity.trampoline_ptr,
             true,
         );
-        function_set_globals_bits(_py, func_ptr, args[1]);
+        if function_set_globals_bits(_py, func_ptr, args[1]).is_err() {
+            dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+            return MoltObject::none().bits();
+        }
         if closure_to_store != 0 {
             function_set_closure_bits(_py, func_ptr, closure_to_store, callable_identity.call_abi);
         }
@@ -1021,9 +1027,15 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
                 return MoltObject::none().bits();
             };
-            let bits = dict_get_in_place(_py, globals_ptr, module_name_bits).unwrap_or(none_bits);
+            let bits = dict_get_in_place(_py, globals_ptr, module_name_bits);
             dec_ref_bits(_py, module_name_bits);
-            bits
+            match bits {
+                Ok(bits) => bits.unwrap_or(none_bits),
+                Err(()) => {
+                    dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+                    return MoltObject::none().bits();
+                }
+            }
         };
 
         if !set_attr(b"__name__", name_bits)
@@ -1274,7 +1286,9 @@ fn initialize_function_metadata(
     }
 
     unsafe {
-        function_set_globals_from_module_name(_py, func_ptr, module_bits);
+        if function_set_globals_from_module_name(_py, func_ptr, module_bits).is_err() {
+            return MoltObject::none().bits();
+        }
     }
 
     if code_ptr.is_some() {
@@ -1420,15 +1434,15 @@ unsafe fn function_set_globals_from_module_name(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
     module_bits: u64,
-) {
+) -> Result<(), ()> {
     unsafe {
         let active_globals = crate::builtins::frames::frame_stack_active_globals_bits();
         if active_globals != 0 {
-            function_set_globals_bits(_py, func_ptr, active_globals);
-            return;
+            function_set_globals_bits(_py, func_ptr, active_globals)?;
+            return Ok(());
         }
         let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
-            return;
+            return Ok(());
         };
         let module_bits = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);
@@ -1436,16 +1450,17 @@ unsafe fn function_set_globals_from_module_name(
             guard.get(&module_name).copied().unwrap_or(0)
         };
         let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-            return;
+            return Ok(());
         };
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            return;
+            return Ok(());
         }
         let globals_bits = module_dict_bits(module_ptr);
         if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
-            function_set_globals_bits(_py, func_ptr, globals_bits);
+            function_set_globals_bits(_py, func_ptr, globals_bits)?;
         }
     }
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -2086,10 +2101,14 @@ mod wasm_runtime_callable_tests {
         crate::with_gil_entry_nopanic!(py, {
             // Resolve and publish first. Only read-only predicates run while the
             // target registry is exclusively held: registration would deadlock.
-            let new = crate::builtins::methods::object_method_bits(py, "__new__");
-            let init = crate::builtins::methods::object_method_bits(py, "__init__");
-            let call = crate::builtins::methods::type_method_bits(py, "__call__");
-            let exception_init = crate::builtins::exceptions::exception_method_bits(py, "__init__");
+            let new = crate::builtins::methods::object_method_bits(py, "__new__")
+                .expect("lookup succeeds");
+            let init = crate::builtins::methods::object_method_bits(py, "__init__")
+                .expect("lookup succeeds");
+            let call = crate::builtins::methods::type_method_bits(py, "__call__")
+                .expect("lookup succeeds");
+            let exception_init = crate::builtins::exceptions::exception_method_bits(py, "__init__")
+                .expect("lookup succeeds");
             let (default_new, policy, matches) = {
                 let _targets = native_callable_targets().lock().unwrap();
                 unsafe {

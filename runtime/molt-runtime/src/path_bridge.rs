@@ -360,17 +360,15 @@ pub extern "C" fn __molt_path_path_from_bits(
     crate::with_gil_entry_nopanic!(_py, {
         match path_from_bits(_py, bits) {
             Ok(path) => {
-                let s = path.to_string_lossy().into_owned();
-                let bytes = s.into_bytes().into_boxed_slice();
+                // Same-build, in-process transport preserves the OS representation.
+                // These bytes are never an external serialization format.
+                let bytes = path
+                    .into_os_string()
+                    .into_encoded_bytes()
+                    .into_boxed_slice();
                 unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
             }
-            Err(msg) => {
-                let bytes = msg.into_bytes().into_boxed_slice();
-                let _ = unsafe {
-                    crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
-                };
-                0
-            }
+            Err(_) => 0,
         }
     })
 }
@@ -387,4 +385,85 @@ pub extern "C" fn __molt_path_type_name(
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
+}
+
+/// Return the canonical owned Python path, preserving str/bytes identity.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_fspath_bits(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        match crate::builtins::io_path_utils::fspath_bits_with_flavor(_py, bits) {
+            Ok((path, _)) => path,
+            Err(error) => error,
+        }
+    })
+}
+
+#[cfg(all(test, feature = "stdlib_path"))]
+mod path_transport_tests {
+    use super::*;
+
+    #[test]
+    fn path_bridge_preserves_bytes_and_does_not_publish_failure_output() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let input = b"molt-path-transport";
+            let ptr = alloc_bytes(py, input);
+            assert!(!ptr.is_null());
+            let _owner = crate::PtrDropGuard::new(ptr);
+            let bits = MoltObject::from_ptr(ptr).bits();
+            molt_runtime_core::with_core_gil!(core, {
+                let path = molt_runtime_path::bridge::path_from_bits(core, bits).unwrap();
+                assert_eq!(path, std::path::PathBuf::from("molt-path-transport"));
+            });
+            let result = molt_runtime_path::os_ext::molt_os_fspath(bits);
+            let _result_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), result)
+            };
+            assert_eq!(
+                result, bits,
+                "public fspath must retain the original bytes result"
+            );
+            assert!(!exception_pending(py));
+
+            let marker = b"unchanged output";
+            let mut out = marker.as_ptr();
+            let mut length = marker.len();
+            assert_eq!(
+                __molt_path_path_from_bits(MoltObject::from_int(42).bits(), &mut out, &mut length),
+                0
+            );
+            assert_eq!(out, marker.as_ptr());
+            assert_eq!(length, marker.len());
+            assert!(exception_pending(py));
+            let exception = crate::molt_exception_last_pending();
+            let _exception_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
+            };
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "TypeError"
+            ));
+            crate::molt_exception_clear();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_bridge_roundtrips_non_utf8_os_bytes_through_the_real_consumer() {
+        use std::os::unix::ffi::OsStrExt;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let input = b"molt-path-\xff";
+            let ptr = alloc_bytes(py, input);
+            assert!(!ptr.is_null());
+            let _owner = crate::PtrDropGuard::new(ptr);
+            let bits = MoltObject::from_ptr(ptr).bits();
+            molt_runtime_core::with_core_gil!(core, {
+                let path = molt_runtime_path::bridge::path_from_bits(core, bits).unwrap();
+                assert_eq!(path.as_os_str().as_bytes(), input);
+            });
+            assert!(!exception_pending(py));
+        });
+    }
 }

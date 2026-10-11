@@ -97,6 +97,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                     Some(crate::object_class_bits(receiver)),
                     Some(receiver_bits),
                 )
+                .expect("operation succeeds")
                 .expect("member descriptor returns its present value");
                 assert_eq!(exposed, value);
                 dec_ref_bits(&py, exposed);
@@ -131,8 +132,12 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                 Some(crate::object_class_bits(receiver)),
                 Some(receiver_bits),
             )
-            .expect("required descriptor binding returns an owned result");
-            assert_eq!(exposed, MoltObject::none().bits());
+            .map(|value| value.expect("required descriptor binding returns an owned result"));
+            if typed {
+                assert_eq!(exposed, Ok(MoltObject::none().bits()));
+            } else {
+                assert!(exposed.is_err());
+            }
             assert_eq!(exception_pending(&py), !typed);
             if !typed {
                 let error = crate::exception_last_bits_noinc(&py).unwrap();
@@ -143,7 +148,9 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                 ));
                 crate::clear_exception(&py);
             }
-            dec_ref_bits(&py, exposed);
+            if let Ok(exposed) = exposed {
+                dec_ref_bits(&py, exposed);
+            }
             dec_ref_bits(&py, descriptor_bits);
             refcount::Py_DECREF(descriptor);
         }
@@ -333,8 +340,9 @@ fn getter_and_setter_partial_mutations_commit_without_replacing_callback_errors(
                     Some(builtin_classes(&py).object),
                     Some(receiver_bits),
                 );
-                if let Some(result) = result {
-                    dec_ref_bits(&py, result);
+                assert_eq!(result.is_err(), fail);
+                if let Ok(result) = result {
+                    dec_ref_bits(&py, result.expect("successful descriptor has a value"));
                 }
             }
             assert_eq!(crate::exception_notes_bits(receiver), expected);
@@ -403,7 +411,8 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
                 descriptor_bits,
                 Some(builtin_classes(&py).object),
                 Some(receiver_bits),
-            );
+            )
+            .expect_err("failed synchronization rejects descriptor result");
             assert_eq!(
                 crate::exception_notes_bits(receiver),
                 before,
@@ -470,6 +479,7 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
             Some(crate::object_class_bits(receiver)),
             Some(receiver_bits),
         )
+        .expect("operation succeeds")
         .unwrap();
         assert_eq!(
             crate::object_class_bits(crate::obj_from_bits(managed_bound).as_ptr().unwrap()),

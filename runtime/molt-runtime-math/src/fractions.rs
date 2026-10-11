@@ -116,13 +116,23 @@ impl FractionHandle {
     }
 }
 
-impl std::fmt::Display for FractionHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.denom.is_one() {
-            write!(f, "{}", self.numer)
-        } else {
-            write!(f, "{}/{}", self.numer, self.denom)
+impl FractionHandle {
+    fn decimal_string(
+        &self,
+        py: &PyToken,
+    ) -> Result<String, molt_runtime_core::integer_decimal::DecimalLimitExceeded> {
+        let mut text = molt_runtime_core::integer_decimal::decimal_string(&self.numer, || {
+            current_int_max_str_digits(py)
+        })?;
+        if !self.denom.is_one() {
+            let denominator =
+                molt_runtime_core::integer_decimal::decimal_string(&self.denom, || {
+                    current_int_max_str_digits(py)
+                })?;
+            text.push('/');
+            text.push_str(&denominator);
         }
+        Ok(text)
     }
 }
 
@@ -574,7 +584,10 @@ pub extern "C" fn molt_fraction_to_str(a_bits: u64) -> u64 {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
         };
-        let s = a.to_string();
+        let s = match a.decimal_string(_py) {
+            Ok(text) => text,
+            Err(error) => return raise_exception::<u64>(_py, "ValueError", &error.to_string()),
+        };
         let ptr = alloc_string(_py, s.as_bytes());
         if ptr.is_null() {
             return raise_exception::<u64>(_py, "MemoryError", "out of memory");

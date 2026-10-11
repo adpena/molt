@@ -623,10 +623,10 @@ pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
     bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_strict,
     complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
-    index_i64_from_obj, index_i64_integral_bits, index_i64_with_overflow, inline_int_from_i128,
-    int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw,
-    round_half_even, sequence_index_bigint, sequence_index_i64, sequence_index_i64_with_type_error,
-    split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
+    index_i64_from_obj, index_i64_integral_bits, index_i64_with_overflow, index_ssize_from_obj,
+    inline_int_from_i128, int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128,
+    int_subclass_value_bits_raw, round_half_even, sequence_index_bigint, sequence_index_i64,
+    sequence_index_i64_with_type_error, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
 #[cfg(not(feature = "stdlib_path"))]
@@ -845,8 +845,6 @@ pub use molt_runtime_itertools::itertools::*;
 pub use molt_runtime_logging::logging_ext::*;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math::cmath_mod::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::colorsys::*;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math::fractions::*;
 #[cfg(feature = "stdlib_math")]

@@ -217,7 +217,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         let args = match argv_from_bits(_py, args_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         if args.is_empty() {
             return raise_exception::<_>(_py, "ValueError", "args must not be empty");
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         let mut env_entries = match env_from_bits(_py, env_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         let mut overlay_env = false;
         if let Some(entries) = env_entries.as_mut() {
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         if !obj_from_bits(cwd_bits).is_none() {
             let cwd = match path_from_bits(_py, cwd_bits) {
                 Ok(path) => path,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(bits) => return bits,
             };
             cmd.current_dir(cwd);
         }
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         }
         let args = match argv_from_bits(_py, args_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         if args.is_empty() {
             return raise_exception::<_>(_py, "ValueError", "args must not be empty");
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         }
         let mut env_entries = match env_from_bits(_py, env_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(bits) => return bits,
         };
         let mut overlay_env = false;
         if let Some(entries) = env_entries.as_mut() {
@@ -384,7 +384,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         if !obj_from_bits(cwd_bits).is_none() {
             let cwd = match path_from_bits(_py, cwd_bits) {
                 Ok(path) => path,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(bits) => return bits,
             };
             cmd.current_dir(cwd);
         }

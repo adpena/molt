@@ -1224,17 +1224,13 @@ pub(crate) fn frame_bindings_locals_dict(py: &PyToken<'_>, payload_bits: u64) ->
     };
     inc_ref_bits(py, cached);
     for &(name, value) in &items.slots {
-        unsafe {
+        let completed = unsafe {
             match value {
                 Some(value) => dict_set_in_place(py, dict, name, value),
-                None => {
-                    if dict_get_in_place(py, dict, name).is_some() {
-                        let _ = dict_del_in_place(py, dict, name);
-                    }
-                }
+                None => dict_del_in_place(py, dict, name).is_ok(),
             }
-        }
-        if exception_pending(py) {
+        };
+        if !completed {
             dec_ref_bits(py, cached);
             return Err(());
         }
@@ -1441,19 +1437,21 @@ pub(crate) fn frame_bindings_write(
     };
     unsafe {
         match value {
-            Some(value) => dict_set_in_place(py, dict, key, value),
+            Some(value) => {
+                if dict_set_in_place(py, dict, key, value) {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
             None => {
-                if !dict_del_in_place(py, dict, key) && !exception_pending(py) {
+                if !dict_del_in_place(py, dict, key)? {
                     raise_key_error_with_key::<u64>(py, key);
                     return Err(());
                 }
+                Ok(())
             }
         }
-    }
-    if exception_pending(py) {
-        Err(())
-    } else {
-        Ok(())
     }
 }
 

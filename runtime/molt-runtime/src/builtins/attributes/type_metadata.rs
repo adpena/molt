@@ -4,7 +4,7 @@ use crate::object::foreign::NativeObjectOwner;
 use molt_cpython_abi::abi_types::PyObject;
 use molt_cpython_abi::api::refcount::ProtectedPyObject;
 
-pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 {
+pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> Result<u64, ()> {
     unsafe {
         if let Some(ptr) = obj_from_bits(receiver).as_ptr()
             && object_type_id(ptr) == crate::TYPE_ID_FOREIGN
@@ -19,25 +19,28 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 
             );
             if value.as_ptr().is_null() {
                 crate::cpython_abi_hooks::propagate_native_failure(py, "native type metadata");
-                return MoltObject::none().bits();
+                return Err(());
             }
-            let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(value.as_ptr());
-            if let Some(bits) = bits {
-                return bits;
-            }
-            crate::cpython_abi_hooks::propagate_native_failure(py, "native metadata projection");
-            return MoltObject::none().bits();
+            return molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_value_for_pyobj(value.as_ptr())
+                .ok_or_else(|| {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "native metadata projection",
+                    );
+                });
         }
         if field == Field::Class {
             let class = type_of_bits(py, receiver);
             inc_ref_bits(py, class);
-            return class;
+            return Ok(class);
         }
         let Some(class) = obj_from_bits(receiver)
             .as_ptr()
             .filter(|ptr| object_type_id(*ptr) == TYPE_ID_TYPE)
         else {
-            return raise_exception::<_>(py, "TypeError", "type metadata requires a type");
+            raise_exception::<()>(py, "TypeError", "type metadata requires a type");
+            return Err(());
         };
         let value = match field {
             Field::Name => class_name_bits(class),
@@ -49,28 +52,28 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 
                     name
                 }
             }
-            Field::Base => match crate::object::class_layout::class_best_base(py, class) {
-                Ok(Some(base)) => base.direct,
-                Ok(None) => MoltObject::none().bits(),
-                Err(()) => return MoltObject::none().bits(),
+            Field::Base => match crate::object::class_layout::class_best_base(py, class)? {
+                Some(base) => base.direct,
+                None => MoltObject::none().bits(),
             },
             Field::Bases => class_bases_bits(class),
             Field::Mro => class_mro_bits(class),
             Field::Dictionary => {
                 if !crate::builtins::methods::publish_builtin_class_methods(py, receiver) {
-                    return MoltObject::none().bits();
+                    return Err(());
                 }
-                return crate::builtins::types::mappingproxy_from_mapping(
-                    py,
-                    class_dict_bits(class),
-                );
+                let value =
+                    crate::builtins::types::mappingproxy_from_mapping(py, class_dict_bits(class));
+                return if obj_from_bits(value).is_none() {
+                    Err(())
+                } else {
+                    Ok(value)
+                };
             }
             Field::Annotate | Field::Annotations => {
-                return match read_type_annotations(py, class, field) {
-                    Some(value) => value,
-                    None if exception_pending(py) => MoltObject::none().bits(),
-                    None => raise_exception::<_>(py, "AttributeError", field.name()),
-                };
+                // This materializer has no missing outcome: absent storage is
+                // created, or an actual exception is selected.
+                return read_type_annotations(py, class, field).ok_or(());
             }
             Field::Doc | Field::TextSignature | Field::AbstractMethods => {
                 return read_namespace_metadata(py, class, field);
@@ -78,7 +81,7 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 
             Field::Class => unreachable!("class field handled without heap admission"),
         };
         inc_ref_bits(py, value);
-        value
+        Ok(value)
     }
 }
 
@@ -87,14 +90,15 @@ pub(crate) unsafe fn write(
     receiver: u64,
     field: Field,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let Some(ptr) = obj_from_bits(receiver).as_ptr() else {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 "__class__ assignment only supported for mutable types or ModuleType subclasses",
             );
+            return Err(());
         };
         if object_type_id(ptr) == crate::TYPE_ID_FOREIGN {
             let raw = crate::object::foreign::foreign_ptr_from_obj(ptr) as *mut PyObject;
@@ -109,7 +113,7 @@ pub(crate) unsafe fn write(
                 .is_some_and(|object| object.as_ptr().is_null())
             {
                 crate::cpython_abi_hooks::propagate_native_failure(py, "native metadata value");
-                return MoltObject::none().bits();
+                return Err(());
             }
             let status = molt_cpython_abi::api::typeobj::native_type_attribute_set(
                 raw,
@@ -121,17 +125,20 @@ pub(crate) unsafe fn write(
             );
             if status < 0 {
                 crate::cpython_abi_hooks::propagate_native_failure(py, "native metadata mutation");
+                return Err(());
             }
-            return MoltObject::none().bits();
+            return Ok(());
         }
         if field == Field::Class {
             let Some(value) = value else {
-                return raise_exception::<_>(py, "TypeError", "can't delete __class__ attribute");
+                raise_exception::<()>(py, "TypeError", "can't delete __class__ attribute");
+                return Err(());
             };
             return crate::builtins::types::object_set_class(py, ptr, value);
         }
         if object_type_id(ptr) != TYPE_ID_TYPE {
-            return raise_exception::<_>(py, "TypeError", "type metadata requires a type");
+            raise_exception::<()>(py, "TypeError", "type metadata requires a type");
+            return Err(());
         }
         write_type_metadata(py, ptr, field, value)
     }
@@ -197,16 +204,19 @@ use molt_cpython_abi::api::typeobj::TypeAttributeField as Field;
 
 // Public doc and abstract methods read only the receiver's namespace. A heap
 // signature reads the private creation doc, interpreted with the current name.
-unsafe fn read_namespace_metadata(py: &PyToken<'_>, class: *mut u8, field: Field) -> u64 {
+unsafe fn read_namespace_metadata(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    field: Field,
+) -> Result<u64, ()> {
     unsafe {
         let bits = MoltObject::from_ptr(class).bits();
         if bits == builtin_classes(py).type_obj {
-            // The root's own namespace contains these descriptors. It has no
-            // internal documentation/signature declaration to expose.
             return if field == Field::AbstractMethods {
-                raise_exception::<_>(py, "AttributeError", field.name())
+                raise_exception::<()>(py, "AttributeError", field.name());
+                Err(())
             } else {
-                MoltObject::none().bits()
+                Ok(MoltObject::none().bits())
             };
         }
         if field == Field::TextSignature && crate::object::class_storage::class_is_heap_type(class)
@@ -214,7 +224,7 @@ unsafe fn read_namespace_metadata(py: &PyToken<'_>, class: *mut u8, field: Field
             use crate::object::class_storage::ClassReferenceSlot;
             let doc = ClassReferenceSlot::CreationDoc.load(class);
             let Some(doc) = obj_from_bits(doc).as_ptr() else {
-                return MoltObject::none().bits();
+                return Ok(MoltObject::none().bits());
             };
             let name = obj_from_bits(class_name_bits(class))
                 .as_ptr()
@@ -224,32 +234,28 @@ unsafe fn read_namespace_metadata(py: &PyToken<'_>, class: *mut u8, field: Field
             let Some(signature) =
                 molt_cpython_abi::api::typeobj::documentation_bytes(name, doc, true)
             else {
-                return MoltObject::none().bits();
+                return Ok(MoltObject::none().bits());
             };
             let result = alloc_string(py, signature);
             return if result.is_null() {
-                MoltObject::none().bits()
+                Err(())
             } else {
-                MoltObject::from_ptr(result).bits()
+                Ok(MoltObject::from_ptr(result).bits())
             };
         }
-        let value = annotation_entry(py, class, field.name().as_bytes());
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        match value {
+        match annotation_entry(py, class, field.name().as_bytes()) {
             Some(value) if field == Field::Doc => {
-                crate::builtins::attr::descriptor_bind(py, value, Some(bits), None)
-                    .unwrap_or_else(|| MoltObject::none().bits())
+                crate::builtins::attr::descriptor_bind(py, value, Some(bits), None)?.ok_or(())
             }
             Some(value) => {
                 inc_ref_bits(py, value);
-                value
+                Ok(value)
             }
             None if field == Field::AbstractMethods => {
-                raise_exception::<_>(py, "AttributeError", field.name())
+                raise_exception::<()>(py, "AttributeError", field.name());
+                Err(())
             }
-            None => MoltObject::none().bits(),
+            None => Ok(MoltObject::none().bits()),
         }
     }
 }
@@ -262,10 +268,10 @@ unsafe fn write_namespace_metadata(
     class: *mut u8,
     field: Field,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         if field == Field::Doc && value.is_none() {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!(
@@ -273,59 +279,54 @@ unsafe fn write_namespace_metadata(
                     class_name_for_error(MoltObject::from_ptr(class).bits())
                 ),
             );
+            return Err(());
         }
         let abstract_type = if field == Field::AbstractMethods {
-            value.is_some_and(|value| is_truthy(py, obj_from_bits(value)))
+            match value {
+                Some(value) => crate::object::ops::truth_value(py, obj_from_bits(value))?,
+                None => false,
+            }
         } else {
             false
         };
-        if exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        let Some(name) = attr_name_bits_from_bytes(py, field.name().as_bytes()) else {
-            return MoltObject::none().bits();
-        };
+        let name = attr_name_bits_from_bytes(py, field.name().as_bytes()).ok_or(())?;
         let _name =
             crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
-        let Some(mut publication) = super::TypeMutation::prepare(py, class, name) else {
-            return MoltObject::none().bits();
-        };
+        let mut publication = super::TypeMutation::prepare(py, class, name).ok_or(())?;
         if field == Field::Doc && !publication.invalidate_native() {
-            return MoltObject::none().bits();
+            return Err(());
         }
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
         let retired = match value {
-            Some(value) => crate::object::ops::dict_set_deferred(py, dictionary, name, value).ok(),
-            None => crate::object::ops::dict_del_deferred(py, dictionary, name),
+            Some(value) => Some(crate::object::ops::dict_set_deferred(
+                py, dictionary, name, value,
+            )?),
+            None => crate::object::ops::dict_del_deferred(py, dictionary, name)?,
         };
-        if let Some(retired) = retired {
-            // The dictionary is committed before releasing its old owner. Do
-            // not move release across the descriptor's observable C invalidation.
-            class_bump_layout_version(class);
-            drop(retired);
-            if field == Field::AbstractMethods {
-                publication.publish();
-                if exception_pending(py) {
-                    // The dictionary and runtime flag remain committed even if
-                    // an existing C view is in failed/recursive publication.
-                    // Preserve the first publication failure during flag update.
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        let _ =
-                            crate::object::class_storage::class_set_abstract(class, abstract_type);
-                    });
-                } else if crate::object::class_storage::class_set_abstract(class, abstract_type)
-                    .is_err()
-                {
-                    crate::cpython_abi_hooks::propagate_native_failure(
-                        py,
-                        "abstract type flag publication",
-                    );
-                }
-            }
-        } else if !exception_pending(py) {
+        let Some(retired) = retired else {
             raise_exception::<()>(py, "AttributeError", field.name());
+            return Err(());
+        };
+        class_bump_layout_version(class);
+        drop(retired);
+        if field == Field::AbstractMethods {
+            if !publication.publish() {
+                // The namespace and flag are committed even when later native
+                // invalidation fails. Keep that selected failure while latching.
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    let _ = crate::object::class_storage::class_set_abstract(class, abstract_type);
+                });
+                return Err(());
+            }
+            if crate::object::class_storage::class_set_abstract(class, abstract_type).is_err() {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "abstract type flag publication",
+                );
+                return Err(());
+            }
         }
-        MoltObject::none().bits()
+        Ok(())
     }
 }
 
@@ -353,24 +354,22 @@ unsafe fn update_annotations_namespace(
         let mut publication = None;
         let result = (|| {
             for (name, _) in updates {
-                names.push(attr_name_bits_from_bytes(py, name)?);
+                names.push(attr_name_bits_from_bytes(py, name).ok_or(())?);
             }
-            publication = Some(super::TypeMutation::prepare(py, class, *names.first()?)?);
+            publication =
+                Some(super::TypeMutation::prepare(py, class, *names.first().ok_or(())?).ok_or(())?);
             for ((_, value), name) in updates.iter().zip(names.iter().copied()) {
                 if let Some(value) = value {
-                    retired.push(
-                        crate::object::ops::dict_set_deferred(py, dictionary, name, *value).ok()?,
-                    );
+                    retired.push(crate::object::ops::dict_set_deferred(
+                        py, dictionary, name, *value,
+                    )?);
                 } else if let Some(previous) =
-                    crate::object::ops::dict_del_deferred(py, dictionary, name)
+                    crate::object::ops::dict_del_deferred(py, dictionary, name)?
                 {
                     retired.push(previous);
                 }
-                if exception_pending(py) {
-                    return None;
-                }
             }
-            Some(())
+            Ok::<(), ()>(())
         })();
         let changed = !retired.is_empty();
         if changed {
@@ -388,7 +387,7 @@ unsafe fn update_annotations_namespace(
                 dec_ref_bits(py, name);
             }
         });
-        result.is_some() && published
+        result.is_ok() && published
     }
 }
 
@@ -411,13 +410,13 @@ pub(crate) unsafe fn read_type_annotations(
         };
         let existing = annotation_entry(py, class, public_key)
             .or_else(|| annotation_entry(py, class, cache_key));
-        if exception_pending(py) {
-            return None;
-        }
         if let Some(value) = existing {
             // descriptor_bind owns the borrowed entry across __get__, passes
             // Python None as instance and the actual class as descriptor owner.
-            return crate::builtins::attr::descriptor_bind(py, value, Some(class_bits), None);
+            return match crate::builtins::attr::descriptor_bind(py, value, Some(class_bits), None) {
+                Ok(value) => value,
+                Err(()) => None,
+            };
         }
         if field == Field::Annotate {
             if !deferred {
@@ -447,8 +446,14 @@ pub(crate) unsafe fn read_type_annotations(
                     MoltObject::from_ptr(dict).bits()
                 }
             };
+            let result = if exception_pending(py) {
+                dec_ref_bits(py, result);
+                None
+            } else {
+                Some(result)
+            };
             dec_ref_bits(py, annotate);
-            result
+            result?
         } else {
             let dict = alloc_dict_with_pairs(py, &[]);
             if dict.is_null() {
@@ -456,10 +461,6 @@ pub(crate) unsafe fn read_type_annotations(
             }
             MoltObject::from_ptr(dict).bits()
         };
-        if exception_pending(py) {
-            dec_ref_bits(py, result);
-            return None;
-        }
         if obj_from_bits(result)
             .as_ptr()
             .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
@@ -485,29 +486,20 @@ unsafe fn write_type_annotations(
     class: *mut u8,
     field: Field,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let deferred = pep649_enabled(py);
         let mut updates: Vec<(&[u8], Option<u64>)> = Vec::with_capacity(4);
         if field == Field::Annotate && deferred {
             let Some(value) = value else {
-                return raise_exception::<_>(
-                    py,
-                    "TypeError",
-                    "cannot delete __annotate__ attribute",
-                );
+                raise_exception::<()>(py, "TypeError", "cannot delete __annotate__ attribute");
+                return Err(());
             };
             if !obj_from_bits(value).is_none() {
-                let callable = is_truthy(py, obj_from_bits(molt_is_callable(value)));
-                if exception_pending(py) {
-                    return MoltObject::none().bits();
-                }
+                let callable = crate::builtins::callable::is_callable_impl(py, value);
                 if !callable {
-                    return raise_exception::<_>(
-                        py,
-                        "TypeError",
-                        "__annotate__ must be callable or None",
-                    );
+                    raise_exception::<()>(py, "TypeError", "__annotate__ must be callable or None");
+                    return Err(());
                 }
             }
             updates.push((b"__annotate_func__", Some(value)));
@@ -516,19 +508,14 @@ unsafe fn write_type_annotations(
             }
         } else {
             let explicit = annotation_entry(py, class, field.name().as_bytes());
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
             let key = if deferred && field == Field::Annotations && explicit.is_none() {
                 b"__annotations_cache__".as_slice()
             } else {
                 field.name().as_bytes()
             };
             if value.is_none() && annotation_entry(py, class, key).is_none() {
-                if exception_pending(py) {
-                    return MoltObject::none().bits();
-                }
-                return raise_exception::<_>(py, "AttributeError", field.name());
+                raise_exception::<()>(py, "AttributeError", field.name());
+                return Err(());
             }
             updates.push((key, value));
             if field == Field::Annotations && deferred {
@@ -539,8 +526,11 @@ unsafe fn write_type_annotations(
                 updates.push((b"__annotate__", None));
             }
         }
-        update_annotations_namespace(py, class, &updates);
-        MoltObject::none().bits()
+        if update_annotations_namespace(py, class, &updates) {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -549,7 +539,7 @@ pub(crate) unsafe fn write_type_metadata(
     class: *mut u8,
     field: Field,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let class_bits = MoltObject::from_ptr(class).bits();
         if !matches!(
@@ -562,13 +552,14 @@ pub(crate) unsafe fn write_type_metadata(
                 | Field::Doc
                 | Field::AbstractMethods
         ) {
-            return raise_exception::<_>(py, "AttributeError", "type metadata is read-only");
+            raise_exception::<()>(py, "AttributeError", "type metadata is read-only");
+            return Err(());
         }
         let attr_name = field.name();
         // CPython's abstract-method getset admits direct descriptor writes on
         // immutable types. Normal type mutation enforces immutability earlier.
         if field != Field::AbstractMethods && crate::object::class_is_immutable(py, class) {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!(
@@ -576,6 +567,7 @@ pub(crate) unsafe fn write_type_metadata(
                     class_name_for_error(class_bits)
                 ),
             );
+            return Err(());
         }
         if matches!(field, Field::Annotations | Field::Annotate) {
             return write_type_annotations(py, class, field, value);
@@ -584,30 +576,28 @@ pub(crate) unsafe fn write_type_metadata(
             return write_namespace_metadata(py, class, field, value);
         }
         let Some(value) = value else {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!("cannot delete {attr_name} attribute"),
             );
+            return Err(());
         };
         if field == Field::Bases {
             if obj_from_bits(value)
                 .as_ptr()
                 .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_TUPLE)
             {
-                return raise_exception::<_>(
-                    py,
-                    "TypeError",
-                    "__bases__ must be a tuple of classes",
-                );
+                raise_exception::<()>(py, "TypeError", "__bases__ must be a tuple of classes");
+                return Err(());
             }
-            return molt_class_set_base(class_bits, value);
+            return crate::builtins::types::class_set_base(py, class_bits, value);
         }
         if obj_from_bits(value)
             .as_ptr()
             .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_STRING)
         {
-            return raise_exception::<_>(
+            raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!(
@@ -616,6 +606,7 @@ pub(crate) unsafe fn write_type_metadata(
                     type_name(py, obj_from_bits(value))
                 ),
             );
+            return Err(());
         }
         let mut publication = super::TypeMutation::runtime_only(py, class);
         let published = if field == Field::Name {
@@ -623,9 +614,10 @@ pub(crate) unsafe fn write_type_metadata(
         } else {
             class_set_qualname_bits(py, class, value)
         };
-        if published {
-            publication.publish();
+        if published && publication.publish() {
+            Ok(())
+        } else {
+            Err(())
         }
-        MoltObject::none().bits()
     }
 }

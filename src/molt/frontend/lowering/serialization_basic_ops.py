@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import integer_literal_bytes, integer_literal_payload
+
 from typing import Any
 
 from molt.frontend._types import (
@@ -55,7 +57,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 ctx.json_ops.append(
                     {
                         "kind": "const_bigint",
-                        "s_value": str(value),
+                        "bytes": list(integer_literal_bytes(value)),
                         "out": op.result.name,
                     }
                 )
@@ -64,10 +66,11 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     {"kind": "const", "value": value, "out": op.result.name}
                 )
         elif op.kind == "CONST_BIGINT":
+            integer_literal_payload(op.args[0])  # reject stale/malformed cached IR
             ctx.json_ops.append(
                 {
                     "kind": "const_bigint",
-                    "s_value": op.args[0],
+                    "bytes": list(op.args[0]),
                     "out": op.result.name,
                 }
             )
@@ -150,7 +153,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                             ctx.json_ops.append(
                                 {
                                     "kind": "const_bigint",
-                                    "s_value": str(result_val),
+                                    "bytes": list(integer_literal_bytes(result_val)),
                                     "out": op.result.name,
                                 }
                             )

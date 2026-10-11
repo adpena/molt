@@ -53,16 +53,11 @@ unsafe fn call_dunder_raw(
                 crate::builtins::attr::DescriptorCallPolicy::Optional,
             ),
         };
-        let Some(res_bits) = result else {
-            if exception_pending(_py) {
-                return BinaryDunderOutcome::Error;
-            }
-            return BinaryDunderOutcome::Missing;
+        let res_bits = match result {
+            Ok(Some(bits)) => bits,
+            Ok(None) => return BinaryDunderOutcome::Missing,
+            Err(()) => return BinaryDunderOutcome::Error,
         };
-        if exception_pending(_py) {
-            dec_ref_bits(_py, res_bits);
-            return BinaryDunderOutcome::Error;
-        }
         if is_not_implemented_bits(_py, res_bits) {
             dec_ref_bits(_py, res_bits);
             return BinaryDunderOutcome::NotImplemented;
@@ -99,7 +94,7 @@ unsafe fn call_current_dunder(
         };
         inc_ref_bits(py, owner);
         let outcome = match class_attr_lookup_raw_mro(py, owner_ptr, name) {
-            Some(raw) => {
+            Ok(Some(raw)) => {
                 let sequence = crate::object::ops_arith::native_slots::is_sequence_slot(Some(raw));
                 if matches!(phase, DunderPhase::Numeric) && sequence
                     || matches!(phase, DunderPhase::Sequence) && !sequence
@@ -109,8 +104,8 @@ unsafe fn call_current_dunder(
                     call_dunder_raw(py, raw, owner_ptr, receiver, argument, modulus)
                 }
             }
-            None if exception_pending(py) => BinaryDunderOutcome::Error,
-            None => BinaryDunderOutcome::Missing,
+            Err(()) => BinaryDunderOutcome::Error,
+            Ok(None) => BinaryDunderOutcome::Missing,
         };
         dec_ref_bits(py, owner);
         outcome
@@ -187,18 +182,20 @@ pub(in crate::object) unsafe fn call_numeric_dunder_sides(
             } else {
                 // Only an overridden reflected method gets subtype priority;
                 // compare __rop__ on both types, not lhs.__op__ to rhs.__rop__.
-                let lhs_rop_raw = obj_from_bits(lhs_type_bits)
-                    .as_ptr()
-                    .and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits));
-                if exception_pending(_py) {
-                    return Some(MoltObject::none().bits());
-                }
-                let rhs_rop_raw = obj_from_bits(rhs_type_bits)
-                    .as_ptr()
-                    .and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits));
-                if exception_pending(_py) {
-                    return Some(MoltObject::none().bits());
-                }
+                let lhs_rop_raw = match obj_from_bits(lhs_type_bits).as_ptr() {
+                    Some(ptr) => match class_attr_lookup_raw_mro(_py, ptr, rop_name_bits) {
+                        Ok(raw) => raw,
+                        Err(()) => return Some(MoltObject::none().bits()),
+                    },
+                    None => None,
+                };
+                let rhs_rop_raw = match obj_from_bits(rhs_type_bits).as_ptr() {
+                    Some(ptr) => match class_attr_lookup_raw_mro(_py, ptr, rop_name_bits) {
+                        Ok(raw) => raw,
+                        Err(()) => return Some(MoltObject::none().bits()),
+                    },
+                    None => None,
+                };
                 rhs_rop_raw.is_some()
                     && lhs_rop_raw.is_none_or(|lhs_raw| lhs_raw != rhs_rop_raw.unwrap())
             };

@@ -533,13 +533,17 @@ managed and native children retain every owned edge occurrence. The collector
 discounts private mirrored references for either target representation; public
 GC introspection also retains inline values that cannot form cycles.
 Builtin list, tuple, dict, set, frozenset, module, traceback, exception and type
-GC slots project that same runtime inventory. Public traversal snapshots and
-pins every edge occurrence before invoking C visitors outside storage locks;
-the first nonzero visitor result is returned unchanged. Immutable frozenset
-and traceback storage does not acquire a mutable clear policy. Readying these
-types does not admit unsupported raw builtin carriers: native allocation rejects
-inherited managed traversal or clear slots even when a subtype overrides the
-other slot.
+GC slots project that same runtime inventory. Native list traversal reads its
+physical owned slots, and native list clear publishes empty storage before
+retiring the detached buffer in reverse element order. Reentrant additions
+survive clear. Native list allocation and heap-list subtype readiness share
+the existing tracked-allocation and subtype lifecycle owners. Public traversal
+snapshots and pins every edge occurrence before invoking C visitors outside
+storage locks; the first nonzero visitor result is returned unchanged.
+Immutable frozenset and traceback storage does not acquire a mutable clear
+policy. Other unsupported raw builtin carriers still fail native admission
+when they inherit managed-only traversal or clear, even if a subtype overrides
+the other slot.
 
 Module definitions contribute typed `m_traverse`, `m_clear` and `m_free`
 callbacks at ABI registration; opaque runtime definition identities are never
@@ -645,6 +649,56 @@ type-factory fixture exercises these element identities, calls and failure
 owners before its physical base and module-MRO checks. Raw `GET_ITEM` macros
 observe physical slots; unchecked `SET_ITEM` stores keep displaced references
 and can restore a slot to NULL through the same publication transaction.
+
+List C operations select physical native storage or the canonical managed
+view once. Native `PyListObject.ob_item` buffers use the PyMem allocator family;
+managed lists retain their existing Rust backing and projection transaction.
+Checked item stores consume the incoming reference, while unchecked construction
+stores retain the displaced reference. Contiguous and extended mutation publish
+the completed shape before retiring removed owners in CPython order. Mapping
+slice assignment materializes its replacement before adjusting the bounds, so
+replacement callbacks can resize the destination. No native buffer is cast to a
+managed vector or mirrored into a second list. Python list base descriptors use
+that same storage selector, including genuine native subclasses; an explicit
+base call does not redispatch a subclass override. List iteration retains its
+public iterator class after target retirement, uses current storage for its
+length hint, and remains exhausted after the target is released. Omitted
+`pop` indices are `-1` at every producer; explicit `None` enters the ordinary
+index protocol and fails. Index conversion precedes the current-length read.
+
+Direct list C operations report explicit success or failure independently of an
+admitted prior exception. The Python callable boundary retains its own result
+validation; it is not used to infer a direct storage mutation's completion.
+
+The public clear/extend APIs introduced by CPython 3.13 use the same storage
+operations as their existing consumers. Exact and self extension reserve once
+and publish through slice mutation; general iteration obtains the iterator,
+queries the original iterable's length hint, reserves through the selected
+storage owner, then appends each yielded item. An iteration failure retains
+its successful prefix. Managed reserve and indexed mutation are typed runtime
+hooks into the same list mutation owner. Both managed and native sorting use
+one generic stable timsort engine in `molt-obj-model`; the current algorithm's
+relocation is not a performance improvement claim. Target-version run detection,
+mutation detection, comparison failure priority and restoration before callback
+retirement remain part of the sorting contract.
+
+Native zero-reference dispatch has one deferred-destruction queue in the existing
+execution thread state, with intrusive links in the existing native allocation
+records. Enqueue and resume allocate no storage, and neither a thread-state
+borrow nor a GC registry lock spans a destructor. CPython 3.12/3.13 participation
+follows actual builtin destructor slots; 3.14 common dispatch admits GC objects
+and restores their prior tracking state before resuming. Custom nonparticipants
+remain immediate. The current conservative frame segment implements the 3.12
+nesting bound; it does not establish 3.13's shared C-recursion headroom or
+3.14's physical-stack thresholds. Exact stack-budget admission and native
+CFunction/CMethod allocator/GC participation remain required, unqualified
+coordinates. No hidden PyGC header
+is fabricated for Molt allocations.
+
+These source contracts and regression fixtures do not qualify a target cell.
+Execution, failure atomicity and latency/allocation/stack measurements must be
+recorded for the supported version, platform, architecture and runtime profile
+before the native-list capability is qualified.
 
 Argument parsing has one format grammar, physical input custody and cleanup
 ledger. Keyword values are read at each conversion point so converter callbacks

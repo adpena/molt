@@ -1454,61 +1454,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_chainmap_contains",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_delitem",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_drop",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_getitem",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_keys",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_len",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_maps",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_new",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_new_child",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_parents",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_chainmap_setitem",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_chan_drop",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -1876,36 +1821,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_collections_abc_runtime_types",
         arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_hls_to_rgb",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_hsv_to_rgb",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_rgb_to_hls",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_rgb_to_hsv",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_rgb_to_yiq",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_colorsys_yiq_to_rgb",
-        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

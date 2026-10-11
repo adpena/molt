@@ -77,19 +77,6 @@ _MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory")
 _MOLT_DEFAULTDICT_MISSING_METHOD = _require_intrinsic("molt_defaultdict_missing_method")
 _MOLT_DEFAULTDICT_NEW = _require_intrinsic("molt_defaultdict_new")
 
-# --- ChainMap intrinsics ---
-_MOLT_CHAINMAP_CONTAINS = _require_intrinsic("molt_chainmap_contains")
-_MOLT_CHAINMAP_DELITEM = _require_intrinsic("molt_chainmap_delitem")
-_MOLT_CHAINMAP_DROP = _require_intrinsic("molt_chainmap_drop")
-_MOLT_CHAINMAP_GETITEM = _require_intrinsic("molt_chainmap_getitem")
-_MOLT_CHAINMAP_KEYS = _require_intrinsic("molt_chainmap_keys")
-_MOLT_CHAINMAP_LEN = _require_intrinsic("molt_chainmap_len")
-_MOLT_CHAINMAP_MAPS = _require_intrinsic("molt_chainmap_maps")
-_MOLT_CHAINMAP_NEW = _require_intrinsic("molt_chainmap_new")
-_MOLT_CHAINMAP_NEW_CHILD = _require_intrinsic("molt_chainmap_new_child")
-_MOLT_CHAINMAP_PARENTS = _require_intrinsic("molt_chainmap_parents")
-_MOLT_CHAINMAP_SETITEM = _require_intrinsic("molt_chainmap_setitem")
-
 
 # ---------------------------------------------------------------------------
 # deque — fully intrinsic-backed
@@ -484,7 +471,7 @@ from _collections import _count_elements
 
 
 class Counter(dict):
-    '''Dict subclass for counting hashable items.  Sometimes called a bag
+    """Dict subclass for counting hashable items.  Sometimes called a bag
     or multiset.  Elements are stored as dictionary keys and their counts
     are stored as dictionary values.
 
@@ -526,7 +513,8 @@ class Counter(dict):
     >>> c.most_common()                 # 'b' is still in, but its count is zero
     [('a', 3), ('c', 1), ('b', 0)]
 
-    '''
+    """
+
     # References:
     #   http://en.wikipedia.org/wiki/Multiset
     #   http://www.gnu.org/software/smalltalk/manual-base/html_node/Bag.html
@@ -535,7 +523,7 @@ class Counter(dict):
     #   Knuth, TAOCP Vol. II section 4.6.3
 
     def __init__(self, iterable=None, /, **kwds):
-        '''Create a new, empty Counter object.  And if given, count elements
+        """Create a new, empty Counter object.  And if given, count elements
         from an input iterable.  Or, initialize the count from another mapping
         of elements to their counts.
 
@@ -544,37 +532,38 @@ class Counter(dict):
         >>> c = Counter({'a': 4, 'b': 2})           # a new counter from a mapping
         >>> c = Counter(a=4, b=2)                   # a new counter from keyword args
 
-        '''
+        """
         super().__init__()
         self.update(iterable, **kwds)
 
     def __missing__(self, key):
-        'The count of elements not in the Counter is zero.'
+        "The count of elements not in the Counter is zero."
         # Needed so that self[missing_item] does not raise KeyError
         return 0
 
     def total(self):
-        'Sum of the counts'
+        "Sum of the counts"
         return sum(self.values())
 
     def most_common(self, n=None):
-        '''List the n most common elements and their counts from the most
+        """List the n most common elements and their counts from the most
         common to the least.  If n is None, then list all element counts.
 
         >>> Counter('abracadabra').most_common(3)
         [('a', 5), ('b', 2), ('r', 2)]
 
-        '''
+        """
         # Emulate Bag.sortedByCount from Smalltalk
         if n is None:
             return sorted(self.items(), key=_itemgetter(1), reverse=True)
 
         # Lazy import to speedup Python startup time
         import heapq
+
         return heapq.nlargest(n, self.items(), key=_itemgetter(1))
 
     def elements(self):
-        '''Iterator over elements repeating each as many times as its count.
+        """Iterator over elements repeating each as many times as its count.
 
         >>> c = Counter('ABCABC')
         >>> sorted(c.elements())
@@ -590,7 +579,7 @@ class Counter(dict):
         Note, if an element's count has been set to zero or is a negative
         number, elements() will ignore it.
 
-        '''
+        """
         # Emulate Bag.do from Smalltalk and Multiset.begin from C++.
         return _chain.from_iterable(_starmap(_repeat, self.items()))
 
@@ -608,7 +597,7 @@ class Counter(dict):
         raise _counter_fromkeys_error()
 
     def update(self, iterable=None, /, **kwds):
-        '''Like dict.update() but add counts instead of replacing them.
+        """Like dict.update() but add counts instead of replacing them.
 
         Source can be an iterable, a dictionary, or another Counter instance.
 
@@ -619,7 +608,7 @@ class Counter(dict):
         >>> c['h']                      # four 'h' in which, witch, and watch
         4
 
-        '''
+        """
         # The regular dict.update() operation makes no sense here because the
         # replace behavior results in some of the original untouched counts
         # being mixed-in with all of the other counts for a mismash that
@@ -642,7 +631,7 @@ class Counter(dict):
             self.update(kwds)
 
     def subtract(self, iterable=None, /, **kwds):
-        '''Like dict.update() but subtracts counts instead of replacing them.
+        """Like dict.update() but subtracts counts instead of replacing them.
         Counts can be reduced below zero.  Both the inputs and outputs are
         allowed to contain zero and negative counts.
 
@@ -656,7 +645,7 @@ class Counter(dict):
         >>> c['w']                          # 1 in which, minus 1 in witch, minus 1 in watch
         -1
 
-        '''
+        """
         if iterable is not None:
             self_get = self.get
             if isinstance(iterable, abc.Mapping):
@@ -669,27 +658,27 @@ class Counter(dict):
             self.subtract(kwds)
 
     def copy(self):
-        'Return a shallow copy.'
+        "Return a shallow copy."
         return self.__class__(self)
 
     def __reduce__(self):
         return self.__class__, (dict(self),)
 
     def __delitem__(self, elem):
-        'Like dict.__delitem__() but does not raise KeyError for missing values.'
+        "Like dict.__delitem__() but does not raise KeyError for missing values."
         if elem in self:
             super().__delitem__(elem)
 
     def __repr__(self):
         if not self:
-            return f'{self.__class__.__name__}()'
+            return f"{self.__class__.__name__}()"
         try:
             # dict() preserves the ordering returned by most_common()
             d = dict(self.most_common())
         except TypeError:
             # handle case where values are not orderable
             d = dict(self)
-        return f'{self.__class__.__name__}({d!r})'
+        return f"{self.__class__.__name__}({d!r})"
 
     # Multiset-style mathematical operations discussed in:
     #       Knuth TAOCP Volume II section 4.6.3 exercise 19
@@ -726,48 +715,48 @@ class Counter(dict):
     #         (cp > cq) == (sp > sq)
 
     def __eq__(self, other):
-        'True if all counts agree. Missing counts are treated as zero.'
+        "True if all counts agree. Missing counts are treated as zero."
         if not isinstance(other, Counter):
             return NotImplemented
         return all(self[e] == other[e] for c in (self, other) for e in c)
 
     def __ne__(self, other):
-        'True if any counts disagree. Missing counts are treated as zero.'
+        "True if any counts disagree. Missing counts are treated as zero."
         if not isinstance(other, Counter):
             return NotImplemented
         return not self == other
 
     def __le__(self, other):
-        'True if all counts in self are a subset of those in other.'
+        "True if all counts in self are a subset of those in other."
         if not isinstance(other, Counter):
             return NotImplemented
         return all(self[e] <= other[e] for c in (self, other) for e in c)
 
     def __lt__(self, other):
-        'True if all counts in self are a proper subset of those in other.'
+        "True if all counts in self are a proper subset of those in other."
         if not isinstance(other, Counter):
             return NotImplemented
         return self <= other and self != other
 
     def __ge__(self, other):
-        'True if all counts in self are a superset of those in other.'
+        "True if all counts in self are a superset of those in other."
         if not isinstance(other, Counter):
             return NotImplemented
         return all(self[e] >= other[e] for c in (self, other) for e in c)
 
     def __gt__(self, other):
-        'True if all counts in self are a proper superset of those in other.'
+        "True if all counts in self are a proper superset of those in other."
         if not isinstance(other, Counter):
             return NotImplemented
         return self >= other and self != other
 
     def __add__(self, other):
-        '''Add counts from two counters.
+        """Add counts from two counters.
 
         >>> Counter('abbb') + Counter('bcc')
         Counter({'b': 4, 'c': 2, 'a': 1})
 
-        '''
+        """
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter()
@@ -781,12 +770,12 @@ class Counter(dict):
         return result
 
     def __sub__(self, other):
-        ''' Subtract count, but keep only results with positive counts.
+        """Subtract count, but keep only results with positive counts.
 
         >>> Counter('abbbc') - Counter('bccd')
         Counter({'b': 2, 'a': 1})
 
-        '''
+        """
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter()
@@ -800,12 +789,12 @@ class Counter(dict):
         return result
 
     def __or__(self, other):
-        '''Union is the maximum of value in either of the input counters.
+        """Union is the maximum of value in either of the input counters.
 
         >>> Counter('abbb') | Counter('bcc')
         Counter({'b': 3, 'c': 2, 'a': 1})
 
-        '''
+        """
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter()
@@ -820,12 +809,12 @@ class Counter(dict):
         return result
 
     def __and__(self, other):
-        ''' Intersection is the minimum of corresponding counts.
+        """Intersection is the minimum of corresponding counts.
 
         >>> Counter('abbb') & Counter('bcc')
         Counter({'b': 1})
 
-        '''
+        """
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter()
@@ -837,7 +826,7 @@ class Counter(dict):
         return result
 
     def __pos__(self):
-        'Adds an empty counter, effectively stripping negative and zero counts'
+        "Adds an empty counter, effectively stripping negative and zero counts"
         result = Counter()
         for elem, count in self.items():
             if count > 0:
@@ -845,10 +834,10 @@ class Counter(dict):
         return result
 
     def __neg__(self):
-        '''Subtracts from an empty counter.  Strips positive and zero counts,
+        """Subtracts from an empty counter.  Strips positive and zero counts,
         and flips the sign on negative counts.
 
-        '''
+        """
         result = Counter()
         for elem, count in self.items():
             if count < 0:
@@ -856,47 +845,47 @@ class Counter(dict):
         return result
 
     def _keep_positive(self):
-        '''Internal method to strip elements with a negative or zero count'''
+        """Internal method to strip elements with a negative or zero count"""
         nonpositive = [elem for elem, count in self.items() if not count > 0]
         for elem in nonpositive:
             del self[elem]
         return self
 
     def __iadd__(self, other):
-        '''Inplace add from another counter, keeping only positive counts.
+        """Inplace add from another counter, keeping only positive counts.
 
         >>> c = Counter('abbb')
         >>> c += Counter('bcc')
         >>> c
         Counter({'b': 4, 'c': 2, 'a': 1})
 
-        '''
+        """
         for elem, count in other.items():
             self[elem] += count
         return self._keep_positive()
 
     def __isub__(self, other):
-        '''Inplace subtract counter, but keep only results with positive counts.
+        """Inplace subtract counter, but keep only results with positive counts.
 
         >>> c = Counter('abbbc')
         >>> c -= Counter('bccd')
         >>> c
         Counter({'b': 2, 'a': 1})
 
-        '''
+        """
         for elem, count in other.items():
             self[elem] -= count
         return self._keep_positive()
 
     def __ior__(self, other):
-        '''Inplace union is the maximum of value from either counter.
+        """Inplace union is the maximum of value from either counter.
 
         >>> c = Counter('abbb')
         >>> c |= Counter('bcc')
         >>> c
         Counter({'b': 3, 'c': 2, 'a': 1})
 
-        '''
+        """
         for elem, other_count in other.items():
             count = self[elem]
             if other_count > count:
@@ -904,14 +893,14 @@ class Counter(dict):
         return self._keep_positive()
 
     def __iand__(self, other):
-        '''Inplace intersection is the minimum of corresponding counts.
+        """Inplace intersection is the minimum of corresponding counts.
 
         >>> c = Counter('abbb')
         >>> c &= Counter('bcc')
         >>> c
         Counter({'b': 1})
 
-        '''
+        """
         for elem, count in self.items():
             other_count = other[elem]
             if other_count < count:
@@ -970,157 +959,159 @@ class defaultdict(dict):
 
 
 # ---------------------------------------------------------------------------
-# ChainMap — intrinsic-backed (handle-based)
-# ---------------------------------------------------------------------------
-# NOTE: isinstance(chain_map, dict) is False. ChainMap uses handle-based
-# storage delegated to Rust intrinsics. The first map in `maps` is the
-# primary map; writes and deletes go there only.
+# ChainMap — one public list of mappings, following CPython 3.12–3.14.
+# Storage and protocol operations are ordinary list/dict/Mapping primitives.
+# See LICENSE.cpython; versioned methods preserve the pinned upstream contracts.
 # ---------------------------------------------------------------------------
 
+from reprlib import recursive_repr as _recursive_repr
 
-class _ChainMapIter:
-    """Forward iterator over unique keys of an intrinsic-backed ChainMap."""
 
-    __slots__ = ("_keys", "_index")
+class ChainMap(abc.MutableMapping):
+    """A ChainMap groups multiple dicts (or other mappings) together
+    to create a single, updateable view.
 
-    def __init__(self, chain_map: "ChainMap") -> None:
-        self._keys = _MOLT_CHAINMAP_KEYS(chain_map._handle)
-        self._index = 0
+    The underlying mappings are stored in a list.  That list is public and can
+    be accessed or updated using the *maps* attribute.  There is no other
+    state.
+
+    Lookups search the underlying mappings successively until a key is found.
+    In contrast, writes, updates, and deletions only operate on the first
+    mapping.
+
+    """
+
+    def __init__(self, *maps):
+        """Initialize a ChainMap by setting *maps* to the given mappings.
+        If no mappings are provided, a single empty dictionary is used.
+
+        """
+        self.maps = list(maps) or [{}]  # always at least one map
+
+    def __missing__(self, key):
+        raise KeyError(key)
+
+    def __getitem__(self, key):
+        for mapping in self.maps:
+            try:
+                return mapping[key]  # can't use 'key in mapping' with defaultdict
+            except KeyError:
+                pass
+        return self.__missing__(key)  # support subclasses that define __missing__
+
+    def get(self, key, default=None):
+        return (
+            self[key] if key in self else default
+        )  # needs to make use of __contains__
+
+    def __len__(self):
+        return len(set().union(*self.maps))  # reuses stored hash values if possible
 
     def __iter__(self):
+        d = {}
+        for mapping in map(dict.fromkeys, reversed(self.maps)):
+            d |= mapping  # reuses stored hash values if possible
+        return iter(d)
+
+    if _sys.version_info < (3, 14):
+
+        def __contains__(self, key):
+            return any(key in m for m in self.maps)
+    else:
+
+        def __contains__(self, key):
+            for mapping in self.maps:
+                if key in mapping:
+                    return True
+            return False
+
+    def __bool__(self):
+        return any(self.maps)
+
+    @_recursive_repr()
+    def __repr__(self):
+        return f"{self.__class__.__name__}({', '.join(map(repr, self.maps))})"
+
+    if _sys.version_info < (3, 13):
+
+        @classmethod
+        def fromkeys(cls, iterable, *args):
+            "Create a ChainMap with a single dict created from the iterable."
+            return cls(dict.fromkeys(iterable, *args))
+    else:
+
+        @classmethod
+        def fromkeys(cls, iterable, value=None, /):
+            "Create a new ChainMap with keys from iterable and values set to value."
+            return cls(dict.fromkeys(iterable, value))
+
+    def copy(self):
+        "New ChainMap or subclass with a new copy of maps[0] and refs to maps[1:]"
+        return self.__class__(self.maps[0].copy(), *self.maps[1:])
+
+    __copy__ = copy
+
+    def new_child(self, m=None, **kwargs):  # like Django's Context.push()
+        """New ChainMap with a new map followed by all previous maps.
+        If no map is provided, an empty dict is used.
+        Keyword arguments update the map or new empty dict.
+        """
+        if m is None:
+            m = kwargs
+        elif kwargs:
+            m.update(kwargs)
+        return self.__class__(m, *self.maps)
+
+    @property
+    def parents(self):  # like Django's Context.pop()
+        "New ChainMap from maps[1:]."
+        return self.__class__(*self.maps[1:])
+
+    def __setitem__(self, key, value):
+        self.maps[0][key] = value
+
+    def __delitem__(self, key):
+        try:
+            del self.maps[0][key]
+        except KeyError:
+            raise KeyError(f"Key not found in the first mapping: {key!r}")
+
+    def popitem(self):
+        "Remove and return an item pair from maps[0]. Raise KeyError is maps[0] is empty."
+        try:
+            return self.maps[0].popitem()
+        except KeyError:
+            raise KeyError("No keys found in the first mapping.")
+
+    def pop(self, key, *args):
+        "Remove *key* from maps[0] and return its value. Raise KeyError if *key* not in maps[0]."
+        try:
+            return self.maps[0].pop(key, *args)
+        except KeyError:
+            raise KeyError(f"Key not found in the first mapping: {key!r}")
+
+    def clear(self):
+        "Clear maps[0], leaving maps[1:] intact."
+        self.maps[0].clear()
+
+    def __ior__(self, other):
+        self.maps[0].update(other)
         return self
 
-    def __next__(self) -> Any:
-        if self._index >= len(self._keys):
-            raise StopIteration
-        key = self._keys[self._index]
-        self._index += 1
-        return key
-
-
-class ChainMap:
-    __slots__ = ("_handle",)
-
-    def __init__(self, *maps) -> None:
-        if maps:
-            # Validate that all positional args are dicts.
-            for m in maps:
-                if not isinstance(m, dict):
-                    raise TypeError("ChainMap maps must be dicts")
-            self._handle = _MOLT_CHAINMAP_NEW(list(maps))
-        else:
-            # Empty ChainMap: pass None so the intrinsic allocates a fresh
-            # empty primary dict.
-            self._handle = _MOLT_CHAINMAP_NEW(None)
-
-    @classmethod
-    def _from_handle(cls, handle) -> "ChainMap":
-        inst = cls.__new__(cls)
-        inst._handle = handle
-        return inst
-
-    # --- Mapping protocol ---
-
-    def __getitem__(self, key: Any) -> Any:
-        return _MOLT_CHAINMAP_GETITEM(self._handle, key)
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        _MOLT_CHAINMAP_SETITEM(self._handle, key, value)
-
-    def __delitem__(self, key: Any) -> None:
-        _MOLT_CHAINMAP_DELITEM(self._handle, key)
-
-    def __contains__(self, key: Any) -> bool:
-        return bool(_MOLT_CHAINMAP_CONTAINS(self._handle, key))
-
-    def __len__(self) -> int:
-        return int(_MOLT_CHAINMAP_LEN(self._handle))
-
-    def __bool__(self) -> bool:
-        return len(self) > 0
-
-    def __iter__(self):
-        return _ChainMapIter(self)
-
-    # --- Views ---
-
-    def keys(self):
-        return list(_MOLT_CHAINMAP_KEYS(self._handle))
-
-    def values(self) -> list:
-        ks = _MOLT_CHAINMAP_KEYS(self._handle)
-        return [_MOLT_CHAINMAP_GETITEM(self._handle, k) for k in ks]
-
-    def items(self) -> list:
-        ks = _MOLT_CHAINMAP_KEYS(self._handle)
-        return [(k, _MOLT_CHAINMAP_GETITEM(self._handle, k)) for k in ks]
-
-    def get(self, key: Any, default: Any = None) -> Any:
-        if _MOLT_CHAINMAP_CONTAINS(self._handle, key):
-            return _MOLT_CHAINMAP_GETITEM(self._handle, key)
-        return default
-
-    # --- ChainMap-specific API ---
-
-    def new_child(self, m: dict | None = None) -> "ChainMap":
-        """Return a new ChainMap with an optional map prepended."""
-        if m is not None and not isinstance(m, dict):
-            raise TypeError("new_child map must be a dict")
-        new_handle = _MOLT_CHAINMAP_NEW_CHILD(self._handle, m)
-        return ChainMap._from_handle(new_handle)
-
-    @property
-    def parents(self) -> "ChainMap":
-        """Return a new ChainMap containing all maps except the first."""
-        new_handle = _MOLT_CHAINMAP_PARENTS(self._handle)
-        return ChainMap._from_handle(new_handle)
-
-    @property
-    def maps(self) -> list:
-        """Return the list of underlying dict objects."""
-        return list(_MOLT_CHAINMAP_MAPS(self._handle))
-
-    # --- Repr ---
-
-    def __repr__(self) -> str:
-        maps = _MOLT_CHAINMAP_MAPS(self._handle)
-        return f"ChainMap({', '.join(repr(m) for m in maps)})"
-
-    # --- Equality ---
-
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, ChainMap):
-            if len(self) != len(other):
-                return False
-            for key in self:
-                if key not in other or self[key] != other[key]:
-                    return False
-            return True
-        if isinstance(other, dict):
-            if len(self) != len(other):
-                return False
-            for key in self:
-                if key not in other or self[key] != other[key]:
-                    return False
-            return True
-        return NotImplemented
-
-    def __ne__(self, other: Any) -> bool:
-        result = self.__eq__(other)
-        if result is NotImplemented:
+    def __or__(self, other):
+        if not isinstance(other, abc.Mapping):
             return NotImplemented
-        return not result
+        m = self.copy()
+        m.maps[0].update(other)
+        return m
 
-    def __hash__(self):
-        raise TypeError("unhashable type: 'ChainMap'")
-
-    def __del__(self):
-        handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_CHAINMAP_DROP(handle)
-            except Exception:
-                pass
+    def __ror__(self, other):
+        if not isinstance(other, abc.Mapping):
+            return NotImplemented
+        m = dict(other)
+        for child in reversed(self.maps):
+            m.update(child)
+        return self.__class__(m)
 
 
 # ---------------------------------------------------------------------------
@@ -1128,7 +1119,7 @@ class ChainMap:
 # ---------------------------------------------------------------------------
 
 
-class UserDict:
+class UserDict(abc.MutableMapping):
     """A plain-dict wrapper that is safe to subclass.
 
     Mirrors CPython's ``collections.UserDict`` (Python >= 3.12).
@@ -1273,7 +1264,11 @@ class UserDict:
         return c
 
     def __copy__(self) -> "UserDict":
-        return self.copy()
+        inst = self.__class__.__new__(self.__class__)
+        inst.__dict__.update(self.__dict__)
+        # Copy the storage directly, without invoking a subclass descriptor.
+        inst.__dict__["data"] = self.__dict__["data"].copy()
+        return inst
 
     # --- Class method ---
 
@@ -1284,8 +1279,7 @@ class UserDict:
             d[key] = value
         return d
 
-    def __hash__(self):  # type: ignore[override]
-        raise TypeError("unhashable type: 'UserDict'")
+    __hash__ = None
 
 
 # ---------------------------------------------------------------------------

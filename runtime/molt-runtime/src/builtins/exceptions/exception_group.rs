@@ -743,17 +743,12 @@ unsafe fn exception_group_copy_metadata(
     if name == 0 {
         return fail(py, "MemoryError", "attribute name allocation failed");
     }
-    let notes = unsafe {
+    let notes = match unsafe {
         attr_lookup_ptr_allow_missing(py, obj_from_bits(original_bits).as_ptr().unwrap(), name)
-    };
-    if exception_pending(py) {
-        if let Some(notes) = notes {
-            dec_ref_bits(py, notes);
-        }
-        return None;
-    }
-    let Some(notes) = notes else {
-        return Some(());
+    } {
+        Ok(Some(notes)) => notes,
+        Ok(None) => return Some(()),
+        Err(()) => return None,
     };
     let notes = Owned::adopt(py, notes);
     // Non-sequence notes are ignored rather than reported here (CPy:961-967).
@@ -765,9 +760,14 @@ unsafe fn exception_group_copy_metadata(
     };
     let copy = Owned::adopt(py, copy);
     drop(notes);
-    let result = crate::builtins::attributes::molt_set_attr_name(derived, name, copy.bits());
-    dec_ref_bits(py, result);
-    (!exception_pending(py)).then_some(())
+    crate::builtins::attributes::mutate_attr_name(
+        py,
+        derived,
+        name,
+        crate::builtins::attr::DescriptorMutation::Set(copy.bits()),
+        molt_cpython_abi::hooks::AttributeMutation::Normal,
+    )
+    .ok()
 }
 
 fn exception_group_pair(

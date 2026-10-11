@@ -20,16 +20,19 @@ use crate::{
 /// Resolve the exact dictionary that owns raw globals storage while retaining
 /// the Python-visible namespace object as the frame identity. Dynamic dict
 /// subclasses deliberately use the existing object-shaped side storage lane.
-pub(crate) fn globals_namespace_storage_bits(py: &PyToken<'_>, namespace_bits: u64) -> Option<u64> {
-    let ptr = obj_from_bits(namespace_bits).as_ptr()?;
-    unsafe { crate::object::ops::dict_like_bits_from_ptr(py, ptr) }
+pub(crate) fn globals_namespace_storage_bits(
+    py: &PyToken<'_>,
+    namespace_bits: u64,
+) -> Result<Option<u64>, ()> {
+    crate::object::ops::dict_backing_bits(py, namespace_bits)
 }
 
 pub(crate) fn globals_namespace_storage_ptr(
     py: &PyToken<'_>,
     namespace_bits: u64,
-) -> Option<*mut u8> {
-    globals_namespace_storage_bits(py, namespace_bits).and_then(|bits| obj_from_bits(bits).as_ptr())
+) -> Result<Option<*mut u8>, ()> {
+    Ok(globals_namespace_storage_bits(py, namespace_bits)?
+        .and_then(|bits| obj_from_bits(bits).as_ptr()))
 }
 
 #[derive(Default)]
@@ -162,7 +165,7 @@ pub(crate) fn admit_compiled_namespace(
     let Some(slot) = compiled_slot_for_code(code_bits) else {
         return Ok(None);
     };
-    if globals_namespace_storage_bits(py, globals_bits).is_none() {
+    if globals_namespace_storage_bits(py, globals_bits)?.is_none() {
         if !crate::exception_pending(py) {
             raise_exception::<u64>(
                 py,
@@ -228,7 +231,10 @@ impl<'a, 'py> FrameInvocationGuard<'a, 'py> {
         code_bits: u64,
         globals_bits: u64,
     ) -> Option<Self> {
-        let builtins_bits = super::frame_effective_builtins_bits(py, globals_bits);
+        let builtins_bits = match super::frame_effective_builtins_bits(py, globals_bits) {
+            Ok(bits) => bits,
+            Err(()) => return None,
+        };
         Self::for_suspended_namespace(py, code_bits, globals_bits, builtins_bits)
     }
 

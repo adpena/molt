@@ -7,7 +7,6 @@
 
 use crate::abi_types::{PyDescrGetFunc, PyDescrSetFunc, PyObject};
 use crate::api::callback::CallbackOperands;
-use crate::api::errors;
 use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks::{
     DecodedHandleResult, DescriptorMutationStatus, DescriptorProtocol, hooks_or_stubs,
@@ -27,7 +26,7 @@ unsafe fn protocol(
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(descriptor).is_some() {
         let value = unsafe { RuntimeValue::acquire(descriptor) }.ok_or(crate::ErrorIndicatorSet)?;
         let protocol = unsafe { (hooks_or_stubs().descriptor_protocol)(value.bits()) };
-        return if protocol == DescriptorProtocol::Error || errors::raised_error_pending() {
+        return if protocol == DescriptorProtocol::Error {
             unsafe { crate::bridge::ensure_result_error(c"managed descriptor protocol failed") };
             Err(crate::ErrorIndicatorSet)
         } else {

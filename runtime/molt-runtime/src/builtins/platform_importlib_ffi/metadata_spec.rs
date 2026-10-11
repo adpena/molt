@@ -1072,9 +1072,12 @@ pub(super) fn importlib_module_dict_get_optional_owned_bits(
 ) -> Result<Option<u64>, u64> {
     let dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
     let out = unsafe { dict_get_in_place(_py, dict_ptr, attr_bits) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let out = match out {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(MoltObject::none().bits());
+        }
+    };
     let Some(bits) = out.filter(|bits| !obj_from_bits(*bits).is_none()) else {
         return Ok(None);
     };

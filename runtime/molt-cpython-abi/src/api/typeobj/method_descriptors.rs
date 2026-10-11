@@ -246,7 +246,7 @@ unsafe extern "C" fn method_vectorcall(
             || descriptor_name(descr),
         )
     };
-    unsafe { operands.complete_result(result, "native method descriptor") }
+    unsafe { operands.complete_callable_result(result, "native method descriptor") }
 }
 
 unsafe extern "C" fn classmethod_call(

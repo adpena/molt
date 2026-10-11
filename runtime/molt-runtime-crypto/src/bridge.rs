@@ -291,10 +291,19 @@ pub unsafe fn dict_len(ptr: *mut u8) -> usize {
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
-pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_crypto_dict_get_in_place(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary lookup status"),
+    }
 }
 
 /// # Safety

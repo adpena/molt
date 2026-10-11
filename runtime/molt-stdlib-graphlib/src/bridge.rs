@@ -171,23 +171,33 @@ pub unsafe fn dict_get_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
     key_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_graphlib_dict_get_in_place(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary lookup status"),
+    }
 }
 
 /// # Safety
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
+#[must_use]
 pub unsafe fn dict_set_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    unsafe { __molt_graphlib_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
+    match unsafe { __molt_graphlib_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
+        1 => true,
+        0 => false,
+        _ => unreachable!("invalid dictionary mutation status"),
+    }
 }
 
 /// # Safety

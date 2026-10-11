@@ -522,9 +522,16 @@ pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
                 if object_type_id(dict_ptr) != TYPE_ID_DICT {
                     continue;
                 }
-                if dict_get_in_place(_py, dict_ptr, fields_name_bits).is_some() {
-                    has_fields = true;
-                    break;
+                match dict_get_in_place(_py, dict_ptr, fields_name_bits) {
+                    Ok(Some(_)) => {
+                        has_fields = true;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(()) => {
+                        dec_ref_bits(_py, fields_name_bits);
+                        return MoltObject::none().bits();
+                    }
                 }
             }
         }
@@ -700,13 +707,23 @@ pub extern "C" fn molt_dataclasses_replace(
             }
 
             if ftype_bits == initvar_tag_bits {
-                let ch_val = unsafe { dict_get_in_place(_py, changes_ptr, name_bits) };
-                if let Some(bits) = ch_val {
-                    unsafe {
-                        dict_set_in_place(_py, values_ptr, name_bits, bits);
-                        dict_del_in_place(_py, changes_ptr, name_bits);
+                let ch_val = match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
+                    Ok(value) => value,
+                    Err(()) => {
+                        dec_ref_bits(_py, init_name_bits);
+                        dec_ref_bits(_py, name_name_bits);
+                        dec_ref_bits(_py, field_type_name_bits);
+                        dec_ref_bits(_py, changes_copy_bits);
+                        dec_ref_bits(_py, values_bits);
+                        return MoltObject::none().bits();
                     }
-                    if exception_pending(_py) {
+                };
+                if let Some(bits) = ch_val {
+                    let completed = unsafe {
+                        dict_set_in_place(_py, values_ptr, name_bits, bits)
+                            && dict_del_in_place(_py, changes_ptr, name_bits).is_ok()
+                    };
+                    if !completed {
                         dec_ref_bits(_py, init_name_bits);
                         dec_ref_bits(_py, name_name_bits);
                         dec_ref_bits(_py, field_type_name_bits);
@@ -744,7 +761,17 @@ pub extern "C" fn molt_dataclasses_replace(
             }
             let init_enabled = is_truthy(_py, obj_from_bits(init_flag_bits));
             if !init_enabled {
-                if unsafe { dict_get_in_place(_py, changes_ptr, name_bits) }.is_some() {
+                if match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
+                    Ok(value) => value.is_some(),
+                    Err(()) => {
+                        dec_ref_bits(_py, init_name_bits);
+                        dec_ref_bits(_py, name_name_bits);
+                        dec_ref_bits(_py, field_type_name_bits);
+                        dec_ref_bits(_py, changes_copy_bits);
+                        dec_ref_bits(_py, values_bits);
+                        return MoltObject::none().bits();
+                    }
+                } {
                     let field_name =
                         string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default();
                     dec_ref_bits(_py, init_name_bits);
@@ -760,12 +787,23 @@ pub extern "C" fn molt_dataclasses_replace(
                 continue;
             }
 
-            if let Some(changed_bits) = unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
-                unsafe {
-                    dict_set_in_place(_py, values_ptr, name_bits, changed_bits);
-                    dict_del_in_place(_py, changes_ptr, name_bits);
+            let changed = match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
+                Ok(value) => value,
+                Err(()) => {
+                    dec_ref_bits(_py, init_name_bits);
+                    dec_ref_bits(_py, name_name_bits);
+                    dec_ref_bits(_py, field_type_name_bits);
+                    dec_ref_bits(_py, changes_copy_bits);
+                    dec_ref_bits(_py, values_bits);
+                    return MoltObject::none().bits();
                 }
-                if exception_pending(_py) {
+            };
+            if let Some(changed_bits) = changed {
+                let completed = unsafe {
+                    dict_set_in_place(_py, values_ptr, name_bits, changed_bits)
+                        && dict_del_in_place(_py, changes_ptr, name_bits).is_ok()
+                };
+                if !completed {
                     dec_ref_bits(_py, init_name_bits);
                     dec_ref_bits(_py, name_name_bits);
                     dec_ref_bits(_py, field_type_name_bits);
@@ -783,10 +821,8 @@ pub extern "C" fn molt_dataclasses_replace(
                     dec_ref_bits(_py, values_bits);
                     return MoltObject::none().bits();
                 }
-                unsafe {
-                    dict_set_in_place(_py, values_ptr, name_bits, current_bits);
-                }
-                if exception_pending(_py) {
+                let stored = unsafe { dict_set_in_place(_py, values_ptr, name_bits, current_bits) };
+                if !stored {
                     dec_ref_bits(_py, init_name_bits);
                     dec_ref_bits(_py, name_name_bits);
                     dec_ref_bits(_py, field_type_name_bits);
@@ -801,16 +837,16 @@ pub extern "C" fn molt_dataclasses_replace(
         dec_ref_bits(_py, name_name_bits);
         dec_ref_bits(_py, field_type_name_bits);
 
-        unsafe {
-            let _ = dict_update_apply(
+        let completed = unsafe {
+            dict_update_apply(
                 _py,
                 values_bits,
                 dict_update_set_in_place,
                 changes_copy_bits,
-            );
-        }
+            )
+        };
         dec_ref_bits(_py, changes_copy_bits);
-        if exception_pending(_py) {
+        if !completed {
             dec_ref_bits(_py, values_bits);
             return MoltObject::none().bits();
         }

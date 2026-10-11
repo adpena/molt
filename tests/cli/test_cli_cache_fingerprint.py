@@ -44,7 +44,7 @@ def test_cache_payload_digest_matches_canonical_json_bytes() -> None:
     }
 
     canonical_bytes = json.dumps(
-        payload,
+        CACHE_KEYS._cache_json_value(payload),
         sort_keys=True,
         separators=(",", ":"),
         default=CACHE_KEYS._json_ir_default,
@@ -1230,3 +1230,62 @@ def test_cargo_document_capture_bounds_actual_growth_before_parse(
         _read_cargo_document(path)
     assert attempts == [path]
     assert sum(consumed) <= len(raw) + 1
+
+
+def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_cache_transport() -> (
+    None
+):
+    import ast
+    import io
+    import sys
+    from molt.frontend import SimpleTIRGenerator
+    from molt.opcode_literal_payloads import integer_literal_value
+
+    huge_hex = "0x1" + "0" * 5000
+    source = (
+        f"def default(value={huge_hex}):\n    return value\n"
+        f"a = {huge_hex}\nb = (2 ** 46) ** 64\nc = -{huge_hex}\n"
+        "print(a, b, c, default())\n"
+    )
+    previous = sys.get_int_max_str_digits()
+    try:
+        outputs = []
+        for limit in (640, 0):
+            sys.set_int_max_str_digits(limit)
+            generator = SimpleTIRGenerator()
+            generator.visit(ast.parse(source))
+            ir = generator.to_json()
+            literal_values = {
+                integer_literal_value(bytes(op["bytes"]))
+                for function in ir["functions"]
+                for op in function["ops"]
+                if op["kind"] == "const_bigint"
+            }
+            expected = 1 << 20000
+            assert expected in literal_values
+            # This bounded power is folded by the existing arithmetic pass.
+            # Unary negation of the huge source literal remains a runtime op.
+            assert 1 << 2944 in literal_values
+            assert any(
+                op["kind"] == "neg"
+                for function in ir["functions"]
+                for op in function["ops"]
+            )
+            payload = CACHE_KEYS._backend_ir_bytes(ir)
+            streamed = io.StringIO()
+            CACHE_KEYS._write_backend_ir_text(streamed, ir)
+            assert streamed.getvalue().encode() == payload
+            assert json.loads(payload) == ir
+            transport, data = CACHE_KEYS._backend_ir_format_and_bytes(ir)
+            if transport == "msgpack":
+                import msgpack
+
+                assert msgpack.unpackb(data) == ir
+            else:
+                assert data == payload
+            outputs.append((payload, CACHE_KEYS._cache_payload_digest(ir)))
+        assert outputs[0] == outputs[1]
+        changed = dict(ir, constants={"changed": expected + 7})
+        assert CACHE_KEYS._cache_payload_digest(changed) != outputs[0][1]
+    finally:
+        sys.set_int_max_str_digits(previous)

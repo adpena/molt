@@ -25,12 +25,6 @@ def _load_module(name, path_text):
 
 
 install_registry({{
-    "molt_colorsys_rgb_to_hls": lambda r, g, b: (0.1, 0.2, 0.3),
-    "molt_colorsys_hls_to_rgb": lambda h, l, s: (0.4, 0.5, 0.6),
-    "molt_colorsys_rgb_to_hsv": lambda r, g, b: (0.7, 0.8, 0.9),
-    "molt_colorsys_hsv_to_rgb": lambda h, s, v: (1.0, 0.0, 0.0),
-    "molt_colorsys_rgb_to_yiq": lambda r, g, b: (0.1, 0.0, -0.1),
-    "molt_colorsys_yiq_to_rgb": lambda y, i, q: (0.2, 0.3, 0.4),
     "molt_keyword_lists": lambda: (["False", "None"], ["match"]),
     "molt_keyword_iskeyword": lambda value: value in {{"False", "None"}},
     "molt_keyword_issoftkeyword": lambda value: value == "match",
@@ -64,8 +58,8 @@ ts.prepare()
 
 checks = {{
     "colorsys": (
-        colorsys_mod.rgb_to_hls(1, 2, 3) == (0.1, 0.2, 0.3)
-        and colorsys_mod.hsv_to_rgb(0, 0, 0) == (1.0, 0.0, 0.0)
+        colorsys_mod.rgb_to_hls(1, 0, 0) == (0.0, 0.5, 1.0)
+        and colorsys_mod.hsv_to_rgb(0, 0, 7) == (7, 7, 7)
         and "molt_colorsys_rgb_to_hls" not in colorsys_mod.__dict__
     ),
     "keyword": (

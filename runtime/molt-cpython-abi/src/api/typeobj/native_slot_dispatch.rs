@@ -675,11 +675,11 @@ unsafe extern "C" fn descriptor_get(
         }
         // CPython calls the raw __get__ with self explicitly; binding this
         // lookup would incorrectly invoke descriptors stored under __get__.
-        let method = OwnedPyObject::from_borrowed(_PyType_Lookup(tp, key.as_ptr()));
+        let method = match type_lookup_borrowed(tp, key.as_ptr()) {
+            Ok(method) => OwnedPyObject::from_borrowed(method),
+            Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        };
         if method.as_ptr().is_null() {
-            if descriptors::pending() {
-                return ptr::null_mut();
-            }
             if slot_wrapper_ptr(tp, SlotWrapper::Direct(DirectSlot::DescrGet))
                 == dispatcher(SlotWrapper::Direct(DirectSlot::DescrGet))
             {

@@ -267,16 +267,20 @@ pub(crate) fn require_process_capability<T: ExceptionSentinel>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn os_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<OsString, String> {
+fn os_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<OsString, u64> {
     let path = path_from_bits(_py, bits)?;
     Ok(path.into_os_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<OsString>, String> {
+pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<OsString>, u64> {
     let obj = obj_from_bits(args_bits);
     if obj.is_none() {
-        return Err("args must be a sequence".to_string());
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "args must be a sequence",
+        ));
     }
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
@@ -288,7 +292,7 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
                     "socket argument snapshot allocation failed",
                 )
             }) else {
-                return Err("socket argument snapshot allocation failed".to_string());
+                return Err(MoltObject::none().bits());
             };
             let mut args = Vec::with_capacity(elems.len());
             for &elem in elems.iter() {
@@ -304,22 +308,46 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
 pub(crate) fn env_from_bits(
     _py: &PyToken<'_>,
     env_bits: u64,
-) -> Result<Option<Vec<(OsString, OsString)>>, String> {
+) -> Result<Option<Vec<(OsString, OsString)>>, u64> {
     let obj = obj_from_bits(env_bits);
     if obj.is_none() {
         return Ok(None);
     }
     let Some(ptr) = obj.as_ptr() else {
-        return Err("env must be a dict".to_string());
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "env must be a dict",
+        ));
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
-            return Err("env must be a dict".to_string());
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "env must be a dict",
+            ));
         }
+        let items_bits = crate::molt_dict_items(env_bits);
+        let items =
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), items_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let mut entries = crate::object::iterable::OwnedIterator::new(_py, items.bits())
+            .ok_or_else(|| MoltObject::none().bits())?;
+        drop(items);
         let mut out = Vec::with_capacity(dict_len(ptr));
-        for row in dict_live_entries(ptr) {
-            let key_bits = row.key;
-            let val_bits = row.value;
+        while let Some(pair_bits) = entries.next().map_err(|_| MoltObject::none().bits())? {
+            // The real dict-items iterator checks mutation and owns this pair
+            // through both conversions; no backing borrow survives a callback.
+            let pair =
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), pair_bits);
+            let pair_ptr = obj_from_bits(pair.bits())
+                .as_ptr()
+                .expect("dict-items pair");
+            let values = tuple_elements(pair_ptr);
+            let (key_bits, val_bits) = (values[0], values[1]);
             out.push((
                 os_string_from_bits(_py, key_bits)?,
                 os_string_from_bits(_py, val_bits)?,

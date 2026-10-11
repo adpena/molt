@@ -322,7 +322,7 @@ pub(super) fn http_server_get_optional_attr_string(
     }
     let out = crate::bridge::format_obj_str(_py, obj_from_bits(bits));
     dec_ref_bits(_py, bits);
-    Ok(Some(out))
+    out.map(Some).ok_or_else(|| MoltObject::none().bits())
 }
 
 pub(super) fn http_server_write_bytes(

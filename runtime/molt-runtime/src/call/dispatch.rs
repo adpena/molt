@@ -30,10 +30,16 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
             if object_type_id(call_ptr) == TYPE_ID_TYPE {
                 let new_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-                let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                let new_bits = match class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 let init_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-                let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits);
+                let init_bits = match class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                };
                 if matches!(
                     resolved_constructor_init_policy(new_bits, init_bits),
                     InitArgPolicy::RejectConstructorArgs
@@ -84,12 +90,13 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
                 std::str::from_utf8(bytes).unwrap_or("")
             };
 
-            if let Some(func_bits) = crate::builtins::functions::lookup_builtin_name(_py, name) {
-                builder_owner.release();
-                return bind_owned_callable(_py, func_bits, builder_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
+            match crate::builtins::functions::lookup_builtin_name(_py, name) {
+                Ok(Some(func_bits)) => {
+                    builder_owner.release();
+                    return bind_owned_callable(_py, func_bits, builder_bits);
+                }
+                Ok(None) => {}
+                Err(()) => return MoltObject::none().bits(),
             }
             // CallBuiltin names the active public namespace. A miss cannot
             // acquire an intrinsic or retry against a different module cache.
@@ -295,7 +302,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
             let name = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
-            let callable = crate::builtins::functions::lookup_builtin_name(py, "len").unwrap();
+            let callable = crate::builtins::functions::lookup_builtin_name(py, "len")
+                .expect("operation succeeds")
+                .unwrap();
             let baseline = object_ref_count(callable);
             let argument = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
             let builder = molt_callargs_new(1, 0);
@@ -354,7 +363,9 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
-            let canonical = crate::builtins::functions::lookup_builtin_name(py, "len").unwrap();
+            let canonical = crate::builtins::functions::lookup_builtin_name(py, "len")
+                .expect("operation succeeds")
+                .unwrap();
             let captured_ptr = crate::alloc_dict_with_pairs(py, &[]);
             let captured = MoltObject::from_ptr(captured_ptr).bits();
             let globals = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
@@ -386,7 +397,8 @@ mod tests {
                 crate::dec_ref_bits(py, value);
             }
             unsafe {
-                crate::dict_del_in_place(py, captured_ptr, public_name);
+                crate::dict_del_in_place(py, captured_ptr, public_name)
+                    .expect("operation succeeds");
             }
             let baseline = object_ref_count(argument);
             for name in [public_name, runtime_name] {

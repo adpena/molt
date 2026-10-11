@@ -1,5 +1,5 @@
-// Py* helpers remain Rust-callable here for runtime tests, but the C linker
-// symbols are owned by the molt-cpython-abi crate.
+// Boxed-handle Py* helpers serve internal runtime callers and their tests.
+// The C linker symbols are owned by the molt-cpython-abi crate.
 #![allow(dead_code, non_snake_case, unused_imports)]
 
 #[cfg(target_arch = "wasm32")]

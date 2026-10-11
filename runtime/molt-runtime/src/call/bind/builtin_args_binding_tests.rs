@@ -225,7 +225,8 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
                     builtins.builtin_function_or_method
                 );
                 assert_eq!(
-                    class_attr_lookup_raw_mro(py, obj_from_bits(class).as_ptr().unwrap(), key),
+                    class_attr_lookup_raw_mro(py, obj_from_bits(class).as_ptr().unwrap(), key)
+                        .expect("operation succeeds"),
                     Some(function),
                     "{name}.__new__ must use the published callable"
                 );

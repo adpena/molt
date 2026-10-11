@@ -300,6 +300,75 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
     if ok != 0 { Some(out) } else { None }
 }
 
+unsafe extern "C" {
+    fn __molt_math_float_as_double(bits: u64, out: *mut f64) -> i32;
+    fn __molt_math_exact_float_value(bits: u64, out: *mut f64) -> i32;
+    fn __molt_math_integer_storage(
+        bits: u64,
+        sign: *mut i32,
+        ptr: *mut *const u8,
+        len: *mut usize,
+    ) -> i32;
+    fn __molt_math_target_minor() -> i64;
+}
+
+/// PyFloat_AsDouble semantics; immediate carriers avoid a bridge entry entirely.
+#[inline]
+pub fn float_as_double(_py: &PyToken, bits: u64) -> Option<f64> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = obj.as_float() {
+        return Some(value);
+    }
+    if let Some(value) = obj.as_int() {
+        return Some(value as f64);
+    }
+    if let Some(value) = obj.as_bool() {
+        return Some(u8::from(value) as f64);
+    }
+    let mut value = 0.0;
+    (unsafe { __molt_math_float_as_double(bits, &mut value) } == 1).then_some(value)
+}
+
+/// Exact floats only. Subclasses must reach the rounding special-method lookup.
+#[inline]
+pub fn exact_float_value(_py: &PyToken, bits: u64) -> Result<Option<f64>, ()> {
+    if let Some(value) = obj_from_bits(bits).as_float() {
+        return Ok(Some(value));
+    }
+    let mut value = 0.0;
+    match unsafe { __molt_math_exact_float_value(bits, &mut value) } {
+        1 => Ok(Some(value)),
+        0 => Ok(None),
+        _ => Err(()),
+    }
+}
+
+/// Actual integer storage, including subtypes, never an __index__ conversion.
+/// Logarithm callers handle immediate int/bool before this arbitrary-width path.
+pub fn integer_storage(_py: &PyToken, bits: u64) -> Result<Option<num_bigint::BigInt>, ()> {
+    use num_bigint::{BigInt, Sign};
+    let mut sign = 0;
+    let mut ptr = std::ptr::null();
+    let mut len = 0;
+    match unsafe { __molt_math_integer_storage(bits, &mut sign, &mut ptr, &mut len) } {
+        0 => Ok(None),
+        1 => {
+            let bytes = unsafe { bridge_owned_u8_buffer(ptr, len) };
+            let sign = match sign {
+                -1 => Sign::Minus,
+                0 => Sign::NoSign,
+                _ => Sign::Plus,
+            };
+            Ok(Some(BigInt::from_bytes_be(sign, &bytes)))
+        }
+        _ => Err(()),
+    }
+}
+
+pub fn target_minor() -> i64 {
+    unsafe { __molt_math_target_minor() }
+}
+
 pub fn to_f64(obj: MoltObject) -> Option<f64> {
     let mut out: f64 = 0.0;
     let ok = unsafe { __molt_math_to_f64(obj.bits(), &mut out) };
@@ -495,6 +564,7 @@ unsafe extern "C" {
     fn __molt_math_type_of_bits(val_bits: u64) -> u64;
     fn __molt_math_maybe_ptr_from_bits(bits: u64) -> *mut u8;
     fn __molt_math_molt_is_callable(bits: u64) -> i32;
+    fn __molt_math_current_int_max_str_digits() -> usize;
     fn __molt_math_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_format_obj_str(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
@@ -511,10 +581,17 @@ pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u6
 ///
 /// `ptr` must refer to a live pointer-backed Molt object for the duration of
 /// this call.
-pub unsafe fn lookup_special_method(_py: &PyToken, ptr: *mut u8, name_bits: u64) -> Option<u64> {
+pub unsafe fn lookup_special_method(
+    _py: &PyToken,
+    ptr: *mut u8,
+    name_bits: u64,
+) -> Result<Option<u64>, ()> {
     let mut result = 0;
-    let present = unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) };
-    (present != 0).then_some(result)
+    match unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) } {
+        1 => Ok(Some(result)),
+        0 => Ok(None),
+        _ => Err(()),
+    }
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
@@ -546,27 +623,31 @@ pub fn molt_is_callable(_py: &PyToken, bits: u64) -> bool {
     unsafe { __molt_math_molt_is_callable(bits) != 0 }
 }
 
-pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
+pub fn current_int_max_str_digits(_py: &PyToken) -> usize {
+    unsafe { __molt_math_current_int_max_str_digits() }
+}
+
+pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        String::from_utf8_lossy(&boxed).into_owned()
+        Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
-        "<?>".to_string()
+        None
     }
 }
 
-pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
+pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        String::from_utf8_lossy(&boxed).into_owned()
+        Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
-        "<?>".to_string()
+        None
     }
 }
 
@@ -588,23 +669,37 @@ unsafe extern "C" {
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
-pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Result<Option<u64>, ()> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_math_dict_get_in_place(dict_ptr, key_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
+    match ok {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        -1 => Err(()),
+        _ => unreachable!("invalid dictionary lookup status"),
+    }
 }
 
 /// # Safety
 ///
 /// `dict_ptr` must refer to a live Molt dictionary object for the duration of
 /// this call.
+#[must_use]
 pub unsafe fn dict_set_in_place(
     _py: &PyToken,
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    unsafe { __molt_math_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
+    match unsafe { __molt_math_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
+        1 => true,
+        0 => false,
+        _ => unreachable!("invalid dictionary mutation status"),
+    }
 }
 
 /// # Safety

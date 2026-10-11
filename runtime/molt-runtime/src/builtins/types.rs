@@ -289,9 +289,7 @@ pub(crate) fn init_cached_runtime_class_configured(
             return runtime_class_init_failed(_py, class_bits, name);
         }
         let layout_bits = MoltObject::from_int(layout_size).bits();
-        unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
-        if exception_pending(_py)
-            || unsafe { dict_get_in_place(_py, dict_ptr, layout_name) } != Some(layout_bits)
+        if !unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) }
             || !configure(class_bits, dict_ptr)
         {
             return runtime_class_init_failed(_py, class_bits, name);
@@ -427,10 +425,9 @@ fn set_class_method(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, fn_bits: u
         return false;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    unsafe { dict_set_in_place(_py, dict_ptr, name_bits, fn_bits) };
-    let published = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) } == Some(fn_bits);
+    let published = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, fn_bits) };
     dec_ref_bits(_py, name_bits);
-    published && !exception_pending(_py)
+    published
 }
 
 fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
@@ -649,11 +646,9 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
             return release_failed_payload();
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, key_bits, *value_bits);
-        }
+        let stored = unsafe { dict_set_in_place(_py, dict_ptr, key_bits, *value_bits) };
         dec_ref_bits(_py, key_bits);
-        if exception_pending(_py) {
+        if !stored {
             return release_failed_payload();
         }
     }
@@ -703,10 +698,9 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
             return release_failed_payload();
         }
         let _key_owner = crate::PtrDropGuard::new(key);
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(key).bits(), value);
-        }
-        if exception_pending(_py) {
+        let completed =
+            unsafe { dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(key).bits(), value) };
+        if !completed {
             return release_failed_payload();
         }
     }
@@ -867,10 +861,12 @@ mod tests {
                     let key_ptr = alloc_string(_py, name.as_bytes());
                     assert!(!key_ptr.is_null());
                     let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                    let first_helper =
-                        dict_get_in_place(_py, first_ptr, key_bits).expect("first helper");
-                    let second_helper =
-                        dict_get_in_place(_py, second_ptr, key_bits).expect("second helper");
+                    let first_helper = dict_get_in_place(_py, first_ptr, key_bits)
+                        .expect("dictionary lookup succeeds")
+                        .expect("first helper");
+                    let second_helper = dict_get_in_place(_py, second_ptr, key_bits)
+                        .expect("dictionary lookup succeeds")
+                        .expect("second helper");
                     assert_ne!(
                         first_helper, second_helper,
                         "independent bootstrap payloads own independent helpers"
@@ -911,8 +907,15 @@ mod tests {
                     let key = alloc_string(_py, name.as_bytes());
                     assert!(!key.is_null());
                     let key = MoltObject::from_ptr(key).bits();
-                    assert_eq!(dict_get_in_place(_py, first_ptr, key), Some(class));
-                    assert_eq!(dict_get_in_place(_py, second_ptr, key), Some(class));
+                    assert_eq!(
+                        dict_get_in_place(_py, first_ptr, key).expect("dictionary lookup succeeds"),
+                        Some(class)
+                    );
+                    assert_eq!(
+                        dict_get_in_place(_py, second_ptr, key)
+                            .expect("dictionary lookup succeeds"),
+                        Some(class)
+                    );
                     dec_ref_bits(_py, key);
                 }
                 let refs = cached_classes.map(|(_, class)| ref_count(class));
@@ -1298,8 +1301,16 @@ mod tests {
 
             let dict = alloc_dict_with_pairs(py, &[first, function]);
             assert!(!dict.is_null());
-            assert_eq!(unsafe { dict_get_in_place(py, dict, same) }, Some(function));
-            assert_eq!(unsafe { dict_get_in_place(py, dict, different) }, None);
+            assert_eq!(
+                unsafe { dict_get_in_place(py, dict, same).expect("dictionary lookup succeeds") },
+                Some(function)
+            );
+            assert_eq!(
+                unsafe {
+                    dict_get_in_place(py, dict, different).expect("dictionary lookup succeeds")
+                },
+                None
+            );
             assert!(!exception_pending(py));
 
             let class = obj_from_bits(method_class(py)).as_ptr().unwrap();
@@ -1308,7 +1319,10 @@ mod tests {
                 .unwrap();
             for name in [b"__eq__".as_slice(), b"__ne__".as_slice()] {
                 let key = attr_name_bits_from_bytes(py, name).unwrap();
-                let descriptor = unsafe { dict_get_in_place(py, class_dict, key) }.unwrap();
+                let descriptor = unsafe {
+                    dict_get_in_place(py, class_dict, key).expect("dictionary lookup succeeds")
+                }
+                .unwrap();
                 let declined = unsafe { call_callable2(py, descriptor, first, receiver) };
                 assert!(crate::is_not_implemented_bits(py, declined));
                 dec_ref_bits(py, declined);
@@ -1442,19 +1456,31 @@ mod tests {
 
             for name in ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"] {
                 let key = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
-                let method = unsafe { dict_get_in_place(py, dict, key) }.unwrap();
+                let method = unsafe {
+                    dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
+                }
+                .unwrap();
                 assert!(crate::builtins::callable::is_callable_impl(py, method));
                 dec_ref_bits(py, key);
             }
 
             let hash_key = attr_name_bits_from_bytes(py, b"__hash__").unwrap();
             assert!(
-                obj_from_bits(unsafe { dict_get_in_place(py, dict, hash_key) }.unwrap()).is_none()
+                obj_from_bits(
+                    unsafe {
+                        dict_get_in_place(py, dict, hash_key).expect("dictionary lookup succeeds")
+                    }
+                    .unwrap()
+                )
+                .is_none()
             );
             dec_ref_bits(py, hash_key);
 
             let contents_key = attr_name_bits_from_bytes(py, b"cell_contents").unwrap();
-            let descriptor = unsafe { dict_get_in_place(py, dict, contents_key) }.unwrap();
+            let descriptor = unsafe {
+                dict_get_in_place(py, dict, contents_key).expect("dictionary lookup succeeds")
+            }
+            .unwrap();
             let descriptor_ptr = obj_from_bits(descriptor).as_ptr().unwrap();
             assert_eq!(
                 unsafe { crate::object::layout::native_descriptor_flavor(descriptor_ptr) },

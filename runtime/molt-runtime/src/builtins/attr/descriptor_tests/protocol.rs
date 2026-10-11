@@ -494,12 +494,13 @@ fn wrapped_descriptor_get_is_raw_while_mutation_hooks_bind() {
                 )
             };
             if classmethod {
-                assert_eq!(get_result, Some(MoltObject::none().bits()));
+                assert!(get_result.is_err());
                 assert_and_clear_error(_py, "TypeError");
                 assert_eq!(HOOK_A.load(Ordering::SeqCst), 0);
             } else {
-                let get_result =
-                    get_result.unwrap_or_else(|| panic!("{prefix} __get__ must invoke"));
+                let get_result = get_result
+                    .expect("descriptor binding succeeds")
+                    .unwrap_or_else(|| panic!("{prefix} __get__ must invoke"));
                 assert_eq!(get_result, MoltObject::from_int(101).bits());
                 assert_eq!(HOOK_A.load(Ordering::SeqCst), descriptor_bits);
                 assert_eq!(HOOK_B.load(Ordering::SeqCst), receiver_bits);
@@ -988,10 +989,10 @@ fn descriptor_call_policies_are_versioned_only_for_binding_errors() {
                         )
                     };
                     if binding_error_propagates {
-                        assert_eq!(binding_result, Some(MoltObject::none().bits()));
+                        assert!(binding_result.is_err());
                         assert_and_clear_error(_py, kind);
                     } else {
-                        assert_eq!(binding_result, None);
+                        assert_eq!(binding_result, Ok(None));
                         assert!(!exception_pending(_py));
                     }
 
@@ -1005,7 +1006,7 @@ fn descriptor_call_policies_are_versioned_only_for_binding_errors() {
                             policy,
                         )
                     };
-                    assert_eq!(body_result, Some(MoltObject::none().bits()));
+                    assert!(body_result.is_err());
                     assert_and_clear_error(_py, kind);
                 }
 
@@ -1059,7 +1060,7 @@ fn descriptor_valued_get_is_raw_while_mutation_hooks_bind() {
                     Some(receiver_bits),
                 )
             },
-            Some(none_bits)
+            Err(())
         );
         assert_and_clear_error(_py, "TypeError");
         assert_eq!(BIND_A.load(Ordering::SeqCst), 0);
@@ -1110,7 +1111,7 @@ fn descriptor_valued_get_is_raw_while_mutation_hooks_bind() {
                     Some(receiver_bits),
                 )
             },
-            Some(none_bits)
+            Err(())
         );
         assert_and_clear_error(_py, "TypeError");
         assert_eq!(BIND_A.load(Ordering::SeqCst), 0);
@@ -1212,6 +1213,7 @@ fn class_objects_use_metaclass_descriptor_hooks_and_ignore_class_local_lookalike
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(receiver_bits),
             )
+            .expect("operation succeeds")
         }
         .expect("metaclass __get__ must bind class object");
         assert_eq!(get_result, MoltObject::from_int(102).bits());
@@ -1292,6 +1294,7 @@ fn class_objects_use_metaclass_descriptor_hooks_and_ignore_class_local_lookalike
                 Some(MoltObject::from_ptr(owner_ptr).bits()),
                 Some(receiver_bits),
             )
+            .expect("operation succeeds")
         }
         .expect("plain class value must be returned");
         assert_eq!(unchanged, misleading_class);
@@ -1452,7 +1455,9 @@ fn custom_getattribute_captures_fallback_and_observes_literal_hook_names() {
         assert!(!exception_pending(_py));
         let getattr_name = string_bits(_py, b"__getattr__");
         assert_eq!(
-            unsafe { class_attr_lookup_raw_mro(_py, class_ptr, getattr_name) },
+            unsafe {
+                class_attr_lookup_raw_mro(_py, class_ptr, getattr_name).expect("operation succeeds")
+            },
             Some(fresh_bits)
         );
         dec_ref_bits(_py, getattr_name);
@@ -1634,7 +1639,10 @@ fn mutation_outcomes_and_self_replacing_hook_are_stable() {
         let set_name = string_bits(_py, b"__set__");
         let replacing_class_ptr = obj_from_bits(replacing_class).as_ptr().unwrap();
         assert_eq!(
-            unsafe { class_attr_lookup_raw_mro(_py, replacing_class_ptr, set_name) },
+            unsafe {
+                class_attr_lookup_raw_mro(_py, replacing_class_ptr, set_name)
+                    .expect("operation succeeds")
+            },
             Some(none_bits)
         );
         dec_ref_bits(_py, set_name);

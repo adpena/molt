@@ -12,6 +12,7 @@ pub mod cached_handle;
 pub mod crc32;
 pub mod float_repr;
 pub mod host_capabilities_generated;
+pub mod integer_decimal;
 pub mod numeric_error_policy_generated;
 
 // ---------------------------------------------------------------------------
@@ -1149,7 +1150,7 @@ pub mod prelude {
 
 /// Function-pointer table for the runtime → serial bridge.
 ///
-/// Instead of 58 individual `extern "C"` imports, extracted crates receive a
+/// Instead of individual `extern "C"` imports, extracted crates receive a
 /// single `&'static RuntimeVtable` whose fields are filled in at init time by
 /// `molt-runtime`.  Every pointer uses an FFI-safe `extern "C"` signature so
 /// the struct can be shared across dynamic-library boundaries.
@@ -1159,8 +1160,8 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 4 makes dictionary snapshots own their returned handle references.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 4;
+// Version 5 removes the unused optional-attribute lookup transport.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1243,12 +1244,14 @@ pub struct RuntimeVtable {
     // --- Callable / protocol ---
     pub call_callable0: unsafe extern "C" fn(u64) -> u64,
     pub call_callable2: unsafe extern "C" fn(u64, u64, u64) -> u64,
-    pub attr_lookup_ptr_allow_missing: unsafe extern "C" fn(*mut u8, u64) -> u64,
     pub intern_static_name: unsafe extern "C" fn(*const u8, usize) -> u64,
 
     // --- Container helpers ---
     pub bytearray_vec: unsafe extern "C" fn(*mut u8) -> *mut Vec<u8>,
+    /// Lookup: 1 writes a borrowed value, 0 is absent, -1 retains an error.
+    /// Absent/error outcomes leave the output unchanged.
     pub dict_get_in_place: unsafe extern "C" fn(*mut u8, u64, *mut u64) -> i32,
+    /// Mutation: 1 completed, 0 failed with the producer error retained.
     pub dict_set_in_place: unsafe extern "C" fn(*mut u8, u64, u64) -> i32,
     pub list_len: unsafe extern "C" fn(*mut u8) -> usize,
     pub seq_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,

@@ -1741,7 +1741,7 @@ mod detach_sink_tests {
                     py,
                     &[int(0), value, int(1), value, int(2), value],
                 );
-                assert!(crate::object::ops::dict_del_in_place(py, dict, int(1)));
+                assert!(crate::object::ops::dict_del_in_place(py, dict, int(1)).unwrap());
                 assert_eq!(owners(), baseline + 2);
                 let (edges, resources) = terminal_detach_capacity(py, dict);
                 let mut sink = DetachedEdgeSink::terminal_with_capacities(edges, resources);
@@ -1752,7 +1752,12 @@ mod detach_sink_tests {
                     baseline + 2,
                     "clear publishes empty before retiring either live value"
                 );
-                crate::object::ops::dict_set_in_place(py, dict, int(9), value);
+                assert!(crate::object::ops::dict_set_in_place(
+                    py,
+                    dict,
+                    int(9),
+                    value
+                ));
                 assert_eq!(owners(), baseline + 3);
                 sink.release_all(py);
                 assert_eq!(
@@ -1761,7 +1766,7 @@ mod detach_sink_tests {
                     "old detached storage is independent from refilled storage"
                 );
                 assert_eq!(
-                    crate::object::ops::dict_get_in_place(py, dict, int(9)),
+                    crate::object::ops::dict_get_in_place(py, dict, int(9)).unwrap(),
                     Some(value)
                 );
                 crate::dec_ref_bits(py, MoltObject::from_ptr(dict).bits());

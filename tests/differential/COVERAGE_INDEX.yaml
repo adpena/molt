@@ -17,6 +17,7 @@ core:
       - tests/differential/basic/class_argument_schedule.py
       - tests/differential/basic/module_function_observation.py
       - tests/differential/basic/class_namespace_lookup.py
+      - tests/differential/basic/attribute_lookup_transactions.py
       - tests/differential/basic/class_annotation_namespace.py
       - tests/differential/basic/class_annotation_namespace_313.py
       - tests/differential/basic/class_constructor_cell_callbacks.py
@@ -56,6 +57,9 @@ core:
         - tests/differential/basic/pattern_matching_basic.py
         - tests/differential/basic/pattern_matching_core_matrix.py
         - tests/differential/basic/pep634_pattern_matching_more.py
+    "654":
+      tests:
+        - tests/differential/basic/exceptiongroup_notes_propagation.py
     "657":
       tests:
         - tests/differential/basic/pep657_error_locations.py
@@ -80,6 +84,8 @@ pyperformance:
 stdlib:
   collections:
     tests:
+      - tests/differential/stdlib/collections_chainmap_protocol.py
+      - tests/differential/stdlib/dictionary_callback_failure_propagation.py
       - tests/differential/stdlib/collections_basic.py
       - tests/differential/stdlib/collections_counter.py
       - tests/differential/stdlib/collections_abc_basic.py
@@ -154,6 +160,7 @@ stdlib:
       - tests/differential/stdlib/ast_basic.py
   asyncio:
     tests:
+      - tests/differential/stdlib/asyncio_subprocess_fspath_failure.py
       - tests/differential/stdlib/asyncio_api_surface_core.py
       - tests/differential/stdlib/asyncio_api_surface_modules.py
       - tests/differential/stdlib/asyncio_idle_wait_deadlines.py
@@ -896,6 +903,7 @@ stdlib:
       - tests/differential/stdlib/math_fma_remainder_basic.py
       - tests/differential/stdlib/math_predicates_basic.py
       - tests/differential/stdlib/math_floor_ceil_basic.py
+      - tests/differential/stdlib/math_numeric_protocol.py
       - tests/differential/stdlib/math_isclose_specials.py
       - tests/differential/stdlib/math_fsum_prod_basic.py
       - tests/differential/stdlib/math_copysign_modf_frexp.py

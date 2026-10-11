@@ -87,11 +87,7 @@ pub(crate) unsafe fn initialize_fields(
                 .add(field.offset)
                 .cast::<u64>() = missing;
         });
-        if exception_pending(py) {
-            Err(())
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
@@ -204,24 +200,32 @@ pub(crate) unsafe fn current_dictionary(
     }
 }
 
-unsafe fn inferred_inline_owners(py: &PyToken<'_>, object: *mut u8) -> Vec<(u64, *mut u64, u64)> {
+unsafe fn inferred_inline_owners(
+    py: &PyToken<'_>,
+    object: *mut u8,
+) -> Result<Vec<(u64, *mut u64, u64)>, ()> {
     unsafe {
         let mut fields = Vec::new();
         // Native payloads can own dictionaries without hosting managed inline
         // fields. Their typed prefix/items must never be interpreted as slots.
         if !super::object_has_class_shape(object) && object_type_id(object) != TYPE_ID_DATACLASS {
-            return fields;
+            return Ok(fields);
         }
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
             && object_type_id(class) == TYPE_ID_TYPE
         {
+            // Traversal reads sealed layout rows. Its only fallible preparation
+            // is the canonical missing singleton, whose pointer is the status.
+            if obj_from_bits(missing_bits(py)).as_ptr().is_none() {
+                return Err(());
+            }
             for_each_instance_field(py, object, class, &mut |field, slot| {
                 if field.kind.is_inferred() && !is_missing_bits(py, *slot) {
                     fields.push((field.name, slot, *slot));
                 }
             });
         }
-        fields
+        Ok(fields)
     }
 }
 
@@ -267,7 +271,7 @@ unsafe fn publish(
         } else {
             missing_bits(py)
         };
-        if exception_pending(py) {
+        if !fields.is_empty() && obj_from_bits(missing).as_ptr().is_none() {
             if dictionary != 0 {
                 dec_ref_bits(py, dictionary);
             }
@@ -302,15 +306,15 @@ pub(crate) unsafe fn replace_dictionary(
     py: &PyToken<'_>,
     object: *mut u8,
     replacement: Option<u64>,
-) {
+) -> Result<(), ()> {
     unsafe {
         if !allows_dictionary(py, object) {
             raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
-            return;
+            return Err(());
         }
         if replacement.is_none() && object_type_id(object) == TYPE_ID_FUNCTION {
             raise_exception::<()>(py, "TypeError", "cannot delete __dict__");
-            return;
+            return Err(());
         }
         if let Some(bits) = replacement
             && obj_from_bits(bits)
@@ -322,20 +326,15 @@ pub(crate) unsafe fn replace_dictionary(
                 type_name(py, obj_from_bits(bits))
             );
             raise_exception::<()>(py, "TypeError", &message);
-            return;
+            return Err(());
         }
-        if current_dictionary(py, object).is_err() {
-            return;
-        }
-        let fields = inferred_inline_owners(py, object);
-        if exception_pending(py) {
-            return;
-        }
+        current_dictionary(py, object)?;
+        let fields = inferred_inline_owners(py, object)?;
         let bits = replacement.unwrap_or(0);
         if bits != 0 {
             inc_ref_bits(py, bits);
         }
-        let _ = publish(py, object, bits, fields);
+        publish(py, object, bits, fields).then_some(()).ok_or(())
     }
 }
 
@@ -386,10 +385,7 @@ unsafe fn materialize_with_pairs(
 ) -> Option<u64> {
     unsafe {
         debug_assert!(current_dictionary(py, object).ok().flatten().is_none());
-        let fields = inferred_inline_owners(py, object);
-        if exception_pending(py) {
-            return None;
-        }
+        let fields = inferred_inline_owners(py, object).ok()?;
         let pairs: Vec<u64> = fields
             .iter()
             .flat_map(|(name, _, value)| [*name, *value])
@@ -404,10 +400,6 @@ unsafe fn materialize_with_pairs(
             return None;
         }
         let bits = MoltObject::from_ptr(dict).bits();
-        if exception_pending(py) {
-            dec_ref_bits(py, bits);
-            return None;
-        }
         debug::dictionary(py, "materialize_staged", object, bits, None, None);
         publish(py, object, bits, fields).then_some(bits)
     }
@@ -417,9 +409,6 @@ unsafe fn materialize_with_pairs(
 /// once. Allocation failure leaves the object and all existing owners unchanged.
 pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
     unsafe {
-        if exception_pending(py) {
-            return None;
-        }
         if !allows_dictionary(py, object) {
             raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
             return None;
@@ -441,9 +430,6 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
     value: u64,
 ) -> Result<Option<super::ops::DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
-        if exception_pending(py) {
-            return Err(());
-        }
         if super::instance_dict_bits_ptr(object).is_null() {
             raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
             return Err(());
@@ -488,14 +474,20 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
 
 /// Ordinary instance and dataclass writers use the same staged first insertion
 /// as private callable metadata. Public capability remains a sealed class fact.
-pub(crate) unsafe fn set_item(py: &PyToken<'_>, object: *mut u8, name: u64, value: u64) {
+pub(crate) unsafe fn set_item(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    name: u64,
+    value: u64,
+) -> Result<(), ()> {
     unsafe {
         if !allows_dictionary(py, object) {
             raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
-            return;
+            return Err(());
         }
-        let result = set_item_deferred(py, object, name, value);
-        drop(result);
+        let retired = set_item_deferred(py, object, name, value)?;
+        drop(retired);
+        Ok(())
     }
 }
 
@@ -536,7 +528,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
             return;
         };
         let missing = missing_bits(py);
-        if exception_pending(py) {
+        if obj_from_bits(missing).as_ptr().is_none() {
             return;
         }
         let mut count = 0usize;
@@ -680,17 +672,22 @@ pub(crate) unsafe fn dataclass_snapshot<'a, 'py>(
         let flags = &(*desc).field_flags;
         for index in 0..count {
             let flag = flags.get(index).copied().unwrap_or(0x7);
-            let bits = if flag & flag_mask == 0 {
-                MoltObject::none().bits()
+            let value = if flag & flag_mask == 0 {
+                Ok(MoltObject::none().bits())
             } else {
                 super::accessors::object_field_get_ptr_raw(py, object, index * size_of::<u64>())
             };
-            (*values).push(bits);
-            if is_missing_bits(py, bits) && !exception_pending(py) {
-                let name = (&(*desc).field_names)[index].as_str();
-                let _ = attr_error(py, &(*desc).name, name);
-            }
-            if exception_pending(py) {
+            let result = value.and_then(|bits| {
+                (*values).push(bits);
+                if is_missing_bits(py, bits) {
+                    let name = (&(*desc).field_names)[index].as_str();
+                    let _ = attr_error(py, &(*desc).name, name);
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
+            if result.is_err() {
                 drop(
                     super::seq_access::PinnedSequenceSnapshot::from_owned_values(
                         py,

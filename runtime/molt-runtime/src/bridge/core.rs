@@ -153,7 +153,11 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-pub unsafe fn dict_get_in_place(_py: &CoreGilToken, ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &CoreGilToken,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Result<Option<u64>, ()> {
     crate::with_gil_entry_nopanic!(py, {
         unsafe { crate::dict_get_in_place(py, ptr, key_bits) }
     })

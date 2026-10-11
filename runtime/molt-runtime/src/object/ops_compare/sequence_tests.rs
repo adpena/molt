@@ -96,6 +96,7 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
             ] {
                 let descriptor =
                     crate::builtins::methods::builtin_class_method_bits(py, owner, name)
+                        .unwrap()
                         .expect("declared comparison");
                 for lhs in [left, child] {
                     let direct = unsafe { call_callable2(py, descriptor, lhs, right) };
@@ -200,6 +201,7 @@ fn sequence_overrides_reflect_and_notimplemented_falls_back_to_identity() {
             builtin_classes(py).tuple,
             "__ge__",
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             unsafe { call_callable2(py, slot, a, values) },

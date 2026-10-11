@@ -13,6 +13,165 @@
 use crate::abi_types::PyObject;
 use std::ptr;
 
+type NativeDestructor = unsafe extern "C" fn(*mut PyObject);
+
+/// A conservative portable segment bound. CPython 3.12 uses 50 participating
+/// destructor frames; newer CPython releases use a C-stack budget. Molt's ABI
+/// has no physical stack-margin authority. This bounds participating native
+/// chains; it does not substitute for target-specific physical stack headroom.
+const NATIVE_DEALLOCATION_SEGMENT_LIMIT: usize = 50;
+
+/// Queue custody belongs to the existing runtime-owned PyThreadState. The
+/// intrusive links belong to the existing native GC allocation records.
+#[derive(Default)]
+pub(crate) struct NativeDeallocationState {
+    depth: usize,
+    head: usize,
+    draining: bool,
+}
+
+impl NativeDeallocationState {
+    pub(crate) fn assert_idle(&self) {
+        assert_eq!(self.depth, 0, "thread teardown crossed native deallocation");
+        assert_eq!(
+            self.head, 0,
+            "thread teardown abandoned native deallocation"
+        );
+        assert!(!self.draining, "thread teardown crossed native queue drain");
+    }
+}
+
+unsafe fn legacy_deallocation_participant(
+    object: *mut PyObject,
+    dealloc: NativeDestructor,
+) -> bool {
+    unsafe {
+        // These are actual native slots, not names or subclass flags. A custom
+        // destructor which delegates to a builtin remains responsible for its
+        // own pre-3.14 trashcan participation. In particular, queueing a base
+        // call after its subtype released members would replay partial teardown.
+        if [
+            crate::api::memory::molt_list_dealloc as NativeDestructor,
+            crate::api::sequences::molt_tuple_subtype_dealloc,
+            crate::api::typeobj::subtype_dealloc,
+        ]
+        .iter()
+        .any(|slot| ptr::fn_addr_eq(dealloc, *slot))
+        {
+            return true;
+        }
+        if crate::abi_types::_PyMethodWrapper_Type
+            .tp_dealloc
+            .is_some_and(|slot| ptr::fn_addr_eq(dealloc, slot))
+        {
+            return true;
+        }
+        // CPython's BaseException_dealloc participates, while its extended
+        // layout destructors and MemoryError's freelist destructor do not.
+        // Molt implements those layouts in one slot, so retain that semantic
+        // distinction instead of treating its slot address as one participant.
+        ptr::fn_addr_eq(
+            dealloc,
+            crate::api::errors::molt_native_exception_dealloc as NativeDestructor,
+        ) && crate::abi_types::exception_layout_root_for_type((*object).ob_type)
+            == Some(molt_lang_obj_model::ExceptionLayoutRoot::Base)
+            && crate::api::typeobj::PyType_IsSubtype(
+                (*object).ob_type,
+                &raw mut crate::abi_types::PyExc_MemoryError,
+            ) == 0
+    }
+}
+
+struct NativeDeallocationFrame;
+
+impl Drop for NativeDeallocationFrame {
+    fn drop(&mut self) {
+        let drain = crate::api::object::with_native_deallocation_state(|state| {
+            state.depth = state.depth.checked_sub(1).expect("native depth underflow");
+            if state.depth == 0 && state.head != 0 && !state.draining {
+                state.draining = true;
+                true
+            } else {
+                false
+            }
+        });
+        if !drain {
+            return;
+        }
+        loop {
+            let address = crate::api::object::with_native_deallocation_state(|state| state.head);
+            if address == 0 {
+                break;
+            }
+            // No thread-state or GC-registry borrow survives a destructor.
+            // Resume removes the link before restoring its previous tracking.
+            let next = unsafe { (crate::hooks::hooks_or_stubs().native_gc_resume)(address) };
+            crate::api::object::with_native_deallocation_state(|state| state.head = next);
+            let object = ptr::with_exposed_provenance_mut::<PyObject>(address);
+            unsafe {
+                assert_eq!(
+                    (*object).ob_refcnt,
+                    0,
+                    "queued native reference count changed"
+                );
+                // Bridge release happened exactly once at the original zero
+                // transition. Replay only the actual current destructor.
+                dispatch_native_deallocation(object);
+            }
+        }
+        crate::api::object::with_native_deallocation_state(|state| {
+            assert_eq!(state.depth, 0);
+            state.draining = false;
+        });
+    }
+}
+
+/// The sole native tp_dealloc dispatch for both public zero-reference entries.
+/// Ordinary callbacks observe the caller's current error; queueing does not
+/// create a saved-error boundary or acquire another reference to a dying object.
+unsafe fn dispatch_native_deallocation(object: *mut PyObject) {
+    unsafe {
+        let type_ = (*object).ob_type;
+        if type_.is_null() {
+            return;
+        }
+        let Some(dealloc) = (*type_).tp_dealloc else {
+            return;
+        };
+        let gc = (*type_).tp_flags & crate::abi_types::Py_TPFLAGS_HAVE_GC != 0;
+        let modern = (crate::hooks::hooks_or_stubs().target_python_minor)() >= 14;
+        let participant = gc && (modern || legacy_deallocation_participant(object, dealloc));
+        // Old local trashcans charge participating destructors. The modern
+        // common entry also sees intervening non-GC native frames, but those
+        // frames always execute synchronously and are never queued.
+        if !participant && !modern {
+            dealloc(object);
+            return;
+        }
+        let deferred = crate::api::object::with_native_deallocation_state(|state| {
+            if participant && state.depth >= NATIVE_DEALLOCATION_SEGMENT_LIMIT {
+                Some(state.head)
+            } else {
+                state.depth = state.depth.checked_add(1).expect("native depth overflow");
+                None
+            }
+        });
+        if let Some(next) = deferred {
+            // 3.12/13 enter their local mechanism already untracked. In 3.14
+            // common dispatch must restore the original bit before the slot.
+            if (crate::hooks::hooks_or_stubs().native_gc_defer)(object.addr(), next, modern) != 0 {
+                crate::api::memory::Py_FatalError(
+                    c"native deallocation queue lost allocation custody".as_ptr(),
+                );
+            }
+            crate::api::object::with_native_deallocation_state(|state| state.head = object.addr());
+            return;
+        }
+        let _frame = NativeDeallocationFrame;
+        dealloc(object);
+    }
+}
+
 /// Increment the reference count.
 ///
 /// # Safety
@@ -77,12 +236,7 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
                 .release_pyobj(op)
                 .requires_type_dealloc()
         {
-            let tp = (*op).ob_type;
-            if !tp.is_null()
-                && let Some(dealloc) = (*tp).tp_dealloc
-            {
-                dealloc(op);
-            }
+            dispatch_native_deallocation(op);
         }
     }
 }
@@ -114,12 +268,7 @@ pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
             .release_pyobj(op)
             .requires_type_dealloc()
         {
-            let tp = (*op).ob_type;
-            if !tp.is_null()
-                && let Some(dealloc) = (*tp).tp_dealloc
-            {
-                dealloc(op);
-            }
+            dispatch_native_deallocation(op);
         }
     }
 }

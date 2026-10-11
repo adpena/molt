@@ -329,16 +329,16 @@ fn resolve_format_field(
             }
             bits
         } else {
-            let value = obj_from_bits(kwargs_bits).as_ptr().and_then(|ptr| unsafe {
-                if object_type_id(ptr) == TYPE_ID_DICT {
-                    dict_get_in_place(py, ptr, key_bits)
-                } else {
-                    None
+            let value = if let Some(ptr) = obj_from_bits(kwargs_bits).as_ptr()
+                && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
+            {
+                match unsafe { dict_get_in_place(py, ptr, key_bits) } {
+                    Ok(value) => value,
+                    Err(()) => return None,
                 }
-            });
-            if exception_pending(py) {
-                return None;
-            }
+            } else {
+                None
+            };
             let Some(value) = value else {
                 return raise_key_error_with_key(py, key_bits);
             };

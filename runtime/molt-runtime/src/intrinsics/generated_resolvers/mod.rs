@@ -14,7 +14,6 @@ mod cmath_resolver;
 mod codecs_resolver;
 mod codeop_resolver;
 mod collections_resolver;
-mod colorsys_resolver;
 mod compile_resolver;
 mod compileall_resolver;
 mod compression_resolver;
@@ -156,9 +155,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = collections_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = colorsys_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = compile_resolver::resolve_symbol(symbol) {

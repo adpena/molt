@@ -44,11 +44,12 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
         let dict = crate::obj_from_bits(dictionary).as_ptr().unwrap();
         let append_name = crate::attr_name_bits_from_bytes(&py, b"append").unwrap();
         let reverse_name = crate::attr_name_bits_from_bytes(&py, b"reverse").unwrap();
-        let previous_reverse = crate::dict_get_in_place(&py, dict, reverse_name);
-        let append =
-            crate::builtins::attr::class_namespace_lookup_raw(&py, class, append_name).unwrap();
+        let previous_reverse = crate::dict_get_in_place(&py, dict, reverse_name).unwrap();
+        let append = crate::builtins::attr::class_namespace_lookup_raw(&py, class, append_name)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            crate::dict_get_in_place(&py, dict, reverse_name),
+            crate::dict_get_in_place(&py, dict, reverse_name).unwrap(),
             previous_reverse,
             "one ordinary lookup must not enumerate the owner's other declarations"
         );
@@ -86,9 +87,11 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
             classes.list
         ));
         assert!(
-            crate::builtins::attr::class_namespace_lookup_raw(&py, class, append_name).is_none()
+            crate::builtins::attr::class_namespace_lookup_raw(&py, class, append_name)
+                .unwrap()
+                .is_none()
         );
-        crate::dict_set_in_place(&py, dict, append_name, append);
+        assert!(crate::dict_set_in_place(&py, dict, append_name, append));
         crate::dec_ref_bits(&py, append);
         refcount::Py_DECREF(c_name);
         crate::dec_ref_bits(&py, append_name);

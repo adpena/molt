@@ -70,10 +70,8 @@ impl GraphState {
         let dict_ptr = self
             .node_map_ptr()
             .ok_or_else(|| raise_exception::<u64>(_py, "RuntimeError", "graph state lost"))?;
-        let found = unsafe { dict_get_in_place(_py, dict_ptr, node_bits) };
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+        let found = unsafe { dict_get_in_place(_py, dict_ptr, node_bits) }
+            .map_err(|()| MoltObject::none().bits())?;
         let Some(idx_bits) = found else {
             return Ok(None);
         };
@@ -109,10 +107,7 @@ impl GraphState {
         });
         inc_ref_bits(_py, node_bits);
         let idx_bits = MoltObject::from_int(idx as i64).bits();
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, node_bits, idx_bits);
-        }
-        if exception_pending(_py) {
+        if !unsafe { dict_set_in_place(_py, dict_ptr, node_bits, idx_bits) } {
             if let Some(node) = self.nodes.pop() {
                 dec_ref_bits(_py, node.node_bits);
             }

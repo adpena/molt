@@ -1028,7 +1028,7 @@ mod tests {
             .molt_handle_for_pyobj(module)
             .unwrap()
             .bits();
-        unsafe { crate::dict_set_in_place(py, modules, probe.name, bits) };
+        unsafe { assert!(crate::dict_set_in_place(py, modules, probe.name, bits)) };
         unsafe { refcount::Py_DECREF(module) };
     }
 
@@ -1162,11 +1162,7 @@ mod tests {
             let name = hook_alloc_str(text.as_ptr(), text.len());
             let old = crate::builtins::modules::molt_module_new(name);
             crate::builtins::modules::molt_module_cache_set(name, old);
-            assert!(crate::object::ops::dict_del_in_place(
-                &py,
-                modules_ptr,
-                name
-            ));
+            assert!(crate::object::ops::dict_del_in_place(&py, modules_ptr, name).unwrap());
             let mut slots = [
                 PyModuleDef_Slot {
                     slot: 2,
@@ -1193,11 +1189,14 @@ mod tests {
                 true,
             );
             assert!(!crate::exception_pending(&py));
-            assert_eq!(dict_get_in_place(&py, modules_ptr, name), None);
+            assert_eq!(dict_get_in_place(&py, modules_ptr, name).unwrap(), None);
             execute_prepared_extension(created, name, true);
             assert!(!crate::exception_pending(&py));
             assert_eq!(EXEC_CALLS.with(Cell::get), 1);
-            assert_eq!(dict_get_in_place(&py, modules_ptr, name), Some(created));
+            assert_eq!(
+                dict_get_in_place(&py, modules_ptr, name).unwrap(),
+                Some(created)
+            );
             let cache = crate::builtins::exceptions::internals::module_cache(&py);
             assert_eq!(cache.lock().unwrap().get(text).copied(), Some(created));
             crate::builtins::modules::module_cache_publish(
@@ -1214,12 +1213,17 @@ mod tests {
                 true,
             );
             assert!(!crate::exception_pending(&py));
-            crate::dict_set_in_place(&py, modules_ptr, name, already_public);
+            assert!(crate::dict_set_in_place(
+                &py,
+                modules_ptr,
+                name,
+                already_public
+            ));
             execute_prepared_extension(already_public, name, true);
             assert!(!crate::exception_pending(&py));
             assert_eq!(EXEC_CALLS.with(Cell::get), 2);
             assert_eq!(
-                dict_get_in_place(&py, modules_ptr, name),
+                dict_get_in_place(&py, modules_ptr, name).unwrap(),
                 Some(already_public)
             );
             assert_eq!(
@@ -1372,7 +1376,7 @@ mod tests {
                 assert!(!crate::exception_pending(&py));
                 assert!(!MoltObject::from_bits(first).is_none());
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits),
+                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(first) }
                 );
                 // CPython _imp.create_dynamic publishes an executed single-
@@ -1403,7 +1407,7 @@ mod tests {
                 );
                 assert_eq!(EXEC_CALLS.with(Cell::get), 0);
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits),
+                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(second) }
                 );
                 if !multiphase {
@@ -1419,7 +1423,7 @@ mod tests {
                 assert!(!crate::exception_pending(&py));
                 assert_eq!(EXEC_CALLS.with(Cell::get), usize::from(multiphase));
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits),
+                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(second) }
                 );
                 if size == 0 && !multiphase {
@@ -1440,7 +1444,10 @@ mod tests {
                         "ValueError"
                     );
                     crate::clear_exception(&py);
-                    assert_eq!(dict_get_in_place(&py, modules_ptr, name_bits), Some(second));
+                    assert_eq!(
+                        dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                        Some(second)
+                    );
 
                     // Simulate public replacement after only some transaction
                     // owners were installed. Rollback must retire our private
@@ -1448,7 +1455,12 @@ mod tests {
                     let replacement_ptr = alloc_module_obj(&py, name_bits);
                     assert!(!replacement_ptr.is_null());
                     let replacement = MoltObject::from_ptr(replacement_ptr).bits();
-                    crate::dict_set_in_place(&py, modules_ptr, name_bits, replacement);
+                    assert!(crate::dict_set_in_place(
+                        &py,
+                        modules_ptr,
+                        name_bits,
+                        replacement
+                    ));
                     let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                         .borrowed_handle_to_new_pyobj(second);
                     assert!(!object.is_null());
@@ -1461,7 +1473,7 @@ mod tests {
                         committed: false,
                     });
                     assert_eq!(
-                        dict_get_in_place(&py, modules_ptr, name_bits),
+                        dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
                         Some(replacement)
                     );
                     let private = crate::builtins::exceptions::internals::module_cache(&py);
@@ -1630,7 +1642,12 @@ mod tests {
                     let replacement_ptr = alloc_module_obj(&py, name_bits);
                     assert!(!replacement_ptr.is_null());
                     let replacement = MoltObject::from_ptr(replacement_ptr).bits();
-                    crate::dict_set_in_place(&py, modules_ptr, name_bits, replacement);
+                    assert!(crate::dict_set_in_place(
+                        &py,
+                        modules_ptr,
+                        name_bits,
+                        replacement
+                    ));
                     let reused = run_extension_init(
                         &py,
                         reimport_init,
@@ -1646,20 +1663,18 @@ mod tests {
                     );
                     assert_eq!(crate::c_api::molt_module_capi_get_def(reused), 0);
                     dec_ref_bits(&py, reused);
-                    assert!(crate::object::ops::dict_del_in_place(
-                        &py,
-                        modules_ptr,
-                        name_bits
-                    ));
+                    assert!(
+                        crate::object::ops::dict_del_in_place(&py, modules_ptr, name_bits).unwrap()
+                    );
                     assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
                     dec_ref_bits(&py, replacement);
 
-                    crate::dict_set_in_place(
+                    assert!(crate::dict_set_in_place(
                         &py,
                         modules_ptr,
                         name_bits,
                         MoltObject::none().bits(),
-                    );
+                    ));
                     let replaced = run_extension_init(
                         &py,
                         reimport_init,
@@ -1676,11 +1691,9 @@ mod tests {
                         "create-only replay publishes before returning"
                     );
                     dec_ref_bits(&py, cached);
-                    assert!(crate::object::ops::dict_del_in_place(
-                        &py,
-                        modules_ptr,
-                        name_bits
-                    ));
+                    assert!(
+                        crate::object::ops::dict_del_in_place(&py, modules_ptr, name_bits).unwrap()
+                    );
                     assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
                     dec_ref_bits(&py, replaced);
                     dec_ref_bits(&py, modules);

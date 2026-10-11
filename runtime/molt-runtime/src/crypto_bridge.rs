@@ -273,13 +273,14 @@ pub extern "C" fn __molt_crypto_dict_get_in_place(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            Some(bits) => {
+            Ok(Some(bits)) => {
                 unsafe {
                     *out = bits;
                 }
                 1
             }
-            None => 0,
+            Ok(None) => 0,
+            Err(()) => -1,
         }
     })
 }

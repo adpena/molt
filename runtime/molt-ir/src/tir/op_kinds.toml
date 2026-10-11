@@ -1495,7 +1495,7 @@ literal_payload_opcodes = [
     { opcode = "ConstBool", literal = "bool" },
     { opcode = "ConstStr", literal = "string" },
     { opcode = "ConstBytes", literal = "bytes" },
-    { opcode = "ConstBigInt", literal = "bigint_decimal" },
+    { opcode = "ConstBigInt", literal = "bigint_bytes" },
 ]
 
 # gvn_*_opcodes: GVN numbering roles. Always-numberable ops are pure value
@@ -1548,7 +1548,7 @@ gvn_type_gated_numberable_opcodes = [
 
 gvn_value_keyed_constant_opcodes = [
     { opcode = "ConstInt", key = "i64_attr", attrs = ["value"] },
-    { opcode = "ConstBigInt", key = "str_attr", attrs = ["s_value"] },
+    { opcode = "ConstBigInt", key = "bytes_attr", attrs = ["bytes"] },
     { opcode = "ConstBool", key = "bool_attr", attrs = ["value"] },
     { opcode = "ConstNone", key = "none_singleton" },
     { opcode = "ConstFloat", key = "f64_bits_attr", attrs = ["f_value", "value"] },

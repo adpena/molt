@@ -76,14 +76,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .ptr_type(inkwell::AddressSpace::default());
-        let bigint_from_str_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+        let bigint_from_bytes_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
         let bfs_fn = declare_fixed_runtime_function(
             self.backend.context,
             &self.backend.module,
-            "molt_bigint_from_str",
+            "molt_bigint_from_bytes",
         )
-        .unwrap_or_else(|| panic!("molt_bigint_from_str must be a fixed LLVM runtime import"));
-        let bfs_fn = require_llvm_function_type("molt_bigint_from_str", bfs_fn, bigint_from_str_ty);
+        .unwrap_or_else(|| panic!("molt_bigint_from_bytes must be a fixed LLVM runtime import"));
+        let bfs_fn =
+            require_llvm_function_type("molt_bigint_from_bytes", bfs_fn, bigint_from_bytes_ty);
 
         let len_val = i64_ty.const_int(digits.len() as u64, false);
         let call = self
@@ -94,7 +95,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = call
             .try_as_basic_value()
             .basic()
-            .expect("molt_bigint_from_str returns i64 bits");
+            .expect("molt_bigint_from_bytes returns i64 bits");
         self.values.insert(result_id, result);
         self.value_types.insert(result_id, TirType::DynBox);
     }

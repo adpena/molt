@@ -1252,8 +1252,11 @@ fn flush_module_attr(_py: &PyToken<'_>, module_bits: u64, attr: &str) {
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let val_bits = dict_get_in_place(_py, dict_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
-        let Some(val_bits) = val_bits else {
-            return;
+        let val_bits = match val_bits {
+            Ok(Some(bits)) => bits,
+            // Shutdown's existing flush policy reports its own failures and
+            // has no later dictionary/default fallback.
+            Ok(None) | Err(()) => return,
         };
         if obj_from_bits(val_bits).is_none() {
             return;

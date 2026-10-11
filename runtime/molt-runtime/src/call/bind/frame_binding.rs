@@ -191,10 +191,8 @@ unsafe fn function_kwdefault_owned(
                 FunctionBindingField::KeywordDefaults.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
-        if exception_pending(py) {
-            return Err(MoltObject::none().bits());
-        }
         if obj_from_bits(defaults_bits).is_none() {
             return Ok(None);
         }
@@ -215,9 +213,12 @@ unsafe fn function_kwdefault_owned(
         inc_ref_bits(py, defaults_bits);
         let _owner = PtrDropGuard::new(defaults_ptr);
         let value = dict_get_in_place(py, defaults_ptr, name_bits);
-        if exception_pending(py) {
-            return Err(MoltObject::none().bits());
-        }
+        let value = match value {
+            Ok(value) => value,
+            Err(()) => {
+                return Err(MoltObject::none().bits());
+            }
+        };
         if let Some(value) = value {
             inc_ref_bits(py, value);
         }
@@ -407,7 +408,7 @@ pub(super) unsafe fn call_function_with_arguments(
             args.enter_inlined_frame();
             return call_function_obj_bound_vec(_py, func_bits, args.positional());
         }
-        let bind_kind_bits = function_attr_bits(
+        let bind_kind_bits = match function_attr_bits(
             _py,
             func_ptr,
             intern_static_name(
@@ -415,7 +416,10 @@ pub(super) unsafe fn call_function_with_arguments(
                 &runtime_state(_py).interned.molt_bind_kind,
                 FunctionBindingField::BindKind.name(),
             ),
-        );
+        ) {
+            Ok(value) => value,
+            Err(()) => return MoltObject::none().bits(),
+        };
         if let Some(kind_bits) = bind_kind_bits
             && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
         {
@@ -485,10 +489,8 @@ unsafe fn python_argument_names<'a, 'py>(
                 &runtime_state(py).interned.molt_arg_names,
                 FunctionBindingField::ArgumentNames.name(),
             ),
-        );
-        if exception_pending(py) {
-            return Err(MoltObject::none().bits());
-        }
+        )
+        .map_err(|()| MoltObject::none().bits())?;
         let Some(bits) = bits else {
             return Ok(None);
         };
@@ -528,6 +530,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 FunctionBindingField::PositionalOnly.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::from_int(0).bits());
         let posonly = obj_from_bits(posonly_bits).as_int().unwrap_or(0).max(0) as usize;
 
@@ -540,6 +543,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 FunctionBindingField::KeywordOnlyNames.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let kwonly_names_pin = if obj_from_bits(kwonly_bits).is_none() {
             None
@@ -574,6 +578,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 FunctionBindingField::Varargs.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let varkw_bits = function_attr_bits(
             _py,
@@ -584,6 +589,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 FunctionBindingField::VarKeywords.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let has_vararg = !obj_from_bits(vararg_bits).is_none();
         let has_varkw = !obj_from_bits(varkw_bits).is_none();
@@ -721,8 +727,8 @@ unsafe fn bind_python_frame<'a, 'py>(
                 // Positional-only names are ordinary entries in **kwargs.
                 // Insertion callbacks belong to keyword binding, before
                 // positional arity checks and live default resolution.
-                crate::dict_set_in_place(_py, dictionary, name, value);
-                if exception_pending(_py) {
+                let completed = crate::dict_set_in_place(_py, dictionary, name, value);
+                if !completed {
                     return Err(MoltObject::none().bits());
                 }
                 // The dictionary retained its own entry; a moved edge ends here.
@@ -780,7 +786,8 @@ unsafe fn bind_python_frame<'a, 'py>(
                 _py,
                 func_ptr,
                 intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__"),
-            );
+            )
+            .map_err(|()| MoltObject::none().bits())?;
             let fname = func_name_bits
                 .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
                 .unwrap_or_else(|| "?".to_string());
@@ -813,10 +820,8 @@ unsafe fn bind_python_frame<'a, 'py>(
                 FunctionBindingField::Defaults.name(),
             ),
         )
+        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
         let defaults_pin = if obj_from_bits(defaults_bits).is_none() {
             None
         } else {

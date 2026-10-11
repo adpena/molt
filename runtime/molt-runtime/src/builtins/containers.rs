@@ -543,13 +543,13 @@ crate::builtins::methods::native_method_table!(list_method_bits, publish_list_me
             2,
         )),
         "pop" => {
-            let none = MoltObject::none().bits();
+            let last_index = MoltObject::from_int(-1).bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "pop").with_text_signature("($self, index=-1, /)"),
                 fn_addr!(molt_list_pop),
                 2,
-                &[none],
+                &[last_index],
             ))
         },
         "clear" => Some(builtin_func_bits(

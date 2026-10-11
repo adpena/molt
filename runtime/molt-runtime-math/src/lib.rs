@@ -1,6 +1,6 @@
 //! `molt-runtime-math` — Math/numeric module group for the Molt runtime.
 //!
-//! Isolates the `math`, `cmath`, `fractions`, `colorsys`, `random`, and
+//! Isolates the `math`, `cmath`, `fractions`, `random`, and
 //! `decimal` Python modules into a dedicated crate.
 //!
 //! This crate is an optional dependency of `molt-runtime`, gated behind the
@@ -14,7 +14,6 @@ pub mod bridge;
 mod bridge_test_stubs;
 
 pub mod cmath_mod;
-pub mod colorsys;
 pub mod fractions;
 pub mod intrinsics_generated;
 pub mod math;

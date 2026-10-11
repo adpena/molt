@@ -35,10 +35,13 @@ fn pickle_lookup_extension_code(
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let code_bits = unsafe { dict_get_in_place(_py, registry_ptr, key_bits) };
     dec_ref_bits(_py, key_bits);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, registry_bits);
-        return Err(MoltObject::none().bits());
-    }
+    let code_bits = match code_bits {
+        Ok(value) => value,
+        Err(()) => {
+            dec_ref_bits(_py, registry_bits);
+            return Err(MoltObject::none().bits());
+        }
+    };
     let Some(code_bits) = code_bits else {
         dec_ref_bits(_py, registry_bits);
         return Ok(None);
@@ -415,9 +418,12 @@ fn pickle_dispatch_reducer_from_table(
     }
     let type_bits = type_of_bits(_py, obj_bits);
     let reducer_bits = unsafe { dict_get_in_place(_py, ptr, type_bits) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let reducer_bits = match reducer_bits {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(MoltObject::none().bits());
+        }
+    };
     let Some(reducer_bits) = reducer_bits else {
         return Ok(None);
     };

@@ -1,7 +1,7 @@
 use std::sync::Once;
 
 use molt_runtime::{
-    lifecycle, molt_bigint_from_str, molt_bytes_from_bytes, molt_string_from_bytes,
+    lifecycle, molt_bigint_from_bytes, molt_bytes_from_bytes, molt_string_from_bytes,
 };
 
 molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
@@ -50,13 +50,16 @@ fn bytes_from_bytes_reuses_const_data_pointer_literal() {
 }
 
 #[test]
-fn bigint_from_str_reuses_const_data_pointer_literal() {
+fn bigint_from_bytes_reuses_const_data_pointer_literal() {
     init_runtime();
 
-    let payload = b"100000000000000000000000000000000000000";
+    let payload = &[
+        0x4b, 0x3b, 0x4c, 0xa8, 0x5a, 0x86, 0xc4, 0x7a, 0x09, 0x8a, 0x22, 0x40, 0x00, 0x00, 0x00,
+        0x00,
+    ];
 
-    let first = unsafe { molt_bigint_from_str(payload.as_ptr(), payload.len() as u64) };
-    let second = unsafe { molt_bigint_from_str(payload.as_ptr(), payload.len() as u64) };
+    let first = unsafe { molt_bigint_from_bytes(payload.as_ptr(), payload.len() as u64) };
+    let second = unsafe { molt_bigint_from_bytes(payload.as_ptr(), payload.len() as u64) };
 
     assert_ne!(first, 0);
     assert_eq!(first, second);

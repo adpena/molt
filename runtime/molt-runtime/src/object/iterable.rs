@@ -29,6 +29,10 @@ pub(crate) fn special_iteration_step(
         SpecialIterationKind::SequenceItem(_) => b"__getitem__",
     };
     let callable = unsafe { crate::builtins::attr::lookup_special_method(py, receiver, name) };
+    let (callable, lookup_failed) = match callable {
+        Ok(callable) => (callable, false),
+        Err(()) => (None, true),
+    };
     let value = callable.map(|callable| {
         let value = unsafe {
             match kind {
@@ -39,7 +43,7 @@ pub(crate) fn special_iteration_step(
         dec_ref_bits(py, callable);
         value
     });
-    if exception_pending(py) {
+    if lookup_failed || (value.is_some() && exception_pending(py)) {
         if let Some(value) = value {
             dec_ref_bits(py, value);
         }

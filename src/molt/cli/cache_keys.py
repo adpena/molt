@@ -6,16 +6,82 @@ import json
 from typing import Any, Iterable, Iterator, Mapping, TextIO
 
 from molt.frontend import MoltValue
+from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 
 
-_CACHE_KEY_SCHEMA_VERSION = "v5"
-_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v3"
+_CACHE_KEY_SCHEMA_VERSION = "v6"
+_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v4"
 # Backend object cache keys hash the serialized backend IR payload. Frontend
 # tooling changes are upstream of this boundary and matter only when they change
 # that payload.
 _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT = "backend-ir-payload-authority-v1"
+_CACHE_JSON_TAGS = frozenset(
+    {
+        "__integer_bytes__",
+        "__dict__",
+        "__ellipsis__",
+        "__bytes__",
+        "__complex__",
+        "__tuple__",
+        "__ast__",
+        "__set__",
+        "__frozenset__",
+        "__molt_value__",
+    }
+)
+
+
+def _cache_json_sort_key(value: Any) -> str:
+    """Order already-encoded heterogeneous keys or set members losslessly."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+    )
+
+
+def _cache_json_value(value: Any) -> Any:
+    """Prepare compiler metadata without decimalizing arbitrary Python ints.
+
+    Retain unchanged JSON containers. String-keyed maps are compiler metadata
+    (names and schema fields), so their order is irrelevant to cache identity.
+    Python dict literals remain ordered AST/IR, never raw metadata maps. Escape
+    tag-shaped name maps and preserve insertion order for non-string key maps.
+    Tags are decoded before semantic consumers see the cached metadata.
+    """
+    if type(value) is int and not -(1 << 63) <= value < (1 << 63):
+        return {"__integer_bytes__": list(integer_literal_bytes(value))}
+    if isinstance(value, dict):
+        name_map = all(isinstance(key, str) for key in value)
+        if not name_map or any(key in _CACHE_JSON_TAGS for key in value):
+            items = sorted(value.items()) if name_map else value.items()
+            return {
+                "__dict__": [
+                    [_cache_json_value(key), _cache_json_value(child)]
+                    for key, child in items
+                ]
+            }
+        result = None
+        for key, child in value.items():
+            replacement = _cache_json_value(child)
+            if replacement is not child:
+                if result is None:
+                    result = dict(value)
+                result[key] = replacement
+        return value if result is None else result
+    if isinstance(value, tuple):
+        return {"__tuple__": [_cache_json_value(item) for item in value]}
+    if isinstance(value, list):
+        result = None
+        for index, child in enumerate(value):
+            replacement = _cache_json_value(child)
+            if replacement is not child:
+                if result is None:
+                    result = list(value)
+                result[index] = replacement
+        if result is not None:
+            return result
+    return value
 
 
 def _json_ir_default(value: Any) -> Any:
@@ -26,14 +92,7 @@ def _json_ir_default(value: Any) -> Any:
     if isinstance(value, bytes):
         return {"__bytes__": list(value)}
     if isinstance(value, tuple):
-        return {
-            "__tuple__": [
-                _json_ir_default(item)
-                if not isinstance(item, (str, int, float, bool, type(None), list, dict))
-                else item
-                for item in value
-            ]
-        }
+        return _cache_json_value(value)
     if isinstance(value, ast.AST):
         # Encode as the bare ``ast.dump`` string, NOT a ``{"__ast__": ...}`` wrapper.
         # The cache decoder (``_decode_cached_json_value``) collapses a stored
@@ -49,13 +108,12 @@ def _json_ir_default(value: Any) -> Any:
         # encode(node) == encode(decode(encode(node))). Proven representation-only
         # (does not change lowered IR) by the two-direction gate in
         # test_cli_lowering_context_ast_idempotent.py.
-        return ast.dump(value, include_attributes=False)
+        return literal_ast_dump(value)
     if isinstance(value, (set, frozenset)):
-        try:
-            items = sorted(value)
-        except TypeError:
-            items = sorted((repr(item) for item in value))
-        return {"__set__": items}
+        items = [_cache_json_value(item) for item in value]
+        items.sort(key=_cache_json_sort_key)
+        tag = "__frozenset__" if isinstance(value, frozenset) else "__set__"
+        return {tag: items}
     if isinstance(value, MoltValue):
         return {
             "__molt_value__": {
@@ -108,7 +166,7 @@ def _cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> bytes:
         separators=(",", ":"),
         default=_json_ir_default,
     )
-    return encoder.encode(payload_ir).encode("utf-8")
+    return encoder.encode(_cache_json_value(payload_ir)).encode("utf-8")
 
 
 def _cache_payload_digest(payload_ir: Mapping[str, Any]) -> str:
@@ -231,7 +289,10 @@ def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
         key: value for key, value in ir.items() if key not in {"functions", "profile"}
     }
     encoded = json.dumps(
-        extras, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+        _cache_json_value(extras),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_ir_default,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

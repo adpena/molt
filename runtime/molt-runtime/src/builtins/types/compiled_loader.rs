@@ -247,16 +247,18 @@ impl<'a, 'py> DisplacedModule<'a, 'py> {
             return None;
         };
         let existing = unsafe { dict_get_in_place(py, dict_ptr, name) };
-        if exception_pending(py) {
-            dec_ref_bits(py, modules);
-            return None;
-        }
+        let existing = match existing {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(py, modules);
+                return None;
+            }
+        };
         let previous =
             existing.filter(|bits| !obj_from_bits(*bits).is_none() && current != Some(*bits));
         if let Some(bits) = previous {
             inc_ref_bits(py, bits);
-            let _ = unsafe { dict_del_in_place(py, dict_ptr, name) };
-            if exception_pending(py) {
+            if unsafe { dict_del_in_place(py, dict_ptr, name) }.is_err() {
                 dec_ref_bits(py, bits);
                 dec_ref_bits(py, modules);
                 return None;
@@ -279,7 +281,7 @@ impl<'a, 'py> DisplacedModule<'a, 'py> {
         clear_exception(self.py);
         if let Some(dict_ptr) = obj_from_bits(self.modules).as_ptr() {
             let present = unsafe { dict_get_in_place(self.py, dict_ptr, self.name) };
-            if present.is_none() && !exception_pending(self.py) {
+            if matches!(present, Ok(None)) {
                 unsafe { dict_set_in_place(self.py, dict_ptr, self.name, previous) };
             }
         }
@@ -550,7 +552,9 @@ mod tests {
             ] {
                 let key = text(py, name);
                 assert_eq!(
-                    unsafe { dict_get_in_place(py, frozen_ptr, key) },
+                    unsafe {
+                        dict_get_in_place(py, frozen_ptr, key).expect("dictionary lookup succeeds")
+                    },
                     Some(expected)
                 );
                 dec_ref_bits(py, key);
@@ -567,7 +571,13 @@ mod tests {
                 let dict_ptr = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
                     .as_ptr()
                     .expect("loader class dict");
-                assert!(unsafe { dict_get_in_place(py, dict_ptr, repr_name) }.is_none());
+                assert!(
+                    unsafe {
+                        dict_get_in_place(py, dict_ptr, repr_name)
+                            .expect("dictionary lookup succeeds")
+                    }
+                    .is_none()
+                );
             }
             dec_ref_bits(py, repr_name);
             let create = attr_or_none(py, loader, b"create_module").expect("bound method");
@@ -715,7 +725,10 @@ mod tests {
             );
             clear_exception(py);
             assert_eq!(
-                unsafe { dict_get_in_place(py, modules_ptr, invalid_name) },
+                unsafe {
+                    dict_get_in_place(py, modules_ptr, invalid_name)
+                        .expect("dictionary lookup succeeds")
+                },
                 Some(stale)
             );
             let _ = unsafe { dict_del_in_place(py, modules_ptr, invalid_name) };
@@ -759,8 +772,10 @@ mod tests {
             let modules =
                 crate::builtins::platform::importlib_runtime_modules_bits(py).expect("sys.modules");
             let modules_ptr = obj_from_bits(modules).as_ptr().expect("modules dict");
-            let visible =
-                unsafe { dict_get_in_place(py, modules_ptr, sys_name) }.expect("visible sys");
+            let visible = unsafe {
+                dict_get_in_place(py, modules_ptr, sys_name).expect("dictionary lookup succeeds")
+            }
+            .expect("visible sys");
             assert_ne!(
                 visible, target,
                 "direct exec_module must not publish its target"

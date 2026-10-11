@@ -42,15 +42,17 @@ impl<'a> LiteralPayload<'a> {
                 (None, Some(bytes)) => Ok(Self::Bytes(bytes)),
                 _ => Err("const_bytes requires bytes payload and forbids s_value".into()),
             },
-            Some(OwnedLiteralPayloadKind::BigintDecimal) => match (text, bytes) {
-                (Some(text), None) => {
-                    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-                    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-                        return Err("const_bigint requires an ASCII decimal integer".into());
+            Some(OwnedLiteralPayloadKind::BigintBytes) => match (text, bytes) {
+                (None, Some(bytes)) if !bytes.is_empty() => {
+                    if bytes.len() > 1
+                        && ((bytes[0] == 0 && bytes[1] < 0x80)
+                            || (bytes[0] == 0xff && bytes[1] >= 0x80))
+                    {
+                        return Err("const_bigint has redundant sign extension".into());
                     }
-                    Ok(Self::Text(text))
+                    Ok(Self::Bytes(bytes))
                 }
-                _ => Err("const_bigint requires decimal s_value and forbids bytes".into()),
+                _ => Err("const_bigint requires nonempty signed bytes and forbids s_value".into()),
             },
             None => Err(format!("{kind} has no owned literal payload")),
         }
@@ -140,13 +142,33 @@ impl<'a> SimpleLiteral<'a> {
     pub fn exact_integer_value(self, max_magnitude: u128) -> Option<i128> {
         let value = match self {
             Self::Int(value) => i128::from(value),
-            Self::Owned(OwnedLiteralPayloadKind::BigintDecimal, LiteralPayload::Text(text)) => {
-                text.parse::<i128>().ok()?
+            Self::Owned(OwnedLiteralPayloadKind::BigintBytes, LiteralPayload::Bytes(bytes)) => {
+                if bytes.len() > 16 {
+                    return None;
+                }
+                let mut signed = [if bytes[0] & 0x80 == 0 { 0 } else { 0xff }; 16];
+                signed[16 - bytes.len()..].copy_from_slice(bytes);
+                i128::from_be_bytes(signed)
             }
             Self::Float(_) | Self::Bool(_) | Self::None | Self::Owned(_, _) => return None,
         };
         (value.unsigned_abs() <= max_magnitude).then_some(value)
     }
+}
+
+/// Canonical signed-byte transport for bounded backend constants and anchors.
+/// Arbitrary-width frontend literals use the same minimal two's-complement
+/// representation; this projection never formats a decimal string.
+pub fn integer_literal_bytes(value: i128) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let mut start = 0;
+    while start + 1 < bytes.len()
+        && ((bytes[start] == 0 && bytes[start + 1] < 0x80)
+            || (bytes[start] == 0xff && bytes[start + 1] >= 0x80))
+    {
+        start += 1;
+    }
+    bytes[start..].to_vec()
 }
 
 pub fn required_simple_literal_bytes(op: &OpIR) -> &[u8] {
@@ -224,6 +246,12 @@ mod tests {
             (OpCode::ConstStr, "const_str", vec![0xed, 0xbf, 0xbf, 0]),
             (OpCode::ConstBytes, "const_bytes", vec![]),
             (OpCode::ConstBytes, "const_bytes", vec![0, 0xff, 0x80]),
+            (OpCode::ConstBigInt, "const_bigint", vec![0]),
+            (
+                OpCode::ConstBigInt,
+                "const_bigint",
+                vec![0xff, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
         ] {
             let typed = tir(
                 opcode,
@@ -236,11 +264,7 @@ mod tests {
             assert!(simple.s_value.is_none());
             assert_eq!(required_simple_literal_bytes(&simple), bytes);
         }
-        for (opcode, text) in [
-            (OpCode::ConstStr, ""),
-            (OpCode::ConstStr, "a\0é"),
-            (OpCode::ConstBigInt, "-9223372036854775809"),
-        ] {
+        for (opcode, text) in [(OpCode::ConstStr, ""), (OpCode::ConstStr, "a\0é")] {
             let typed = tir(
                 opcode,
                 AttrDict::from([("s_value".into(), AttrValue::Str(text.into()))]),
@@ -306,7 +330,8 @@ mod tests {
             assert_eq!(value.exact_integer_value(7), Some(-7));
             assert_eq!(value.exact_integer_value(6), None);
         }
-        for text in ["", "-", "+", " 1", "1 ", "1.0", "0xff", "１２"] {
+        // Retired decimal transport is rejected, including otherwise valid text.
+        for text in ["", "-", "+", " 1", "1 ", "1.0", "0xff", "１２", "123"] {
             let op = OpIR {
                 kind: "const_bigint".into(),
                 s_value: Some(text.into()),
@@ -316,7 +341,7 @@ mod tests {
         }
         let huge = OpIR {
             kind: "const_bigint".into(),
-            s_value: Some("12345678901234567890123456789012345678901234567890".into()),
+            bytes: Some([vec![1], vec![0; 32]].concat()),
             ..OpIR::default()
         };
         assert!(validate_simple_literal(&huge).is_ok());
@@ -345,5 +370,42 @@ mod tests {
             );
         }
         assert!(validate_tir_literal(&tir(OpCode::ConstNone, AttrDict::new())).is_ok());
+    }
+
+    #[test]
+    fn signed_literal_bytes_are_minimal_and_project_exact_boundaries() {
+        for (value, bytes) in [
+            (0, vec![0]),
+            (127, vec![0x7f]),
+            (128, vec![0, 0x80]),
+            (-1, vec![0xff]),
+            (-128, vec![0x80]),
+            (-129, vec![0xff, 0x7f]),
+        ] {
+            assert_eq!(integer_literal_bytes(value), bytes);
+        }
+        for value in [i128::MIN, -129, -128, -1, 0, 127, 128, i128::MAX] {
+            let op = OpIR {
+                kind: "const_bigint".into(),
+                bytes: Some(integer_literal_bytes(value)),
+                ..OpIR::default()
+            };
+            let literal = SimpleLiteral::from_simple(&op).unwrap().unwrap();
+            assert_eq!(literal.exact_integer_value(u128::MAX), Some(value));
+        }
+        for bytes in [
+            vec![],
+            vec![0, 0],
+            vec![0, 127],
+            vec![0xff, 0xff],
+            vec![0xff, 0x80],
+        ] {
+            let op = OpIR {
+                kind: "const_bigint".into(),
+                bytes: Some(bytes),
+                ..OpIR::default()
+            };
+            assert!(validate_simple_literal(&op).is_err());
+        }
     }
 }

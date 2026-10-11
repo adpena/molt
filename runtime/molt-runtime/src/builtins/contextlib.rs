@@ -176,8 +176,14 @@ fn contextlib_check_methods(
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 continue;
             }
-            if let Some(value_bits) = unsafe { dict_get_in_place(_py, dict_ptr, method_name_bits) }
-            {
+            let value = match unsafe { dict_get_in_place(_py, dict_ptr, method_name_bits) } {
+                Ok(value) => value,
+                Err(()) => {
+                    dec_ref_bits(_py, method_name_bits);
+                    return Err(MoltObject::none().bits());
+                }
+            };
+            if let Some(value_bits) = value {
                 found = true;
                 non_none = !obj_from_bits(value_bits).is_none();
                 break;
@@ -837,7 +843,7 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(value) => value,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         let old_cwd = match std::env::current_dir() {
             Ok(value) => value,
@@ -879,7 +885,7 @@ pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(value) => value,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+            Err(error) => return error,
         };
         if let Err(err) = std::env::set_current_dir(&path) {
             return raise_exception::<u64>(_py, "OSError", &err.to_string());

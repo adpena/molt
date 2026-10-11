@@ -54,10 +54,7 @@ fn require_str(_py: &CoreGilToken, bits: u64, label: &str) -> Result<String, u64
 /// Resolve a path argument (str | bytes | os.PathLike) to a PathBuf.
 #[inline]
 fn require_path(_py: &CoreGilToken, bits: u64, _label: &str) -> Result<PathBuf, u64> {
-    match path_from_bits(_py, bits) {
-        Ok(p) => Ok(p),
-        Err(msg) => Err(raise_exception::<u64>(_py, "TypeError", &msg)),
-    }
+    path_from_bits(_py, bits)
 }
 
 /// Allocate a runtime string from a Rust &str slice, returning bits.
@@ -1147,7 +1144,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
             for &bits in elems.iter() {
                 match path_from_bits(_py, bits) {
                     Ok(p) => out.push(p),
-                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                    Err(bits) => return bits,
                 }
             }
             out
@@ -2788,40 +2785,10 @@ pub extern "C" fn molt_os_wstopsig(status_bits: u64) -> u64 {
     MoltObject::from_int(result as i64).bits()
 }
 
-/// `os.fspath(path)` -> str | bytes
-/// Resolves PathLike objects by calling __fspath__.
-/// If path is already str or bytes, returns it directly.
-/// Otherwise attempts __fspath__ protocol via path_from_bits.
+/// os.fspath shares the canonical runtime protocol and preserves result type.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let obj = obj_from_bits(path_bits);
-        // Fast path: already str
-        if string_obj_to_owned(obj).is_some() {
-            inc_ref_bits(_py, path_bits);
-            return path_bits;
-        }
-        // Fast path: already bytes (check via type_id)
-        if let Some(ptr) = obj.as_ptr() {
-            let type_id = unsafe { object_type_id(ptr) };
-            if type_id == TYPE_ID_BYTES {
-                inc_ref_bits(_py, path_bits);
-                return path_bits;
-            }
-        }
-        // Try __fspath__ protocol via path_from_bits
-        match path_from_bits(_py, path_bits) {
-            Ok(pathbuf) => {
-                let s = pathbuf.to_string_lossy();
-                str_bits(_py, &s)
-            }
-            Err(_msg) => {
-                let tn = type_name(_py, obj);
-                let msg = format!("expected str, bytes or os.PathLike object, not {}", tn);
-                raise_exception::<u64>(_py, "TypeError", &msg)
-            }
-        }
-    })
+    crate::bridge::fspath_bits(path_bits)
 }
 
 // ---------------------------------------------------------------------------

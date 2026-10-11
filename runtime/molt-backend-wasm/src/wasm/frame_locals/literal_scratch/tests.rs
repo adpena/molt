@@ -151,7 +151,7 @@ fn literal_scratch_policy_preserves_typed_payloads() {
         (
             "digits",
             bigint_scratch,
-            OwnedLiteralPayloadKind::BigintDecimal,
+            OwnedLiteralPayloadKind::BigintBytes,
         ),
         ("blob", bytes_scratch, OwnedLiteralPayloadKind::Bytes),
     ] {

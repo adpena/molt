@@ -99,9 +99,10 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         let method = unsafe {
             crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__length_hint__")
         };
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
+        let method = match method {
+            Ok(method) => method,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let Some(method) = method else {
             return crate::int_bits_from_i64(_py, default as i64);
         };

@@ -30,20 +30,26 @@ fn assert_namespace_mutability(py: &PyToken<'_>, class: u64, immutable: bool) {
         dec_ref_bits(py, kind);
         dec_ref_bits(py, exception);
         clear_exception(py);
-        assert_eq!(unsafe { dict_get_in_place(py, namespace, name) }, None);
+        assert_eq!(
+            unsafe { dict_get_in_place(py, namespace, name).expect("dictionary lookup succeeds") },
+            None
+        );
     } else {
         assert!(
             !exception_pending(py),
             "mutable class rejected an attribute"
         );
         assert_eq!(
-            unsafe { dict_get_in_place(py, namespace, name) },
+            unsafe { dict_get_in_place(py, namespace, name).expect("dictionary lookup succeeds") },
             Some(value)
         );
         let result = crate::molt_del_attr_name(class, name);
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
-        assert_eq!(unsafe { dict_get_in_place(py, namespace, name) }, None);
+        assert_eq!(
+            unsafe { dict_get_in_place(py, namespace, name).expect("dictionary lookup succeeds") },
+            None
+        );
     }
 }
 

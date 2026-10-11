@@ -7,8 +7,10 @@ use crate::object::memoryview::{
 
 #[cfg(test)]
 mod comparison_consumer_tests;
+#[cfg(test)]
+mod index_status_tests;
 
-pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> bool {
+pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> Result<bool, ()> {
     if let Some(ptr) = obj_from_bits(obj_bits).as_ptr()
         && unsafe { object_type_id(ptr) } == crate::TYPE_ID_FOREIGN
     {
@@ -18,61 +20,101 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> b
                 std::ptr::with_exposed_provenance_mut(native),
             )
         };
-        if !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
-            || exception_pending(_py)
-        {
-            crate::cpython_abi_hooks::propagate_native_failure(_py, "native mapping admission");
-            return false;
-        }
-        return status != 0;
+        return Ok(status != 0);
     }
     unsafe { crate::builtins::attr::has_special_method(_py, obj_bits, b"__getitem__") }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, false, true)
+    index_impl(obj_bits, key_bits, false, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 pub(crate) extern "C" fn molt_getitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, true, true)
+    index_impl(obj_bits, key_bits, true, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 /// Invoke an admitted native sq_item with an already normalized index.
 pub(crate) fn molt_sequence_item_builtin(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, true, false)
+    index_impl(obj_bits, key_bits, true, false).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
-fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negative: bool) -> u64 {
+pub(crate) fn index_impl(
+    obj_bits: u64,
+    key_bits: u64,
+    builtin_only: bool,
+    normalize_negative: bool,
+) -> Result<u64, ()> {
     crate::with_gil_entry_nopanic!(_py, {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             unsafe {
-                if !builtin_only
-                    && (object_type_id(obj_ptr) == crate::TYPE_ID_FOREIGN
-                        || !crate::object::iterable::builtin_receiver(_py, obj_ptr))
-                {
-                    if let Some(method) =
-                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__getitem__")
-                    {
-                        let result = call_callable1(_py, method, key_bits);
-                        dec_ref_bits(_py, method);
-                        return result;
+                if !builtin_only && object_type_id(obj_ptr) == crate::TYPE_ID_FOREIGN {
+                    use crate::object::foreign::NativeObjectOwner;
+                    use molt_cpython_abi::{bridge::GLOBAL_BRIDGE, hooks::DecodedHandleResult};
+                    let receiver = NativeObjectOwner::from_owned(
+                        GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(obj_bits),
+                    );
+                    if receiver.as_ptr().is_null() {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            _py,
+                            "subscript receiver",
+                        );
+                        return Err(());
                     }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                    let key = NativeObjectOwner::from_owned(
+                        GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(key_bits),
+                    );
+                    if key.as_ptr().is_null() {
+                        crate::cpython_abi_hooks::propagate_native_failure(_py, "subscript key");
+                        return Err(());
+                    }
+                    let result = molt_cpython_abi::api::object::PyObject_GetItem(
+                        receiver.as_ptr(),
+                        key.as_ptr(),
+                    );
+                    return match molt_cpython_abi::bridge::owned_native_result_to_runtime(result)
+                        .decode()
+                    {
+                        DecodedHandleResult::Ok(bits) => Ok(bits),
+                        DecodedHandleResult::Missing | DecodedHandleResult::Error => {
+                            crate::cpython_abi_hooks::propagate_native_failure(
+                                _py,
+                                "native subscript",
+                            );
+                            Err(())
+                        }
+                    };
+                }
+                if !builtin_only && !crate::object::iterable::builtin_receiver(_py, obj_ptr) {
+                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                        _py,
+                        obj_bits,
+                        b"__getitem__",
+                    ) {
+                        Ok(value) => value,
+                        Err(()) => return Err(()),
+                    }) {
+                        let result = call_callable1(_py, method, key_bits);
+                        let failed = exception_pending(_py);
+                        dec_ref_bits(_py, method);
+                        if failed {
+                            dec_ref_bits(_py, result);
+                            return Err(());
+                        }
+                        return Ok(result);
                     }
                     // Classes also support __class_getitem__; ordinary values
                     // have exhausted their live protocol at this boundary.
                     if object_type_id(obj_ptr) != TYPE_ID_TYPE {
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "TypeError",
                             &format!(
                                 "'{}' object is not subscriptable",
                                 type_name(_py, obj_from_bits(obj_bits))
                             ),
-                        );
+                        ));
                     }
                 }
                 if builtin_only && crate::object::tuple_storage::native_tuple(obj_bits).is_some() {
@@ -82,16 +124,16 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     return tuple.getitem(key_bits, normalize_negative);
                 }
                 if object_is_exact_builtin_dict(_py, obj_ptr) {
-                    if let Some(val) = dict_get_in_place(_py, obj_ptr, key_bits) {
+                    if let Some(val) = match dict_get_in_place(_py, obj_ptr, key_bits) {
+                        Ok(value) => value,
+                        Err(()) => return Err(()),
+                    } {
                         if obj_from_bits(val).as_ptr().is_some() {
                             inc_ref_bits(_py, val);
                         }
-                        return val;
+                        return Ok(val);
                     }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_key_error_with_key(_py, key_bits);
+                    return Err(raise_key_error_with_key::<()>(_py, key_bits));
                 }
                 // list_int: flat i64 storage — delegate to specialized getitem
                 let tid = object_type_id(obj_ptr);
@@ -132,21 +174,18 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         if idx >= 0 && idx < len {
                             let Some(val) = crate::object::seq_access::item(obj_ptr, idx as usize)
                             else {
-                                return MoltObject::none().bits();
+                                return Err(());
                             };
                             // inc_ref only for heap-pointer elements; inline
                             // int/float/bool/None elements carry no refcount.
                             if obj_from_bits(val).as_ptr().is_some() {
                                 inc_ref_bits(_py, val);
                             }
-                            return val;
+                            return Ok(val);
                         }
                     }
                 }
             }
-        }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
         }
         let obj = obj_from_bits(obj_bits);
         let key = obj_from_bits(key_bits);
@@ -157,23 +196,30 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        return memoryview_slice(
-                            _py,
-                            ptr,
-                            slice_start_bits(slice_ptr),
-                            slice_stop_bits(slice_ptr),
-                            slice_step_bits(slice_ptr),
-                        );
+                        return {
+                            let bits = memoryview_slice(
+                                _py,
+                                ptr,
+                                slice_start_bits(slice_ptr),
+                                slice_stop_bits(slice_ptr),
+                                slice_step_bits(slice_ptr),
+                            );
+                            if obj_from_bits(bits).is_none() {
+                                Err(())
+                            } else {
+                                Ok(bits)
+                            }
+                        };
                     }
                     if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
+                        return Err(raise_released_memoryview::<()>(_py));
                     }
                     if memoryview_data(ptr).is_null() {
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "BufferError",
                             "invalid memoryview storage",
-                        );
+                        ));
                     }
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
@@ -184,7 +230,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             .is_some_and(|key| object_type_id(key) == TYPE_ID_ELLIPSIS)
                         {
                             inc_ref_bits(_py, obj_bits);
-                            return obj_bits;
+                            return Ok(obj_bits);
                         }
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
@@ -195,16 +241,16 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             .unwrap_or(false)
                         {
                             let Some(format) = memoryview_adjust_format(_py, ptr) else {
-                                return MoltObject::none().bits();
+                                return Err(());
                             };
                             let val = memoryview_read_item_at(_py, ptr, 0, &format);
-                            return val.unwrap_or_else(|| MoltObject::none().bits());
+                            return val.ok_or(());
                         }
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "TypeError",
                             "invalid indexing of 0-dim memory",
-                        );
+                        ));
                     }
                     if let Some(tup_ptr) = key.as_ptr()
                         && object_type_id(tup_ptr) == TYPE_ID_TUPLE
@@ -214,7 +260,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             tup_ptr,
                             "memoryview index tuple snapshot allocation failed",
                         ) else {
-                            return MoltObject::none().bits();
+                            return Err(());
                         };
                         let mut has_slice = false;
                         let mut all_slice = true;
@@ -232,41 +278,47 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         }
                         if has_slice {
                             if all_slice {
-                                return CompatibilityError::MemoryviewSlice {
+                                return Err(CompatibilityError::MemoryviewSlice {
                                     rank: ndim,
                                     slices: elems.len(),
                                     tuple: true,
                                     assignment: false,
                                 }
-                                .raise(_py);
+                                .raise::<()>(_py));
                             }
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "TypeError",
                                 "memoryview: invalid slice key",
-                            );
+                            ));
                         }
-                        if !elems.iter().all(|&key| memoryview_is_index_key(_py, key)) {
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
+                        if !match elems.iter().try_fold(true, |valid, &key| {
+                            if valid {
+                                memoryview_is_index_key(_py, key)
+                            } else {
+                                Ok(false)
                             }
-                            return raise_exception::<_>(
+                        }) {
+                            Ok(valid) => valid,
+                            Err(()) => return Err(()),
+                        } {
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "TypeError",
                                 "memoryview: invalid slice key",
-                            );
+                            ));
                         }
                         let Some(format) = memoryview_adjust_format(_py, ptr) else {
-                            return MoltObject::none().bits();
+                            return Err(());
                         };
                         if elems.len() < ndim {
-                            return CompatibilityError::MemoryviewSubView {
+                            return Err(CompatibilityError::MemoryviewSubView {
                                 rank: ndim,
                                 indices: elems.len(),
                                 tuple: true,
                                 assignment: false,
                             }
-                            .raise(_py);
+                            .raise::<()>(_py));
                         }
                         if elems.len() > ndim {
                             let msg = format!(
@@ -274,14 +326,14 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                                 ndim,
                                 elems.len()
                             );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            return Err(raise_exception::<()>(_py, "TypeError", &msg));
                         }
                         if shape.len() != strides.len() {
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "BufferError",
                                 "invalid memoryview strides",
-                            );
+                            ));
                         }
                         let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
@@ -290,7 +342,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                                 elem_bits,
                                 "memoryview: invalid slice key",
                             ) else {
-                                return MoltObject::none().bits();
+                                return Err(());
                             };
                             let mut i = idx;
                             let dim_len = shape[dim];
@@ -300,41 +352,41 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             }
                             if i < 0 || i >= dim_len_i64 {
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
-                                return raise_exception::<_>(_py, "IndexError", &msg);
+                                return Err(raise_exception::<()>(_py, "IndexError", &msg));
                             }
                             indices.push(i as isize);
                         }
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "BufferError",
                                 "invalid memoryview index offset",
-                            );
+                            ));
                         };
                         let val = memoryview_read_item_at(_py, ptr, pos, &format);
-                        return val.unwrap_or_else(|| MoltObject::none().bits());
+                        return val.ok_or(());
                     }
                     let Some(idx) = sequence_index_i64_with_type_error(
                         _py,
                         key_bits,
                         "memoryview: invalid slice key",
                     ) else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
+                        return Err(raise_released_memoryview::<()>(_py));
                     }
                     let Some(format) = memoryview_adjust_format(_py, ptr) else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     if ndim > 1 {
-                        return CompatibilityError::MemoryviewSubView {
+                        return Err(CompatibilityError::MemoryviewSubView {
                             rank: ndim,
                             indices: 1,
                             tuple: false,
                             assignment: false,
                         }
-                        .raise(_py);
+                        .raise::<()>(_py));
                     }
                     let len = shape[0] as i64;
                     let mut i = idx;
@@ -342,21 +394,21 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         i += len;
                     }
                     if i < 0 || i >= len {
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "IndexError",
                             "index out of bounds on dimension 1",
-                        );
+                        ));
                     }
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "BufferError",
                             "invalid memoryview index offset",
-                        );
+                        ));
                     };
                     let val = memoryview_read_item_at(_py, ptr, pos, &format);
-                    return val.unwrap_or_else(|| MoltObject::none().bits());
+                    return val.ok_or(());
                 }
                 if type_id == TYPE_ID_STRING
                     || type_id == TYPE_ID_BYTES
@@ -372,7 +424,12 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             _py, start_obj, stop_obj, step_obj,
                         ) {
                             Ok(slice) => slice,
-                            Err(err) => return slice_error(_py, err),
+                            Err(err) => {
+                                return {
+                                    slice_error(_py, err);
+                                    Err(())
+                                };
+                            }
                         };
                         let bytes = if type_id == TYPE_ID_STRING {
                             std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr))
@@ -438,9 +495,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             }
                         };
                         if out_ptr.is_null() {
-                            return MoltObject::none().bits();
+                            return Err(());
                         }
-                        return MoltObject::from_ptr(out_ptr).bits();
+                        return Ok(MoltObject::from_ptr(out_ptr).bits());
                     }
                     let idx = if type_id == TYPE_ID_BYTEARRAY {
                         sequence_index_i64(_py, key_bits, "bytearray")
@@ -459,7 +516,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         sequence_index_i64_with_type_error(_py, key_bits, &type_err)
                     };
                     let Some(idx) = idx else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     if type_id == TYPE_ID_STRING {
                         let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
@@ -469,26 +526,26 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             i += len;
                         }
                         if i < 0 || i >= len {
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "IndexError",
                                 "string index out of range",
-                            );
+                            ));
                         }
                         let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "IndexError",
                                 "string index out of range",
-                            );
+                            ));
                         };
                         let mut out = Vec::with_capacity(4);
                         push_wtf8_codepoint(&mut out, code.to_u32());
                         let out_ptr = alloc_string(_py, &out);
                         if out_ptr.is_null() {
-                            return MoltObject::none().bits();
+                            return Err(());
                         }
-                        return MoltObject::from_ptr(out_ptr).bits();
+                        return Ok(MoltObject::from_ptr(out_ptr).bits());
                     }
                     let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
                     let len = bytes.len() as i64;
@@ -498,15 +555,19 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     }
                     if i < 0 || i >= len {
                         if type_id == TYPE_ID_BYTEARRAY {
-                            return raise_exception::<_>(
+                            return Err(raise_exception::<()>(
                                 _py,
                                 "IndexError",
                                 "bytearray index out of range",
-                            );
+                            ));
                         }
-                        return raise_exception::<_>(_py, "IndexError", "index out of range");
+                        return Err(raise_exception::<()>(
+                            _py,
+                            "IndexError",
+                            "index out of range",
+                        ));
                     }
-                    return MoltObject::from_int(bytes[i as usize] as i64).bits();
+                    return Ok(MoltObject::from_int(bytes[i as usize] as i64).bits());
                 }
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST {
@@ -520,14 +581,19 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             obj_from_bits(slice_step_bits(slice_ptr)),
                         ) {
                             Ok(slice) => slice,
-                            Err(err) => return slice_error(_py, err),
+                            Err(err) => {
+                                return {
+                                    slice_error(_py, err);
+                                    Err(())
+                                };
+                            }
                         };
                         let Some(elems) = crate::object::seq_access::snapshot(
                             _py,
                             ptr,
                             "list slice snapshot allocation failed",
                         ) else {
-                            return MoltObject::none().bits();
+                            return Err(());
                         };
                         let (start, stop, step) = slice.adjust(elems.len() as isize);
                         let out_ptr = if step == 1 {
@@ -547,9 +613,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             alloc_list(_py, out.as_slice())
                         };
                         if out_ptr.is_null() {
-                            return MoltObject::none().bits();
+                            return Err(());
                         }
-                        return MoltObject::from_ptr(out_ptr).bits();
+                        return Ok(MoltObject::from_ptr(out_ptr).bits());
                     }
                     // CPython sequence subscript requires the integer protocol
                     // (`__index__`): int / bool / int-subclass / object with
@@ -559,7 +625,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     // never reintroduce `to_i64` here (it accepts integral floats
                     // and silently diverges from CPython).
                     let Some(idx) = sequence_index_i64(_py, key_bits, "list") else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     let len = list_len(ptr) as i64;
                     let mut i = idx;
@@ -576,11 +642,19 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                                 task, len, i
                             );
                         }
-                        return raise_exception::<_>(_py, "IndexError", "list index out of range");
+                        return Err(raise_exception::<()>(
+                            _py,
+                            "IndexError",
+                            "list index out of range",
+                        ));
                     }
                     let Some(val_item) = crate::object::seq_access::pin_item(_py, ptr, i as usize)
                     else {
-                        return raise_exception::<_>(_py, "IndexError", "list index out of range");
+                        return Err(raise_exception::<()>(
+                            _py,
+                            "IndexError",
+                            "list index out of range",
+                        ));
                     };
                     let val = val_item.bits();
                     if debug_index_list_enabled() {
@@ -595,7 +669,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     }
                     inc_ref_bits(_py, val);
                     drop(val_item);
-                    return val;
+                    return Ok(val);
                 }
                 if type_id == TYPE_ID_TUPLE {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -606,7 +680,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             ptr,
                             "tuple slice snapshot allocation failed",
                         ) else {
-                            return MoltObject::none().bits();
+                            return Err(());
                         };
                         let len = elems.len() as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
@@ -616,7 +690,12 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             _py, len, start_obj, stop_obj, step_obj,
                         ) {
                             Ok(vals) => vals,
-                            Err(err) => return slice_error(_py, err),
+                            Err(err) => {
+                                return {
+                                    slice_error(_py, err);
+                                    Err(())
+                                };
+                            }
                         };
                         let out_ptr = if step == 1 {
                             let s = start as usize;
@@ -635,14 +714,14 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             alloc_tuple(_py, out.as_slice())
                         };
                         if out_ptr.is_null() {
-                            return MoltObject::none().bits();
+                            return Err(());
                         }
-                        return MoltObject::from_ptr(out_ptr).bits();
+                        return Ok(MoltObject::from_ptr(out_ptr).bits());
                     }
                     // `__index__`-only key coercion (see the list branch above):
                     // float keys raise TypeError, they are not truncated.
                     let Some(idx) = sequence_index_i64(_py, key_bits, "tuple") else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     let len = tuple_len(ptr) as i64;
                     let mut i = idx;
@@ -659,13 +738,21 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                                 task, len, i
                             );
                         }
-                        return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+                        return Err(raise_exception::<()>(
+                            _py,
+                            "IndexError",
+                            "tuple index out of range",
+                        ));
                     }
                     let Some(val) = crate::object::seq_access::item(ptr, i as usize) else {
-                        return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+                        return Err(raise_exception::<()>(
+                            _py,
+                            "IndexError",
+                            "tuple index out of range",
+                        ));
                     };
                     inc_ref_bits(_py, val);
-                    return val;
+                    return Ok(val);
                 }
                 if type_id == TYPE_ID_RANGE {
                     // `__index__`-only key coercion: `index_i64_integral_bits`
@@ -680,93 +767,108 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
                             let adj = (idx_i64 as i128) + len;
                             if adj < 0 {
-                                return raise_exception::<_>(
+                                return Err(raise_exception::<()>(
                                     _py,
                                     "IndexError",
                                     "range object index out of range",
-                                );
+                                ));
                             }
                             idx_i64 = match i64::try_from(adj) {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    return raise_exception::<_>(
+                                    return Err(raise_exception::<()>(
                                         _py,
                                         "IndexError",
                                         "range object index out of range",
-                                    );
+                                    ));
                                 }
                             };
                         }
                         if let Some(value) =
                             range_value_at_index_i64(start_i64, stop_i64, step_i64, idx_i64 as i128)
                         {
-                            return int_bits_from_i64(_py, value);
+                            return {
+                                let bits = int_bits_from_i64(_py, value);
+                                if obj_from_bits(bits).is_none() {
+                                    Err(())
+                                } else {
+                                    Ok(bits)
+                                }
+                            };
                         }
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "IndexError",
                             "range object index out of range",
-                        );
+                        ));
                     }
                     let Some(mut idx) = sequence_index_bigint(_py, key_bits, "range") else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     let Some((start, stop, step)) = range_components_bigint(ptr) else {
-                        return MoltObject::none().bits();
+                        return Err(());
                     };
                     let len = range_len_bigint(&start, &stop, &step);
                     if normalize_negative && idx.is_negative() {
                         idx += &len;
                     }
                     if idx.is_negative() || idx >= len {
-                        return raise_exception::<_>(
+                        return Err(raise_exception::<()>(
                             _py,
                             "IndexError",
                             "range object index out of range",
-                        );
+                        ));
                     }
                     let val = start + step * idx;
-                    return int_bits_from_bigint(_py, val);
-                }
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return MoltObject::none().bits();
+                    return {
+                        let bits = int_bits_from_bigint(_py, val);
+                        if obj_from_bits(bits).is_none() {
+                            Err(())
+                        } else {
+                            Ok(bits)
+                        }
                     };
-                    if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
+                }
+                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    Ok(storage) => storage,
+                    Err(()) => return Err(()),
+                }) {
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return Err(());
+                    };
+                    if let Some(val) = match dict_get_in_place(_py, dict_ptr, key_bits) {
+                        Ok(value) => value,
+                        Err(()) => return Err(()),
+                    } {
                         // Skip inc_ref for inline values (ints, bools, None).
                         if obj_from_bits(val).as_ptr().is_some() {
                             inc_ref_bits(_py, val);
                         }
-                        return val;
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                        return Ok(val);
                     }
                     if !object_is_exact_builtin_dict(_py, ptr) {
-                        if let Some(call_bits) = crate::builtins::attr::lookup_special_method(
+                        if let Some(call_bits) = (match crate::builtins::attr::lookup_special_method(
                             _py,
                             obj_bits,
                             b"__missing__",
                         ) {
+                            Ok(value) => value,
+                            Err(()) => return Err(()),
+                        }) {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
+                            let failed = exception_pending(_py);
                             dec_ref_bits(_py, call_bits);
-                            if exception_pending(_py) {
+                            if failed {
                                 dec_ref_bits(_py, res);
                                 exception_stack_pop(_py);
-                                return MoltObject::none().bits();
+                                return Err(());
                             }
                             exception_stack_pop(_py);
-                            return res;
-                        }
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
+                            return Ok(res);
                         }
                     }
-                    return raise_key_error_with_key(_py, key_bits);
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
+                    return Err(raise_key_error_with_key::<()>(_py, key_bits));
                 }
                 if type_id == TYPE_ID_DICT_KEYS_VIEW
                     || type_id == TYPE_ID_DICT_VALUES_VIEW
@@ -774,31 +876,33 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                 {
                     let view_name = type_name(_py, obj);
                     let msg = format!("'{}' object is not subscriptable", view_name);
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return Err(raise_exception::<()>(_py, "TypeError", &msg));
                 }
                 if type_id == TYPE_ID_TYPE {
                     // Try explicit __class_getitem__ first (handles custom
                     // implementations in user-defined classes).
-                    if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__") {
-                        if let Some(call_bits) =
-                            class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
-                        {
-                            dec_ref_bits(_py, name_bits);
+                    {
+                        let name_bits =
+                            attr_name_bits_from_bytes(_py, b"__class_getitem__").ok_or(())?;
+                        let lookup = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits);
+                        dec_ref_bits(_py, name_bits);
+                        let lookup = match lookup {
+                            Ok(value) => value,
+                            Err(()) => return Err(()),
+                        };
+                        if let Some(call_bits) = lookup {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
+                            let failed = exception_pending(_py);
                             dec_ref_bits(_py, call_bits);
-                            if exception_pending(_py) {
+                            if failed {
                                 dec_ref_bits(_py, res);
                                 exception_stack_pop(_py);
-                                return MoltObject::none().bits();
+                                return Err(());
                             }
                             exception_stack_pop(_py);
-                            return res;
+                            return Ok(res);
                         }
-                        dec_ref_bits(_py, name_bits);
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
                     }
                     // CPython rule: a type is subscriptable IFF `__class_getitem__`
                     // is resolvable on it. The explicit-call path above handles a
@@ -822,15 +926,26 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                     // `TYPE_ID_TYPE` receiver — byte-identical to CPython
                     // 3.12/3.13/3.14. This removes molt's prior unconditional
                     // default-GenericAlias-for-every-type divergence.
-                    if let Some(cgi_name_bits) =
-                        attr_name_bits_from_bytes(_py, b"__class_getitem__")
                     {
-                        let present = class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits).is_some();
+                        let cgi_name_bits =
+                            attr_name_bits_from_bytes(_py, b"__class_getitem__").ok_or(())?;
+                        let present = class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits);
                         dec_ref_bits(_py, cgi_name_bits);
+                        let present = match present {
+                            Ok(value) => value.is_some(),
+                            Err(()) => return Err(()),
+                        };
                         if present {
-                            return crate::builtins::types::molt_generic_alias_new(
-                                obj_bits, key_bits,
-                            );
+                            return {
+                                let bits = crate::builtins::types::molt_generic_alias_new(
+                                    obj_bits, key_bits,
+                                );
+                                if obj_from_bits(bits).is_none() {
+                                    Err(())
+                                } else {
+                                    Ok(bits)
+                                }
+                            };
                         }
                     }
                 }
@@ -857,7 +972,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                 }
                 format!("'{}' object is not subscriptable", tn)
             };
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return Err(raise_exception::<()>(_py, "TypeError", &msg));
         }
         let obj_dbg = obj_from_bits(obj_bits);
         if debug_subscript_enabled() {
@@ -874,7 +989,8 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
             );
         }
         let msg = format!("'{}' object is not subscriptable", type_name(_py, obj));
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<()>(_py, "TypeError", &msg);
+        Err(())
     })
 }
 
@@ -975,9 +1091,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) =
-                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__setitem__")
-                    {
+                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                        _py,
+                        obj_bits,
+                        b"__setitem__",
+                    ) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    }) {
                         let result = call_callable2(_py, method, key_bits, val_bits);
                         dec_ref_bits(_py, method);
                         dec_ref_bits(_py, result);
@@ -987,14 +1108,10 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             obj_bits
                         };
                     }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
                     return unsupported_item_mutation(_py, obj_bits, false);
                 }
                 if object_type_id(ptr) == TYPE_ID_DICT {
-                    dict_set_in_place(_py, ptr, key_bits, val_bits);
-                    if exception_pending(_py) {
+                    if !dict_set_in_place(_py, ptr, key_bits, val_bits) {
                         return MoltObject::none().bits();
                     }
                     return obj_bits;
@@ -1032,7 +1149,6 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             Ok(slice) => slice,
                             Err(err) => return slice_error(_py, err),
                         };
-                        let (start, stop, step) = slice.adjust(list_len(ptr) as isize);
                         let new_items = match collect_iterable_values(
                             _py,
                             val_bits,
@@ -1041,6 +1157,9 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             Some(items) => items,
                             None => return MoltObject::none().bits(),
                         };
+                        // Replacement iteration may resize the receiver. Slice
+                        // bounds use the resulting size, as list_ass_subscript.
+                        let (start, stop, step) = slice.adjust(list_len(ptr) as isize);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -1061,10 +1180,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         let indices = collect_slice_indices(start, stop, step);
                         if indices.len() != new_items.len() {
                             let new_len = new_items.len();
-                            for item in new_items {
-                                dec_ref_bits(_py, item);
-                            }
-                            return raise_exception::<_>(
+                            let result = raise_exception::<_>(
                                 _py,
                                 "ValueError",
                                 &format!(
@@ -1073,6 +1189,10 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                                     indices.len()
                                 ),
                             );
+                            for item in new_items {
+                                dec_ref_bits(_py, item);
+                            }
+                            return result;
                         }
                         let changed = crate::object::list_mutation::replace_indices(
                             _py, ptr, &indices, &new_items,
@@ -1373,10 +1493,16 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                                 "memoryview: invalid slice key",
                             );
                         }
-                        if !elems.iter().all(|&key| memoryview_is_index_key(_py, key)) {
-                            if exception_pending(_py) {
-                                return MoltObject::none().bits();
+                        if !match elems.iter().try_fold(true, |valid, &key| {
+                            if valid {
+                                memoryview_is_index_key(_py, key)
+                            } else {
+                                Ok(false)
                             }
+                        }) {
+                            Ok(valid) => valid,
+                            Err(()) => return MoltObject::none().bits(),
+                        } {
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
@@ -1468,10 +1594,10 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         }
                         return obj_bits;
                     }
-                    if !memoryview_is_index_key(_py, key_bits) {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
+                    if !match memoryview_is_index_key(_py, key_bits) {
+                        Ok(valid) => valid,
+                        Err(()) => return MoltObject::none().bits(),
+                    } {
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
@@ -1519,12 +1645,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     }
                     return obj_bits;
                 }
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    Ok(storage) => storage,
+                    Err(()) => return MoltObject::none().bits(),
+                }) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-                    if exception_pending(_py) {
+                    if !dict_set_in_place(_py, dict_ptr, key_bits, val_bits) {
                         return MoltObject::none().bits();
                     }
                     return obj_bits;
@@ -1559,9 +1687,14 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) =
-                        crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__delitem__")
-                    {
+                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                        _py,
+                        obj_bits,
+                        b"__delitem__",
+                    ) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    }) {
                         let result = call_callable1(_py, method, key_bits);
                         dec_ref_bits(_py, method);
                         dec_ref_bits(_py, result);
@@ -1570,9 +1703,6 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         } else {
                             obj_bits
                         };
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
                     }
                     return unsupported_item_mutation(_py, obj_bits, true);
                 }
@@ -1753,14 +1883,17 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     }
                     return raise_exception::<_>(_py, "TypeError", "cannot delete memory");
                 }
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    Ok(storage) => storage,
+                    Err(()) => return MoltObject::none().bits(),
+                }) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    let removed = dict_del_in_place(_py, dict_ptr, key_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
+                    let removed = match dict_del_in_place(_py, dict_ptr, key_bits) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
                     if removed {
                         return obj_bits;
                     }
@@ -1955,11 +2088,14 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) = crate::builtins::attr::lookup_special_method(
+                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
                         _py,
                         container_bits,
                         b"__contains__",
                     ) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    }) {
                         let result = call_callable1(_py, method, item_bits);
                         dec_ref_bits(_py, method);
                         if exception_pending(_py) {
@@ -1974,19 +2110,19 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                             MoltObject::from_bool(truth).bits()
                         };
                     }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
                 }
                 let type_id = object_type_id(ptr);
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    Ok(storage) => storage,
+                    Err(()) => return MoltObject::none().bits(),
+                }) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    let found = dict_find_entry(_py, dict_ptr, item_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
+                    let found = match dict_find_entry(_py, dict_ptr, item_bits) {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
                     return MoltObject::from_bool(found.is_some()).bits();
                 }
                 match type_id {
@@ -2064,11 +2200,14 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     }
                     _ => {}
                 }
-                if let Some(call_bits) = crate::builtins::attr::lookup_special_method(
+                if let Some(call_bits) = (match crate::builtins::attr::lookup_special_method(
                     _py,
                     container_bits,
                     b"__contains__",
                 ) {
+                    Ok(value) => value,
+                    Err(()) => return MoltObject::none().bits(),
+                }) {
                     let result = call_callable1(_py, call_bits, item_bits);
                     dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {
@@ -2082,9 +2221,6 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     } else {
                         MoltObject::from_bool(truth).bits()
                     };
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
                 }
                 return iterable_contains(_py, container_bits, item_bits);
             }

@@ -420,12 +420,14 @@ fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) {
         b"__molt_layout_size__",
     );
     unsafe {
-        dict_set_in_place(
+        if !dict_set_in_place(
             _py,
             dict_ptr,
             layout_name_bits,
             MoltObject::from_int(16).bits(),
-        );
+        ) {
+            return;
+        }
         class_bump_layout_version(frame_ptr);
         let shaped = crate::object::class_set_instance_shape_id(
             frame_ptr,

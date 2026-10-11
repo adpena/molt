@@ -326,48 +326,51 @@ fn normalize_builtins_value(bits: u64) -> u64 {
     }
 }
 
-pub(crate) fn frame_effective_builtins_bits(_py: &PyToken<'_>, globals_bits: u64) -> u64 {
-    let globals_ptr = globals_namespace_storage_ptr(_py, globals_bits);
+pub(crate) fn frame_effective_builtins_bits(
+    _py: &PyToken<'_>,
+    globals_bits: u64,
+) -> Result<u64, ()> {
+    let globals_ptr = globals_namespace_storage_ptr(_py, globals_bits)?;
     if let Some(globals_ptr) = globals_ptr {
         let key_bits = intern_static_name(
             _py,
             &runtime_state(_py).interned.dunder_builtins_name,
             b"__builtins__",
         );
-        if let Some(value_bits) = unsafe { dict_get_in_place(_py, globals_ptr, key_bits) } {
-            return normalize_builtins_value(value_bits);
+        if key_bits == 0 {
+            return Err(());
+        }
+        if let Some(value_bits) = unsafe { dict_get_in_place(_py, globals_ptr, key_bits) }? {
+            return Ok(normalize_builtins_value(value_bits));
         }
     }
-    if exception_pending(_py) {
-        return 0;
-    }
     if let Some(bits) = frame_stack_active_builtins() {
-        return bits;
+        return Ok(bits);
     }
     let cached = {
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         cache.lock().unwrap().get("builtins").copied()
     };
     if let Some(bits) = cached {
-        return normalize_builtins_value(bits);
+        return Ok(normalize_builtins_value(bits));
     }
     // A compiled application admits its builtins body in the module registry.
     // Materialize that canonical namespace before capture, never substitute a
     // later cache value into an already executing frame. The builtins body
     // publishes its dictionary before entering its own frame, closing cycles.
-    if !crate::exception_pending(_py)
-        && crate::builtins::module_table::module_execution_target_has_body("builtins") == Some(true)
+    if crate::builtins::module_table::module_execution_target_has_body("builtins") == Some(true)
         && !crate::builtins::module_table::module_initialization_awaits_publication(_py, "builtins")
     {
         let id = crate::builtins::module_table::module_id_of("builtins")
             .expect("admitted builtins registry row");
         let module = crate::builtins::module_table::module_ensure(_py, id);
+        let failed = exception_pending(_py);
         let bits = normalize_builtins_value(module);
         // The module table owns this published namespace after ensure returns.
         dec_ref_bits(_py, module);
-        return bits;
+        return if failed { Err(()) } else { Ok(bits) };
     }
-    0
+    Ok(0)
 }
 
 /// Transfer an explicitly owned code/namespace triple to the sole Python frame.
@@ -743,7 +746,11 @@ unsafe fn code_is_module(code_bits: u64) -> bool {
 }
 
 fn frame_globals_field(_py: &PyToken<'_>, entry: FrameEntry) -> Option<FrameField> {
-    if globals_namespace_storage_bits(_py, entry.globals_bits).is_some() {
+    let globals = match globals_namespace_storage_bits(_py, entry.globals_bits) {
+        Ok(storage) => storage,
+        Err(()) => return None,
+    };
+    if globals.is_some() {
         return Some(FrameField {
             bits: entry.globals_bits,
             owned: false,
@@ -888,39 +895,39 @@ unsafe fn alloc_traceback_obj(
     next_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> i64 {
+        fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> Result<i64, ()> {
             let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
-                return -1;
+                return Ok(-1);
             };
             unsafe {
                 let dict_bits = instance_dict_bits(frame_ptr);
                 let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                    return -1;
+                    return Ok(-1);
                 };
                 if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                    return -1;
+                    return Ok(-1);
                 }
                 let f_code_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
-                let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) else {
-                    return -1;
+                let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)? else {
+                    return Ok(-1);
                 };
                 let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-                    return -1;
+                    return Ok(-1);
                 };
                 if object_type_id(code_ptr) != TYPE_ID_CODE {
-                    return -1;
+                    return Ok(-1);
                 }
                 let linetable_bits = code_linetable_bits(code_ptr);
                 let Some(linetable_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
-                    return -1;
+                    return Ok(-1);
                 };
                 if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
-                    return -1;
+                    return Ok(-1);
                 }
                 let Some(linetable) = crate::object::seq_access::pin_tuple(_py, linetable_ptr)
                 else {
-                    return -1;
+                    return Ok(-1);
                 };
                 let mut best: Option<(usize, i64)> = None;
                 for (idx, entry_bits) in linetable.iter().copied().enumerate() {
@@ -949,7 +956,7 @@ unsafe fn alloc_traceback_obj(
                     let span = if start_col >= 0 && end_col >= start_col {
                         end_col - start_col
                     } else {
-                        -1
+                        Ok(-1)
                     };
                     match best {
                         Some((_, best_span)) if span <= best_span => {}
@@ -957,9 +964,9 @@ unsafe fn alloc_traceback_obj(
                     }
                 }
                 if let Some((idx, _)) = best {
-                    return (idx as i64) * 2;
+                    return Ok((idx as i64) * 2);
                 }
-                -1
+                Ok(-1)
             }
         }
 
@@ -983,7 +990,14 @@ unsafe fn alloc_traceback_obj(
         let tb_lasti_bits =
             intern_static_name(_py, &runtime_state(_py).interned.tb_lasti_name, b"tb_lasti");
         let line_bits = MoltObject::from_int(line).bits();
-        let lasti_bits = MoltObject::from_int(compute_tb_lasti(_py, frame_bits, line)).bits();
+        let lasti = match compute_tb_lasti(_py, frame_bits, line) {
+            Ok(value) => value,
+            Err(()) => {
+                dec_ref_bits(_py, tb_bits);
+                return None;
+            }
+        };
+        let lasti_bits = MoltObject::from_int(lasti).bits();
         let dict_ptr = alloc_dict_with_pairs(
             _py,
             &[
@@ -1590,13 +1604,15 @@ mod tests {
                 "PyEval_GetBuiltins follows stored f_builtins, not a later globals mutation"
             );
             assert_eq!(
-                super::frame_effective_builtins_bits(_py, globals_bits),
+                super::frame_effective_builtins_bits(_py, globals_bits)
+                    .expect("builtins namespace lookup succeeds"),
                 second_bits,
                 "a new function captures the current explicit globals entry"
             );
             let unconfigured = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[])).bits();
             assert_eq!(
-                super::frame_effective_builtins_bits(_py, unconfigured),
+                super::frame_effective_builtins_bits(_py, unconfigured)
+                    .expect("builtins namespace lookup succeeds"),
                 first_bits,
                 "absent __builtins__ inherits the active captured builtins"
             );

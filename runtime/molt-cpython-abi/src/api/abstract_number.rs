@@ -1216,39 +1216,39 @@ pub unsafe fn float_slot_result(
     Ok((result, false))
 }
 
-/// Shared foreign numeric slot conversion. None means no numeric slot;
-/// Some(NULL) means an existing slot failed and its error must survive.
-pub(crate) unsafe fn foreign_float_conversion(o: *mut PyObject) -> Option<*mut PyObject> {
-    use crate::api::numbers;
+/// A validated native protocol result, still held by its original owner.
+/// Scalar and object-producing consumers choose their CPython retirement and
+/// sentinel phases without repeating slot lookup, validation, or warnings.
+pub(crate) enum ForeignFloatResult {
+    Float {
+        owner: crate::api::refcount::OwnedPyObject,
+        exact: bool,
+    },
+    Index(crate::api::refcount::OwnedPyObject),
+}
+
+pub(crate) unsafe fn foreign_float_result(
+    o: *mut PyObject,
+) -> Result<Option<ForeignFloatResult>, crate::ErrorIndicatorSet> {
+    use crate::api::refcount::OwnedPyObject;
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Float) } {
-        let Ok((result, exact)) =
-            (unsafe { float_slot_result(result, || numeric_class_name((*o).ob_type, 50)) })
-        else {
-            return Some(ptr::null_mut());
-        };
-        if exact {
-            return Some(result);
-        }
-        let value = unsafe { numbers::PyFloat_AsDouble(result) };
-        unsafe { crate::api::refcount::Py_DECREF(result) };
-        if value == -1.0 && conversion_exception_pending() {
-            return Some(ptr::null_mut());
-        }
-        return Some(pyobj_from_float(value));
+        let (result, exact) =
+            unsafe { float_slot_result(result, || numeric_class_name((*o).ob_type, 50)) }?;
+        return Ok(Some(ForeignFloatResult::Float {
+            owner: unsafe { OwnedPyObject::from_owned(result) },
+            exact,
+        }));
     }
     if let Some(index) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
         let index = unsafe { integer_slot_result(index, "__index__") };
         if index.is_null() {
-            return Some(index);
+            return Err(crate::ErrorIndicatorSet);
         }
-        let value = unsafe { numbers::PyLong_AsDouble(index) };
-        unsafe { crate::api::refcount::Py_DECREF(index) };
-        if value == -1.0 && conversion_exception_pending() {
-            return Some(ptr::null_mut());
-        }
-        return Some(pyobj_from_float(value));
+        return Ok(Some(ForeignFloatResult::Index(unsafe {
+            OwnedPyObject::from_owned(index)
+        })));
     }
-    None
+    Ok(None)
 }
 
 #[unsafe(no_mangle)]
@@ -1282,8 +1282,30 @@ pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
         };
         return unsafe { pyobj_from_result(result) };
     }
-    if let Some(result) = unsafe { foreign_float_conversion(o) } {
-        return result;
+    match unsafe { foreign_float_result(o) } {
+        Err(_) => return ptr::null_mut(),
+        Ok(Some(ForeignFloatResult::Float { owner, exact })) => {
+            if exact {
+                return owner.into_ptr();
+            }
+            let value = unsafe { crate::api::numbers::float_as_double(owner.as_ptr()) };
+            drop(owner);
+            return value.map_or(ptr::null_mut(), pyobj_from_float);
+        }
+        Ok(Some(ForeignFloatResult::Index(owner))) => {
+            let value = unsafe { crate::api::numbers::long_as_double(owner.as_ptr()) };
+            drop(owner);
+            let Ok(value) = value else {
+                return ptr::null_mut();
+            };
+            // PyNumber_Float performs this check after retiring the index
+            // result. PyFloat_AsDouble instead returns its scalar directly.
+            if value == -1.0 && conversion_exception_pending() {
+                return ptr::null_mut();
+            }
+            return pyobj_from_float(value);
+        }
+        Ok(None) => {}
     }
     let message = format!(
         "float() argument must be a string or a real number, not '{}'",

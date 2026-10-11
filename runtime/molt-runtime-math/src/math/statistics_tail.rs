@@ -286,55 +286,29 @@ fn statistics_normal_dist_samples_value(
                 if let Some(rng) = seeded_rng.as_mut() {
                     rng.gauss(mu, sigma)
                 } else {
-                    let sample_bits =
-                        call_callable2(_py, random_fn_bits, gauss_mu_bits, gauss_sigma_bits);
+                    let sample = unsafe {
+                        OwnedRuntimeValue::from_owned_bits(
+                            _py,
+                            call_callable2(_py, random_fn_bits, gauss_mu_bits, gauss_sigma_bits),
+                        )
+                    };
                     if exception_pending(_py) {
                         return None;
                     }
-                    let sample_obj = obj_from_bits(sample_bits);
-                    let Some(sample_real) = coerce_real_named(_py, sample_bits, "sample") else {
-                        if sample_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, sample_bits);
-                        }
-                        return None;
-                    };
-                    let Some(sample_float) = coerce_to_f64(_py, sample_real) else {
-                        if sample_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, sample_bits);
-                        }
-                        return None;
-                    };
-                    if sample_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, sample_bits);
-                    }
-                    sample_float
+                    float_as_double(_py, sample.bits())?
                 }
             }
             StatisticsNormalDistSamplesMode::InvCdf => {
                 let probability = if let Some(rng) = seeded_rng.as_mut() {
                     rng.random()
                 } else {
-                    let p_bits = call_callable0(_py, random_fn_bits);
+                    let p = unsafe {
+                        OwnedRuntimeValue::from_owned_bits(_py, call_callable0(_py, random_fn_bits))
+                    };
                     if exception_pending(_py) {
                         return None;
                     }
-                    let p_obj = obj_from_bits(p_bits);
-                    let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
-                        if p_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, p_bits);
-                        }
-                        return None;
-                    };
-                    let Some(p_float) = coerce_to_f64(_py, p_real) else {
-                        if p_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, p_bits);
-                        }
-                        return None;
-                    };
-                    if p_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, p_bits);
-                    }
-                    p_float
+                    float_as_double(_py, p.bits())?
                 };
                 if probability <= 0.0 || probability >= 1.0 {
                     return raise_exception::<Option<u64>>(
@@ -361,10 +335,8 @@ fn statistics_normal_dist_params(
     mu_bits: u64,
     sigma_bits: u64,
 ) -> Option<(f64, f64)> {
-    let mu_real = coerce_real_named(_py, mu_bits, "mu")?;
-    let mu = coerce_to_f64(_py, mu_real)?;
-    let sigma_real = coerce_real_named(_py, sigma_bits, "sigma")?;
-    let sigma = coerce_to_f64(_py, sigma_real)?;
+    let mu = float_as_double(_py, mu_bits)?;
+    let sigma = float_as_double(_py, sigma_bits)?;
     if sigma < 0.0 {
         return raise_exception::<Option<(f64, f64)>>(
             _py,
@@ -682,10 +654,7 @@ pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: 
         let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median_grouped") else {
             return MoltObject::none().bits();
         };
-        let Some(interval_real) = coerce_real_named(_py, interval_bits, "median_grouped") else {
-            return MoltObject::none().bits();
-        };
-        let Some(interval) = coerce_to_f64(_py, interval_real) else {
+        let Some(interval) = float_as_double(_py, interval_bits) else {
             return MoltObject::none().bits();
         };
         let n = values.len();
@@ -861,10 +830,7 @@ pub extern "C" fn molt_statistics_normal_dist_inv_cdf(
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(p_real) = coerce_real_named(_py, p_bits, "p") else {
-            return MoltObject::none().bits();
-        };
-        let Some(p) = coerce_to_f64(_py, p_real) else {
+        let Some(p) = float_as_double(_py, p_bits) else {
             return MoltObject::none().bits();
         };
         if p <= 0.0 || p >= 1.0 {
@@ -888,10 +854,7 @@ pub extern "C" fn molt_statistics_normal_dist_pdf(
         if variance == 0.0 {
             return raise_exception::<_>(_py, "ValueError", "pdf() not defined when sigma is zero");
         }
-        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_real) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
         let diff = x - mu;
@@ -914,10 +877,7 @@ pub extern "C" fn molt_statistics_normal_dist_cdf(
         if sigma == 0.0 {
             return raise_exception::<_>(_py, "ValueError", "cdf() not defined when sigma is zero");
         }
-        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_real) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
         MoltObject::from_float(statistics_normal_dist_cdf_raw(x, mu, sigma)).bits()
@@ -941,10 +901,7 @@ pub extern "C" fn molt_statistics_normal_dist_zscore(
                 "zscore() not defined when sigma is zero",
             );
         }
-        let Some(x_real) = coerce_real_named(_py, x_bits, "x") else {
-            return MoltObject::none().bits();
-        };
-        let Some(x) = coerce_to_f64(_py, x_real) else {
+        let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
         MoltObject::from_float((x - mu) / sigma).bits()

@@ -2,7 +2,7 @@
 //! class's slot table; these functions always operate on the declaring list's
 //! storage through the existing C-API readers, publishers and mutation owner.
 use super::*;
-use crate::abi_types::PySequenceMethods;
+use crate::abi_types::{PyMappingMethods, PySequenceMethods};
 use crate::api::abstract_sequence::{MaterializedPointers, checked_py_ssize};
 use crate::api::{errors, object, refcount::OwnedPyObject, typeobj};
 use std::os::raw::c_void;
@@ -20,9 +20,180 @@ static mut LIST_SEQUENCE: PySequenceMethods = PySequenceMethods {
     sq_inplace_repeat: inplace_repeat as *mut c_void,
 };
 
+static mut LIST_MAPPING: PyMappingMethods = PyMappingMethods {
+    mp_length: PyList_Size as *mut c_void,
+    mp_subscript: subscript as *mut c_void,
+    mp_ass_subscript: assign_subscript as *mut c_void,
+};
+
 /// Called once by builtin type initialization before any type is published.
 pub(crate) unsafe fn initialize() {
-    unsafe { crate::abi_types::PyList_Type.tp_as_sequence = (&raw mut LIST_SEQUENCE).cast() };
+    unsafe {
+        crate::abi_types::PyList_Type.tp_as_sequence = (&raw mut LIST_SEQUENCE).cast();
+        crate::abi_types::PyList_Type.tp_as_mapping = (&raw mut LIST_MAPPING).cast();
+    }
+}
+
+unsafe fn bad_key(key: *mut PyObject) {
+    unsafe {
+        let class = object::Py_TYPE(key);
+        if !class.is_null() {
+            errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                c"list indices must be integers or slices, not %.200s".as_ptr(),
+                (*class).tp_name,
+            );
+        }
+    }
+}
+
+unsafe extern "C" fn subscript(list: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        if crate::api::abstract_number::PyIndex_Check(key) != 0 {
+            let mut index = crate::api::abstract_number::PyNumber_AsSsize_t(
+                key,
+                (&raw mut crate::abi_types::PyExc_IndexError).cast(),
+            );
+            if index == -1 && errors::raised_error_pending() {
+                return ptr::null_mut();
+            }
+            let Some(read) = ListRead::acquire(list) else {
+                return ptr::null_mut();
+            };
+            if index < 0 {
+                index += read.len() as Py_ssize_t;
+            }
+            let item = read.item(index as usize);
+            return object::Py_XNewRef(item);
+        }
+        if crate::api::slice::PySlice_Check(key) == 0 {
+            bad_key(key);
+            return ptr::null_mut();
+        }
+        let (mut start, mut stop, mut step) = (0, 0, 0);
+        if crate::api::slice::PySlice_Unpack(key, &mut start, &mut stop, &mut step) < 0 {
+            return ptr::null_mut();
+        }
+        let Some(read) = ListRead::acquire(list) else {
+            return ptr::null_mut();
+        };
+        let count = crate::api::slice::PySlice_AdjustIndices(
+            read.len() as Py_ssize_t,
+            &mut start,
+            &mut stop,
+            step,
+        );
+        list_from_borrowed_indexed(count, |index| read.item((start + index * step) as usize))
+    }
+}
+
+unsafe extern "C" fn assign_subscript(
+    list: *mut PyObject,
+    key: *mut PyObject,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe {
+        if crate::api::abstract_number::PyIndex_Check(key) != 0 {
+            let mut index = crate::api::abstract_number::PyNumber_AsSsize_t(
+                key,
+                (&raw mut crate::abi_types::PyExc_IndexError).cast(),
+            );
+            if index == -1 && errors::raised_error_pending() {
+                return -1;
+            }
+            let Some(read) = ListRead::acquire(list) else {
+                return -1;
+            };
+            if index < 0 {
+                index += read.len() as Py_ssize_t;
+            }
+            return assign_item_with_read(&read, index, value);
+        }
+        if crate::api::slice::PySlice_Check(key) == 0 {
+            bad_key(key);
+            return -1;
+        }
+        let (mut start, mut stop, mut step) = (0, 0, 0);
+        if crate::api::slice::PySlice_Unpack(key, &mut start, &mut stop, &mut step) < 0 {
+            return -1;
+        }
+        // Materialization can resize the receiver. Normalize against its final
+        // size after all replacement callbacks, including for step == 1.
+        let replacement = if value.is_null() {
+            None
+        } else {
+            let items = if value == list {
+                MaterializedPointers::from_list_storage(list)
+            } else {
+                crate::api::abstract_sequence::materialize_iterable_pointers(
+                    value,
+                    Some(c"must assign iterable to extended slice".as_ptr()),
+                    crate::api::abstract_sequence::SequenceMaterialization::Fast,
+                )
+            };
+            let Some(items) = items else {
+                return -1;
+            };
+            Some(items)
+        };
+        let Some(read) = ListRead::acquire(list) else {
+            return -1;
+        };
+        let count = crate::api::slice::PySlice_AdjustIndices(
+            read.len() as Py_ssize_t,
+            &mut start,
+            &mut stop,
+            step,
+        ) as usize;
+        if (step > 0 && start > stop) || (step < 0 && start < stop) {
+            stop = start;
+        }
+        if step == 1 {
+            return set_list_slice(&read, start, stop, replacement.as_ref());
+        }
+        if let Some(items) = &replacement {
+            if items.len() != count {
+                errors::PyErr_Format(
+                    (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                    c"attempt to assign sequence of size %zd to extended slice of size %zd"
+                        .as_ptr(),
+                    items.len() as Py_ssize_t,
+                    count as Py_ssize_t,
+                );
+                return -1;
+            }
+        }
+        if count == 0 {
+            return 0;
+        }
+        if let Some(native) = read.native_pointer() {
+            if let Some(items) = &replacement {
+                if !native_list::replace_extended(native, start, step, items.as_slice()) {
+                    drop(replacement);
+                    errors::PyErr_NoMemory();
+                    return -1;
+                }
+                return 0;
+            }
+            return native_list::delete_extended(native, start, step, count);
+        }
+        let mut indices = Vec::new();
+        if indices.try_reserve_exact(count).is_err() {
+            errors::PyErr_NoMemory();
+            return -1;
+        }
+        for offset in 0..count {
+            indices.push((start + offset as Py_ssize_t * step) as usize);
+        }
+        if replacement.is_none() && step < 0 {
+            indices.reverse();
+        }
+        mutate_list_indices(
+            &read,
+            &indices,
+            replacement.as_ref().map(MaterializedPointers::as_slice),
+        )
+    }
 }
 
 pub(crate) unsafe extern "C" fn assign_item(
@@ -30,10 +201,14 @@ pub(crate) unsafe extern "C" fn assign_item(
     index: Py_ssize_t,
     value: *mut PyObject,
 ) -> c_int {
-    let len = unsafe { PyList_Size(list) };
-    if len < 0 {
+    let Some(read) = (unsafe { ListRead::acquire(list) }) else {
         return -1;
-    }
+    };
+    unsafe { assign_item_with_read(&read, index, value) }
+}
+
+unsafe fn assign_item_with_read(read: &ListRead, index: Py_ssize_t, value: *mut PyObject) -> c_int {
+    let len = unsafe { read.len() } as Py_ssize_t;
     if index < 0 || index >= len {
         unsafe {
             errors::PyErr_SetString(
@@ -44,11 +219,15 @@ pub(crate) unsafe extern "C" fn assign_item(
         return -1;
     }
     if value.is_null() {
-        return unsafe { PyList_SetSlice(list, index, index + 1, ptr::null_mut()) };
+        return unsafe { set_list_slice(read, index, index + 1, None) };
     }
     // sq_ass_item borrows; PyList_SetItem consumes on success and failure.
     unsafe { crate::api::refcount::Py_INCREF(value) };
-    unsafe { PyList_SetItem(list, index, value) }
+    if let Some(native) = read.native_pointer() {
+        unsafe { native_list::set_item(native, index, value) }
+    } else {
+        unsafe { PyList_SetItem(read.object.cast(), index, value) }
+    }
 }
 
 unsafe extern "C" fn contains(list: *mut PyObject, needle: *mut PyObject) -> c_int {
@@ -150,6 +329,15 @@ unsafe extern "C" fn inplace_concat(list: *mut PyObject, other: *mut PyObject) -
 }
 
 unsafe extern "C" fn inplace_repeat(list: *mut PyObject, count: Py_ssize_t) -> *mut PyObject {
+    let Some(read) = (unsafe { ListRead::acquire(list) }) else {
+        return ptr::null_mut();
+    };
+    if let Some(native) = read.native_pointer() {
+        if !unsafe { native_list::repeat(native, count) } {
+            return ptr::null_mut();
+        }
+        return unsafe { object::Py_NewRef(list) };
+    }
     if count == 1 {
         // A direct slot call still validates/commits its physical receiver.
         if unsafe { PyList_Size(list) } < 0 {

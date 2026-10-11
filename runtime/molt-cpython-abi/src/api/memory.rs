@@ -555,8 +555,8 @@ pub unsafe extern "C" fn molt_managed_gc_clear(object: *mut PyObject) -> c_int {
     result
 }
 
-/// A real native list prefix may be traversed by an extension's own layout
-/// lifecycle. This does not admit allocation through managed builtin slots.
+/// Managed lists project their runtime inventory; genuine native lists own
+/// their physical C edges. Allocation and mutation share this distinction.
 pub unsafe extern "C" fn molt_list_gc_traverse(
     object: *mut PyObject,
     visit: *mut c_void,
@@ -591,6 +591,52 @@ pub unsafe extern "C" fn molt_list_gc_traverse(
         }
     }
     0
+}
+
+/// Clear the owning representation without changing collector membership.
+/// Native list clear and delete-all share one detach-before-release operation;
+/// managed buffers stay under the runtime projection owner.
+pub unsafe extern "C" fn molt_list_gc_clear(object: *mut PyObject) -> c_int {
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    if crate::bridge::GLOBAL_BRIDGE
+        .managed_handle_for_pyobj(object)
+        .is_some()
+    {
+        return unsafe { molt_managed_gc_clear(object) };
+    }
+    if object.is_null() || unsafe { crate::api::sequences::PyList_Check(object) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    unsafe { crate::api::sequences::native_list::clear_native(object.cast()) }
+}
+
+/// Retire genuine native list storage. Managed views are consumed by bridge
+/// reference counting before native deallocator dispatch. The heap-subtype
+/// wrapper owns finalization and the instance's type reference.
+pub unsafe extern "C" fn molt_list_dealloc(object: *mut PyObject) {
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    unsafe {
+        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(object) else {
+            return;
+        };
+        let list = object.cast::<crate::abi_types::PyListObject>();
+        // Terminal list destruction differs from public clear: CPython keeps
+        // the dying header through reverse item retirement. Do not let clear's
+        // reentrant publication policy change that callback-visible phase.
+        crate::api::sequences::native_list::release_buffer(
+            (*list).ob_item,
+            (*list).ob_base.ob_size,
+        );
+        if (crate::hooks::hooks_or_stubs().target_python_minor)() >= 14 {
+            // CPython 3.14 list_dealloc releases GC storage directly; 3.12/13
+            // dispatch the actual type's free slot. This is a target fact.
+            (*list).ob_item = std::ptr::null_mut();
+            deallocation.finish_gc();
+        } else {
+            deallocation.finish();
+        }
+    }
 }
 
 struct NativeGcVisitContext {

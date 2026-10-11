@@ -219,14 +219,15 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
     name_ptr: *const u8,
     name_len: usize,
     value_bits: u64,
-) -> u64 {
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_ptr.is_null() || (name_ptr.is_null() && name_len != 0) {
-            return crate::raise_exception::<u64>(
+            crate::raise_exception::<()>(
                 _py,
                 "TypeError",
                 "invalid attribute receiver or name",
             );
+            return -1;
         }
         let bytes = if name_len == 0 {
             &[]
@@ -234,12 +235,16 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
             unsafe { std::slice::from_raw_parts(name_ptr, name_len) }
         };
         let Ok(name) = std::str::from_utf8(bytes) else {
-            return crate::raise_exception::<u64>(_py, "TypeError", "attribute name must be UTF-8");
+            crate::raise_exception::<()>(_py, "TypeError", "attribute name must be UTF-8");
+            return -1;
         };
-        unsafe {
+        match unsafe {
             crate::builtins::attributes::object_setattr_raw(
                 _py, obj_ptr, name_bits, name, value_bits,
             )
+        } {
+            Ok(()) => 0,
+            Err(()) => -1,
         }
     })
 }
@@ -596,11 +601,15 @@ pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: us
         };
         // Materialize the canonical method anchors before inspecting mutable
         // class/instance state. All subsequent successful reads are callback-free.
-        let Some(get) = crate::builtins::methods::object_method_bits(py, "__getattribute__") else {
-            return crate::MoltObject::none().bits();
+        let get = match crate::builtins::methods::object_method_bits(py, "__getattribute__") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => return refused(),
+            Err(()) => return crate::MoltObject::none().bits(),
         };
-        let Some(set) = crate::builtins::methods::object_method_bits(py, "__setattr__") else {
-            return crate::MoltObject::none().bits();
+        let set = match crate::builtins::methods::object_method_bits(py, "__setattr__") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => return refused(),
+            Err(()) => return crate::MoltObject::none().bits(),
         };
         unsafe {
             let name = std::slice::from_raw_parts(name, len);
@@ -888,9 +897,11 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
             return 0;
         };
         unsafe {
-            if let Ok(Some(dictionary)) =
-                crate::object::field_storage::current_dictionary(py, object)
-            {
+            let dictionary = match crate::object::field_storage::current_dictionary(py, object) {
+                Ok(dictionary) => dictionary,
+                Err(()) => return 0,
+            };
+            if let Some(dictionary) = dictionary {
                 let Some(dict) = crate::obj_from_bits(dictionary).as_ptr() else {
                     return 0;
                 };
@@ -915,10 +926,7 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
                 // The exact probe proved every same-hash predecessor an exact
                 // string; using its retained key cannot invoke guest equality.
                 let result = crate::object::ops::dict_set_deferred(py, dict, key, new);
-                return i32::from(result.is_ok() && !crate::exception_pending(py));
-            }
-            if crate::exception_pending(py) {
-                return 0;
+                return i32::from(result.is_ok());
             }
             let Some(class) = crate::obj_from_bits(crate::object_class_bits(object)).as_ptr()
             else {
@@ -948,8 +956,9 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
             let Some(offset) = selected else {
                 return 0;
             };
-            crate::object::accessors::object_field_set_ptr_raw(py, object, offset, new);
-            i32::from(!crate::exception_pending(py))
+            i32::from(
+                crate::object::accessors::object_field_set_ptr_raw(py, object, offset, new).is_ok(),
+            )
         }
     })
 }

@@ -86,15 +86,17 @@ pub(crate) fn foreign_release(c_ptr: usize) {
     });
 }
 
-/// Complete native retirement before returning to a runtime operation. Both
-/// foreign-wrapper release and standalone owned C temporaries use this boundary.
+/// Complete native retirement before returning to a runtime operation. Foreign
+/// wrapper release, owned C temporaries, and operations that return a scalar
+/// after retiring their native temporaries share this completion boundary.
 #[inline]
-pub(crate) fn retire_native_reference(release: impl FnOnce()) {
-    release();
+pub(crate) fn retire_native_reference<T>(release: impl FnOnce() -> T) -> T {
+    let result = release();
     // A valid native deallocator may move the active raised exception between
     // channels through PyErr_GetRaisedException/PyErr_SetRaisedException.
     // Complete that native reentry before returning to a runtime consumer.
     crate::cpython_abi_hooks::transfer_pending_cpython_exception();
+    result
 }
 
 /// Ordinary C-reference retirement returning to a runtime consumer. Native

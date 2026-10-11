@@ -665,9 +665,11 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
             if object_type_id(hay_ptr) != TYPE_ID_STRING {
                 return MoltObject::none().bits();
             }
-            let dict_ptr_opt = table
-                .as_ptr()
-                .and_then(|ptr| dict_like_bits_from_ptr(_py, ptr))
+            let backing = match crate::object::ops::dict_backing_bits(_py, table.bits()) {
+                Ok(backing) => backing,
+                Err(()) => return MoltObject::none().bits(),
+            };
+            let dict_ptr_opt = backing
                 .and_then(|bits| obj_from_bits(bits).as_ptr())
                 .filter(|ptr| object_type_id(*ptr) == TYPE_ID_DICT);
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
@@ -678,7 +680,13 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
             for ch in hay_str.chars() {
                 let key_bits = MoltObject::from_int(ch as i64).bits();
                 let (mapped, mapped_owned) = if let Some(dict_ptr) = dict_ptr_opt {
-                    (dict_get_in_place(_py, dict_ptr, key_bits), false)
+                    (
+                        match dict_get_in_place(_py, dict_ptr, key_bits) {
+                            Ok(value) => value,
+                            Err(()) => return MoltObject::none().bits(),
+                        },
+                        false,
+                    )
                 } else {
                     let mapped_bits = molt_getitem_method(table_bits, key_bits);
                     if exception_pending(_py) {
@@ -897,8 +905,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                             "keys in translate table must be strings or integers",
                         );
                     };
-                    dict_set_in_place(_py, out_ptr, mapped_key_bits, value_bits);
-                    if exception_pending(_py) {
+                    if !dict_set_in_place(_py, out_ptr, mapped_key_bits, value_bits) {
                         dec_ref_bits(_py, out_bits);
                         return MoltObject::none().bits();
                     }
@@ -984,8 +991,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
             for (from_ch, to_ch) in x_str.chars().zip(y_str.chars()) {
                 let key_bits = MoltObject::from_int(from_ch as i64).bits();
                 let value_bits = MoltObject::from_int(to_ch as i64).bits();
-                dict_set_in_place(_py, out_ptr, key_bits, value_bits);
-                if exception_pending(_py) {
+                if !dict_set_in_place(_py, out_ptr, key_bits, value_bits) {
                     dec_ref_bits(_py, out_bits);
                     return MoltObject::none().bits();
                 }
@@ -1008,8 +1014,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                 let none_bits = MoltObject::none().bits();
                 for ch in z_str.chars() {
                     let key_bits = MoltObject::from_int(ch as i64).bits();
-                    dict_set_in_place(_py, out_ptr, key_bits, none_bits);
-                    if exception_pending(_py) {
+                    if !dict_set_in_place(_py, out_ptr, key_bits, none_bits) {
                         dec_ref_bits(_py, out_bits);
                         return MoltObject::none().bits();
                     }

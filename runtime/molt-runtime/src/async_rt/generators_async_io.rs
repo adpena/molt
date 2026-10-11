@@ -226,24 +226,17 @@ unsafe fn asyncio_pending_with_connect_retry(
 
 unsafe fn asyncio_socket_is_connected(_py: &PyToken<'_>, sock_bits: u64) -> bool {
     unsafe {
-        let Some(peer_bits) = asyncio_call_method0_allow_missing(_py, sock_bits, b"getpeername")
-        else {
-            if exception_pending(_py) {
-                asyncio_clear_pending_exception(_py);
-            }
-            return false;
-        };
-        if exception_pending(_py) {
-            if !obj_from_bits(peer_bits).is_none() {
+        match asyncio_call_method0_allow_missing(_py, sock_bits, b"getpeername") {
+            Ok(Some(peer_bits)) => {
                 dec_ref_bits(_py, peer_bits);
+                true
             }
-            asyncio_clear_pending_exception(_py);
-            return false;
+            Ok(None) => false,
+            Err(()) => {
+                asyncio_clear_pending_exception(_py);
+                false
+            }
         }
-        if !obj_from_bits(peer_bits).is_none() {
-            dec_ref_bits(_py, peer_bits);
-        }
-        true
     }
 }
 

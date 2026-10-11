@@ -59,6 +59,7 @@ pub(crate) mod layout;
 pub(crate) mod list_mutation;
 #[cfg(test)]
 mod list_representation_tests;
+pub(crate) mod list_storage;
 pub(crate) mod mapping_merge;
 pub(crate) mod memoryview;
 pub(crate) mod native_handle;
@@ -2788,14 +2789,16 @@ unsafe fn class_lookup_raw_dict_attr(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return None;
+            return Ok(None);
         }
-        let dict_ptr = obj_from_bits(layout::class_dict_bits(class_ptr)).as_ptr()?;
+        let Some(dict_ptr) = obj_from_bits(layout::class_dict_bits(class_ptr)).as_ptr() else {
+            return Ok(None);
+        };
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
+            return Ok(None);
         }
         crate::dict_get_in_place(_py, dict_ptr, attr_bits)
     }
@@ -2805,18 +2808,18 @@ unsafe fn class_lookup_raw_mro_dict_attr(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         if let Some(mro) = crate::class_mro_pinned(_py, class_ptr) {
             for class_bits in mro.iter().copied() {
                 let Some(candidate) = obj_from_bits(class_bits).as_ptr() else {
                     continue;
                 };
-                if let Some(bits) = class_lookup_raw_dict_attr(_py, candidate, attr_bits) {
-                    return Some(bits);
+                if let Some(bits) = class_lookup_raw_dict_attr(_py, candidate, attr_bits)? {
+                    return Ok(Some(bits));
                 }
             }
-            return None;
+            return Ok(None);
         }
         class_lookup_raw_dict_attr(_py, class_ptr, attr_bits)
     }
@@ -3531,14 +3534,14 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
             let _del_name_owner = obj_from_bits(del_name_bits)
                 .as_ptr()
                 .map(crate::PtrDropGuard::new);
-            let raw_del_bits = obj_from_bits(class_bits)
-                .as_ptr()
-                .and_then(|class_ptr| unsafe {
-                    class_lookup_raw_mro_dict_attr(py, class_ptr, del_name_bits)
-                });
-            let Some(raw_del_bits) = raw_del_bits else {
+            let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return;
             };
+            let raw_del_bits =
+                match unsafe { class_lookup_raw_mro_dict_attr(py, class_ptr, del_name_bits) } {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) | Err(()) => return,
+                };
             inc_ref_bits(py, raw_del_bits);
             drop(
                 raw_del_owner.replace(
@@ -3559,17 +3562,17 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
                 0,
             );
             let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
-            let del_bits = obj_from_bits(class_bits)
-                .as_ptr()
-                .and_then(|class_ptr| unsafe {
-                    crate::builtins::attr::descriptor_bind(
-                        py,
-                        raw_del_bits,
-                        Some(MoltObject::from_ptr(class_ptr).bits()),
-                        Some(obj_bits),
-                    )
-                })
-                .unwrap_or(0);
+            let del_bits = match unsafe {
+                crate::builtins::attr::descriptor_bind(
+                    py,
+                    raw_del_bits,
+                    Some(MoltObject::from_ptr(class_ptr).bits()),
+                    Some(obj_bits),
+                )
+            } {
+                Ok(Some(bits)) => bits,
+                Ok(None) | Err(()) => return,
+            };
             let _del_owner = (del_bits != 0)
                 .then(|| obj_from_bits(del_bits).as_ptr())
                 .flatten()
@@ -4834,6 +4837,7 @@ mod tests {
                 .as_ptr()
                 .expect("replacement class namespace");
             let descriptor = unsafe { crate::dict_get_in_place(_py, namespace, dict_name) }
+                .expect("namespace lookup succeeded")
                 .expect("sealed class owns an instance dictionary descriptor");
             let descriptor_ptr = crate::obj_from_bits(descriptor).as_ptr().unwrap();
             assert_eq!(

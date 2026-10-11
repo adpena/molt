@@ -736,9 +736,6 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             super::ops_dict::molt_dict_copy(MoltObject::from_ptr(live_namespace).bits());
         let namespace = obj_from_bits(staged_bits).as_ptr().ok_or(())?;
         owners.push(crate::PtrDropGuard::new(namespace));
-        if exception_pending(py) {
-            return Err(());
-        }
         let fields_name = intern_static_name(
             py,
             &runtime_state(py).interned.field_offsets_name,
@@ -749,14 +746,13 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             &runtime_state(py).interned.molt_layout_size,
             b"__molt_layout_size__",
         );
-        if exception_pending(py) {
+        if obj_from_bits(fields_name).as_ptr().is_none()
+            || obj_from_bits(size_name).as_ptr().is_none()
+        {
             return Err(());
         }
-        let original = dict_get_in_place(py, namespace, fields_name)
+        let original = dict_get_in_place(py, namespace, fields_name)?
             .filter(|&bits| !obj_from_bits(bits).is_none());
-        if exception_pending(py) {
-            return Err(());
-        }
         let original_ptr = match original {
             Some(bits) => Some(
                 obj_from_bits(bits)
@@ -776,14 +772,11 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             inc_ref_bits(py, bits);
         }
         let _original_owner = original_ptr.map(crate::PtrDropGuard::new);
-        let size_hint = dict_get_in_place(py, namespace, size_name)
+        let size_hint = dict_get_in_place(py, namespace, size_name)?
             .and_then(|bits| obj_from_bits(bits).as_int())
             .filter(|&size| size > 0)
             .map(|size| usize::try_from(size).map_err(|_| overflow(py)))
             .transpose()?;
-        if exception_pending(py) {
-            return Err(());
-        }
         let mut prefix = super::class_reserved_layout_prefix(class);
         let tail = super::class_reserved_layout_tail(py, class);
         let best = class_best_base(py, class)?;
@@ -1024,13 +1017,9 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             let staged_bits = super::ops_dict::molt_dict_copy(map);
             let staged = obj_from_bits(staged_bits).as_ptr().ok_or(())?;
             owners.push(crate::PtrDropGuard::new(staged));
-            if exception_pending(py) {
-                return Err(());
-            }
             for field in visible {
                 let offset = i64::try_from(field.offset).map_err(|_| overflow(py))?;
-                dict_set_in_place(py, staged, field.name, MoltObject::from_int(offset).bits());
-                if exception_pending(py) {
+                if !dict_set_in_place(py, staged, field.name, MoltObject::from_int(offset).bits()) {
                     return Err(());
                 }
             }
@@ -1063,11 +1052,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             );
             let descriptor_ptr = obj_from_bits(descriptor).as_ptr().ok_or(())?;
             let _descriptor_owner = crate::PtrDropGuard::new(descriptor_ptr);
-            if exception_pending(py) {
-                return Err(());
-            }
-            dict_set_in_place(py, namespace, name, descriptor);
-            if exception_pending(py) {
+            if !dict_set_in_place(py, namespace, name, descriptor) {
                 return Err(());
             }
             published_names.push(name);
@@ -1080,10 +1065,10 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             })
         {
             let name = intern_static_name(py, &runtime_state(py).interned.dict_name, b"__dict__");
-            if exception_pending(py) {
+            if obj_from_bits(name).as_ptr().is_none() {
                 return Err(());
             }
-            if dict_get_in_place(py, namespace, name).is_none() {
+            if dict_get_in_place(py, namespace, name)?.is_none() {
                 let descriptor = crate::builtins::types::alloc_native_descriptor(
                     py,
                     crate::builtins::types::NativeDescriptorSpec {
@@ -1099,11 +1084,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                 );
                 let descriptor_ptr = obj_from_bits(descriptor).as_ptr().ok_or(())?;
                 let _descriptor_owner = crate::PtrDropGuard::new(descriptor_ptr);
-                if exception_pending(py) {
-                    return Err(());
-                }
-                dict_set_in_place(py, namespace, name, descriptor);
-                if exception_pending(py) {
+                if !dict_set_in_place(py, namespace, name, descriptor) {
                     return Err(());
                 }
             }
@@ -1128,11 +1109,8 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
         let record_owner = crate::PtrDropGuard::new(record_ptr);
         // Construction hints are consumed into the private record/cache.
         // They never survive publication as Python class attributes.
-        dict_del_in_place(py, namespace, fields_name);
-        dict_del_in_place(py, namespace, size_name);
-        if exception_pending(py) {
-            return Err(());
-        }
+        dict_del_in_place(py, namespace, fields_name)?;
+        dict_del_in_place(py, namespace, size_name)?;
         Ok(PreparedLayout {
             record: MoltObject::from_ptr(record_ptr).bits(),
             size,
@@ -1263,7 +1241,7 @@ mod tests {
                 let namespace = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
                 let name = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
                 let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
-                dict_set_in_place(py, namespace, name, empty);
+                assert!(dict_set_in_place(py, namespace, name, empty));
                 assert!(crate::builtins::attr::capture_class_slot_declaration_for_seal(py, class));
                 let iterator = crate::molt_iter(empty);
                 dec_ref_bits(py, name);
@@ -1291,12 +1269,12 @@ mod tests {
             for name in names {
                 dec_ref_bits(py, name);
             }
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 py,
                 namespace,
                 slots_name,
                 MoltObject::from_ptr(declaration).bits(),
-            );
+            ));
             dec_ref_bits(py, slots_name);
             dec_ref_bits(py, MoltObject::from_ptr(declaration).bits());
             super::super::class_finish_definition(py, class_ptr).expect("sealed test class");
@@ -1343,7 +1321,7 @@ mod tests {
                 let namespace = obj_from_bits(class_dict_bits(admitted_ptr))
                     .as_ptr()
                     .unwrap();
-                dict_set_in_place(py, namespace, slots, empty);
+                assert!(dict_set_in_place(py, namespace, slots, empty));
                 assert!(
                     crate::builtins::attr::capture_class_slot_declaration_for_seal(
                         py,
@@ -1355,7 +1333,7 @@ mod tests {
                 // publication; rebinding names cannot reopen construction.
                 let original_bases = class_bases_bits(admitted_ptr);
                 let changed = MoltObject::from_ptr(alloc_tuple(py, &[weak])).bits();
-                dict_set_in_place(py, namespace, slots, changed);
+                assert!(dict_set_in_place(py, namespace, slots, changed));
                 dec_ref_bits(py, changed);
                 for base in [native.object, native.set] {
                     let result = molt_class_set_base(admitted, base);
@@ -1399,19 +1377,19 @@ mod tests {
                 ] {
                     let namespace = alloc_dict_with_pairs(py, &[]);
                     if let Some(declaration) = declaration {
-                        dict_set_in_place(py, namespace, slots, declaration);
+                        assert!(dict_set_in_place(py, namespace, slots, declaration));
                     }
                     let static_class = molt_class_new(name);
                     let static_ptr = obj_from_bits(static_class).as_ptr().unwrap();
                     let result = molt_class_set_base(static_class, base);
                     dec_ref_bits(py, result);
                     if let Some(declaration) = declaration {
-                        dict_set_in_place(
+                        assert!(dict_set_in_place(
                             py,
                             obj_from_bits(class_dict_bits(static_ptr)).as_ptr().unwrap(),
                             slots,
                             declaration,
-                        );
+                        ));
                     }
                     super::super::class_finish_definition(py, static_ptr)
                         .expect("static slot admission");
@@ -1431,7 +1409,7 @@ mod tests {
                         let policy = crate::builtins::attr::class_slots_info(py, class).unwrap();
                         assert_eq!(policy.encode(), expected);
                         let namespace = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
-                        dict_set_in_place(py, namespace, slots, empty);
+                        assert!(dict_set_in_place(py, namespace, slots, empty));
                         assert_eq!(
                             super::super::layout::class_slot_declaration_bits(class),
                             record
@@ -1693,12 +1671,14 @@ mod tests {
                     obj_from_bits(class_dict_bits(base_ptr)).as_ptr().unwrap(),
                     x,
                 )
+                .unwrap()
                 .unwrap();
                 let child_descriptor = dict_get_in_place(
                     py,
                     obj_from_bits(class_dict_bits(child_ptr)).as_ptr().unwrap(),
                     x,
                 )
+                .unwrap()
                 .unwrap();
                 let object = alloc_instance_for_class(py, child_ptr);
                 assert!(obj_from_bits(object).as_ptr().is_some());
@@ -1709,14 +1689,15 @@ mod tests {
                     base_descriptor,
                     object,
                     Some(base_value),
-                );
+                )
+                .unwrap();
                 let missing = crate::builtins::types::native_descriptor_get(
                     py,
                     child_descriptor,
                     Some(object),
                     None,
                 );
-                dec_ref_bits(py, missing);
+                assert!(missing.is_err());
                 assert!(exception_pending(py));
                 clear_exception(py);
                 crate::builtins::types::native_descriptor_mutate(
@@ -1724,14 +1705,16 @@ mod tests {
                     child_descriptor,
                     object,
                     Some(child_value),
-                );
+                )
+                .unwrap();
                 assert_eq!(
                     crate::builtins::types::native_descriptor_get(
                         py,
                         base_descriptor,
                         Some(object),
                         None
-                    ),
+                    )
+                    .unwrap(),
                     base_value
                 );
                 assert_eq!(
@@ -1740,17 +1723,19 @@ mod tests {
                         child_descriptor,
                         Some(object),
                         None
-                    ),
+                    )
+                    .unwrap(),
                     child_value
                 );
-                crate::builtins::types::native_descriptor_mutate(py, base_descriptor, object, None);
+                crate::builtins::types::native_descriptor_mutate(py, base_descriptor, object, None)
+                    .unwrap();
                 let missing = crate::builtins::types::native_descriptor_get(
                     py,
                     base_descriptor,
                     Some(object),
                     None,
                 );
-                dec_ref_bits(py, missing);
+                assert!(missing.is_err());
                 assert!(exception_pending(py));
                 clear_exception(py);
                 assert_eq!(
@@ -1759,7 +1744,8 @@ mod tests {
                         child_descriptor,
                         Some(object),
                         None
-                    ),
+                    )
+                    .unwrap(),
                     child_value
                 );
                 dec_ref_bits(py, object);
@@ -1781,7 +1767,9 @@ mod tests {
                 let object = alloc_instance_for_class(py, class_ptr);
                 let ptr = obj_from_bits(object).as_ptr().unwrap();
                 let tail = super::super::layout::dict_subclass_storage_slot(ptr).unwrap();
-                let backing = super::super::ops::dict_like_bits_from_ptr(py, ptr).unwrap();
+                let backing = super::super::ops::dict_like_bits_from_ptr(py, ptr)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(*tail, backing);
                 for_each_field(py, class_ptr, &mut |field| {
                     assert!(field.offset + WORD <= tail as usize - ptr as usize);
@@ -1790,7 +1778,11 @@ mod tests {
                 // with a second owner that hides the broken physical invariant.
                 *tail = MoltObject::from_int(99).bits();
                 dec_ref_bits(py, backing);
-                assert!(super::super::ops::dict_like_bits_from_ptr(py, ptr).is_none());
+                assert!(
+                    super::super::ops::dict_like_bits_from_ptr(py, ptr)
+                        .unwrap()
+                        .is_none()
+                );
                 assert!(exception_pending(py));
                 assert_eq!(*tail, MoltObject::from_int(99).bits());
                 clear_exception(py);

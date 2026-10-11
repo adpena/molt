@@ -2832,7 +2832,10 @@ mod resolver_admission_tests {
                         }
                         clear_exception(py);
                         assert_eq!(
-                            unsafe { dict_get_in_place(py, modules_ptr, name) },
+                            unsafe {
+                                dict_get_in_place(py, modules_ptr, name)
+                                    .expect("dictionary lookup succeeds")
+                            },
                             None,
                             "failed import must not publish a module"
                         );

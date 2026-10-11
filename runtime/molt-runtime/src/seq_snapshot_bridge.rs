@@ -217,8 +217,8 @@ mod tests {
             let dict = alloc_dict_with_pairs(py, &[keys[0], value, keys[1], value, keys[2], value]);
             assert!(!dict.is_null());
             unsafe {
-                assert!(dict_del_in_place(py, dict, keys[1]));
-                dict_set_in_place(py, dict, keys[3], value);
+                assert_eq!(dict_del_in_place(py, dict, keys[1]), Ok(true));
+                assert!(dict_set_in_place(py, dict, keys[3], value));
             }
             assert!(!exception_pending(py));
             assert_eq!(owners(value), 4);
@@ -260,7 +260,12 @@ mod tests {
             assert!(!value_ptr.is_null());
             let value = MoltObject::from_ptr(value_ptr).bits();
             unsafe {
-                dict_set_in_place(py, dict, MoltObject::from_int(7).bits(), value);
+                assert!(dict_set_in_place(
+                    py,
+                    dict,
+                    MoltObject::from_int(7).bits(),
+                    value
+                ));
             }
             assert_eq!(owners(value), 2);
             // Zero denies the canonical snapshot reservation; one admits it

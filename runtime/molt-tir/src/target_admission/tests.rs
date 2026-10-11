@@ -576,7 +576,9 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
         },
         OpIR {
             kind: "const_bigint".to_string(),
-            s_value: Some((1_u64 << 53).to_string()),
+            bytes: Some(molt_ir::literal_payload::integer_literal_bytes(
+                1_i128 << 53,
+            )),
             out: Some("out".to_string()),
             ..OpIR::default()
         },
@@ -584,22 +586,25 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
         validate_numeric_target_contract(&function_ir(vec![op]), &target)
             .expect("exact concrete literal must be admitted");
     }
-    for (payload, reason) in [
-        ("9007199254740993", "exact concrete value authority"),
-        ("-9007199254740993", "exact concrete value authority"),
-        ("not-an-int", "exact concrete value authority"),
+    for payload in [
+        molt_ir::literal_payload::integer_literal_bytes(9_007_199_254_740_993),
+        molt_ir::literal_payload::integer_literal_bytes(-9_007_199_254_740_993),
+        vec![0, 0],
     ] {
         let error = validate_numeric_target_contract(
             &function_ir(vec![OpIR {
                 kind: "const_bigint".to_string(),
-                s_value: Some(payload.to_string()),
+                bytes: Some(payload.clone()),
                 out: Some("out".to_string()),
                 ..OpIR::default()
             }]),
             &target,
         )
         .expect_err("unsafe or malformed bigint literal must reject");
-        assert!(error.contains(reason), "{payload}: {error}");
+        assert!(
+            error.contains("exact concrete value authority"),
+            "{payload:?}: {error}"
+        );
     }
 }
 

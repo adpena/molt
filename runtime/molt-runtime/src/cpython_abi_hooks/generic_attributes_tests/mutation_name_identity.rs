@@ -229,10 +229,13 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
                 .expect("materialized generic dictionary");
                 let dictionary = obj_from_bits(dictionary).as_ptr().unwrap();
                 assert_eq!(
-                    crate::dict_get_in_place(py, dictionary, name),
+                    crate::dict_get_in_place(py, dictionary, name).unwrap(),
                     Some(value_bits)
                 );
-                assert_eq!(crate::dict_get_in_place(py, dictionary, spelling), None);
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, spelling).unwrap(),
+                    None
+                );
                 assert!(crate::dict_live_entries(dictionary).any(|row| row.key == name));
                 let read = object::PyObject_GenericGetAttr(view, name_view);
                 assert_eq!(take_bits(read), value_bits);
@@ -240,7 +243,10 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
                     object::PyObject_GenericSetAttr(view, name_view, std::ptr::null_mut()),
                     0
                 );
-                assert_eq!(crate::dict_get_in_place(py, dictionary, name), None);
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, name).unwrap(),
+                    None
+                );
                 assert!(!crate::exception_pending(py));
                 refcount::Py_DECREF(view);
             }
@@ -382,7 +388,7 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     "normal assignment"
                 });
                 assert_eq!(
-                    crate::dict_get_in_place(py, dictionary, spelling),
+                    crate::dict_get_in_place(py, dictionary, spelling).unwrap(),
                     Some(MoltObject::from_int(31).bits())
                 );
                 let key = crate::dict_live_entries(dictionary)
@@ -406,7 +412,10 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                 } else {
                     "normal deletion"
                 });
-                assert_eq!(crate::dict_get_in_place(py, dictionary, spelling), None);
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, spelling).unwrap(),
+                    None
+                );
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
             }
             assert_eq!(HASH_CALLS.with(Cell::get), 0);

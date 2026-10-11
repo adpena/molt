@@ -219,7 +219,7 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
         }
         let exit_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
-        let Some(exit_bits) =
+        let Ok(Some(exit_bits)) =
             lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
         else {
             return;
@@ -334,14 +334,16 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                         &runtime_state(_py).interned.enter_name,
                         b"__enter__",
                     );
-                    let Some(enter_bits) = lookup_special_method_bits(
+                    let enter_method = lookup_special_method_bits(
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         enter_name_bits,
-                    ) else {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
+                    );
+                    let enter_method = match enter_method {
+                        Ok(method) => method,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
+                    let Some(enter_bits) = enter_method else {
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
@@ -349,8 +351,10 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                         );
                     };
                     let res = call_callable0(_py, enter_bits);
+                    let failed = exception_pending(_py);
                     dec_ref_bits(_py, enter_bits);
-                    if exception_pending(_py) {
+                    if failed {
+                        dec_ref_bits(_py, res);
                         return MoltObject::none().bits();
                     }
                     context_stack_push(_py, ctx_bits);
@@ -401,22 +405,23 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                         &runtime_state(_py).interned.exit_name,
                         b"__exit__",
                     );
-                    let Some(exit_bits) = lookup_special_method_bits(
+                    let exit_method = lookup_special_method_bits(
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         exit_name_bits,
-                    ) else {
-                        context_stack_pop(_py, ctx_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
+                    );
+                    context_stack_pop(_py, ctx_bits);
+                    let exit_method = match exit_method {
+                        Ok(method) => method,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
+                    let Some(exit_bits) = exit_method else {
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
                             "context manager missing __exit__",
                         );
                     };
-                    context_stack_pop(_py, ctx_bits);
                     let res = call_context_exit(_py, exit_bits, exc_bits);
                     dec_ref_bits(_py, exit_bits);
                     res

@@ -29,10 +29,8 @@ pub(super) fn dict(
                 let key = Pin::borrow(py, row.key);
                 let value = Pin::borrow(py, row.value);
                 let hash = row.hash.expect("live dictionary row").get();
-                let found = dict_find_entry_with_hash(py, right, key.bits, hash);
-                if exception_pending(py) {
-                    return Err(molt_runtime_core::ErrorIndicatorSet);
-                }
+                let found = dict_find_entry_with_hash(py, right, key.bits, hash)
+                    .map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
                 let Some(found) = found else {
                     return Ok(false);
                 };
@@ -41,9 +39,6 @@ pub(super) fn dict(
                 drop(other);
                 drop(value);
                 drop(key);
-                if exception_pending(py) {
-                    return Err(molt_runtime_core::ErrorIndicatorSet);
-                }
                 if !equal {
                     return Ok(false);
                 }
@@ -196,12 +191,9 @@ pub(super) fn view_contains(
             .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         let _dict = Pin::borrow(py, MoltObject::from_ptr(dict).bits());
         if family == BuiltinComparison::DictKeys {
-            let found = crate::object::ops::dict_find_entry(py, dict, item);
-            return if exception_pending(py) {
-                Err(molt_runtime_core::ErrorIndicatorSet)
-            } else {
-                Ok(found.is_some())
-            };
+            return crate::object::ops::dict_find_entry(py, dict, item)
+                .map(|found| found.is_some())
+                .map_err(|()| molt_runtime_core::ErrorIndicatorSet);
         }
         let Some(tuple) = obj_from_bits(item).as_ptr() else {
             return Ok(false);
@@ -218,10 +210,8 @@ pub(super) fn view_contains(
         };
         let key = Pin::borrow(py, key);
         let value = Pin::borrow(py, value);
-        let found = crate::object::ops::dict_find_entry(py, dict, key.bits);
-        if exception_pending(py) {
-            return Err(molt_runtime_core::ErrorIndicatorSet);
-        }
+        let found = crate::object::ops::dict_find_entry(py, dict, key.bits)
+            .map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
         let Some(found) = found else {
             return Ok(false);
         };

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import integer_literal_value
+
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -143,10 +145,12 @@ def primitive_const_values(definitions: dict[str, MoltOp]) -> dict[str, Any]:
         value = op.args[0]
         # Constructor semantics, not the host payload's numeric equality,
         # determine the exact result type (e.g. CONST_FLOAT([1]) is float).
-        if type(value) not in (bool, int, float, str):
+        if type(value) not in (bool, int, float, str, bytes):
             continue
         try:
-            if op.kind in {"CONST_BIGINT", "CONST_INT"}:
+            if op.kind == "CONST_BIGINT":
+                value = integer_literal_value(value)
+            elif op.kind == "CONST_INT":
                 value = int(value)
             elif op.kind == "CONST_BOOL":
                 value = bool(value)
@@ -631,7 +635,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             if op.kind == "CONST_BOOL":
                 return bool(op.args[0])
             if op.kind == "CONST_BIGINT":
-                return int(op.args[0])
+                return integer_literal_value(op.args[0])
             if op.kind == "CONST_FLOAT":
                 return float(op.args[0])
             if op.kind == "CONST_STR":

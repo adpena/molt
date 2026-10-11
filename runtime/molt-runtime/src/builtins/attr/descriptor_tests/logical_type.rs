@@ -37,8 +37,11 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 crate::molt_getattr_builtin(receiver, name, missing),
                 crate::molt_object_getattribute(receiver, name),
                 unsafe { crate::molt_get_attr_object(receiver, b"__class__".as_ptr(), 9) },
-                unsafe { object_attr_lookup_with_dict(py, receiver, name, dictionary, false) }
-                    .expect("generic dictionary lookup preserves the logical type"),
+                unsafe {
+                    object_attr_lookup_with_dict(py, receiver, name, dictionary, false)
+                        .expect("operation succeeds")
+                }
+                .expect("generic dictionary lookup preserves the logical type"),
             ];
             for actual in reads {
                 assert!(!exception_pending(py));
@@ -95,7 +98,8 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 await_name,
                 missing,
             );
-            let result = object_attr_lookup_with_dict(py, future, await_name, dictionary, false);
+            let result = object_attr_lookup_with_dict(py, future, await_name, dictionary, false)
+                .expect("operation succeeds");
             assert_eq!(
                 result,
                 Some(missing),
@@ -161,9 +165,14 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
         assert_eq!(CLASS_DESCRIPTOR_CALLS.load(Ordering::Relaxed), 0);
         assert_eq!(type_of_bits(py, receiver), owner);
         let root = obj_from_bits(builtin_classes(py).object).as_ptr().unwrap();
-        let descriptor = unsafe { class_attr_lookup_raw_mro(py, root, name) }.unwrap();
-        let result =
-            unsafe { descriptor_bind(py, descriptor, Some(owner), Some(receiver)) }.unwrap();
+        let descriptor =
+            unsafe { class_attr_lookup_raw_mro(py, root, name).expect("operation succeeds") }
+                .unwrap();
+        let result = unsafe {
+            descriptor_bind(py, descriptor, Some(owner), Some(receiver))
+                .expect("operation succeeds")
+        }
+        .unwrap();
         assert_eq!(
             result, owner,
             "the inherited data descriptor reads actual type identity"
@@ -285,7 +294,9 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
                 name,
                 MoltObject::from_int(99).bits(),
             );
-            let own = object_attr_lookup_with_dict(py, proxy, name, dictionary, false).unwrap();
+            let own = object_attr_lookup_with_dict(py, proxy, name, dictionary, false)
+                .expect("operation succeeds")
+                .unwrap();
             assert_eq!(
                 own, receiver,
                 "readonly native metadata is a data descriptor"
@@ -312,6 +323,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
                 obj_from_bits(body_new_owner).as_ptr().unwrap(),
                 new_name,
             )
+            .expect("operation succeeds")
             .unwrap();
             assert_eq!(
                 object_type_id(obj_from_bits(body_new).as_ptr().unwrap()),
@@ -330,7 +342,9 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             let assigned = crate::molt_set_attr_name(base, new_name, probe);
             dec_ref_bits(py, assigned);
             assert!(!exception_pending(py), "late constructor assignment");
-            let selected = super_resolve_method_unbound(py, child, receiver, new_name).unwrap();
+            let selected = super_resolve_method_unbound(py, child, receiver, new_name)
+                .expect("resolution succeeds")
+                .unwrap();
             assert_eq!(selected.func_bits, probe);
             dec_ref_bits(py, selected.func_bits);
             let bound_new = crate::molt_get_attr_name(proxy, new_name);
@@ -355,7 +369,9 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             );
             assert_eq!(
                 new,
-                crate::builtins::methods::type_method_bits(py, "__new__").unwrap()
+                crate::builtins::methods::type_method_bits(py, "__new__")
+                    .expect("method lookup succeeds")
+                    .unwrap()
             );
             assert!(!exception_pending(py));
             for bits in [
@@ -461,8 +477,9 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
                 }
-                let result =
-                    object_attr_lookup_with_dict(py, coroutine, name, dictionary, false).unwrap();
+                let result = object_attr_lookup_with_dict(py, coroutine, name, dictionary, false)
+                    .expect("operation succeeds")
+                    .unwrap();
                 assert_eq!(result, expected);
                 dec_ref_bits(py, result);
                 use molt_cpython_abi::api::{object, refcount};
@@ -503,7 +520,9 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
                 let child = test_class_bits(py, label, &[base], &[]);
                 let receiver = call_callable0(py, child);
                 assert!(!exception_pending(py), "native subtype construction");
-                let (_, selected) = super_attribute_owned(py, child, child, init_name).unwrap();
+                let (_, selected) = super_attribute_owned(py, child, child, init_name)
+                    .expect("lookup succeeds")
+                    .unwrap();
                 assert_eq!(
                     NativeCallableKind::from_class(
                         py,
@@ -512,7 +531,11 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
                     Some(NativeCallableKind::WrapperDescriptor)
                 );
                 dec_ref_bits(py, selected);
-                assert!(super_resolve_method_unbound(py, child, receiver, init_name).is_none());
+                assert!(
+                    super_resolve_method_unbound(py, child, receiver, init_name)
+                        .expect("resolution succeeds")
+                        .is_none()
+                );
                 assert!(!exception_pending(py));
                 let proxy = crate::molt_super_new(child, receiver);
                 let bound = crate::molt_get_attr_name(proxy, init_name);
@@ -545,10 +568,16 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
             let receiver = call_callable0(py, child);
             let method_name = string_bits(py, b"method");
             let field_name = string_bits(py, b"field");
-            let selected = super_resolve_method_unbound(py, child, receiver, method_name).unwrap();
+            let selected = super_resolve_method_unbound(py, child, receiver, method_name)
+                .expect("resolution succeeds")
+                .unwrap();
             assert_eq!(selected.func_bits, probe);
             dec_ref_bits(py, selected.func_bits);
-            assert!(super_resolve_method_unbound(py, child, receiver, field_name).is_none());
+            assert!(
+                super_resolve_method_unbound(py, child, receiver, field_name)
+                    .expect("resolution succeeds")
+                    .is_none()
+            );
             let proxy = crate::molt_super_new(child, receiver);
             let bound = crate::molt_get_attr_name(proxy, method_name);
             let result = call_callable0(py, bound);

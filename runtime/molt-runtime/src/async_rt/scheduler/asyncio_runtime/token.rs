@@ -9,10 +9,14 @@ pub(super) fn asyncio_parse_token_id(_py: &PyToken<'_>, token_bits: u64) -> Resu
                 .as_deref(),
             Some("1")
         ) {
+            let value = crate::format_obj_str(_py, obj_from_bits(token_bits));
+            if crate::exception_pending(_py) {
+                return Err(crate::MoltObject::none().bits());
+            }
             eprintln!(
                 "molt bad asyncio token type={} value={}",
                 crate::type_name(_py, obj_from_bits(token_bits)),
-                crate::format_obj_str(_py, obj_from_bits(token_bits))
+                value
             );
         }
         return Err(raise_exception::<u64>(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::builtins::attr::descriptor_call1;
+use crate::builtins::exceptions::ExceptionValue;
 
 /// One normal attribute transaction for custom and default lookup, on ordinary
 /// objects, dataclasses, dictless instances and metaclass receivers alike.
@@ -12,42 +13,33 @@ pub(super) unsafe fn attribute_lookup_transaction<F>(
     name: u64,
     default: Option<u64>,
     default_lookup: F,
-) -> Option<u64>
+) -> Result<Option<u64>, ()>
 where
-    F: FnOnce() -> Option<u64>,
+    F: FnOnce() -> Result<Option<u64>, ()>,
 {
     unsafe {
-        let receiver_bits = MoltObject::from_ptr(object).bits();
+        let receiver = MoltObject::from_ptr(object).bits();
         let owner_bits = MoltObject::from_ptr(owner).bits();
-        inc_ref_bits(py, receiver_bits);
+        inc_ref_bits(py, receiver);
         inc_ref_bits(py, owner_bits);
         inc_ref_bits(py, name);
-        let fallback_name =
-            intern_static_name(py, &runtime_state(py).interned.getattr_name, b"__getattr__");
-        let fallback = if exception_pending(py) {
-            None
-        } else {
-            class_attr_lookup_raw_mro(py, owner, fallback_name)
-        };
-        if let Some(bits) = fallback {
-            inc_ref_bits(py, bits);
-        }
-        let getattribute_name = intern_static_name(
-            py,
-            &runtime_state(py).interned.getattribute_name,
-            b"__getattribute__",
-        );
-        let raw = if exception_pending(py) {
-            None
-        } else {
-            class_attr_lookup_raw_mro(py, owner, getattribute_name)
-        };
-        if let Some(bits) = raw {
-            inc_ref_bits(py, bits);
-        }
+        let mut fallback = None;
+        let mut raw = None;
         let result = (|| {
-            if exception_pending(py) {
-                return None;
+            let fallback_name =
+                intern_static_name(py, &runtime_state(py).interned.getattr_name, b"__getattr__");
+            fallback = class_attr_lookup_raw_mro(py, owner, fallback_name)?;
+            if let Some(bits) = fallback {
+                inc_ref_bits(py, bits);
+            }
+            let getattribute_name = intern_static_name(
+                py,
+                &runtime_state(py).interned.getattribute_name,
+                b"__getattribute__",
+            );
+            raw = class_attr_lookup_raw_mro(py, owner, getattribute_name)?;
+            if let Some(bits) = raw {
+                inc_ref_bits(py, bits);
             }
             if fallback.is_some() {
                 traceback_suppress_enter();
@@ -55,49 +47,32 @@ where
             exception_stack_push();
             let result = match raw {
                 Some(raw) if Some(raw) != default => {
-                    descriptor_call1(py, raw, owner, Some(receiver_bits), name)
+                    descriptor_call1(py, raw, owner, Some(receiver), name)
                 }
                 _ => default_lookup(),
             };
+            // The selected getattribute callable retires with its own failure
+            // still selected, before AttributeError suppression or fallback.
+            if let Some(bits) = raw.take() {
+                dec_ref_bits(py, bits);
+            }
             if fallback.is_some() {
                 traceback_suppress_exit();
             }
-            // A default lookup reports a missing attribute as None without a
-            // pending exception. A Python None value is Some(tagged None).
-            let use_fallback = if exception_pending(py) {
-                if let Some(bits) = result {
-                    dec_ref_bits(py, bits);
-                }
-                let error = molt_exception_last_pending();
-                let admitted = fallback.is_some()
-                    && exception_matches_builtin_name(py, error, "AttributeError");
-                if admitted {
-                    molt_exception_clear();
-                }
-                dec_ref_bits(py, error);
-                admitted
-            } else if result.is_some() {
-                exception_stack_pop(py);
-                return result;
-            } else {
-                fallback.is_some()
+            let result = match result {
+                Err(()) if fallback.is_some() && clear_attribute_error_if_pending(py) => Ok(None),
+                result => result,
             };
             exception_stack_pop(py);
-            if !use_fallback {
-                return None;
+            match (result, fallback) {
+                (Ok(None), Some(fallback)) => {
+                    exception_stack_push();
+                    let result = descriptor_call1(py, fallback, owner, Some(receiver), name);
+                    exception_stack_pop(py);
+                    result
+                }
+                (result, _) => result,
             }
-            exception_stack_push();
-            let result = descriptor_call1(py, fallback.unwrap(), owner, Some(receiver_bits), name);
-            let result = if exception_pending(py) {
-                if let Some(bits) = result {
-                    dec_ref_bits(py, bits);
-                }
-                None
-            } else {
-                result
-            };
-            exception_stack_pop(py);
-            result
         })();
         if let Some(bits) = raw {
             dec_ref_bits(py, bits);
@@ -107,7 +82,7 @@ where
         }
         dec_ref_bits(py, name);
         dec_ref_bits(py, owner_bits);
-        dec_ref_bits(py, receiver_bits);
+        dec_ref_bits(py, receiver);
         result
     }
 }
@@ -116,7 +91,7 @@ pub(crate) unsafe fn type_attr_lookup_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe { type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, true) }
 }
 
@@ -124,7 +99,7 @@ pub(crate) unsafe fn type_attr_lookup_ptr_default(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe { type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false) }
 }
 
@@ -133,7 +108,7 @@ unsafe fn type_attr_lookup_ptr_inner(
     obj_ptr: *mut u8,
     attr_bits: u64,
     allow_meta_custom_getattribute: bool,
-) -> Option<u64> {
+) -> Result<Option<u64>, ()> {
     unsafe {
         let class_bits = MoltObject::from_ptr(obj_ptr).bits();
         inc_ref_bits(_py, class_bits);
@@ -159,44 +134,46 @@ unsafe fn type_attr_lookup_ptr_inner(
                     obj_ptr,
                     meta_ptr,
                     attr_bits,
-                    type_method_bits(_py, "__getattribute__"),
+                    type_method_bits(_py, "__getattribute__")?,
                     || type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
                 );
             }
-            if let Some(meta_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, attr_bits)
-                && descriptor_is_data(_py, meta_bits)
-            {
-                return descriptor_bind(
-                    _py,
-                    meta_bits,
-                    Some(MoltObject::from_ptr(meta_ptr).bits()),
-                    Some(class_bits),
-                );
-            }
         }
-        // Intrinsic metadata is represented by the metaclass data descriptors
-        // above. Local namespace entries use ordinary descriptor precedence.
-        let dict_bits = class_dict_bits(obj_ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-            && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits)
+        // Capture one metaclass selection before descriptor classification or
+        // class-namespace equality can replace its only namespace reference.
+        let mut meta_attribute = match meta_ptr {
+            Some(meta) => class_attr_lookup_raw_mro(_py, meta, attr_bits)?
+                .map(|bits| ExceptionValue::pin(_py, bits)),
+            None => None,
+        };
+        if let Some(selected) = meta_attribute.as_ref()
+            && descriptor_has_get(_py, selected.bits())?
+            && descriptor_is_data(_py, selected.bits())?
         {
             return descriptor_bind(
                 _py,
-                val_bits,
-                Some(MoltObject::from_ptr(obj_ptr).bits()),
-                None,
+                selected.bits(),
+                meta_ptr.map(|ptr| MoltObject::from_ptr(ptr).bits()),
+                Some(class_bits),
             );
+        }
+        // Look through the class MRO once. Pin the local selection before
+        // retiring the unused metaclass candidate, then bind it.
+        if let Some(bits) = class_attr_lookup_raw_mro(_py, obj_ptr, attr_bits)? {
+            let local = ExceptionValue::pin(_py, bits);
+            drop(meta_attribute.take());
+            return descriptor_bind(_py, local.bits(), Some(class_bits), None);
         }
 
         if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
             let builtins = builtin_classes(_py);
             if class_bits == builtins.object
                 && (name == "__getattribute__" || name == "__setattr__" || name == "__delattr__")
-                && let Some(func_bits) = object_method_bits(_py, name.as_str())
+                && let Some(func_bits) = object_method_bits(_py, name.as_str())?
             {
                 inc_ref_bits(_py, func_bits);
-                return Some(func_bits);
+                drop(meta_attribute.take());
+                return Ok(Some(func_bits));
             }
             if name == "__init_subclass__"
                 && matches!(
@@ -214,36 +191,38 @@ unsafe fn type_attr_lookup_ptr_inner(
             }
             if class_bits == builtins.tuple
                 && name == "__new__"
-                && let Some(func_bits) = builtin_class_method_bits(_py, class_bits, "__new__")
+                && let Some(func_bits) = builtin_class_method_bits(_py, class_bits, "__new__")?
             {
                 inc_ref_bits(_py, func_bits);
-                return Some(func_bits);
+                drop(meta_attribute.take());
+                return Ok(Some(func_bits));
             }
 
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
             if name == "fromkeys" {
                 let builtins = builtin_classes(_py);
                 if issubclass_bits(class_bits, builtins.dict)
-                    && let Some(func_bits) = dict_method_bits(_py, name.as_str())
+                    && let Some(func_bits) = dict_method_bits(_py, name.as_str())?
                 {
-                    let bound_bits = molt_bound_method_new(func_bits, class_bits);
-                    return Some(bound_bits);
+                    let function = ExceptionValue::pin(_py, func_bits);
+                    drop(meta_attribute.take());
+                    let bound_bits = molt_bound_method_new(function.bits(), class_bits);
+                    return if obj_from_bits(bound_bits).is_none() {
+                        Err(())
+                    } else {
+                        Ok(Some(bound_bits))
+                    };
                 }
             }
         }
-        if let Some(class_bits) = class_attr_lookup(_py, obj_ptr, obj_ptr, None, attr_bits) {
-            return Some(class_bits);
-        }
-        if let Some(meta_ptr) = meta_ptr
-            && let Some(meta_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, attr_bits)
-        {
+        if let Some(selected) = meta_attribute {
             return descriptor_bind(
                 _py,
-                meta_bits,
-                Some(MoltObject::from_ptr(meta_ptr).bits()),
+                selected.bits(),
+                meta_ptr.map(|ptr| MoltObject::from_ptr(ptr).bits()),
                 Some(class_bits),
             );
         }
-        None
+        Ok(None)
     }
 }

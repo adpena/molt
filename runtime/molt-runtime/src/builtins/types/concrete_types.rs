@@ -959,12 +959,7 @@ fn mappingproxy_admits(py: &PyToken<'_>, mapping: u64) -> Result<bool, ()> {
                 }
             }
         }
-        let present = crate::object::ops::value_supports_mp_subscript(py, mapping);
-        if exception_pending(py) {
-            Err(())
-        } else {
-            Ok(present)
-        }
+        crate::object::ops::value_supports_mp_subscript(py, mapping)
     }
 }
 
@@ -1167,9 +1162,7 @@ pub extern "C" fn molt_types_simplenamespace_init(
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    let _ =
-                        dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwargs_bits);
-                    if exception_pending(_py) {
+                    if !dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwargs_bits) {
                         dec_ref_bits(_py, dict_bits);
                         return MoltObject::none().bits();
                     }
@@ -1205,8 +1198,9 @@ pub extern "C" fn molt_types_simplenamespace_init(
                     // SimpleNamespace.__init__ populates its dictionary
                     // directly, like CPython: neither subclass setters nor
                     // data descriptors participate in constructor state.
-                    crate::object::field_storage::set_item(_py, self_ptr, key_bits, val_bits);
-                    if exception_pending(_py) {
+                    if crate::object::field_storage::set_item(_py, self_ptr, key_bits, val_bits)
+                        .is_err()
+                    {
                         dec_ref_bits(_py, dict_bits);
                         return MoltObject::none().bits();
                     }

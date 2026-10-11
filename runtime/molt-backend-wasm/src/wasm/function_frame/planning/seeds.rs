@@ -138,12 +138,12 @@ impl FrameConstSeedPlan {
 fn anchor_key(policy: WasmConstOpPolicy, op: &OpIR) -> FrameConstAnchorKey {
     match policy.literal_payload() {
         None if op.kind == "const" => FrameConstAnchorKey::Integer(
-            op.value
-                .unwrap_or_else(|| panic!("const requires an i64 payload"))
-                .to_string()
-                .into_bytes(),
+            molt_ir::literal_payload::integer_literal_bytes(i128::from(
+                op.value
+                    .unwrap_or_else(|| panic!("const requires an i64 payload")),
+            )),
         ),
-        Some(OwnedLiteralPayloadKind::BigintDecimal) => {
+        Some(OwnedLiteralPayloadKind::BigintBytes) => {
             FrameConstAnchorKey::Integer(policy.required_simple_ir_literal_bytes(op).to_vec())
         }
         None => FrameConstAnchorKey::RuntimeSingleton(op.kind.clone()),
@@ -214,7 +214,14 @@ mod tests {
         let mut wide = literal("const", "wide", "");
         wide.s_value = None;
         wide.value = Some(i64::MAX);
-        let bigint = literal("const_bigint", "big", &i64::MAX.to_string());
+        let bigint = OpIR {
+            kind: "const_bigint".into(),
+            out: Some("big".into()),
+            bytes: Some(molt_ir::literal_payload::integer_literal_bytes(i128::from(
+                i64::MAX,
+            ))),
+            ..OpIR::default()
+        };
         for ops in [vec![wide.clone(), bigint.clone()], vec![bigint, wide]] {
             let (_, frame) =
                 WasmFunctionFramePlan::for_function(&function(ops)).into_function_and_frame();

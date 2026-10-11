@@ -18,10 +18,10 @@
     "molt-private": 46,
     "private": 63,
     "private-representation": 1,
-    "public-version-specific": 172,
+    "public-version-specific": 174,
     "stable-abi": 466,
     "stable-values-version-specific-layout": 1,
-    "total": 760,
+    "total": 762,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -1666,6 +1666,20 @@
       "stability": "public-version-specific",
       "surface": "function",
       "symbol": "PyList_CheckExact",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_Clear",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_Extend",
       "verified_at": "3.12"
     },
     {

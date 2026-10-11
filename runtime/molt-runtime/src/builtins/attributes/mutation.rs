@@ -35,88 +35,96 @@ enum CustomMutationDispatch {
     Handled,
 }
 
-/// Resolve and invoke one `__setattr__`/`__delattr__` hook without first
-/// materializing a bound method. The descriptor invocation boundary pins the
-/// raw hook and receiver, preserves binding exceptions, and owns the ignored
-/// call result exactly once.
-unsafe fn dispatch_custom_mutation(
-    py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    object_ptr: *mut u8,
-    attr_bits: u64,
+/// Capture the action hook once. A counterpart probe may mutate its namespace.
+unsafe fn selected_mutation_hook<'a, 'py>(
+    py: &'a PyToken<'py>,
+    class: *mut u8,
     mutation: DescriptorMutation,
-    default_policy: CustomMutationDefaultPolicy,
-) -> CustomMutationDispatch {
+) -> Result<Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>>, ()> {
     unsafe {
         let names = &runtime_state(py).interned;
-        let (hook_name, default_symbol) = match mutation {
-            DescriptorMutation::Set(_) => (
-                intern_static_name(py, &names.setattr_name, b"__setattr__"),
-                fn_key!(crate::molt_object_setattr),
-            ),
-            DescriptorMutation::Delete => (
-                intern_static_name(py, &names.delattr_name, b"__delattr__"),
-                fn_key!(crate::molt_object_delattr),
-            ),
-        };
-        let Some(raw_hook) = class_attr_lookup_raw_mro(py, class_ptr, hook_name) else {
-            return if exception_pending(py) {
-                CustomMutationDispatch::Handled
-            } else {
-                CustomMutationDispatch::ContinueStorage
-            };
-        };
-        if exception_pending(py) {
-            return CustomMutationDispatch::Handled;
-        }
-        let default_symbol = match default_policy {
-            CustomMutationDefaultPolicy::InvokeAnyHook => None,
-            CustomMutationDefaultPolicy::ContinueOnObjectDefault => Some(default_symbol),
-        };
-        if let Some(default_symbol) = default_symbol
-            && crate::call::type_policy::callable_matches_runtime_symbol(
-                Some(raw_hook),
-                default_symbol,
-            )
-        {
-            return CustomMutationDispatch::ContinueStorage;
-        }
-
-        let object_bits = MoltObject::from_ptr(object_ptr).bits();
-        let result = match mutation {
-            DescriptorMutation::Set(value) => {
-                descriptor_call2(py, raw_hook, class_ptr, Some(object_bits), attr_bits, value)
+        let name = match mutation {
+            DescriptorMutation::Set(_) => {
+                intern_static_name(py, &names.setattr_name, b"__setattr__")
             }
             DescriptorMutation::Delete => {
-                descriptor_call1(py, raw_hook, class_ptr, Some(object_bits), attr_bits)
+                intern_static_name(py, &names.delattr_name, b"__delattr__")
             }
         };
-        if let Some(result_bits) = result {
-            crate::call::discard_owned_call_result(py, result_bits);
-        }
-        CustomMutationDispatch::Handled
+        Ok(class_attr_lookup_raw_mro(py, class, name)?
+            .map(|bits| crate::builtins::exceptions::ExceptionValue::pin(py, bits)))
     }
 }
 
-/// Resolve the shared set/delete slot as a pair. Two object defaults install
-/// the raw generic slot even on metaclasses; two type defaults install the type
-/// slot. A mixed pair retains the explicit wrappers and their admission rules.
-unsafe fn normal_class_mutation_access(
+unsafe fn invoke_selected_mutation(
     py: &PyToken<'_>,
+    hook: crate::builtins::exceptions::ExceptionValue<'_, '_>,
     class: *mut u8,
-    metaclass: *mut u8,
+    object: *mut u8,
     name: u64,
     mutation: DescriptorMutation,
+) -> Result<CustomMutationDispatch, ()> {
+    unsafe {
+        let object_bits = MoltObject::from_ptr(object).bits();
+        let result = match mutation {
+            DescriptorMutation::Set(value) => {
+                descriptor_call2(py, hook.bits(), class, Some(object_bits), name, value)
+            }
+            DescriptorMutation::Delete => {
+                descriptor_call1(py, hook.bits(), class, Some(object_bits), name)
+            }
+        };
+        drop(hook);
+        if let Some(result) = result? {
+            crate::call::discard_owned_call_result(py, result);
+        }
+        Ok(CustomMutationDispatch::Handled)
+    }
+}
+
+unsafe fn dispatch_custom_mutation(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    object: *mut u8,
+    name: u64,
+    mutation: DescriptorMutation,
+    default_policy: CustomMutationDefaultPolicy,
+) -> Result<CustomMutationDispatch, ()> {
+    unsafe {
+        let Some(hook) = selected_mutation_hook(py, class, mutation)? else {
+            return Ok(CustomMutationDispatch::ContinueStorage);
+        };
+        let default = match mutation {
+            DescriptorMutation::Set(_) => fn_key!(crate::molt_object_setattr),
+            DescriptorMutation::Delete => fn_key!(crate::molt_object_delattr),
+        };
+        if default_policy == CustomMutationDefaultPolicy::ContinueOnObjectDefault
+            && crate::call::type_policy::callable_matches_runtime_symbol(Some(hook.bits()), default)
+        {
+            return Ok(CustomMutationDispatch::ContinueStorage);
+        }
+        invoke_selected_mutation(py, hook, class, object, name, mutation)
+    }
+}
+
+/// A known exact namespace can classify paired defaults without callbacks.
+unsafe fn pure_mutation_default_access(
+    py: &PyToken<'_>,
+    class: *mut u8,
 ) -> Option<AttributeMutation> {
     unsafe {
-        let names = &runtime_state(py).interned;
-        let setter_name = intern_static_name(py, &names.setattr_name, b"__setattr__");
-        let deleter_name = intern_static_name(py, &names.delattr_name, b"__delattr__");
-        let setter = class_attr_lookup_raw_mro(py, metaclass, setter_name);
-        let deleter = class_attr_lookup_raw_mro(py, metaclass, deleter_name);
-        if exception_pending(py) {
-            return None;
-        }
+        let setter = crate::builtins::attr::class_namespace_lookup_mro_pure(
+            py,
+            class,
+            b"__setattr__",
+            None,
+        )?;
+        let deleter = crate::builtins::attr::class_namespace_lookup_mro_pure(
+            py,
+            class,
+            b"__delattr__",
+            None,
+        )?;
         for (set, delete, access) in [
             (
                 fn_key!(crate::molt_object_setattr),
@@ -135,17 +143,75 @@ unsafe fn normal_class_mutation_access(
                 return Some(access);
             }
         }
-        match dispatch_custom_mutation(
-            py,
-            metaclass,
-            class,
-            name,
-            mutation,
-            CustomMutationDefaultPolicy::InvokeAnyHook,
-        ) {
-            CustomMutationDispatch::Handled => None,
-            CustomMutationDispatch::ContinueStorage => Some(AttributeMutation::TypeDefault),
+        None
+    }
+}
+
+/// Only a selected default needs its counterpart to identify a shared slot.
+/// Keep the selected owner pinned; custom hooks never probe the other action.
+unsafe fn selected_mutation_default_access(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    mutation: DescriptorMutation,
+    selected: u64,
+) -> Result<Option<AttributeMutation>, ()> {
+    unsafe {
+        for (set, delete, access) in [
+            (
+                fn_key!(crate::molt_object_setattr),
+                fn_key!(crate::molt_object_delattr),
+                AttributeMutation::Generic,
+            ),
+            (
+                fn_key!(crate::builtins::methods::type_setattr),
+                fn_key!(crate::builtins::methods::type_delattr),
+                AttributeMutation::TypeDefault,
+            ),
+        ] {
+            let (action, counterpart, expected) = match mutation {
+                DescriptorMutation::Set(_) => (set, DescriptorMutation::Delete, delete),
+                DescriptorMutation::Delete => (
+                    delete,
+                    DescriptorMutation::Set(MoltObject::none().bits()),
+                    set,
+                ),
+            };
+            if crate::call::type_policy::callable_matches_runtime_symbol(Some(selected), action) {
+                let other = selected_mutation_hook(py, class, counterpart)?;
+                return Ok(crate::call::type_policy::callable_matches_runtime_symbol(
+                    other.as_ref().map(|value| value.bits()),
+                    expected,
+                )
+                .then_some(access));
+            }
         }
+        Ok(None)
+    }
+}
+
+/// Two object defaults install the generic slot even on metaclasses; two type
+/// defaults install the type slot. A mixed pair invokes the selected wrapper.
+unsafe fn normal_class_mutation_access(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    metaclass: *mut u8,
+    name: u64,
+    mutation: DescriptorMutation,
+) -> Result<Option<AttributeMutation>, ()> {
+    unsafe {
+        if let Some(access) = pure_mutation_default_access(py, metaclass) {
+            return Ok(Some(access));
+        }
+        let Some(selected) = selected_mutation_hook(py, metaclass, mutation)? else {
+            return Ok(Some(AttributeMutation::TypeDefault));
+        };
+        if let Some(access) =
+            selected_mutation_default_access(py, metaclass, mutation, selected.bits())?
+        {
+            return Ok(Some(access));
+        }
+        invoke_selected_mutation(py, selected, metaclass, class, name, mutation)?;
+        Ok(None)
     }
 }
 
@@ -216,13 +282,20 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
             // this guard on both return and unwind, before caller displaced
             // owners. Prepared declaration/registry pins stay in the transaction.
             let retirement = PublicationRetirement(native);
-            let status = if exception_pending(self.py) {
-                molt_cpython_abi::api::errors::with_preserved_error(|| retirement.0.publish())
+            let mut publish = || {
+                if retirement.0.publish() == 0 {
+                    Ok(())
+                } else {
+                    Err(molt_cpython_abi::ErrorIndicatorSet)
+                }
+            };
+            let status = if molt_cpython_abi::api::errors::raised_error_pending() {
+                molt_cpython_abi::api::errors::with_saved_error(publish)
             } else {
-                retirement.0.publish()
+                publish()
             };
             drop(retirement);
-            if status == 0 {
+            if status.is_ok() {
                 true
             } else {
                 crate::cpython_abi_hooks::propagate_native_failure(
@@ -248,31 +321,32 @@ unsafe fn mutate_class_descriptor(
     name: u64,
     mutation: DescriptorMutation,
     access: AttributeMutation,
-) -> Option<u64> {
+) -> Result<bool, ()> {
     unsafe {
         let mut publication = if access == AttributeMutation::TypeDefault {
-            let Some(publication) = TypeMutation::prepare(py, class, name) else {
-                return Some(MoltObject::none().bits());
-            };
-            Some(publication)
+            Some(TypeMutation::prepare(py, class, name).ok_or(())?)
         } else {
             None
         };
-        let result =
-            apply_descriptor_mutation(py, descriptor, MoltObject::from_ptr(class).bits(), mutation);
-        if result.is_some()
-            && !exception_pending(py)
+        let applied = apply_descriptor_mutation(
+            py,
+            descriptor,
+            MoltObject::from_ptr(class).bits(),
+            mutation,
+        )?;
+        if applied
             && let Some(publication) = publication.as_mut()
+            && !publication.publish()
         {
-            publication.publish();
+            return Err(());
         }
-        result
+        Ok(applied)
     }
 }
 
 /// Translate protocol-level mutation outcomes at the attribute boundary, where
 /// the owner and attribute name needed by CPython-compatible diagnostics live.
-/// `None` means the class entry is not a data descriptor and ordinary storage
+/// `Ok(false)` means the class entry is not a data descriptor and ordinary storage
 /// mutation should continue.
 #[inline]
 unsafe fn apply_descriptor_mutation(
@@ -280,12 +354,11 @@ unsafe fn apply_descriptor_mutation(
     descriptor_bits: u64,
     instance_bits: u64,
     mutation: DescriptorMutation,
-) -> Option<u64> {
+) -> Result<bool, ()> {
     match unsafe { descriptor_mutate(py, descriptor_bits, instance_bits, mutation) } {
-        DescriptorMutationOutcome::Applied | DescriptorMutationOutcome::Error => {
-            Some(MoltObject::none().bits())
-        }
-        DescriptorMutationOutcome::NotDescriptor => None,
+        DescriptorMutationOutcome::Applied => Ok(true),
+        DescriptorMutationOutcome::Error => Err(()),
+        DescriptorMutationOutcome::NotDescriptor => Ok(false),
     }
 }
 
@@ -298,11 +371,16 @@ unsafe fn mutate_callable_descriptor(
     object: *mut u8,
     name: u64,
     mutation: DescriptorMutation,
-) -> Option<u64> {
+) -> Result<bool, ()> {
     unsafe {
-        let class =
-            obj_from_bits(type_of_bits(py, MoltObject::from_ptr(object).bits())).as_ptr()?;
-        let descriptor = class_attr_lookup_raw_mro(py, class, name)?;
+        let Some(class) =
+            obj_from_bits(type_of_bits(py, MoltObject::from_ptr(object).bits())).as_ptr()
+        else {
+            return Ok(false);
+        };
+        let Some(descriptor) = class_attr_lookup_raw_mro(py, class, name)? else {
+            return Ok(false);
+        };
         apply_descriptor_mutation(
             py,
             descriptor,
@@ -318,20 +396,25 @@ unsafe fn mutate_cell_descriptor(
     cell_ptr: *mut u8,
     name_bits: u64,
     mutation: DescriptorMutation,
-) -> Option<u64> {
+) -> Result<bool, ()> {
     let class_bits = crate::builtins::types::cell_class(py);
-    obj_from_bits(class_bits)
+    let Some(class) = obj_from_bits(class_bits)
         .as_ptr()
         .filter(|class| unsafe { object_type_id(*class) } == TYPE_ID_TYPE)
-        .and_then(|class| unsafe { class_attr_lookup_raw_mro(py, class, name_bits) })
-        .and_then(|descriptor| unsafe {
-            apply_descriptor_mutation(
-                py,
-                descriptor,
-                MoltObject::from_ptr(cell_ptr).bits(),
-                mutation,
-            )
-        })
+    else {
+        return Err(());
+    };
+    let Some(descriptor) = (unsafe { class_attr_lookup_raw_mro(py, class, name_bits) })? else {
+        return Ok(false);
+    };
+    unsafe {
+        apply_descriptor_mutation(
+            py,
+            descriptor,
+            MoltObject::from_ptr(cell_ptr).bits(),
+            mutation,
+        )
+    }
 }
 
 /// Canonical type defaults use one exact string while normal overrides and
@@ -371,27 +454,25 @@ unsafe fn mutate_class_namespace(
     name_bits: u64,
     name: &str,
     value: Option<u64>,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
         let Some(dict_ptr) = obj_from_bits(class_dict_bits(class_ptr)).as_ptr() else {
-            return false;
+            return Ok(false);
         };
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return false;
+            return Ok(false);
         }
-        let Some(mut publication) = TypeMutation::prepare(py, class_ptr, name_bits) else {
-            return false;
-        };
+        let mut publication = TypeMutation::prepare(py, class_ptr, name_bits).ok_or(())?;
         let retired = match value {
             Some(bits) => {
                 match crate::object::ops::dict_set_deferred(py, dict_ptr, name_bits, bits) {
                     Ok(retired) => retired,
-                    Err(()) => return false,
+                    Err(()) => return Err(()),
                 }
             }
-            None => match crate::object::ops::dict_del_deferred(py, dict_ptr, name_bits) {
+            None => match crate::object::ops::dict_del_deferred(py, dict_ptr, name_bits)? {
                 Some(retired) => retired,
-                None => return false,
+                None => return Ok(false),
             },
         };
         if name == "__del__" {
@@ -400,7 +481,7 @@ unsafe fn mutate_class_namespace(
         let published = publication.publish();
         drop(retired);
         drop(publication);
-        published
+        if published { Ok(true) } else { Err(()) }
     }
 }
 
@@ -412,27 +493,26 @@ unsafe fn mutate_class_physical_dictionary(
     class: *mut u8,
     name: u64,
     value: Option<u64>,
-) -> bool {
+) -> Result<bool, ()> {
     unsafe {
         if let Some(value) = value {
-            let result = crate::object::field_storage::set_item_deferred(py, class, name, value);
-            let applied = result.is_ok();
-            drop(result);
-            return applied;
+            let retired = crate::object::field_storage::set_item_deferred(py, class, name, value)?;
+            drop(retired);
+            return Ok(true);
         }
-        let Ok(Some(dictionary)) = crate::object::field_storage::current_dictionary(py, class)
-        else {
-            return false;
+        let Some(dictionary) = crate::object::field_storage::current_dictionary(py, class)? else {
+            return Ok(false);
         };
-        // Key equality may invoke Python. Keep the dictionary alive through
-        // deletion even when a callback changes the physical owner.
         inc_ref_bits(py, dictionary);
         let retired = crate::object::ops::dict_del_deferred(
             py,
             obj_from_bits(dictionary).as_ptr().unwrap(),
             name,
         );
-        let applied = retired.is_some();
+        let applied = retired
+            .as_ref()
+            .map(|retired| retired.is_some())
+            .map_err(|()| ());
         drop(retired);
         dec_ref_bits(py, dictionary);
         applied
@@ -465,413 +545,404 @@ pub unsafe extern "C" fn molt_set_attr_generic(
 }
 
 unsafe fn set_attr_ptr_with_name(
+    _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
     attr_name: &str,
     val_bits: u64,
     access: AttributeMutation,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let type_id = object_type_id(obj_ptr);
-            if let Some(result) = readonly_descriptor_metadata(_py, obj_ptr, attr_name) {
-                return result;
-            }
-            // Foreign (C-extension) object: route through its own `tp_setattro`
-            // via the ABI bridge. This is the shared setattr helper every entry
-            // point funnels through, so foreign dispatch lives here.
-            if type_id == crate::TYPE_ID_FOREIGN {
-                let c_ptr = crate::object::foreign::foreign_ptr_from_obj(obj_ptr);
-                let rc = molt_cpython_abi::bridge::molt_foreign_setattr(
-                    c_ptr,
-                    attr_bits,
-                    Some(val_bits),
-                    access,
-                );
-                if rc < 0 {
-                    crate::cpython_abi_hooks::propagate_native_failure(
-                        _py,
-                        "native attribute assignment",
-                    );
-                }
-                return MoltObject::none().bits();
-            }
-            if type_id == TYPE_ID_MODULE {
-                let result = if access == AttributeMutation::Normal
-                    && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                    && dispatch_custom_mutation(
-                        _py,
-                        class_ptr,
-                        obj_ptr,
-                        attr_bits,
-                        DescriptorMutation::Set(val_bits),
-                        CustomMutationDefaultPolicy::InvokeAnyHook,
-                    ) == CustomMutationDispatch::Handled
-                {
-                    MoltObject::none().bits()
-                } else {
-                    object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits)
-                };
-                return result;
-            }
-            if type_id == TYPE_ID_TYPE {
-                let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-                let metaclass_bits = type_of_bits(_py, class_bits);
-                let access = if access == AttributeMutation::Normal {
-                    let Some(metaclass) = obj_from_bits(metaclass_bits).as_ptr() else {
-                        return MoltObject::none().bits();
-                    };
-                    let Some(access) = normal_class_mutation_access(
-                        _py,
-                        obj_ptr,
-                        metaclass,
-                        attr_bits,
-                        DescriptorMutation::Set(val_bits),
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    access
-                } else {
-                    access
-                };
-                if access != AttributeMutation::Generic
-                    && crate::object::class_is_immutable(_py, obj_ptr)
-                {
-                    // CPython: setting an attribute on an immutable builtin type
-                    // raises `cannot set '<attr>' attribute of immutable type
-                    // '<type>'` (version-stable across 3.12/3.13/3.14).
-                    let class_label = class_name_for_error(class_bits);
-                    let msg = format!(
-                        "cannot set '{attr_name}' attribute of immutable type '{class_label}'"
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                if crate::object::class_definition_is_finished(obj_ptr)
-                    && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
-                {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "class layout metadata is immutable",
-                    );
-                }
-                // A class object is an instance of its metaclass. Its metaclass
-                // data descriptors therefore own mutation before the class's
-                // local metadata and namespace paths.
-                let Some((attr_bits, _canonical_name)) =
-                    canonical_type_mutation_name(_py, attr_bits, access)
-                else {
-                    return MoltObject::none().bits();
-                };
-                let descriptor_result = obj_from_bits(metaclass_bits)
-                    .as_ptr()
-                    .filter(|ptr| object_type_id(*ptr) == TYPE_ID_TYPE)
-                    .and_then(|metaclass_ptr| {
-                        class_attr_lookup_raw_mro(_py, metaclass_ptr, attr_bits).and_then(
-                            |descriptor_bits| {
-                                mutate_class_descriptor(
-                                    _py,
-                                    obj_ptr,
-                                    descriptor_bits,
-                                    attr_bits,
-                                    DescriptorMutation::Set(val_bits),
-                                    access,
-                                )
-                            },
-                        )
-                    });
-                if let Some(result) = descriptor_result {
-                    return result;
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let applied = if access == AttributeMutation::Generic {
-                    mutate_class_physical_dictionary(_py, obj_ptr, attr_bits, Some(val_bits))
-                } else {
-                    mutate_class_namespace(_py, obj_ptr, attr_bits, attr_name, Some(val_bits))
-                };
-                if applied || exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return attr_error(_py, "type", attr_name);
-            }
-            if type_id == crate::TYPE_ID_CELL {
-                let result = mutate_cell_descriptor(
+        let type_id = object_type_id(obj_ptr);
+        if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
+            return Err(());
+        }
+        // Foreign (C-extension) object: route through its own `tp_setattro`
+        // via the ABI bridge. This is the shared setattr helper every entry
+        // point funnels through, so foreign dispatch lives here.
+        if type_id == crate::TYPE_ID_FOREIGN {
+            let c_ptr = crate::object::foreign::foreign_ptr_from_obj(obj_ptr);
+            let rc = molt_cpython_abi::bridge::molt_foreign_setattr(
+                c_ptr,
+                attr_bits,
+                Some(val_bits),
+                access,
+            );
+            if rc < 0 {
+                crate::cpython_abi_hooks::propagate_native_failure(
                     _py,
+                    "native attribute assignment",
+                );
+                return Err(());
+            }
+            return Ok(());
+        }
+        if type_id == TYPE_ID_MODULE {
+            let result = if access == AttributeMutation::Normal
+                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
+                && dispatch_custom_mutation(
+                    _py,
+                    class_ptr,
                     obj_ptr,
                     attr_bits,
                     DescriptorMutation::Set(val_bits),
-                );
-                if let Some(result) = result {
-                    return result;
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return attr_error(_py, "cell", attr_name);
-            }
-            if NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)).is_some() {
-                let result = mutate_callable_descriptor(
-                    _py,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Set(val_bits),
-                );
-                if let Some(result) = result {
-                    return result;
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return attr_error(
-                    _py,
-                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                    attr_name,
-                );
-            }
-            if type_id == TYPE_ID_FUNCTION {
-                // Runtime metadata writers retain direct access. Public mutation
-                // follows the sealed Python type, with its writable module member.
-                if !crate::object::field_storage::class_allows_dictionary(_py, obj_ptr) {
-                    return attr_error_with_obj(
-                        _py,
-                        type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                        attr_name,
-                        MoltObject::from_ptr(obj_ptr).bits(),
-                    );
-                }
-                if attr_name == "__code__" {
-                    if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
-                        return raise_exception::<_>(
-                            _py,
-                            "AttributeError",
-                            &format!(
-                                "'{}' object has no attribute '__code__'",
-                                type_name(_py, MoltObject::from_ptr(obj_ptr)),
-                            ),
-                        );
-                    }
-                    let val_obj = obj_from_bits(val_bits);
-                    let Some(val_ptr) = val_obj.as_ptr() else {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "function __code__ must be a code object",
-                        );
-                    };
-                    if object_type_id(val_ptr) != TYPE_ID_CODE {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "function __code__ must be a code object",
-                        );
-                    }
-                    let Some(code_identity) =
-                        crate::object::layout::code_callable_identity(val_ptr)
-                    else {
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "function __code__ must have a published callable identity",
-                        );
-                    };
-                    if !code_identity.call_abi.is_reconstructible() {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "cannot assign opaque runtime-context code to a Python function",
-                        );
-                    }
-                    let function_abi = function_call_abi(obj_ptr);
-                    if !function_abi.is_reconstructible() {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "cannot replace code on an opaque runtime-context function",
-                        );
-                    }
-                    if function_abi != code_identity.call_abi {
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "function and code object use different callable context ABIs",
-                        );
-                    }
-                    let closure_bits = function_closure_bits(obj_ptr);
-                    let closure_len = if closure_bits == 0 || obj_from_bits(closure_bits).is_none()
-                    {
-                        0
-                    } else {
-                        let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits)
-                        else {
-                            return raise_exception::<_>(
-                                _py,
-                                "SystemError",
-                                "function closure is not a tuple",
-                            );
-                        };
-                        if closure.first_non_cell.is_some() {
-                            return raise_exception::<_>(
-                                _py,
-                                "SystemError",
-                                "function closure contains a non-cell value",
-                            );
-                        }
-                        closure.len
-                    };
-                    let freevars_bits = code_freevars_bits(val_ptr);
-                    let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
-                        return raise_exception::<_>(
-                            _py,
-                            "SystemError",
-                            "code freevars metadata is not a tuple",
-                        );
-                    };
-                    if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
-                        return raise_exception::<_>(
-                            _py,
-                            "SystemError",
-                            "code freevars metadata is not a tuple",
-                        );
-                    }
-                    let freevars_len = crate::object::seq_access::len(freevars_ptr);
-                    if closure_len != freevars_len {
-                        let name =
-                            string_obj_to_owned(obj_from_bits(function_name_bits(_py, obj_ptr)))
-                                .unwrap_or_else(|| "<function>".to_string());
-                        let msg = format!(
-                            "{name}() requires a code object with {closure_len} free vars, not {freevars_len}"
-                        );
-                        return raise_exception::<_>(_py, "ValueError", &msg);
-                    }
-                    if !crate::builtins::functions::function_replace_code_bits(
-                        _py, obj_ptr, val_bits,
-                    ) {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::none().bits();
-                }
-                if attr_name == "__closure__" {
-                    return raise_exception::<_>(_py, "AttributeError", "readonly attribute");
-                }
-                if attr_name == "__annotate__" && pep649_enabled(_py) {
-                    let val_obj = obj_from_bits(val_bits);
-                    if !val_obj.is_none() {
-                        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
-                        if !callable_ok {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "__annotate__ must be callable or None",
-                            );
-                        }
-                        function_set_annotations_bits(_py, obj_ptr, 0);
-                    }
-                    function_set_annotate_bits(_py, obj_ptr, val_bits);
-                    return MoltObject::none().bits();
-                }
-                if attr_name == "__annotations__" {
-                    let val_obj = obj_from_bits(val_bits);
-                    let ann_bits = if val_obj.is_none() {
-                        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-                        if dict_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        MoltObject::from_ptr(dict_ptr).bits()
-                    } else {
-                        let Some(val_ptr) = val_obj.as_ptr() else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "__annotations__ must be set to a dict object",
-                            );
-                        };
-                        if object_type_id(val_ptr) != TYPE_ID_DICT {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                "__annotations__ must be set to a dict object",
-                            );
-                        }
-                        val_bits
-                    };
-                    function_set_annotations_bits(_py, obj_ptr, ann_bits);
-                    if pep649_enabled(_py) {
-                        function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
-                    }
-                    return MoltObject::none().bits();
-                }
-                let result = mutate_callable_descriptor(
-                    _py,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Set(val_bits),
-                );
-                if result.is_some() || exception_pending(_py) {
-                    return result.unwrap_or(MoltObject::none().bits());
-                }
-                crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
-                return MoltObject::none().bits();
-            }
-            if type_id == TYPE_ID_CODE {
-                return attr_error(_py, "code", attr_name);
-            }
-            if type_id == TYPE_ID_DATACLASS {
-                if access == AttributeMutation::Normal
-                    && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && dispatch_custom_mutation(
-                        _py,
-                        class_ptr,
-                        obj_ptr,
-                        attr_bits,
-                        DescriptorMutation::Set(val_bits),
-                        CustomMutationDefaultPolicy::InvokeAnyHook,
-                    ) == CustomMutationDispatch::Handled
-                {
-                    return MoltObject::none().bits();
-                }
-                let result = dataclass_setattr_inner(
-                    _py,
-                    obj_ptr,
-                    attr_bits,
-                    attr_name,
-                    val_bits,
-                    access == AttributeMutation::Normal,
-                );
-                return result;
-            }
-            if crate::object::heap_kind_has_class_shape(type_id)
-                || crate::object::native_instance::has_fields(obj_ptr)
-                || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
+                    CustomMutationDefaultPolicy::InvokeAnyHook,
+                )? == CustomMutationDispatch::Handled
             {
-                let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                if class_bits != 0
-                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && access == AttributeMutation::Normal
-                    && dispatch_custom_mutation(
-                        _py,
-                        class_ptr,
-                        obj_ptr,
-                        attr_bits,
-                        DescriptorMutation::Set(val_bits),
-                        CustomMutationDefaultPolicy::ContinueOnObjectDefault,
-                    ) == CustomMutationDispatch::Handled
-                {
-                    return MoltObject::none().bits();
-                }
-                let result = object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits);
-                return result;
+                Ok(())
+            } else {
+                object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits)
+            };
+            return result;
+        }
+        if type_id == TYPE_ID_TYPE {
+            let class_bits = MoltObject::from_ptr(obj_ptr).bits();
+            let metaclass_bits = type_of_bits(_py, class_bits);
+            let access = if access == AttributeMutation::Normal {
+                let metaclass = obj_from_bits(metaclass_bits).as_ptr().ok_or(())?;
+                let Some(access) = normal_class_mutation_access(
+                    _py,
+                    obj_ptr,
+                    metaclass,
+                    attr_bits,
+                    DescriptorMutation::Set(val_bits),
+                )?
+                else {
+                    return Ok(());
+                };
+                access
+            } else {
+                access
+            };
+            if access != AttributeMutation::Generic
+                && crate::object::class_is_immutable(_py, obj_ptr)
+            {
+                // CPython: setting an attribute on an immutable builtin type
+                // raises `cannot set '<attr>' attribute of immutable type
+                // '<type>'` (version-stable across 3.12/3.13/3.14).
+                let class_label = class_name_for_error(class_bits);
+                let msg =
+                    format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
+                raise_exception::<()>(_py, "TypeError", &msg);
+                return Err(());
             }
-            setattr_no_attr_error_with_obj(
+            if crate::object::class_definition_is_finished(obj_ptr)
+                && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
+            {
+                raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+                return Err(());
+            }
+            // A class object is an instance of its metaclass. Its metaclass
+            // data descriptors therefore own mutation before the class's
+            // local metadata and namespace paths.
+            let (attr_bits, _canonical_name) =
+                canonical_type_mutation_name(_py, attr_bits, access).ok_or(())?;
+            if let Some(metaclass) = obj_from_bits(metaclass_bits)
+                .as_ptr()
+                .filter(|ptr| object_type_id(*ptr) == TYPE_ID_TYPE)
+                && let Some(descriptor) = class_attr_lookup_raw_mro(_py, metaclass, attr_bits)?
+                && mutate_class_descriptor(
+                    _py,
+                    obj_ptr,
+                    descriptor,
+                    attr_bits,
+                    DescriptorMutation::Set(val_bits),
+                    access,
+                )?
+            {
+                return Ok(());
+            }
+            let applied = if access == AttributeMutation::Generic {
+                mutate_class_physical_dictionary(_py, obj_ptr, attr_bits, Some(val_bits))?
+            } else {
+                mutate_class_namespace(_py, obj_ptr, attr_bits, attr_name, Some(val_bits))?
+            };
+            if applied {
+                return Ok(());
+            }
+            attr_error(_py, "type", attr_name);
+            return Err(());
+        }
+        if type_id == crate::TYPE_ID_CELL {
+            let result =
+                mutate_cell_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Set(val_bits))?;
+            if result {
+                return Ok(());
+            }
+            attr_error(_py, "cell", attr_name);
+            return Err(());
+        }
+        if NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)).is_some() {
+            let result = mutate_callable_descriptor(
+                _py,
+                obj_ptr,
+                attr_bits,
+                DescriptorMutation::Set(val_bits),
+            )?;
+            if result {
+                return Ok(());
+            }
+            attr_error(
                 _py,
                 type_name(_py, MoltObject::from_ptr(obj_ptr)),
                 attr_name,
-                MoltObject::from_ptr(obj_ptr).bits(),
-            )
-        })
+            );
+            return Err(());
+        }
+        if type_id == TYPE_ID_FUNCTION {
+            // Runtime metadata writers retain direct access. Public mutation
+            // follows the sealed Python type, with its writable module member.
+            if !crate::object::field_storage::class_allows_dictionary(_py, obj_ptr) {
+                attr_error_with_obj(
+                    _py,
+                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                    attr_name,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                );
+                return Err(());
+            }
+            if attr_name == "__code__" {
+                if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
+                    raise_exception::<()>(
+                        _py,
+                        "AttributeError",
+                        &format!(
+                            "'{}' object has no attribute '__code__'",
+                            type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                        ),
+                    );
+                    return Err(());
+                }
+                let val_obj = obj_from_bits(val_bits);
+                let Some(val_ptr) = val_obj.as_ptr() else {
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "function __code__ must be a code object",
+                    );
+                    return Err(());
+                };
+                if object_type_id(val_ptr) != TYPE_ID_CODE {
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "function __code__ must be a code object",
+                    );
+                    return Err(());
+                }
+                let Some(code_identity) = crate::object::layout::code_callable_identity(val_ptr)
+                else {
+                    raise_exception::<()>(
+                        _py,
+                        "ValueError",
+                        "function __code__ must have a published callable identity",
+                    );
+                    return Err(());
+                };
+                if !code_identity.call_abi.is_reconstructible() {
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "cannot assign opaque runtime-context code to a Python function",
+                    );
+                    return Err(());
+                }
+                let function_abi = function_call_abi(obj_ptr);
+                if !function_abi.is_reconstructible() {
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "cannot replace code on an opaque runtime-context function",
+                    );
+                    return Err(());
+                }
+                if function_abi != code_identity.call_abi {
+                    raise_exception::<()>(
+                        _py,
+                        "ValueError",
+                        "function and code object use different callable context ABIs",
+                    );
+                    return Err(());
+                }
+                let closure_bits = function_closure_bits(obj_ptr);
+                let closure_len = if closure_bits == 0 || obj_from_bits(closure_bits).is_none() {
+                    0
+                } else {
+                    let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits)
+                    else {
+                        raise_exception::<()>(
+                            _py,
+                            "SystemError",
+                            "function closure is not a tuple",
+                        );
+                        return Err(());
+                    };
+                    if closure.first_non_cell.is_some() {
+                        raise_exception::<()>(
+                            _py,
+                            "SystemError",
+                            "function closure contains a non-cell value",
+                        );
+                        return Err(());
+                    }
+                    closure.len
+                };
+                let freevars_bits = code_freevars_bits(val_ptr);
+                let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
+                    raise_exception::<()>(
+                        _py,
+                        "SystemError",
+                        "code freevars metadata is not a tuple",
+                    );
+                    return Err(());
+                };
+                if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
+                    raise_exception::<()>(
+                        _py,
+                        "SystemError",
+                        "code freevars metadata is not a tuple",
+                    );
+                    return Err(());
+                }
+                let freevars_len = crate::object::seq_access::len(freevars_ptr);
+                if closure_len != freevars_len {
+                    let name = string_obj_to_owned(obj_from_bits(function_name_bits(_py, obj_ptr)))
+                        .unwrap_or_else(|| "<function>".to_string());
+                    let msg = format!(
+                        "{name}() requires a code object with {closure_len} free vars, not {freevars_len}"
+                    );
+                    raise_exception::<()>(_py, "ValueError", &msg);
+                    return Err(());
+                }
+                if !crate::builtins::functions::function_replace_code_bits(_py, obj_ptr, val_bits) {
+                    return Err(());
+                }
+                return Ok(());
+            }
+            if attr_name == "__closure__" {
+                raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+                return Err(());
+            }
+            if attr_name == "__annotate__" && pep649_enabled(_py) {
+                let val_obj = obj_from_bits(val_bits);
+                if !val_obj.is_none() {
+                    let callable_ok = crate::builtins::callable::is_callable_impl(_py, val_bits);
+                    if !callable_ok {
+                        raise_exception::<()>(
+                            _py,
+                            "TypeError",
+                            "__annotate__ must be callable or None",
+                        );
+                        return Err(());
+                    }
+                    function_set_annotations_bits(_py, obj_ptr, 0);
+                }
+                function_set_annotate_bits(_py, obj_ptr, val_bits);
+                return Ok(());
+            }
+            if attr_name == "__annotations__" {
+                let val_obj = obj_from_bits(val_bits);
+                let ann_bits = if val_obj.is_none() {
+                    let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+                    if dict_ptr.is_null() {
+                        return Err(());
+                    }
+                    MoltObject::from_ptr(dict_ptr).bits()
+                } else {
+                    let Some(val_ptr) = val_obj.as_ptr() else {
+                        raise_exception::<()>(
+                            _py,
+                            "TypeError",
+                            "__annotations__ must be set to a dict object",
+                        );
+                        return Err(());
+                    };
+                    if object_type_id(val_ptr) != TYPE_ID_DICT {
+                        raise_exception::<()>(
+                            _py,
+                            "TypeError",
+                            "__annotations__ must be set to a dict object",
+                        );
+                        return Err(());
+                    }
+                    val_bits
+                };
+                function_set_annotations_bits(_py, obj_ptr, ann_bits);
+                if pep649_enabled(_py) {
+                    function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
+                }
+                return Ok(());
+            }
+            let result = mutate_callable_descriptor(
+                _py,
+                obj_ptr,
+                attr_bits,
+                DescriptorMutation::Set(val_bits),
+            )?;
+            if result {
+                return Ok(());
+            }
+            return crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
+        }
+        if type_id == TYPE_ID_CODE {
+            attr_error(_py, "code", attr_name);
+            return Err(());
+        }
+        if type_id == TYPE_ID_DATACLASS {
+            if access == AttributeMutation::Normal
+                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
+                && object_type_id(class_ptr) == TYPE_ID_TYPE
+                && dispatch_custom_mutation(
+                    _py,
+                    class_ptr,
+                    obj_ptr,
+                    attr_bits,
+                    DescriptorMutation::Set(val_bits),
+                    CustomMutationDefaultPolicy::InvokeAnyHook,
+                )? == CustomMutationDispatch::Handled
+            {
+                return Ok(());
+            }
+            let result = dataclass_setattr_inner(
+                _py,
+                obj_ptr,
+                attr_bits,
+                attr_name,
+                val_bits,
+                access == AttributeMutation::Normal,
+            );
+            return result;
+        }
+        if crate::object::heap_kind_has_class_shape(type_id)
+            || crate::object::native_instance::has_fields(obj_ptr)
+            || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
+        {
+            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            if class_bits != 0
+                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                && object_type_id(class_ptr) == TYPE_ID_TYPE
+                && access == AttributeMutation::Normal
+                && dispatch_custom_mutation(
+                    _py,
+                    class_ptr,
+                    obj_ptr,
+                    attr_bits,
+                    DescriptorMutation::Set(val_bits),
+                    CustomMutationDefaultPolicy::ContinueOnObjectDefault,
+                )? == CustomMutationDispatch::Handled
+            {
+                return Ok(());
+            }
+            let result = object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits);
+            return result;
+        }
+        setattr_no_attr_error_with_obj(
+            _py,
+            type_name(_py, MoltObject::from_ptr(obj_ptr)),
+            attr_name,
+            MoltObject::from_ptr(obj_ptr).bits(),
+        );
+        Err(())
     }
 }
 
@@ -880,10 +951,11 @@ unsafe fn module_delattr_namespace(
     obj_ptr: *mut u8,
     attr_bits: u64,
     attr_name: &str,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         if attr_name == "__dict__" {
-            return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+            return Err(());
         }
         let dict_bits = module_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -894,46 +966,56 @@ unsafe fn module_delattr_namespace(
                 &runtime_state(_py).interned.annotations_name,
                 b"__annotations__",
             );
+            if annotations_bits == 0 {
+                return Err(());
+            }
             if crate::object::ops_compare::string_storage_equal(attr_bits, annotations_bits) {
-                if dict_del_in_place(_py, dict_ptr, annotations_bits) {
+                if dict_del_in_place(_py, dict_ptr, annotations_bits)? {
                     if pep649_enabled(_py) {
                         let annotate_bits = intern_static_name(
                             _py,
                             &runtime_state(_py).interned.annotate_name,
                             b"__annotate__",
                         );
+                        if annotate_bits == 0 {
+                            return Err(());
+                        }
                         let none_bits = MoltObject::none().bits();
-                        dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits);
+                        if !dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits) {
+                            return Err(());
+                        }
                     }
-                    return MoltObject::none().bits();
+                    return Ok(());
                 }
                 let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr)))
                     .unwrap_or_default();
                 let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-                return raise_exception::<_>(_py, "AttributeError", &msg);
+                raise_exception::<()>(_py, "AttributeError", &msg);
+                return Err(());
             }
             let annotate_bits = intern_static_name(
                 _py,
                 &runtime_state(_py).interned.annotate_name,
                 b"__annotate__",
             );
+            if annotate_bits == 0 {
+                return Err(());
+            }
             if crate::object::ops_compare::string_storage_equal(attr_bits, annotate_bits)
                 && pep649_enabled(_py)
             {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot delete __annotate__ attribute",
-                );
+                raise_exception::<()>(_py, "TypeError", "cannot delete __annotate__ attribute");
+                return Err(());
             }
-            if dict_del_in_place(_py, dict_ptr, attr_bits) {
-                return MoltObject::none().bits();
+            if dict_del_in_place(_py, dict_ptr, attr_bits)? {
+                return Ok(());
             }
         }
         let module_name =
             string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
         let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-        attr_error_with_message(_py, &msg)
+        attr_error_with_message(_py, &msg);
+        Err(())
     }
 }
 
@@ -943,11 +1025,11 @@ unsafe fn del_attr_ptr_with_access(
     attr_bits: u64,
     attr_name: &str,
     access: AttributeMutation,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let type_id = object_type_id(obj_ptr);
-        if let Some(result) = readonly_descriptor_metadata(_py, obj_ptr, attr_name) {
-            return result;
+        if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
+            return Err(());
         }
         if type_id == crate::TYPE_ID_FOREIGN {
             let c_ptr = crate::object::foreign::foreign_ptr_from_obj(obj_ptr);
@@ -957,8 +1039,9 @@ unsafe fn del_attr_ptr_with_access(
                     _py,
                     "native attribute deletion",
                 );
+                return Err(());
             }
-            return MoltObject::none().bits();
+            return Ok(());
         }
         if type_id == TYPE_ID_MODULE {
             if access == AttributeMutation::Normal
@@ -970,9 +1053,9 @@ unsafe fn del_attr_ptr_with_access(
                     attr_bits,
                     DescriptorMutation::Delete,
                     CustomMutationDefaultPolicy::InvokeAnyHook,
-                ) == CustomMutationDispatch::Handled
+                )? == CustomMutationDispatch::Handled
             {
-                return MoltObject::none().bits();
+                return Ok(());
             }
             return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
         }
@@ -980,17 +1063,16 @@ unsafe fn del_attr_ptr_with_access(
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
             let metaclass_bits = type_of_bits(_py, class_bits);
             let access = if access == AttributeMutation::Normal {
-                let Some(metaclass) = obj_from_bits(metaclass_bits).as_ptr() else {
-                    return MoltObject::none().bits();
-                };
+                let metaclass = obj_from_bits(metaclass_bits).as_ptr().ok_or(())?;
                 let Some(access) = normal_class_mutation_access(
                     _py,
                     obj_ptr,
                     metaclass,
                     attr_bits,
                     DescriptorMutation::Delete,
-                ) else {
-                    return MoltObject::none().bits();
+                )?
+                else {
+                    return Ok(());
                 };
                 access
             } else {
@@ -1005,124 +1087,105 @@ unsafe fn del_attr_ptr_with_access(
                 let class_label = class_name_for_error(class_bits);
                 let msg =
                     format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                raise_exception::<()>(_py, "TypeError", &msg);
+                return Err(());
             }
             if crate::object::class_definition_is_finished(obj_ptr)
                 && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
             {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "class layout metadata is immutable",
-                );
+                raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+                return Err(());
             }
-            let Some((attr_bits, _canonical_name)) =
-                canonical_type_mutation_name(_py, attr_bits, access)
-            else {
-                return MoltObject::none().bits();
-            };
-            let descriptor_result = obj_from_bits(metaclass_bits)
+            let (attr_bits, _canonical_name) =
+                canonical_type_mutation_name(_py, attr_bits, access).ok_or(())?;
+            if let Some(metaclass) = obj_from_bits(metaclass_bits)
                 .as_ptr()
                 .filter(|ptr| object_type_id(*ptr) == TYPE_ID_TYPE)
-                .and_then(|metaclass_ptr| {
-                    class_attr_lookup_raw_mro(_py, metaclass_ptr, attr_bits).and_then(
-                        |descriptor_bits| {
-                            mutate_class_descriptor(
-                                _py,
-                                obj_ptr,
-                                descriptor_bits,
-                                attr_bits,
-                                DescriptorMutation::Delete,
-                                access,
-                            )
-                        },
-                    )
-                });
-            if let Some(result) = descriptor_result {
-                return result;
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
+                && let Some(descriptor) = class_attr_lookup_raw_mro(_py, metaclass, attr_bits)?
+                && mutate_class_descriptor(
+                    _py,
+                    obj_ptr,
+                    descriptor,
+                    attr_bits,
+                    DescriptorMutation::Delete,
+                    access,
+                )?
+            {
+                return Ok(());
             }
             let applied = if access == AttributeMutation::Generic {
-                mutate_class_physical_dictionary(_py, obj_ptr, attr_bits, None)
+                mutate_class_physical_dictionary(_py, obj_ptr, attr_bits, None)?
             } else {
-                mutate_class_namespace(_py, obj_ptr, attr_bits, attr_name, None)
+                mutate_class_namespace(_py, obj_ptr, attr_bits, attr_name, None)?
             };
-            if applied || exception_pending(_py) {
-                return MoltObject::none().bits();
+            if applied {
+                return Ok(());
             }
             if access == AttributeMutation::Generic {
-                return attr_error(_py, class_name_for_error(metaclass_bits), attr_name);
+                attr_error(_py, class_name_for_error(metaclass_bits), attr_name);
+                return Err(());
             }
             let class_name =
                 string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
             let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-            return attr_error_with_message(_py, &msg);
+            attr_error_with_message(_py, &msg);
+            return Err(());
         }
         if type_id == crate::TYPE_ID_CELL {
             let result =
-                mutate_cell_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete);
-            if let Some(result) = result {
-                return result;
+                mutate_cell_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete)?;
+            if result {
+                return Ok(());
             }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return attr_error(_py, "cell", attr_name);
+            attr_error(_py, "cell", attr_name);
+            return Err(());
         }
         if NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)).is_some() {
             let result =
-                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete);
-            if let Some(result) = result {
-                return result;
+                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete)?;
+            if result {
+                return Ok(());
             }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return attr_error(
+            attr_error(
                 _py,
                 type_name(_py, MoltObject::from_ptr(obj_ptr)),
                 attr_name,
             );
+            return Err(());
         }
         if type_id == TYPE_ID_FUNCTION {
             // Runtime metadata writers retain direct access. Public mutation
             // follows the sealed Python type, with its writable module member.
             if !crate::object::field_storage::class_allows_dictionary(_py, obj_ptr) {
-                return attr_error_with_obj(
+                attr_error_with_obj(
                     _py,
                     type_name(_py, MoltObject::from_ptr(obj_ptr)),
                     attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
+                return Err(());
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot delete __annotate__ attribute",
-                );
+                raise_exception::<()>(_py, "TypeError", "cannot delete __annotate__ attribute");
+                return Err(());
             }
             if attr_name == "__annotations__" {
                 function_set_annotations_bits(_py, obj_ptr, 0);
                 if pep649_enabled(_py) {
                     function_set_annotate_bits(_py, obj_ptr, MoltObject::none().bits());
                 }
-                return MoltObject::none().bits();
+                return Ok(());
             }
             let result =
-                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete);
-            if result.is_some() || exception_pending(_py) {
-                return result.unwrap_or(MoltObject::none().bits());
+                mutate_callable_descriptor(_py, obj_ptr, attr_bits, DescriptorMutation::Delete)?;
+            if result {
+                return Ok(());
             }
-            if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits) {
-                return MoltObject::none().bits();
+            if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)? {
+                return Ok(());
             }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return attr_error(_py, "function", attr_name);
+            attr_error(_py, "function", attr_name);
+            return Err(());
         }
         if type_id == TYPE_ID_DATACLASS {
             if access == AttributeMutation::Normal
@@ -1135,9 +1198,9 @@ unsafe fn del_attr_ptr_with_access(
                     attr_bits,
                     DescriptorMutation::Delete,
                     CustomMutationDefaultPolicy::InvokeAnyHook,
-                ) == CustomMutationDispatch::Handled
+                )? == CustomMutationDispatch::Handled
             {
-                return MoltObject::none().bits();
+                return Ok(());
             }
             return dataclass_delattr_inner(
                 _py,
@@ -1163,9 +1226,9 @@ unsafe fn del_attr_ptr_with_access(
                     attr_bits,
                     DescriptorMutation::Delete,
                     CustomMutationDefaultPolicy::ContinueOnObjectDefault,
-                ) == CustomMutationDispatch::Handled
+                )? == CustomMutationDispatch::Handled
             {
-                return MoltObject::none().bits();
+                return Ok(());
             }
             return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
         }
@@ -1178,7 +1241,8 @@ unsafe fn del_attr_ptr_with_access(
             type_name(_py, MoltObject::from_ptr(obj_ptr)),
             attr_name,
             MoltObject::from_ptr(obj_ptr).bits(),
-        )
+        );
+        Err(())
     }
 }
 
@@ -1188,30 +1252,32 @@ pub(crate) unsafe fn object_setattr_raw(
     attr_bits: u64,
     attr_name: &str,
     val_bits: u64,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
-        if let Some(result) = readonly_descriptor_metadata(_py, obj_ptr, attr_name) {
-            return result;
+        if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
+            return Err(());
         }
         let _header = header_from_obj_ptr(obj_ptr);
         if object_type_id(obj_ptr) == TYPE_ID_OBJECT
             && crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr))
         {
-            return attr_error_with_obj(
+            attr_error_with_obj(
                 _py,
                 "object",
                 attr_name,
                 MoltObject::from_ptr(obj_ptr).bits(),
             );
+            return Err(());
         }
         let payload = object_payload_size(obj_ptr);
         if payload < std::mem::size_of::<u64>() {
-            return attr_error_with_obj(
+            attr_error_with_obj(
                 _py,
                 "object",
                 attr_name,
                 MoltObject::from_ptr(obj_ptr).bits(),
             );
+            return Err(());
         }
         let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
         let class_ptr = obj_from_bits(class_bits)
@@ -1220,46 +1286,49 @@ pub(crate) unsafe fn object_setattr_raw(
         let mut slots_info = None;
         if let Some(class_ptr) = class_ptr {
             slots_info = class_slots_info(_py, class_ptr);
-            let class_attribute = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits);
+            let class_attribute = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?;
             if let Some(desc_bits) = class_attribute
-                && let Some(result) = apply_descriptor_mutation(
+                && apply_descriptor_mutation(
                     _py,
                     desc_bits,
                     instance_bits_for_call(obj_ptr),
                     DescriptorMutation::Set(val_bits),
-                )
+                )?
             {
-                return result;
+                return Ok(());
             }
         }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         if let Some(class_ptr) = class_ptr
-            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)
+            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)?
         {
             return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE {
             if attr_name == "__dict__" {
-                return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
+                raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+                return Err(());
             }
-            return molt_module_set_attr(MoltObject::from_ptr(obj_ptr).bits(), attr_bits, val_bits);
+            return crate::builtins::modules::module_set_attr(
+                _py,
+                MoltObject::from_ptr(obj_ptr).bits(),
+                attr_bits,
+                val_bits,
+            );
         }
         if slots_info.is_none_or(|info| !info.allows_dict) {
             // `__slots__` instance (no `__dict__`) rejecting a non-slot attribute
             // via the `setattr()` builtin path: version-gated no-`__dict__` SET
             // message (3.13+), matching `molt_set_attr_generic`.
             let type_label = class_name_for_error(class_bits);
-            return setattr_no_attr_error_with_obj(
+            setattr_no_attr_error_with_obj(
                 _py,
                 type_label,
                 attr_name,
                 MoltObject::from_ptr(obj_ptr).bits(),
             );
+            return Err(());
         }
-        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
-        MoltObject::none().bits()
+        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits)
     }
 }
 
@@ -1270,15 +1339,12 @@ unsafe fn dataclass_setattr_inner(
     attr_name: &str,
     val_bits: u64,
     enforce_frozen: bool,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if enforce_frozen && !desc_ptr.is_null() && (*desc_ptr).frozen {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "cannot assign to frozen dataclass field",
-            );
+            raise_exception::<()>(_py, "TypeError", "cannot assign to frozen dataclass field");
+            return Err(());
         }
         if !desc_ptr.is_null() {
             let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
@@ -1300,15 +1366,15 @@ unsafe fn dataclass_setattr_inner(
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
-                && let Some(result) = apply_descriptor_mutation(
+                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
+                && apply_descriptor_mutation(
                     _py,
                     desc_bits,
                     instance_bits_for_call(obj_ptr),
                     DescriptorMutation::Set(val_bits),
-                )
+                )?
             {
-                return result;
+                return Ok(());
             }
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 return crate::object::accessors::object_field_set_ptr_raw(
@@ -1325,16 +1391,16 @@ unsafe fn dataclass_setattr_inner(
                 } else {
                     name.as_str()
                 };
-                return attr_error_with_obj(
+                attr_error_with_obj(
                     _py,
                     type_label,
                     attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
+                return Err(());
             }
         }
-        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits);
-        MoltObject::none().bits()
+        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits)
     }
 }
 
@@ -1343,74 +1409,72 @@ pub(crate) unsafe fn object_delattr_raw(
     obj_ptr: *mut u8,
     attr_bits: u64,
     attr_name: &str,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
-        if let Some(result) = readonly_descriptor_metadata(_py, obj_ptr, attr_name) {
-            return result;
+        if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
+            return Err(());
         }
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         let _header = header_from_obj_ptr(obj_ptr);
         if object_type_id(obj_ptr) == TYPE_ID_OBJECT
             && crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr))
         {
-            return attr_error_with_obj(
+            attr_error_with_obj(
                 _py,
                 class_name_for_error(type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits())),
                 attr_name,
                 obj_bits,
             );
+            return Err(());
         }
         let payload = object_payload_size(obj_ptr);
         if payload < std::mem::size_of::<u64>() {
-            return attr_error_with_obj(
+            attr_error_with_obj(
                 _py,
                 class_name_for_error(type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits())),
                 attr_name,
                 obj_bits,
             );
+            return Err(());
         }
         let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-        let class_attribute = obj_from_bits(class_bits)
+        let class_attribute = match obj_from_bits(class_bits)
             .as_ptr()
             .filter(|class| object_type_id(*class) == TYPE_ID_TYPE)
-            .and_then(|class| class_attr_lookup_raw_mro(_py, class, attr_bits));
+        {
+            Some(class) => class_attr_lookup_raw_mro(_py, class, attr_bits)?,
+            None => None,
+        };
         if let Some(desc_bits) = class_attribute
-            && let Some(result) = apply_descriptor_mutation(
+            && apply_descriptor_mutation(
                 _py,
                 desc_bits,
                 instance_bits_for_call(obj_ptr),
                 DescriptorMutation::Delete,
-            )
+            )?
         {
-            return result;
-        }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+            return Ok(());
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE && attr_name == "__dict__" {
-            return raise_exception::<u64>(_py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+            return Err(());
         }
         if class_bits != 0
             && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
             && object_type_id(class_ptr) == TYPE_ID_TYPE
-            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)
+            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)?
         {
-            if !crate::object::accessors::object_field_delete_ptr_raw(_py, obj_ptr, offset) {
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return attr_error(_py, class_name_for_error(class_bits), attr_name);
+            if !crate::object::accessors::object_field_delete_ptr_raw(_py, obj_ptr, offset)? {
+                attr_error(_py, class_name_for_error(class_bits), attr_name);
+                return Err(());
             }
-            return MoltObject::none().bits();
+            return Ok(());
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE {
             return module_delattr_namespace(_py, obj_ptr, attr_bits, attr_name);
         }
-        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits) {
-            return MoltObject::none().bits();
-        }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)? {
+            return Ok(());
         }
         // Deleting a non-existent attribute. CPython appends "and no __dict__ for
         // setting new attributes" (3.13+) ONLY when the instance has no `__dict__`
@@ -1422,14 +1486,16 @@ pub(crate) unsafe fn object_delattr_raw(
                     && class_slots_info(_py, class_ptr).is_some_and(|info| !info.allows_dict)
             });
         if slots_only {
-            return setattr_no_attr_error_with_obj(
+            setattr_no_attr_error_with_obj(
                 _py,
                 class_name_for_error(class_bits),
                 attr_name,
                 obj_bits,
             );
+            return Err(());
         }
-        attr_error(_py, class_name_for_error(class_bits), attr_name)
+        attr_error(_py, class_name_for_error(class_bits), attr_name);
+        Err(())
     }
 }
 
@@ -1439,7 +1505,7 @@ unsafe fn dataclass_delattr_inner(
     attr_bits: u64,
     attr_name: &str,
     enforce_frozen: bool,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if !desc_ptr.is_null() {
@@ -1447,38 +1513,35 @@ unsafe fn dataclass_delattr_inner(
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
-                && let Some(result) = apply_descriptor_mutation(
+                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
+                && apply_descriptor_mutation(
                     _py,
                     desc_bits,
                     instance_bits_for_call(obj_ptr),
                     DescriptorMutation::Delete,
-                )
+                )?
             {
-                return result;
+                return Ok(());
             }
             if enforce_frozen && (*desc_ptr).frozen {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot delete frozen dataclass field",
-                );
+                raise_exception::<()>(_py, "TypeError", "cannot delete frozen dataclass field");
+                return Err(());
             }
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
                 if crate::object::accessors::object_field_delete_ptr_raw(
                     _py,
                     obj_ptr,
                     index * std::mem::size_of::<u64>(),
-                ) || exception_pending(_py)
-                {
-                    return MoltObject::none().bits();
+                )? {
+                    return Ok(());
                 }
-                return attr_error_with_obj(
+                attr_error_with_obj(
                     _py,
                     &(*desc_ptr).name,
                     attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
+                return Err(());
             }
             if !(*desc_ptr).allows_dict {
                 let name = &(*desc_ptr).name;
@@ -1487,18 +1550,17 @@ unsafe fn dataclass_delattr_inner(
                 } else {
                     name.as_str()
                 };
-                return attr_error_with_obj(
+                attr_error_with_obj(
                     _py,
                     type_label,
                     attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
+                return Err(());
             }
         }
-        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)
-            || exception_pending(_py)
-        {
-            return MoltObject::none().bits();
+        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)? {
+            return Ok(());
         }
         let type_label = if !desc_ptr.is_null() {
             let name = &(*desc_ptr).name;
@@ -1515,7 +1577,8 @@ unsafe fn dataclass_delattr_inner(
             type_label,
             attr_name,
             MoltObject::from_ptr(obj_ptr).bits(),
-        )
+        );
+        Err(())
     }
 }
 
@@ -1635,45 +1698,46 @@ unsafe fn mutate_attr_bytes(
         let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
             return MoltObject::none().bits();
         };
-        let result = mutate_attr_name(py, object, name, mutation, AttributeMutation::Normal);
+        let _ = mutate_attr_name(py, object, name, mutation, AttributeMutation::Normal);
         molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
-        result
+        MoltObject::none().bits()
     }
 }
 
 /// Named mutation shares one validation/storage boundary. Generic never calls
 /// __setattr__/__delattr__; explicit object methods admit before entering here.
-fn mutate_attr_name(
+pub(crate) fn mutate_attr_name(
     py: &PyToken<'_>,
     object: u64,
     name: u64,
     mutation: DescriptorMutation,
     access: AttributeMutation,
-) -> u64 {
+) -> Result<(), ()> {
     let Some(name_ptr) = obj_from_bits(name).as_ptr() else {
-        return raise_attr_name_type_error(py, name);
+        raise_attr_name_type_error(py, name);
+        return Err(());
     };
     unsafe {
         if object_type_id(name_ptr) != TYPE_ID_STRING {
-            return raise_attr_name_type_error(py, name);
+            raise_attr_name_type_error(py, name);
+            return Err(());
         }
-        // Preserve the admitted object across every override, descriptor and
-        // dictionary callback; bytes are only a diagnostic/typed-field view.
         inc_ref_bits(py, name);
-        let _name_owner = crate::PtrDropGuard::preserving(name_ptr);
+        let _name_owner = crate::PtrDropGuard::new(name_ptr);
         let attribute =
             string_obj_to_owned(obj_from_bits(name)).unwrap_or_else(|| "<attr>".to_string());
         let Some(object_ptr) = maybe_ptr_from_bits(object) else {
-            return setattr_no_attr_error_with_obj(
+            setattr_no_attr_error_with_obj(
                 py,
                 type_name(py, obj_from_bits(object)),
                 &attribute,
                 object,
             );
+            return Err(());
         };
         match mutation {
             DescriptorMutation::Set(value) => {
-                set_attr_ptr_with_name(object_ptr, name, &attribute, value, access)
+                set_attr_ptr_with_name(py, object_ptr, name, &attribute, value, access)
             }
             DescriptorMutation::Delete => {
                 del_attr_ptr_with_access(py, object_ptr, name, &attribute, access)
@@ -1685,31 +1749,33 @@ fn mutate_attr_name(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_attr_name(object: u64, name: u64, value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        mutate_attr_name(
+        let _ = mutate_attr_name(
             py,
             object,
             name,
             DescriptorMutation::Set(value),
             AttributeMutation::Normal,
-        )
+        );
+        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_del_attr_name(object: u64, name: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        mutate_attr_name(
+        let _ = mutate_attr_name(
             py,
             object,
             name,
             DescriptorMutation::Delete,
             AttributeMutation::Normal,
-        )
+        );
+        MoltObject::none().bits()
     })
 }
 
 /// Raw C PyObject_GenericSetAttr assignment: descriptor/storage only.
-pub(crate) fn generic_set_attr_name(object: u64, name: u64, value: u64) -> u64 {
+pub(crate) fn generic_set_attr_name(object: u64, name: u64, value: u64) -> Result<(), ()> {
     crate::with_gil_entry_nopanic!(py, {
         mutate_attr_name(
             py,
@@ -1722,7 +1788,7 @@ pub(crate) fn generic_set_attr_name(object: u64, name: u64, value: u64) -> u64 {
 }
 
 /// Raw C PyObject_GenericSetAttr deletion (NULL is carried separately).
-pub(crate) fn generic_del_attr_name(object: u64, name: u64) -> u64 {
+pub(crate) fn generic_del_attr_name(object: u64, name: u64) -> Result<(), ()> {
     crate::with_gil_entry_nopanic!(py, {
         mutate_attr_name(
             py,
@@ -1734,8 +1800,7 @@ pub(crate) fn generic_del_attr_name(object: u64, name: u64) -> u64 {
     })
 }
 
-/// Explicit defaults admit by real receiver type. Pure managed MROs have one
-/// runtime default: type for metaclass instances, object for other instances.
+/// Explicit defaults admit by real receiver type and the shared paired slot.
 /// A foreign C type in the MRO delegates its slot check to the C authority.
 fn explicit_mutation_admitted(
     py: &PyToken<'_>,
@@ -1778,6 +1843,36 @@ fn explicit_mutation_admitted(
             || class_mro_view(py, class_ptr).contains(&builtin_classes(py).type_obj);
         if type_default == is_metaclass {
             return true;
+        }
+        if !type_default && is_metaclass {
+            let access = if let Some(access) = pure_mutation_default_access(py, class_ptr) {
+                Some(access)
+            } else {
+                let mutation = if delete {
+                    DescriptorMutation::Delete
+                } else {
+                    DescriptorMutation::Set(MoltObject::none().bits())
+                };
+                let selected = match selected_mutation_hook(py, class_ptr, mutation) {
+                    Ok(selected) => selected,
+                    Err(()) => return false,
+                };
+                match selected {
+                    Some(selected) => match selected_mutation_default_access(
+                        py,
+                        class_ptr,
+                        mutation,
+                        selected.bits(),
+                    ) {
+                        Ok(access) => access,
+                        Err(()) => return false,
+                    },
+                    None => None,
+                }
+            };
+            if access == Some(AttributeMutation::Generic) {
+                return true;
+            }
         }
         let operation = if delete { "__delattr__" } else { "__setattr__" };
         raise_exception::<u64>(
@@ -1836,7 +1931,8 @@ pub(crate) fn explicit_type_mutate_attr_name(object: u64, name: u64, value: Opti
                     if !explicit_mutation_admitted(py, object, true, value.is_none()) {
                         return MoltObject::none().bits();
                     }
-                    return type_mutate_attr_name(object, name, value);
+                    let _ = type_mutate_attr_name(object, name, value);
+                    return MoltObject::none().bits();
                 }
             }
         }
@@ -1858,7 +1954,7 @@ pub(crate) fn explicit_type_mutate_attr_name(object: u64, name: u64, value: Opti
 
 /// Default type mutation bypasses metaclass overrides but publishes the
 /// canonical namespace/cache transaction. Explicit callers own admission.
-pub(crate) fn type_mutate_attr_name(object: u64, name: u64, value: Option<u64>) -> u64 {
+pub(crate) fn type_mutate_attr_name(object: u64, name: u64, value: Option<u64>) -> Result<(), ()> {
     crate::with_gil_entry_nopanic!(py, {
         mutate_attr_name(
             py,

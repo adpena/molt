@@ -612,10 +612,9 @@ pub extern "C" fn molt_pickle_loads_core(
                     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                         return pickle_raise(_py, "pickle.loads: setitem target is not dict");
                     }
-                    unsafe {
-                        crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-                    }
-                    if exception_pending(_py) {
+                    let completed =
+                        unsafe { crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits) };
+                    if !completed {
                         return MoltObject::none().bits();
                     }
                     stack.push(PickleVmItem::Value(dict_bits));
@@ -651,15 +650,15 @@ pub extern "C" fn molt_pickle_loads_core(
                     }
                     let mut pair_idx = 0usize;
                     while pair_idx + 1 < values.len() {
-                        unsafe {
+                        let completed = unsafe {
                             crate::dict_set_in_place(
                                 _py,
                                 dict_ptr,
                                 values[pair_idx],
                                 values[pair_idx + 1],
-                            );
-                        }
-                        if exception_pending(_py) {
+                            )
+                        };
+                        if !completed {
                             return MoltObject::none().bits();
                         }
                         pair_idx += 2;

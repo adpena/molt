@@ -969,7 +969,7 @@ pub(in crate::object) unsafe fn set_intersection_bits(
                 return MoltObject::none().bits();
             }
             let hash = hash_bits(py, key);
-            if exception_pending(py) {
+            if hash == u64::MAX {
                 return MoltObject::none().bits();
             }
             let found = super::ops::set_find_entry_in_place_with_hash(py, set, key, hash);
@@ -1095,7 +1095,15 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
                         entry.bits(),
                         entry.hash(),
                     );
-                    if !exception_pending(py) && found.is_none() {
+                    let found = match found {
+                        Ok(found) => found,
+                        Err(()) => {
+                            dec_ref_bits(py, bits);
+                            drop(entry);
+                            return MoltObject::none().bits();
+                        }
+                    };
+                    if found.is_none() {
                         super::ops::set_add_with_hash_in_place(
                             py,
                             result,

@@ -1168,7 +1168,9 @@ pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u6
         let Some(_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "header name must be str");
         };
-        let value = format_obj_str(_py, obj_from_bits(value_bits));
+        let Some(value) = format_obj_str(_py, obj_from_bits(value_bits)) else {
+            return MoltObject::none().bits();
+        };
         let out_ptr = alloc_string(_py, value.as_bytes());
         if out_ptr.is_null() {
             MoltObject::none().bits()

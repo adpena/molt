@@ -8,7 +8,7 @@
 
 /// How the sort finds natural runs, which decides its comparisons.
 #[derive(Clone, Copy)]
-pub(super) enum RunDetection {
+pub enum RunDetection {
     /// Through CPython 3.12: a run is non-descending or strictly descending.
     StrictlyDescending,
     /// From CPython 3.13 (gh-116554): a descending run may hold runs of equal
@@ -18,7 +18,7 @@ pub(super) enum RunDetection {
 
 /// A failed sort: `Compare` carries the comparison's pending exception;
 /// `Memory` has none yet.
-pub(super) enum TimsortError {
+pub enum TimsortError {
     Compare,
     Memory,
 }
@@ -48,7 +48,7 @@ enum MergeExit {
 }
 
 /// Sort `v` in place with the strict order `lt` (`Err` stops the sort).
-pub(super) fn timsort<T, F>(v: &mut [T], runs: RunDetection, mut lt: F) -> Result<(), TimsortError>
+pub fn timsort<T, F>(v: &mut [T], runs: RunDetection, mut lt: F) -> Result<(), TimsortError>
 where
     T: Copy,
     F: FnMut(&T, &T) -> Result<bool, ()>,

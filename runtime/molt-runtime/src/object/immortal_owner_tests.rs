@@ -156,7 +156,10 @@ impl LiteralFixture {
         let bytes: &[u8] = match self {
             Self::String => b"literal ownership: non-interned string!",
             Self::Bytes => b"literal ownership bytes",
-            Self::BigInt => b"1234567890123456789012345678901234567890",
+            Self::BigInt => &[
+                0x03, 0xa0, 0xc9, 0x20, 0x75, 0xc0, 0xdb, 0xf3, 0xb8, 0xac, 0xbc, 0x5f, 0x96, 0xce,
+                0x3f, 0x0a, 0xd2,
+            ],
         };
         // These data-segment constructors take an unboxed byte count, not a
         // tagged Python integer. All three fixtures share that ABI contract.
@@ -172,7 +175,7 @@ impl LiteralFixture {
                     crate::molt_bytes_from_bytes(bytes.as_ptr(), len, &mut bits),
                     0
                 ),
-                Self::BigInt => bits = crate::molt_bigint_from_str(bytes.as_ptr(), len),
+                Self::BigInt => bits = crate::molt_bigint_from_bytes(bytes.as_ptr(), len),
             }
         }
         bits
@@ -299,12 +302,12 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                 for (index, bits) in canonical_values(py).into_iter().enumerate() {
                     assert_canonical(bits);
                     unsafe {
-                        crate::dict_set_in_place(
+                        assert!(crate::dict_set_in_place(
                             py,
                             dictionary,
                             MoltObject::from_int(index as i64).bits(),
                             bits,
-                        )
+                        ))
                     };
                 }
                 for (index, fixture) in [
@@ -321,12 +324,12 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                         0
                     );
                     unsafe {
-                        crate::dict_set_in_place(
+                        assert!(crate::dict_set_in_place(
                             py,
                             dictionary,
                             MoltObject::from_int(index as i64 + 10).bits(),
                             bits,
-                        )
+                        ))
                     };
                     crate::dec_ref_bits(py, bits);
                 }

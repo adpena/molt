@@ -327,27 +327,27 @@ pub fn molt_object_hash(bits: u64) -> u64 {
 
 unsafe extern "C" {
     fn __molt_path_path_from_bits(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_path_fspath_bits(bits: u64) -> u64;
 
     fn __molt_path_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
 
-pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, String> {
+pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, u64> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_path_path_from_bits(bits, &mut out_ptr, &mut out_len) };
-    if ok != 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        let s = String::from_utf8_lossy(&boxed).into_owned();
-        Ok(std::path::PathBuf::from(s))
-    } else {
-        // Error message is in the returned buffer
-        if !out_ptr.is_null() && out_len > 0 {
-            let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-            Err(String::from_utf8_lossy(&boxed).into_owned())
-        } else {
-            Err("path_from_bits failed".to_string())
-        }
+    if ok == 0 {
+        return Err(MoltObject::none().bits());
     }
+    let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
+    // SAFETY: unchanged OsString::into_encoded_bytes output from this process's
+    // runtime, built with the same Rust version and target.
+    let path = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(&bytes) };
+    Ok(std::path::PathBuf::from(path))
+}
+
+pub fn fspath_bits(bits: u64) -> u64 {
+    unsafe { __molt_path_fspath_bits(bits) }
 }
 
 pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {

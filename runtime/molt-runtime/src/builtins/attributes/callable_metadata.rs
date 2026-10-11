@@ -2,88 +2,90 @@
 use super::*;
 use crate::builtins::functions::native_callable::CallableMetadata as Field;
 
-pub(crate) unsafe fn read(_py: &PyToken<'_>, public_ptr: *mut u8, field: Field) -> Option<u64> {
+pub(crate) unsafe fn read(
+    py: &PyToken<'_>,
+    public: *mut u8,
+    field: Field,
+) -> Result<Option<u64>, ()> {
     unsafe {
-        let kind = NativeCallableKind::from_class(_py, object_class_bits(public_ptr));
-        if kind.is_none() && object_type_id(public_ptr) == TYPE_ID_FUNCTION {
-            let value = field.load(public_ptr).unwrap_or(MoltObject::none().bits());
-            inc_ref_bits(_py, value);
-            return Some(value);
+        let kind = NativeCallableKind::from_class(py, object_class_bits(public));
+        if kind.is_none() && object_type_id(public) == TYPE_ID_FUNCTION {
+            let value = field.load(public).unwrap_or(MoltObject::none().bits());
+            inc_ref_bits(py, value);
+            return Ok(Some(value));
         }
-        let kind = kind?;
-        let obj_ptr = if object_type_id(public_ptr) == TYPE_ID_BOUND_METHOD {
-            obj_from_bits(bound_method_func_bits(public_ptr)).as_ptr()?
-        } else {
-            public_ptr
+        let Some(kind) = kind else {
+            return Ok(None);
         };
-        if field == Field::SelfValue && object_type_id(public_ptr) == TYPE_ID_BOUND_METHOD {
-            let value = bound_method_self_bits(public_ptr);
-            inc_ref_bits(_py, value);
-            return Some(value);
+        let object = if object_type_id(public) == TYPE_ID_BOUND_METHOD {
+            let Some(object) = obj_from_bits(bound_method_func_bits(public)).as_ptr() else {
+                return Ok(None);
+            };
+            object
+        } else {
+            public
+        };
+        if field == Field::SelfValue && object_type_id(public) == TYPE_ID_BOUND_METHOD {
+            let value = bound_method_self_bits(public);
+            inc_ref_bits(py, value);
+            return Ok(Some(value));
         }
-        if field == Field::Module && kind.has_module() && public_ptr != obj_ptr {
-            let value = crate::object::layout::bound_method_module_bits(public_ptr);
-            inc_ref_bits(_py, value);
-            return Some(value);
+        if field == Field::Module && kind.has_module() && public != object {
+            let value = crate::object::layout::bound_method_module_bits(public);
+            inc_ref_bits(py, value);
+            return Ok(Some(value));
         }
         if field == Field::SelfValue
-            && public_ptr == obj_ptr
+            && public == object
             && let Some(value) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .cfunction_self(MoltObject::from_ptr(obj_ptr).bits())
+                .cfunction_self(MoltObject::from_ptr(object).bits())
         {
-            return match value {
-                Ok(bits) => Some(bits),
-                Err(molt_cpython_abi::ErrorIndicatorSet) => {
-                    crate::cpython_abi_hooks::propagate_native_failure(
-                        _py,
-                        "native callable __self__",
-                    );
-                    None
-                }
-            };
+            return value.map(Some).map_err(|_| {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "native callable __self__");
+            });
         }
         if (field == Field::Doc || field == Field::TextSignature)
-            && public_ptr == obj_ptr
+            && public == object
             && let Some(documentation) = molt_cpython_abi::bridge::GLOBAL_BRIDGE.cfunction_metadata(
-                MoltObject::from_ptr(obj_ptr).bits(),
+                MoltObject::from_ptr(object).bits(),
                 field == Field::TextSignature,
             )
         {
-            return documentation.map_or_else(
-                || Some(MoltObject::none().bits()),
-                |text| {
-                    let ptr = alloc_string(_py, &text);
-                    (!ptr.is_null()).then(|| MoltObject::from_ptr(ptr).bits())
-                },
-            );
-        }
-        if field == Field::Module
-            && kind.has_module()
-            && public_ptr == obj_ptr
-            && let Some(result) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .cfunction_module(MoltObject::from_ptr(obj_ptr).bits())
-        {
-            return match result {
-                Ok(bits) => Some(bits),
-                Err(molt_cpython_abi::ErrorIndicatorSet) => {
-                    crate::cpython_abi_hooks::propagate_native_failure(
-                        _py,
-                        "native callable __module__",
-                    );
-                    None
+            return match documentation {
+                None => Ok(Some(MoltObject::none().bits())),
+                Some(text) => {
+                    let pointer = alloc_string(py, &text);
+                    if pointer.is_null() {
+                        Err(())
+                    } else {
+                        Ok(Some(MoltObject::from_ptr(pointer).bits()))
+                    }
                 }
             };
         }
+        if field == Field::Module
+            && kind.has_module()
+            && public == object
+            && let Some(result) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .cfunction_module(MoltObject::from_ptr(object).bits())
+        {
+            return result.map(Some).map_err(|_| {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "native callable __module__",
+                );
+            });
+        }
         let value =
-            crate::call::function::function_metadata_bits(_py, obj_ptr, field.name().as_bytes());
+            crate::call::function::function_metadata_bits(py, object, field.name().as_bytes());
         if obj_from_bits(value).is_none()
             && matches!(field, Field::Name | Field::QualName | Field::Owner)
         {
-            raise_exception::<()>(_py, "AttributeError", field.name());
-            return None;
+            raise_exception::<()>(py, "AttributeError", field.name());
+            return Err(());
         }
-        inc_ref_bits(_py, value);
-        Some(value)
+        inc_ref_bits(py, value);
+        Ok(Some(value))
     }
 }
 
@@ -92,7 +94,7 @@ pub(crate) unsafe fn write(
     object: *mut u8,
     field: Field,
     value: Option<u64>,
-) -> u64 {
+) -> Result<(), ()> {
     unsafe {
         if object_type_id(object) == TYPE_ID_FUNCTION
             && NativeCallableKind::from_class(py, object_class_bits(object)).is_none()
@@ -100,7 +102,8 @@ pub(crate) unsafe fn write(
             return crate::object::function_metadata::write_public(py, object, field, value);
         }
         if field != Field::Module {
-            return raise_exception::<_>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            return Err(());
         }
         if object_type_id(object) == TYPE_ID_BOUND_METHOD {
             crate::object::layout::bound_method_set_module_bits(
@@ -116,14 +119,15 @@ pub(crate) unsafe fn write(
                     py,
                     "native callable __module__ assignment",
                 );
+                return Err(());
             }
         } else {
             let value = value.unwrap_or(MoltObject::none().bits());
             if !crate::call::class_init::function_set_attr_name(py, object, b"__module__", value) {
-                return MoltObject::none().bits();
+                return Err(());
             }
         }
-        MoltObject::none().bits()
+        Ok(())
     }
 }
 

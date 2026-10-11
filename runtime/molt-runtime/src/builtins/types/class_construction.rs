@@ -95,10 +95,7 @@ fn copy_kwds_mapping(_py: &PyToken<'_>, kwds_bits: u64) -> Option<u64> {
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     if !obj_from_bits(kwds_bits).is_none() {
-        unsafe {
-            let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwds_bits);
-        }
-        if exception_pending(_py) {
+        if !unsafe { dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwds_bits) } {
             dec_ref_bits(_py, dict_bits);
             return None;
         }
@@ -280,7 +277,15 @@ fn prepare_class_impl(
         dec_ref_bits(_py, kwds_copy_bits);
         return None;
     };
-    let metaclass_bits = unsafe { dict_get_in_place(_py, kwds_copy_ptr, metaclass_name_bits) };
+    let metaclass_bits = match unsafe { dict_get_in_place(_py, kwds_copy_ptr, metaclass_name_bits) }
+    {
+        Ok(value) => value,
+        Err(()) => {
+            dec_ref_bits(_py, metaclass_name_bits);
+            dec_ref_bits(_py, kwds_copy_bits);
+            return None;
+        }
+    };
     if let Some(bits) = metaclass_bits {
         // `dict_get_in_place` returns a borrowed reference into `kwds_copy`.
         // The following `dict_del_in_place` drops the dict's strong reference to
@@ -292,10 +297,7 @@ fn prepare_class_impl(
         // use-after-free that release-mode codegen happened to mask while
         // dev-mode codegen surfaced as a missing namespace key).
         inc_ref_bits(_py, bits);
-        unsafe {
-            dict_del_in_place(_py, kwds_copy_ptr, metaclass_name_bits);
-        }
-        if exception_pending(_py) {
+        if unsafe { dict_del_in_place(_py, kwds_copy_ptr, metaclass_name_bits) }.is_err() {
             dec_ref_bits(_py, bits);
             dec_ref_bits(_py, metaclass_name_bits);
             dec_ref_bits(_py, kwds_copy_bits);
@@ -434,7 +436,16 @@ fn prepare_class_impl(
         // string-keyed store with their own "indices must be integers" message,
         // exactly as CPython does.  int/object/set/slice/dict-views (no
         // `mp_subscript`) are rejected here.
-        if !crate::object::ops::value_supports_mp_subscript(_py, val_bits) {
+        let mapping = match crate::object::ops::value_supports_mp_subscript(_py, val_bits) {
+            Ok(mapping) => mapping,
+            Err(()) => {
+                dec_ref_bits(_py, val_bits);
+                dec_ref_bits(_py, winner_bits);
+                dec_ref_bits(_py, kwds_copy_bits);
+                return None;
+            }
+        };
+        if !mapping {
             let meta_name = class_name_for_error(winner_bits);
             let ns_type = type_name(_py, obj_from_bits(val_bits)).into_owned();
             dec_ref_bits(_py, val_bits);

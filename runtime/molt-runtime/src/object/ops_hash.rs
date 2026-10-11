@@ -625,14 +625,14 @@ fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
             let mut acc = TupleHashAccumulator::new();
             for &elem in elems.iter() {
                 let lane = hash_bits_signed(_py, elem);
-                if exception_pending(_py) {
-                    return 0;
+                if lane == -1 {
+                    return -1;
                 }
                 acc.push(lane);
             }
             acc.finish_tuple(elems.len())
         })
-        .unwrap_or(0)
+        .unwrap_or(-1)
     }
 }
 
@@ -653,12 +653,12 @@ fn hash_dataclass_fields(
         if is_missing_bits(_py, elem) {
             let name = field_names.get(idx).map(|s| s.as_str()).unwrap_or("field");
             let _ = attr_error(_py, type_label, name);
-            return 0;
+            return -1;
         }
         count += 1;
         let lane = hash_bits_signed(_py, elem);
-        if exception_pending(_py) {
-            return 0;
+        if lane == -1 {
+            return -1;
         }
         acc.push(lane);
     }
@@ -671,8 +671,8 @@ fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let mut acc = TupleHashAccumulator::new();
     for lane_bits in [origin_bits, args_bits] {
         let lane = hash_bits_signed(_py, lane_bits);
-        if exception_pending(_py) {
-            return 0;
+        if lane == -1 {
+            return -1;
         }
         acc.push(lane);
     }
@@ -682,8 +682,8 @@ fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
 fn hash_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let args_bits = unsafe { union_type_args_bits(ptr) };
     let lane = hash_bits_signed(_py, args_bits);
-    if exception_pending(_py) {
-        return 0;
+    if lane == -1 {
+        return -1;
     }
     let mut acc = TupleHashAccumulator::new();
     acc.push(lane);
@@ -699,7 +699,7 @@ pub(crate) fn hash_slice_bits(
     let mut acc = TupleHashAccumulator::new();
     for bits in [start_bits, stop_bits, step_bits] {
         let lane = hash_bits_signed(_py, bits);
-        if exception_pending(_py) {
+        if lane == -1 {
             return None;
         }
         acc.push(lane);
@@ -741,7 +741,8 @@ fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
 fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
     let name = type_name(_py, obj);
     let msg = format!("unhashable type: '{name}'");
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<()>(_py, "TypeError", &msg);
+    -1
 }
 
 /// Hash a `TYPE_ID_FOREIGN` wrapper by routing to the wrapped C object's own
@@ -757,7 +758,7 @@ unsafe fn hash_foreign(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let h = unsafe { molt_cpython_abi::bridge::molt_foreign_hash(c_ptr) };
     if h == -1 {
         crate::cpython_abi_hooks::propagate_native_failure(_py, "native hash");
-        return 0;
+        return -1;
     }
     h as i64
 }
@@ -787,7 +788,8 @@ fn is_unhashable_type(type_id: u32) -> bool {
 fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     unsafe {
         if memoryview_released(ptr) {
-            return raise_released_memoryview(_py);
+            raise_released_memoryview::<()>(_py);
+            return -1;
         }
         // CPython runs CHECK_RELEASED_INT first. The released-state check belongs at THIS
         // position, ahead of the writable/format checks, to preserve CPython's
@@ -797,11 +799,8 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         // Writable views are unhashable. Checked before the format restriction so
         // a writable, non-byte-format view still reports "writable" (CPython order).
         if !memoryview_readonly(ptr) {
-            return raise_exception::<i64>(
-                _py,
-                "ValueError",
-                "cannot hash writable memoryview object",
-            );
+            raise_exception::<()>(_py, "ValueError", "cannot hash writable memoryview object");
+            return -1;
         }
 
         // Hashing is restricted to the one-byte formats 'B', 'b', 'c'
@@ -810,11 +809,12 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         let is_byte_format = memoryview_format_from_bits(memoryview_format_bits(ptr))
             .is_some_and(|fmt| matches!(fmt.code, b'b' | b'B' | b'c'));
         if !is_byte_format {
-            return raise_exception::<i64>(
+            raise_exception::<()>(
                 _py,
                 "ValueError",
                 "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
             );
+            return -1;
         }
 
         // CPython hashes the exporting object and propagates its error: a
@@ -822,20 +822,23 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         // TypeError: unhashable type: 'bytearray'. The owner's hash value is
         // discarded — only its hashability gates the view. molt flattens nested
         // views at construction, so the owner is always the root bytes/bytearray.
-        let _ = hash_bits_signed(_py, memoryview_owner_bits(ptr));
-        if exception_pending(_py) {
-            return 0;
+        let owner_hash = hash_bits_signed(_py, memoryview_owner_bits(ptr));
+        if owner_hash == -1 {
+            return -1;
         }
 
         // The hash is the hash of the view's C-contiguous bytes (== mv.tobytes()),
         // computed via the shared materialization primitive.
         match memoryview_collect_bytes(ptr) {
             Some(bytes) => hash_bytes(_py, &bytes),
-            None => raise_exception::<i64>(
-                _py,
-                "ValueError",
-                "operation forbidden on released memoryview object",
-            ),
+            None => {
+                raise_exception::<()>(
+                    _py,
+                    "ValueError",
+                    "operation forbidden on released memoryview object",
+                );
+                -1
+            }
         }
     }
 }
@@ -850,22 +853,25 @@ enum HashDeclaration {
 /// Resolve user declarations before selecting a physical builtin carrier.
 /// Implicit __hash__ = None belongs to class construction. Later equality
 /// mutation must not disable an inherited hash slot.
-unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
+unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> Result<HashDeclaration, ()> {
     unsafe {
         if let Some(ptr) = obj_from_bits(bits).as_ptr()
             && object_class_bits(ptr) == 0
             && object_type_id(ptr) != TYPE_ID_TYPE
         {
-            return HashDeclaration::Builtin;
+            return Ok(HashDeclaration::Builtin);
         }
         let class_bits = type_of_bits(py, bits);
         let Some(class) = obj_from_bits(class_bits).as_ptr() else {
-            return HashDeclaration::Builtin;
+            return Ok(HashDeclaration::Builtin);
         };
         if is_builtin_class_bits(py, class_bits) && crate::object::class_is_immutable(py, class) {
-            return HashDeclaration::Builtin;
+            return Ok(HashDeclaration::Builtin);
         }
         let hash_name = intern_static_name(py, &runtime_state(py).interned.hash_name, b"__hash__");
+        if obj_from_bits(hash_name).is_none() {
+            return Err(());
+        }
         for &base in class_mro_view(py, class).iter() {
             if is_builtin_class_bits(py, base)
                 && obj_from_bits(base)
@@ -880,15 +886,15 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
             let Some(dict) = obj_from_bits(class_dict_bits(base)).as_ptr() else {
                 continue;
             };
-            if let Some(value) = dict_get_in_place(py, dict, hash_name) {
-                return if obj_from_bits(value).is_none() {
+            if let Some(value) = dict_get_in_place(py, dict, hash_name)? {
+                return Ok(if obj_from_bits(value).is_none() {
                     HashDeclaration::Disabled
                 } else {
                     HashDeclaration::Custom
-                };
+                });
             }
         }
-        HashDeclaration::Builtin
+        Ok(HashDeclaration::Builtin)
     }
 }
 
@@ -905,7 +911,7 @@ pub extern "C" fn molt_method_hash(bits: u64) -> u64 {
         let _method = molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), bits);
         let receiver = identity_hash(unsafe { bound_method_self_bits(ptr) });
         let function = hash_bits_signed(py, unsafe { bound_method_func_bits(ptr) });
-        if exception_pending(py) {
+        if function == -1 {
             return MoltObject::none().bits();
         }
         int_bits_from_i64(py, fix_hash(receiver ^ function))
@@ -931,12 +937,12 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_FOREIGN {
                 match hash_declaration(_py, bits) {
-                    HashDeclaration::Custom => return hash_from_dunder(_py, obj, ptr).unwrap_or(0),
-                    HashDeclaration::Disabled => return hash_unhashable(_py, obj),
-                    HashDeclaration::Builtin => {}
-                }
-                if exception_pending(_py) {
-                    return 0;
+                    Ok(HashDeclaration::Custom) => {
+                        return hash_from_dunder(_py, obj, ptr).unwrap_or(-1);
+                    }
+                    Ok(HashDeclaration::Disabled) => return hash_unhashable(_py, obj),
+                    Ok(HashDeclaration::Builtin) => {}
+                    Err(()) => return -1,
                 }
             }
             if is_unhashable_type(type_id) {
@@ -989,7 +995,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                         let Some(fields) =
                             crate::object::field_storage::dataclass_snapshot(_py, ptr, 0x4)
                         else {
-                            return 0;
+                            return -1;
                         };
                         let type_label = if desc.name.is_empty() {
                             "dataclass"
@@ -1023,7 +1029,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 if let Some(hash) = hash_slice_bits(_py, start_bits, stop_bits, step_bits) {
                     return hash;
                 }
-                return 0;
+                return -1;
             }
             if type_id == TYPE_ID_FROZENSET {
                 return hash_frozenset(_py, ptr);
@@ -1043,12 +1049,21 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
             intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
         let class_bits = type_of_bits(_py, obj.bits());
         let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
-        if hash_declaration(_py, obj.bits()) == HashDeclaration::Disabled {
-            return Some(hash_unhashable(_py, obj));
+        if obj_from_bits(hash_name_bits).is_none() {
+            return Some(-1);
+        }
+        match hash_declaration(_py, obj.bits()) {
+            Ok(HashDeclaration::Disabled) => return Some(hash_unhashable(_py, obj)),
+            Ok(_) => {}
+            Err(()) => return Some(-1),
         }
         let class_ptr = obj_from_bits(class_bits).as_ptr()?;
         let call_bits =
-            class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits)?;
+            match class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits) {
+                Ok(Some(bits)) => bits,
+                Ok(None) => return None,
+                Err(()) => return Some(-1),
+            };
         if obj_from_bits(call_bits).is_none() {
             dec_ref_bits(_py, call_bits);
             if default_type_hashable {
@@ -1056,7 +1071,8 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
             }
             let name = type_name(_py, obj);
             let msg = format!("unhashable type: '{name}'");
-            return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return Some(-1);
         }
         let res_bits = call_callable0(_py, call_bits);
         dec_ref_bits(_py, call_bits);
@@ -1064,7 +1080,7 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
             if !obj_from_bits(res_bits).is_none() {
                 dec_ref_bits(_py, res_bits);
             }
-            return Some(0);
+            return Some(-1);
         }
         let hash = if let Some(i) = crate::builtins::numbers::index_i64_integral_bits(res_bits) {
             // __hash__ preserves every fitting Py_hash_t, even above the
@@ -1079,7 +1095,8 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         } else {
             let msg = "__hash__ method should return an integer";
             dec_ref_bits(_py, res_bits);
-            return Some(raise_exception::<i64>(_py, "TypeError", msg));
+            raise_exception::<()>(_py, "TypeError", msg);
+            return Some(-1);
         };
         dec_ref_bits(_py, res_bits);
         Some(hash)
@@ -1117,9 +1134,6 @@ pub extern "C" fn molt_int_hash_method(self_bits: u64) -> u64 {
         } else {
             hash_int(to_i64(value).expect("validated integer hash receiver"))
         };
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         int_bits_from_i64(_py, hash)
     })
 }
@@ -1131,9 +1145,6 @@ pub extern "C" fn molt_float_hash_method(self_bits: u64) -> u64 {
             return hash_descriptor_type_error(_py, self_bits, "float");
         };
         let hash = hash_float(value);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         int_bits_from_i64(_py, hash)
     })
 }
@@ -1151,9 +1162,6 @@ pub extern "C" fn molt_str_hash_method(self_bits: u64) -> u64 {
             }
         }
         let hash = hash_string(_py, ptr);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         int_bits_from_i64(_py, hash)
     })
 }
@@ -1209,10 +1217,13 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
-            let declaration = hash_declaration(_py, key_bits);
-            if exception_pending(_py) {
-                return false;
+            if type_id == TYPE_ID_FOREIGN {
+                return true;
             }
+            let declaration = match hash_declaration(_py, key_bits) {
+                Ok(declaration) => declaration,
+                Err(()) => return false,
+            };
             if declaration == HashDeclaration::Disabled
                 || (declaration == HashDeclaration::Builtin && is_unhashable_type(type_id))
             {

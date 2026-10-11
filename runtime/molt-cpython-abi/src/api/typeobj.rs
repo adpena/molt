@@ -38,7 +38,7 @@ pub use method_descriptors::{
     PyClassMethod_New, PyDescr_NewClassMethod, PyDescr_NewMethod, PyStaticMethod_New,
 };
 pub(crate) use native_lifecycle::{
-    NativeDeallocation, gc_uses_managed_storage, object_dealloc, type_dealloc,
+    NativeDeallocation, gc_uses_managed_storage, object_dealloc, subtype_dealloc, type_dealloc,
 };
 pub(crate) use root_metadata::type_setattro;
 use slot_wrappers::SLOT_WRAPPER_DEFS;
@@ -2163,14 +2163,6 @@ unsafe fn type_from_spec_impl(
         } else {
             !allocated_class.is_null() && (*allocated_class).tp_flags & Py_TPFLAGS_HEAPTYPE != 0
         };
-        if crate::api::errors::check_native_status(0, "heap type allocation") < 0 {
-            native_lifecycle::release_unconstructed_type(
-                object,
-                allocated_class,
-                owns_allocated_class,
-            );
-            return ptr::null_mut();
-        }
         if allocated_class != metaclass {
             reject_type_layout(c"type allocator returned an object with the wrong metaclass");
             native_lifecycle::release_unconstructed_type(
@@ -2814,33 +2806,41 @@ pub unsafe extern "C" fn PyUnstable_Type_AssignVersionTag(tp: *mut PyTypeObject)
 
 /// Lookup a single physical/runtime namespace while preserving the caller's
 /// C3 traversal order. The bridge returns the original descriptor, borrowed.
-unsafe fn type_namespace_lookup_with_bridge(
+pub(crate) unsafe fn type_namespace_lookup_with_bridge(
     bridge: &crate::bridge::ObjectBridge,
     tp: *mut PyTypeObject,
     name: *mut PyObject,
 ) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
     unsafe {
-        if let Some(class) = bridge.observed_handle_for_pyobj(tp.cast()) {
+        let managed = bridge
+            .semantic_handle_for_pyobj(tp.cast())
+            .map_err(|()| crate::ErrorIndicatorSet)?;
+        if let Some(class) = managed {
+            let class = bridge
+                .prepare_runtime_value(class, crate::bridge::RuntimeValueAccess::Observe)
+                .ok_or(crate::ErrorIndicatorSet)?;
             let hooks = crate::hooks::hooks_or_stubs();
-            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
-                let name =
-                    crate::bridge::RuntimeValue::acquire(name).ok_or(crate::ErrorIndicatorSet)?;
-                return match (hooks.type_lookup_borrowed)(class.bits(), name.bits(), 0).decode() {
-                    crate::hooks::DecodedHandleResult::Ok(bits) => {
-                        let value = bridge.handle_to_borrowed_pyobj(bits);
-                        if value.is_null() {
-                            Err(crate::ErrorIndicatorSet)
-                        } else {
-                            Ok(value)
-                        }
-                    }
-                    crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
-                    crate::hooks::DecodedHandleResult::Error => {
-                        crate::api::errors::check_native_status(-1, "type namespace lookup");
-                        Err(crate::ErrorIndicatorSet)
-                    }
-                };
+            if hooks.classify_heap(class.bits()) != crate::abi_types::MoltTypeTag::Type as u8 {
+                crate::api::errors::PyErr_BadInternalCall();
+                return Err(crate::ErrorIndicatorSet);
             }
+            let name =
+                crate::bridge::RuntimeValue::acquire(name).ok_or(crate::ErrorIndicatorSet)?;
+            return match (hooks.type_lookup_borrowed)(class.bits(), name.bits(), 0).decode() {
+                crate::hooks::DecodedHandleResult::Ok(bits) => {
+                    let value = bridge.handle_to_borrowed_pyobj(bits);
+                    if value.is_null() {
+                        Err(crate::ErrorIndicatorSet)
+                    } else {
+                        Ok(value)
+                    }
+                }
+                crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
+                crate::hooks::DecodedHandleResult::Error => {
+                    crate::api::errors::check_native_status(-1, "type namespace lookup");
+                    Err(crate::ErrorIndicatorSet)
+                }
+            };
         }
         // READYING owns the partially populated dictionary; lookup may inspect
         // it without starting another readiness transaction.
@@ -2877,55 +2877,73 @@ pub unsafe extern "C" fn _PyType_Lookup(
     if tp.is_null() || name.is_null() {
         return ptr::null_mut();
     }
+    unsafe { type_lookup_borrowed(tp, name) }.unwrap_or(ptr::null_mut())
+}
+
+pub(crate) unsafe fn type_lookup_borrowed(
+    tp: *mut PyTypeObject,
+    name: *mut PyObject,
+) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
+    if tp.is_null() || name.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return Err(crate::ErrorIndicatorSet);
+    }
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     let Some(_type_owner) =
         (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
     else {
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     };
     let _name_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(name) };
     let found = (|| unsafe {
-        if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
+        let observed =
+            crate::bridge::observe_pyobject(tp.cast()).ok_or(crate::ErrorIndicatorSet)?;
+        if let crate::bridge::ResolvedPyObject::ManagedMolt(class) = observed {
             let hooks = crate::hooks::hooks_or_stubs();
-            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
-                let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
-                    return ptr::null_mut();
-                };
-                return match (hooks.type_lookup_borrowed)(class.bits(), name.bits(), 1).decode() {
-                    crate::hooks::DecodedHandleResult::Ok(value) => {
-                        GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value)
-                    }
-                    crate::hooks::DecodedHandleResult::Missing => ptr::null_mut(),
-                    crate::hooks::DecodedHandleResult::Error => {
-                        crate::api::errors::check_native_status(-1, "type MRO lookup");
-                        ptr::null_mut()
-                    }
-                };
+            if hooks.classify_heap(class.bits()) != crate::abi_types::MoltTypeTag::Type as u8 {
+                crate::api::errors::PyErr_BadInternalCall();
+                return Err(crate::ErrorIndicatorSet);
             }
+            let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
+                return Err(crate::ErrorIndicatorSet);
+            };
+            return match (hooks.type_lookup_borrowed)(class.bits(), name.bits(), 1).decode() {
+                crate::hooks::DecodedHandleResult::Ok(value) => {
+                    let value = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value);
+                    if value.is_null() {
+                        Err(crate::ErrorIndicatorSet)
+                    } else {
+                        Ok(value)
+                    }
+                }
+                crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
+                crate::hooks::DecodedHandleResult::Error => {
+                    crate::api::errors::check_native_status(-1, "type MRO lookup");
+                    Err(crate::ErrorIndicatorSet)
+                }
+            };
         }
         let mro = (*tp).tp_mro;
         if !mro.is_null() {
             let _mro_owner = crate::api::refcount::OwnedPyObject::from_borrowed(mro);
             let n = crate::api::sequences::PyTuple_Size(mro);
             if n < 0 {
-                return ptr::null_mut();
+                return Err(crate::ErrorIndicatorSet);
             }
             let mut i: Py_ssize_t = 0;
             while i < n {
                 let base = crate::api::sequences::PyTuple_GetItem(mro, i).cast::<PyTypeObject>();
                 if base.is_null() {
-                    return ptr::null_mut();
+                    return Err(crate::ErrorIndicatorSet);
                 }
-                if !base.is_null() {
-                    match type_namespace_lookup_with_bridge(&GLOBAL_BRIDGE, base, name) {
-                        Ok(found) if found.is_null() => {}
-                        Ok(found) => return found,
-                        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
-                    }
+                match type_namespace_lookup_with_bridge(&GLOBAL_BRIDGE, base, name) {
+                    Ok(found) if found.is_null() => {}
+                    Ok(found) => return Ok(found),
+                    Err(error) => return Err(error),
                 }
                 i += 1;
             }
-            return ptr::null_mut();
+            return Ok(ptr::null_mut());
         }
         // No MRO computed (type not readied): fall back to a direct base-chain
         // walk so lookups still resolve.
@@ -2933,8 +2951,8 @@ pub unsafe extern "C" fn _PyType_Lookup(
         while !cur.is_null() {
             match type_namespace_lookup_with_bridge(&GLOBAL_BRIDGE, cur, name) {
                 Ok(found) if found.is_null() => {}
-                Ok(found) => return found,
-                Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+                Ok(found) => return Ok(found),
+                Err(error) => return Err(error),
             }
             let base = (*cur).tp_base;
             if base == cur {
@@ -2942,10 +2960,10 @@ pub unsafe extern "C" fn _PyType_Lookup(
             }
             cur = base;
         }
-        ptr::null_mut()
+        Ok(ptr::null_mut())
     })();
-    if !crate::api::errors::raised_error_pending() {
-        // Error-free hits and misses rearm invalidated watchers. Failed lookup
+    if found.is_ok() {
+        // Successful hits and misses rearm invalidated watchers. Failed lookup
         // keeps its original exception and leaves the tag invalid.
         unsafe { assign_type_version_tag(tp, &mut HashSet::new()) };
     }
@@ -3805,16 +3823,14 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
         return ptr::null_mut();
     };
     let _name_owner = unsafe { OwnedPyObject::from_borrowed(name) };
-    if descriptors::pending() {
-        return ptr::null_mut();
-    }
     let tp = o.cast::<PyTypeObject>();
     let metatype = unsafe { (*o).ob_type };
     let _metatype_owner = unsafe { OwnedPyObject::from_borrowed(metatype.cast()) };
-    let meta_owner = unsafe { OwnedPyObject::from_borrowed(_PyType_Lookup(metatype, name)) };
-    if descriptors::pending() {
-        return ptr::null_mut();
-    }
+    let descriptor = match unsafe { type_lookup_borrowed(metatype, name) } {
+        Ok(descriptor) => descriptor,
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+    };
+    let meta_owner = unsafe { OwnedPyObject::from_borrowed(descriptor) };
     let meta_attribute = meta_owner.as_ptr();
     let is_data = match unsafe { descriptor::is_data(meta_attribute) } {
         Ok(value) => value,
@@ -3825,10 +3841,11 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
         return result;
     }
 
-    let owner = unsafe { OwnedPyObject::from_borrowed(_PyType_Lookup(tp, name)) };
-    if descriptors::pending() {
-        return ptr::null_mut();
-    }
+    let descriptor = match unsafe { type_lookup_borrowed(tp, name) } {
+        Ok(descriptor) => descriptor,
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+    };
+    let owner = unsafe { OwnedPyObject::from_borrowed(descriptor) };
     let attribute = owner.as_ptr();
     if !attribute.is_null() {
         // CPython retires the unused metatype descriptor before invoking a

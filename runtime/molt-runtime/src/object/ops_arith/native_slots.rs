@@ -392,11 +392,10 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
             let key = ExceptionValue::pin(py, key);
             let value = ExceptionValue::pin(py, value);
 
-            let old = dict_get_with_hash_in_place(py, temporary_ptr, key.bits(), hash)
-                .map(|bits| ExceptionValue::pin(py, bits));
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
+            let old = match dict_get_with_hash_in_place(py, temporary_ptr, key.bits(), hash) {
+                Ok(old) => old.map(|bits| ExceptionValue::pin(py, bits)),
+                Err(()) => return MoltObject::none().bits(),
+            };
             let equal = if let Some(old) = &old {
                 match compare_object_eq_bool(
                     py,
@@ -411,10 +410,11 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
                 false
             };
             if equal {
-                let removed = dict_del_with_hash_deferred(py, temporary_ptr, key.bits(), hash);
-                if removed.is_none() || exception_pending(py) {
-                    return MoltObject::none().bits();
-                }
+                let removed = match dict_del_with_hash_deferred(py, temporary_ptr, key.bits(), hash)
+                {
+                    Ok(Some(removed)) => removed,
+                    Ok(None) | Err(()) => return MoltObject::none().bits(),
+                };
                 drop(removed);
             } else {
                 let pair = alloc_tuple(py, &[key.bits(), value.bits()]);

@@ -10,6 +10,7 @@ pub mod hash_policy;
 pub mod hierarchy;
 pub mod int_literal;
 pub mod sequence_compare;
+pub mod timsort;
 
 pub use exception_layout::{
     BuiltinExceptionSpec, ExceptionAttributeDeclaration, ExceptionAttributeField,

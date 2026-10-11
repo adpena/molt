@@ -1030,25 +1030,30 @@ pub extern "C" fn molt_weakref_register(
 /// referent death.
 pub(crate) fn weakref_cached_hash_or_compute(_py: &PyToken<'_>, weak_bits: u64) -> i64 {
     let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
-        return raise_exception::<i64>(_py, "TypeError", "weakref must be an object");
+        raise_exception::<()>(_py, "TypeError", "weakref must be an object");
+        return -1;
     };
     if !object_is_weakref_slot(weak_ptr) {
-        return raise_exception::<i64>(_py, "TypeError", "weakref must be an object");
+        raise_exception::<()>(_py, "TypeError", "weakref must be an object");
+        return -1;
     }
     let weak_slot = PtrSlot(weak_ptr);
     let target_bits = {
         let registry = runtime_state(_py).weakrefs.lock().unwrap();
         let Some(entry) = registry.by_ref.get(&weak_slot) else {
-            return raise_exception::<i64>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            return -1;
         };
         if entry.cached_hash != WEAKREF_HASH_UNSET {
             return entry.cached_hash;
         }
         if entry.target.0.is_null() {
-            return raise_exception::<i64>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            return -1;
         }
         let Some(bits) = try_retain_registered_ptr(&registry, entry.target.0) else {
-            return raise_exception::<i64>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            return -1;
         };
         bits
     };
@@ -1058,8 +1063,8 @@ pub(crate) fn weakref_cached_hash_or_compute(_py: &PyToken<'_>, weak_bits: u64) 
         .unwrap_or_else(|| std::process::abort());
     let hash = super::ops_hash::hash_bits_signed(_py, target_bits);
     dec_ref_bits(_py, target_bits);
-    if exception_pending(_py) {
-        return 0;
+    if hash == -1 {
+        return -1;
     }
 
     let mut registry = runtime_state(_py).weakrefs.lock().unwrap();

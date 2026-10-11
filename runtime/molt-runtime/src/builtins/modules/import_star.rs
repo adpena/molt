@@ -36,10 +36,14 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
         inc_ref_bits(py, destination_dict);
         let _dst_dict_owner = PtrDropGuard::new(dst_dict);
         let all_name = intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
-        let explicit = crate::builtins::attr::attr_lookup_ptr_allow_missing(py, src, all_name);
-        if exception_pending(py) {
+        if all_name == 0 {
             return none;
         }
+        let explicit = match crate::builtins::attr::attr_lookup_ptr_allow_missing(py, src, all_name)
+        {
+            Ok(value) => value,
+            Err(()) => return none,
+        };
         let skip_private = explicit.is_none();
         let names = if let Some(names) = explicit {
             names
@@ -120,8 +124,8 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
                 if exception_pending(py) {
                     return none;
                 }
-                dict_set_in_place(py, dst_dict, name, value);
-                if exception_pending(py) {
+                let completed = dict_set_in_place(py, dst_dict, name, value);
+                if !completed {
                     return none;
                 }
             }
@@ -204,11 +208,13 @@ mod tests {
                 );
                 assert!(!exception_pending(py));
                 assert_eq!(
-                    dict_get_in_place(py, dst_dict, dynamic_name),
+                    dict_get_in_place(py, dst_dict, dynamic_name)
+                        .expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(99).bits())
                 );
                 assert_eq!(
-                    dict_get_in_place(py, dst_dict, hidden_name),
+                    dict_get_in_place(py, dst_dict, hidden_name)
+                        .expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(11).bits())
                 );
                 for bits in [
@@ -357,7 +363,7 @@ mod tests {
                         );
                     }
                     assert_eq!(
-                        dict_get_in_place(py, dst_dict, key),
+                        dict_get_in_place(py, dst_dict, key).expect("dictionary lookup succeeds"),
                         if mode == 2 {
                             None
                         } else {
@@ -399,7 +405,7 @@ mod tests {
                 );
                 assert_error(py, "TypeError");
                 assert_eq!(
-                    dict_get_in_place(py, dst_dict, key),
+                    dict_get_in_place(py, dst_dict, key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(7).bits())
                 );
                 for bits in [key, source_name, destination_name] {

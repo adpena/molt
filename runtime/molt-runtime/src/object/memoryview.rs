@@ -235,9 +235,11 @@ pub(crate) fn memoryview_scalar_format(py: &PyToken<'_>, format: &str) -> Option
     }
 }
 
-pub(crate) unsafe fn memoryview_is_index_key(py: &PyToken<'_>, key: u64) -> bool {
-    crate::builtins::numbers::index_integral_payload_bits(key).is_some()
-        || unsafe { crate::builtins::attr::has_special_method(py, key, b"__index__") }
+pub(crate) unsafe fn memoryview_is_index_key(py: &PyToken<'_>, key: u64) -> Result<bool, ()> {
+    Ok(
+        crate::builtins::numbers::index_integral_payload_bits(key).is_some()
+            || unsafe { crate::builtins::attr::has_special_method(py, key, b"__index__") }?,
+    )
 }
 
 pub(crate) unsafe fn memoryview_prepare_iter(py: &PyToken<'_>, view: *mut u8) -> Option<String> {
@@ -1075,6 +1077,9 @@ pub(crate) unsafe fn memoryview_read_scalar(
             Some(crate::int_bits_from_i128(_py, i128::from(val)))
         }
     }
+    // Every supported scalar format yields bytes, bool, float or int. A boxed
+    // None here is exclusively the numeric allocator failure sentinel.
+    .filter(|bits| !obj_from_bits(*bits).is_none())
 }
 
 pub(crate) unsafe fn memoryview_read_scalar_at(

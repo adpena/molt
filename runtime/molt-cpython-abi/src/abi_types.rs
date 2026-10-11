@@ -1965,8 +1965,11 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         // dict is EQ/NE key-value equality. Without them two distinct-but-equal
         // list/dict objects compare unequal by object identity in do_richcompare.
         PyList_Type.tp_richcompare = Some(crate::api::sequences::molt_list_richcompare);
+        PyList_Type.tp_dealloc = Some(crate::api::memory::molt_list_dealloc);
         PyList_Type.tp_traverse = Some(crate::api::memory::molt_list_gc_traverse);
-        PyList_Type.tp_clear = Some(crate::api::memory::molt_managed_gc_clear);
+        PyList_Type.tp_clear = Some(crate::api::memory::molt_list_gc_clear);
+        PyList_Type.tp_alloc = Some(crate::api::typeobj::PyType_GenericAlloc);
+        PyList_Type.tp_free = Some(crate::api::memory::PyObject_GC_Del);
         for ty in [
             &raw mut PyDict_Type,
             &raw mut PySet_Type,
