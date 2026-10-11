@@ -37,8 +37,6 @@ fn require_ssl_capability(
 // ── Constants (mirror CPython ssl module integer values) ──────────────────
 
 const PURPOSE_SERVER_AUTH: i64 = 1;
-#[allow(dead_code)]
-const PURPOSE_CLIENT_AUTH: i64 = 2;
 const PROTOCOL_TLS_CLIENT: i64 = 16;
 const PROTOCOL_TLS_SERVER: i64 = 17;
 const CERT_NONE: i64 = 0;

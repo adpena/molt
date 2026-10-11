@@ -251,7 +251,6 @@ pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
 
 // Native no-net keeps this symbol for the existing crate-root helper surface;
 // net/wasm feature lanes call it directly from socket/channel operations.
-#[allow(dead_code)]
 pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     operation: OperationId,
