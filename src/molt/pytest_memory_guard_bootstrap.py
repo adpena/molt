@@ -22,7 +22,7 @@ from molt.process_spawn import (
     inherit_stdio_kwargs,
 )
 from molt.memory_guard_paths import (
-    active_guard_marker_dir,
+    ACTIVE_DIRNAME,
     canonical_pytest_current_test_file_path,
     pytest_custody_artifact_path as _pytest_custody_artifact_path,
     pytest_custody_path_is_canonical as _pytest_custody_path_is_canonical,
@@ -588,10 +588,13 @@ def _active_guard_marker_valid(
     marker = Path(marker_raw).expanduser()
     try:
         marker_resolved = marker.resolve(strict=False)
-        marker_root = active_guard_marker_dir(ROOT, environ).resolve(strict=False)
     except OSError:
         return False
-    if marker_resolved.parent != marker_root:
+    # The marker lives in its own guard's active directory. Do not compare it
+    # with this process's state root: a test session points the guards its
+    # tests start at another root, and its children still belong to the outer
+    # guard. The record below binds name, pid, token, status and guard path.
+    if marker_resolved.parent.name != ACTIVE_DIRNAME:
         return False
     from tools.memory_guard_core.active_custody import read_marker_record
 

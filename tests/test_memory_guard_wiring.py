@@ -97,6 +97,31 @@ _GUARD_LAUNCHERS = frozenset(
 )
 
 
+def test_session_children_recognize_the_outer_guard_by_its_marker(
+    test_guard_custody_roots, monkeypatch
+) -> None:
+    """A test's direct child must not pay a process snapshot or a re-exec.
+
+    The session points the guards that tests start at its own root, but the
+    outer guard's marker stays in the host root. HF-163 CI: the child then
+    rejected that marker, imported the guard to sample every process, or
+    re-ran itself under a new guard, and accel workers missed their
+    100-500 ms deadlines.
+    """
+
+    def no_snapshot():
+        raise AssertionError("a child of a live, marked guard sampled processes")
+
+    monkeypatch.setattr(memory_guard, "sample_processes", no_snapshot)
+    assert os.environ[memory_guard_paths.STATE_ROOT_ENV] == str(
+        test_guard_custody_roots.state_root
+    )
+    assert Path(os.environ["MOLT_MEMORY_GUARD_MARKER"]).parent.parent == (
+        test_guard_custody_roots.host_state_root
+    )
+    assert pytest_memory_guard_bootstrap.outer_memory_guard_active(dict(os.environ))
+
+
 def test_tests_consume_the_outer_guard_lease_under_the_session_root(
     test_guard_custody_roots,
 ) -> None:

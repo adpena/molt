@@ -940,7 +940,17 @@ def test_terminal_publication_pins_custody_against_postcheck_transfer(
         assert file_locks._file_lock_is_owned(handle)
         return original(*args)
 
+    sweep = scratch.reclaim_terminal_scratch
+
+    def sweep_after_transfer(*args, **kwargs):
+        # The finisher's sweep competes for the released lock. Order it after
+        # the transfer so the contender's lock is deterministic; a sweep that
+        # finds the generation busy defers its receipt removal.
+        assert transferred.wait(5)
+        return sweep(*args, **kwargs)
+
     monkeypatch.setattr(scratch, "_publish_index", publish)
+    monkeypatch.setattr(scratch, "reclaim_terminal_scratch", sweep_after_transfer)
     thread = threading.Thread(target=transfer)
     thread.start()
     try:
@@ -951,6 +961,8 @@ def test_terminal_publication_pins_custody_against_postcheck_transfer(
         assert not file_locks._file_lock_is_owned(handle)
         assert file_locks._file_lock_is_owned(contender[0])
         assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+        assert result["retention"]["protected_count"] == 1
+        assert scratch._index_path(lease.generation).is_file()
     finally:
         reached.set()
         thread.join(5)
