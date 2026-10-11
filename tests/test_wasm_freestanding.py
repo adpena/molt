@@ -710,7 +710,6 @@ def test_precompile_produces_host_container(tmp_path):
         ],
         cwd=PROJECT_ROOT,
         env=wasm_test_build_env(PROJECT_ROOT, linked=True),
-        timeout=180,
     )
     assert result.returncode == 0, (
         f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
