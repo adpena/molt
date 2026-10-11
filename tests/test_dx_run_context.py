@@ -1477,6 +1477,18 @@ def test_canonical_env_preserves_explicit_toolchain_root_and_adds_ruff_cache(
     assert env["RUFF_CACHE_DIR"] == str(resolved_output / ".ruff-cache")
 
 
+def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = tmp_path / "separate tools"
+    outputs = tmp_path / "builds"
+    env = {"MOLT_TARGET_ROOT": str(tools), "MOLT_EXT_ROOT": str(outputs)}
+    resolved = RunContext(repo).canonical_env(env, create_dirs=False)
+    assert Path(resolved["MOLT_TARGET_ROOT"]) == tools
+    assert dx.canonical_toolchain_root(repo, env, require_exists=False) == tools
+    assert not tools.exists() and not outputs.exists()
+
+
 def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:
     """The uv project env authority must be STABLE across sessions.
 
@@ -1631,3 +1643,172 @@ def test_checkout_head_refuses_an_unreadable_layout(tmp_path: Path) -> None:
     (tmp_path / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
     assert dx.git_checkout_head(tmp_path) is None
     assert dx.git_checkout_head(tmp_path / "missing") is None
+
+
+@pytest.mark.parametrize("layout", ["bundle", "wheel", "damaged-bundle"])
+def test_installed_toolchain_default_is_home_state_not_source(
+    tmp_path, monkeypatch, layout
+):
+    from molt import source_root
+
+    bundle = tmp_path / "readonly-install"
+    source = bundle / "source"
+    source.mkdir(parents=True)
+    home = tmp_path / "mutable home"
+    env = {"MOLT_HOME": str(home)}
+    if layout == "bundle":
+        (source / source_root.MANIFEST_NAME).write_text(
+            "content admission is separate", encoding="utf-8"
+        )
+    elif layout == "damaged-bundle":
+        env["MOLT_BUNDLE_ROOT"] = str(bundle)
+    else:
+        monkeypatch.setattr(source_root, "packaged_distribution_root", lambda: bundle)
+    assert (
+        dx.canonical_toolchain_root(source, env, require_exists=False)
+        == home / "target-root"
+    )
+    assert not home.exists()
+    assert not (source / "target-root").exists()
+    assert dx.canonical_molt_root(source) == source
+
+
+def test_installed_toolchain_default_reuses_shared_home_and_refuses_nested_state(
+    tmp_path, monkeypatch
+):
+    from molt import default_paths, source_root
+
+    bundle = tmp_path / "bundle"
+    source = bundle / "source"
+    source.mkdir(parents=True)
+    (source / source_root.MANIFEST_NAME).write_text(
+        "invalid manifest must not imply development", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        default_paths, "_default_home_str", lambda _environ=None: str(tmp_path / "user")
+    )
+    env = {"XDG_CACHE_HOME": str(tmp_path / "user-cache")}
+    expected = default_paths._default_molt_home(environ=env) / "target-root"
+    assert dx.canonical_toolchain_root(source, env, require_exists=False) == expected
+    for values in (
+        {"MOLT_HOME": str(bundle)},
+        {"MOLT_TARGET_ROOT": str(source / "tools")},
+    ):
+        with pytest.raises(dx.DxConfigError, match="outside the immutable bundle"):
+            dx.canonical_toolchain_root(source, values, require_exists=False)
+    assert not expected.exists()
+
+
+def test_toolchain_selector_preserves_relative_paths_and_rejects_file_roots(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    selected = dx.canonical_toolchain_root(
+        project,
+        {"MOLT_TARGET_ROOT": "relative tools"},
+        cwd=tmp_path,
+        require_exists=False,
+    )
+    assert selected == tmp_path / "relative tools"
+    selected.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(dx.DxConfigError, match="not a directory"):
+        dx.canonical_toolchain_root(
+            project, {"MOLT_TARGET_ROOT": str(selected)}, require_exists=False
+        )
+
+
+@pytest.mark.parametrize("selector", ["MOLT_TARGET_ROOT", "MOLT_HOME", "MOLT_CACHE"])
+def test_installed_tool_state_expands_selected_child_home(
+    tmp_path, monkeypatch, selector
+):
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
+    key = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(key, str(tmp_path / "ambient"))
+    child_home = tmp_path / "selected home"
+    env = {key: str(child_home), selector: "~/state"}
+    expected = child_home / "state"
+    if selector == "MOLT_HOME":
+        expected /= "target-root"
+    elif selector == "MOLT_CACHE":
+        expected /= "home/target-root"
+    assert dx.canonical_toolchain_root(source, env, require_exists=False) == expected
+    assert not child_home.exists()
+
+
+def test_relative_known_bundle_uses_request_cwd_and_rejects_nested_tool_state(tmp_path):
+    cwd = tmp_path / "caller"
+    source = cwd / "bundle/source"
+    source.mkdir(parents=True)
+    env = {"MOLT_BUNDLE_ROOT": "bundle", "MOLT_HOME": "mutable"}
+    assert (
+        dx.canonical_toolchain_root(source, env, cwd=cwd, require_exists=False)
+        == cwd / "mutable/target-root"
+    )
+    with pytest.raises(dx.DxConfigError, match="outside the immutable bundle"):
+        dx.canonical_toolchain_root(
+            source, {**env, "MOLT_HOME": "bundle/state"}, cwd=cwd, require_exists=False
+        )
+
+
+def test_managed_membership_preserves_aliases_but_admits_only_selected_state(tmp_path):
+    real = tmp_path / "real" / "state"
+    real.mkdir(parents=True)
+    alias = tmp_path / "state-alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink unavailable")
+    member = real / "toolchains/bin/tool"
+    env = {"MOLT_TARGET_ROOT": str(alias)}
+    assert dx.selected_toolchain_contains(tmp_path, member, env)
+    assert not dx.selected_toolchain_contains(tmp_path, tmp_path / "external/tool", env)
+    # Admission resolves the selected alias to the one physical state root.
+    assert dx.canonical_toolchain_root(tmp_path, env, require_exists=False) == (
+        real.resolve()
+    )
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
+    tmp_path, monkeypatch, windows
+):
+    from types import SimpleNamespace
+    from molt import default_paths
+
+    # Change only the pure environment-key authority, not pathlib's host class.
+    monkeypatch.setattr(
+        default_paths,
+        "os",
+        SimpleNamespace(name="nt" if windows else "posix", fspath=os.fspath),
+    )
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    env = {
+        "molt_bundle_root": str(source.parent),
+        "molt_target_root": str(tmp_path / "selected"),
+        "MOLT_HOME": str(tmp_path / "home"),
+    }
+    actual = dx.canonical_toolchain_root(source, env, require_exists=False)
+    assert actual == (tmp_path / "selected" if windows else source / "target-root")
+    env.pop("molt_target_root")
+    assert dx.canonical_toolchain_root(source, env, require_exists=False) == (
+        tmp_path / "home/target-root" if windows else source / "target-root"
+    )
+    if windows:
+        with pytest.raises(
+            dx.DxConfigError, match="conflicting captured environment spellings"
+        ):
+            dx.canonical_toolchain_root(
+                source,
+                {**env, "MOLT_TARGET_ROOT": "one", "molt_target_root": "two"},
+                require_exists=False,
+            )
+        with pytest.raises(
+            dx.DxConfigError, match="conflicting captured environment spellings"
+        ):
+            dx.canonical_toolchain_root(
+                source, {**env, "MOLT_BUNDLE_ROOT": "different"}, require_exists=False
+            )

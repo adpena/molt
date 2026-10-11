@@ -422,6 +422,49 @@ class ProcessTreeTracker:
                         changed = True
         return {pid for pid in self.known_pids if pid in samples}
 
+    def admit_reserved_group_members(
+        self,
+        samples: Mapping[int, ProcessSample],
+    ) -> set[int]:
+        """Admit live members of the group the root leads; return new PIDs.
+
+        The caller launched the root as a session leader and took ``samples``
+        after the root exited but before it reaped the root. Until that reap
+        the root's PID stays reserved, so no other process can lead or join a
+        group with that ID: every live member descends from the root, whatever
+        its parent is now. Parentage alone misses a child whose parent exited
+        between two samples, because the child is reparented at that exit.
+        """
+
+        assert self.known_pids is not None
+        assert self.known_identities is not None
+        assert self.released_identities is not None
+        assert self.known_ancestry is not None
+        root_identity = self.known_identities.get(self.root_pid)
+        admitted: set[int] = set()
+        for sample in samples.values():
+            if (
+                sample.pid == self.root_pid
+                or sample_pgid_or_pid(sample) != self.root_pid
+            ):
+                continue
+            identity = process_identity(sample)
+            if (
+                not process_identity_has_creation_marker(identity)
+                or self.released_identities.get(sample.pid) == identity
+                or self.known_identities.get(sample.pid) == identity
+            ):
+                continue
+            if root_identity is not None and not process_births_are_ordered(
+                root_identity.started_at_ns, identity.started_at_ns
+            ):
+                continue
+            self.known_pids.add(sample.pid)
+            self.known_identities[sample.pid] = identity
+            self.known_ancestry.pop(sample.pid, None)
+            admitted.add(sample.pid)
+        return admitted
+
     def transfer_process_group(
         self,
         pgid: int,

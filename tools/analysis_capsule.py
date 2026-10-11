@@ -66,14 +66,16 @@ def load_json(path: Path) -> dict[str, Any]:
     return raw
 
 
-def analyze_binary(path: Path) -> dict[str, Any]:
+def analyze_binary(path: Path, *, scanner: Path | None = None) -> dict[str, Any]:
     if not path.is_file():
         raise CapsuleError(f"{path}: binary does not exist")
     fmt = binary_size_analysis.detect_format(path)
     if fmt == "wasm":
         return binary_size_analysis.to_json(binary_size_analysis.analyse_wasm(path))
     if fmt in {"macho", "elf"}:
-        return binary_size_analysis.to_json(binary_size_analysis.analyse_native(path))
+        return binary_size_analysis.to_json(
+            binary_size_analysis.analyse_native(path, scanner=scanner)
+        )
     raise CapsuleError(f"{path}: unrecognized binary format")
 
 
@@ -329,11 +331,33 @@ def _summarize_binary(
             "total_bytes": binary_size.get("total_bytes")
             if isinstance(binary_size.get("total_bytes"), int)
             else None,
-            "category_totals": _int_mapping(binary_size.get("category_totals")),
             "by_type": _int_mapping(binary_size.get("by_type")),
             "top_symbols": _list_of_mappings(binary_size.get("top_50_symbols"))[:20],
             "sections": _list_of_mappings(binary_size.get("sections"))[:40],
         }
+        if binary_size.get("format") == "native":
+            try:
+                attribution = binary_size_analysis.validate_native_attribution(
+                    binary_size.get("attribution"), binary_size.get("total_bytes")
+                )
+            except ValueError as exc:
+                raise CapsuleError(str(exc)) from exc
+            size_summary.update(
+                attribution=attribution,
+                sha256=_string_or_none(binary_size.get("sha256")),
+                object_format=_string_or_none(binary_size.get("object_format")),
+                universal=binary_size.get("universal"),
+                symbol_extent_status=_string_or_none(
+                    binary_size.get("symbol_extent_status")
+                ),
+                symbol_category_counts=_int_mapping(
+                    binary_size.get("symbol_category_counts")
+                ),
+                native_sections=_list_of_mappings(binary_size.get("native_sections")),
+                native_slices=_list_of_mappings(binary_size.get("native_slices")),
+                tools=_list_of_mappings(binary_size.get("tools")),
+                name_authorities=_list_of_mappings(binary_size.get("name_authorities")),
+            )
 
     startup_summary: dict[str, Any] | None = None
     if startup_audit is not None:
@@ -572,6 +596,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Emit the capsule even when cross-layer checks fail",
     )
+    parser.add_argument(
+        "--native-facts-scanner",
+        type=Path,
+        help="Existing compiler inspector for --binary",
+    )
     args = parser.parse_args(argv)
 
     if args.binary_size_json and args.binary:
@@ -584,7 +613,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             binary_size = load_json(args.binary_size_json)
             binary_size_path = str(args.binary_size_json)
         elif args.binary:
-            binary_size = analyze_binary(args.binary)
+            binary_size = analyze_binary(args.binary, scanner=args.native_facts_scanner)
             binary_size_path = str(args.binary)
         else:
             binary_size = None

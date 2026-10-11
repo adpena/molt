@@ -308,6 +308,26 @@ def test_birth_bound_daemon_reuse_never_signals_replacement(tmp_path, monkeypatc
 @pytest.mark.skipif(
     os.name != "posix", reason="POSIX backend daemon and pass_fds custody"
 )
+def test_guardian_loads_owner_custody_from_a_guest_project_root(tmp_path):
+    # A guest project has no `tools` package, and the guardian runs from it with
+    # no inherited import path; it must still load the owner's custody modules.
+    guest = tmp_path / "guest-project"
+    guest.mkdir()
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
+    active = suite.SuiteDaemonLease.start(project_root=guest, environ=env)
+    assert active is not None
+    active.close()
+    assert active.guardian.poll() == 0, (active.path.parent / "guardian.log").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert suite.read_lease(active.path)["state"] == "closed"
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX backend daemon and pass_fds custody"
+)
 def test_owned_suite_guardian_closes_on_eof_without_backend_build(tmp_path):
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)

@@ -5,7 +5,8 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 
 ## Prerequisites
 
-- Python 3.12+ (the examples select 3.12 through `uv`)
+- A [supported CPython compiler host](../packaging/INSTALL.md#requirements)
+  (the examples select 3.12 through `uv`)
 - Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC

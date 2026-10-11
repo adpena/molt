@@ -7,7 +7,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from io import BufferedReader
-import ntpath
 import os
 from pathlib import Path
 import re
@@ -15,6 +14,8 @@ import shlex
 import stat
 import subprocess
 from typing import BinaryIO
+
+from molt.default_paths import executable_environment_value, expand_user_path
 
 from molt.file_hashing import (
     content_change_time_ns,
@@ -202,85 +203,6 @@ def _executable_paths(path: Path, *, label: str) -> tuple[Path, Path]:
 
 def executable_content_path(path: Path, *, label: str) -> Path:
     return _executable_paths(path, label=label)[1]
-
-
-def executable_environment_value(
-    environment: Mapping[str, str],
-    key: str,
-    default: str = "",
-    *,
-    windows: bool | None = None,
-) -> str:
-    """Read captured executable-selection inputs with host key semantics."""
-    if windows is None:
-        windows = os.name == "nt"
-    if not windows:
-        return environment.get(key, default)
-    values = {
-        value
-        for name, value in environment.items()
-        if name.casefold() == key.casefold()
-    }
-    if len(values) > 1:
-        raise ValueError(f"conflicting captured environment spellings for {key}")
-    return next(iter(values), default)
-
-
-def expand_user_path(
-    path: str | Path, *, environment: Mapping[str, str] | None = None
-) -> Path:
-    """Expand a user selector using the selected environment, never ambient keys.
-
-    With no explicit mapping, retain pathlib's host behavior. POSIX named users
-    (and a missing HOME) use the system account database, as pathlib does;
-    Windows uses USERPROFILE or HOMEDRIVE/HOMEPATH and captured USERNAME.
-    """
-    raw = os.fspath(path)
-    if not raw.startswith("~"):
-        return Path(raw)
-    if environment is None:
-        return Path(raw).expanduser()
-    separators = "/\\" if os.name == "nt" else "/"
-    end = next(
-        (index for index, char in enumerate(raw) if char in separators), len(raw)
-    )
-    user, suffix = raw[1:end], raw[end:]
-    if os.name == "nt":
-        home = executable_environment_value(environment, "USERPROFILE")
-        if not home:
-            homepath = executable_environment_value(environment, "HOMEPATH")
-            if not homepath:
-                raise ValueError("selected environment has no user home for tilde path")
-            home = ntpath.join(
-                executable_environment_value(environment, "HOMEDRIVE"), homepath
-            )
-        if user:
-            current_user = executable_environment_value(environment, "USERNAME")
-            if user != current_user:
-                if ntpath.basename(home.rstrip("\\/")) != current_user:
-                    raise ValueError(
-                        "selected environment cannot resolve named user home"
-                    )
-                home = ntpath.join(ntpath.dirname(home.rstrip("\\/")), user)
-    else:
-        home = environment.get("HOME") if not user else None
-        if home is None:
-            import pwd
-
-            try:
-                home = (
-                    pwd.getpwnam(user) if user else pwd.getpwuid(os.getuid())
-                ).pw_dir
-            except KeyError as exc:
-                raise ValueError(
-                    "cannot resolve system account for tilde path"
-                ) from exc
-    if "\0" in home:
-        raise ValueError("selected user home contains a NUL byte")
-    expanded = home + suffix if os.name == "nt" else home.rstrip(separators) + suffix
-    if expanded.startswith("~"):
-        raise ValueError("selected user home did not resolve tilde path")
-    return Path(expanded or os.sep)
 
 
 def executable_name_candidates(

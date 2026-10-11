@@ -724,7 +724,7 @@ def _native_probe_fixture(tmp_path: Path) -> tuple[Path, str]:
         "wasm-opt version 130 (version_130)wasm-opt version 130 (version_130)",
     ),
 )
-def test_version_probe_rejects_noncanonical_or_ambiguous_output(
+def test_managed_version_probe_rejects_untagged_or_ambiguous_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stdout: str,
@@ -740,7 +740,7 @@ def test_version_probe_rejects_noncanonical_or_ambiguous_output(
         provisioner._read_wasm_opt_version(executable, expected_sha256=digest)
 
 
-def test_version_probe_accepts_only_the_canonical_upstream_identity(
+def test_managed_version_probe_accepts_the_tagged_release_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -890,3 +890,102 @@ def test_receipt_loader_rejects_inexact_json(
 
     with pytest.raises(BinaryenIdentityError, match=message):
         load_binaryen_install_receipt(root)
+
+
+@pytest.mark.parametrize(
+    "record", ("wasm-opt version 133", "wasm-opt version 133 (version_133)")
+)
+@pytest.mark.parametrize("terminator", ("", "\n"))
+def test_external_version_probe_retains_exact_release_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record: str,
+    terminator: str,
+) -> None:
+    executable, digest = _native_probe_fixture(tmp_path)
+    calls = []
+
+    def completed(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, record + terminator, "")
+
+    monkeypatch.setattr(binaryen_identity, "run_completed_command", completed)
+    assert binaryen_identity.read_binaryen_version(
+        executable, expected_sha256=digest
+    ) == ("133", record)
+    assert calls == [[str(executable), "--version"]]
+    assert binaryen_identity.is_binaryen_version_output(record)
+    assert not binaryen_identity.is_binaryen_version_output(record + "\n")
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        "wasm-opt version 0",
+        "wasm-opt version 0133",
+        "wasm-opt version 1\u0663\u0663",
+        "wasm-opt version 133 (version_132)",
+        "wasm-opt version 133 (version_133-1-g1234567)",
+        " wasm-opt version 133",
+        "wasm-opt version 133 ",
+        "wasm-opt version 133\n\n",
+        "wasm-opt version 133\r",
+        "wasm-opt version 133\nsecond record",
+    ),
+)
+def test_version_record_rejects_non_release_or_ambiguous_text(record: str) -> None:
+    with pytest.raises(BinaryenIdentityError, match="invalid version"):
+        binaryen_identity.parse_binaryen_version_output(record)
+    assert not binaryen_identity.is_binaryen_version_output(record)
+
+
+@pytest.mark.parametrize(
+    "version", ("134", "1\u0663\u0663", "13\uff13", "1\u0969" + "3")
+)
+def test_receipt_version_grammar_with_coherent_record_digest(
+    tmp_path: Path, version: str
+) -> None:
+    archive = tmp_path / "binaryen.tar.gz"
+    _write_archive(archive, _required_members())
+    record = asdict(_asset(archive))
+    record.pop("record_sha256")
+    record["version"] = version
+    record["archive_root"] = f"binaryen-version_{version}"
+    record["url"] = (
+        f"https://example.invalid/binaryen-version_{version}-x86_64-linux.tar.gz"
+    )
+    # Independent JSON encoding preserves a valid digest even for Unicode;
+    # neither a stale digest nor a stale archive root may mask the defect.
+    record["record_sha256"] = hashlib.sha256(
+        json.dumps(
+            record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    payload = {
+        "schema": "molt.binaryen-install.v3",
+        "asset": record,
+        "tree": {
+            "schema": "molt.binaryen-tree.v3",
+            "entries": record["tree_entries"],
+            "total_bytes": record["tree_total_bytes"],
+            "sha256": record["tree_sha256"],
+        },
+    }
+    if version == "134":
+        assert binaryen_identity.validate_binaryen_install_receipt(payload) == payload
+    else:
+        with pytest.raises(BinaryenIdentityError, match="receipt identity is invalid"):
+            binaryen_identity.validate_binaryen_install_receipt(payload)
+
+
+@pytest.mark.parametrize("version", ("1\u0663\u0663", "13\uff13", "1\u0969" + "3"))
+@pytest.mark.parametrize("tagged", (False, True))
+def test_version_output_rejects_mixed_unicode_release_digits(
+    version: str, tagged: bool
+) -> None:
+    record = f"wasm-opt version {version}"
+    if tagged:
+        record += f" (version_{version})"
+    with pytest.raises(BinaryenIdentityError, match="invalid version"):
+        binaryen_identity.parse_binaryen_version_output(record)
+    assert not binaryen_identity.is_binaryen_version_output(record)

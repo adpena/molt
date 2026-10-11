@@ -13,8 +13,8 @@ Index mode executes the captured staged generator with its staged manifest, poli
 | Metric | Before report 001 | Current |
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
-| CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 338 |
+| CI selection families | 5 | 12 |
+| Hashed executable authority inputs | 1 | 342 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -43,11 +43,12 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 120 s | 1140 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2520 s | 120 s | 960 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 43 min | 2400 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
+| `python_unit_collection` | pr, main | yes | `github-matrix` | 16 min | 900 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
+| `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 20 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 254 min | 15000 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
@@ -81,6 +82,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
+| `linux-x86_64-py312-unit-collection` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-release-output` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release-output` |
@@ -179,13 +181,12 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.cargo-link.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.cargo-link.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 180 s | `python-tests` | 0 |
 | `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 360 s | `python-tests` | 0 |
 | `portability.rust.macos.clippy-workspace` | `platform_portability` | `macos-arm64-py312-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `portability.rust.linux-aarch64.clippy-workspace` | `platform_portability` | `linux-aarch64-py312-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `portability.rust.macos.runtime-gate` | `platform_portability` | `macos-arm64-py312-rust-native-dev` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 | `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.commit-attribution` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 60 s | `repository-policy` | 0 |
-| `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -206,7 +207,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 5 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 5 |
 | `repository.tooling-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
@@ -231,7 +232,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.integration.host-exports.tinygrad-dtype` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.integration.host-exports.tinygrad-tensor` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.integration.host-exports.tensor-row-ops` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.test.import-from-codec-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
@@ -246,6 +247,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.frontend-lowering.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.cli` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.cli.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
@@ -255,6 +257,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `native.integration.python-custody` | `native_integration` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `native.integration.cli-smoke` | `native_integration` | `linux-x86_64-py312-native-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `rust.clippy.wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `rust.cargo-locks` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.clippy.browser-simd` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
@@ -319,7 +322,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
-| `docs-architecture` | 3 | 2 | no |
+| `docs-architecture` | 4 | 2 | no |
 | `dev-tooling` | 12 | 5 | no |
 | `rust-ffi-blocks` | 6 | 2 | no |
 | `rust-toolchain` | 10 | 2 | no |
@@ -332,7 +335,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
 | `import-symbol-gate` | 2 | 2 | no |
-| `phase-exit-manifest` | 6 | 2 | no |
+| `phase-exit-manifest` | 7 | 2 | no |
 | `public-contract` | 19 | 2 | no |
 
 ## Selection contract

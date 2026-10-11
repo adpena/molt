@@ -11,6 +11,7 @@ from molt.capability_policy import (
     CapabilityPolicy,
     allowed_capabilities_for_package,
     allowed_effects_for_package,
+    missing_package_capabilities,
     parse_capability_input,
     parse_capability_policy,
     resolve_capability_policy,
@@ -234,6 +235,35 @@ def test_omitted_package_allow_inherits_but_empty_allow_denies_all() -> None:
         allowed_capabilities_for_package(resolution.capabilities, policy, "isolated")
         == set()
     )
+
+
+def test_required_profiles_expand_before_the_package_allowlist_check() -> None:
+    policy, errors = parse_capability_policy(
+        {
+            "allow": ["net", "fs.read"],
+            "packages": {
+                "client": {"allow": ["net"], "deny": ["net.bind"]},
+                "sockets_only": {"allow": ["net.socket"]},
+            },
+        }
+    )
+    assert errors == []
+    assert policy is not None
+    resolution = resolve_capability_policy(policy)
+    assert resolution.errors == ()
+    grants = resolution.capabilities
+
+    assert missing_package_capabilities(["net"], grants, policy, None) == []
+    assert missing_package_capabilities(["net", "fs.read"], grants, policy, "x") == []
+    assert missing_package_capabilities(["net"], grants, policy, "client") == [
+        "net.bind"
+    ]
+    sockets_only = missing_package_capabilities(["net"], grants, policy, "sockets_only")
+    assert "net.socket" not in sockets_only
+    assert {"net.bind", "net.connect", "net.listen"} <= set(sockets_only)
+    assert missing_package_capabilities(["fs.write"], grants, policy, None) == [
+        "fs.write"
+    ]
 
 
 def test_effect_scoping_intersects_global_and_package_policy() -> None:

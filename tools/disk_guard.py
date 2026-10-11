@@ -87,8 +87,10 @@ from molt.disk_capacity import (  # noqa: E402
 )
 from molt.custody_layout import custody_root  # noqa: E402
 from molt.dx import (  # noqa: E402
+    # noqa: E402,
     cargo_target_dir_for_artifact_root,
     configured_artifact_root,
+    session_targets_dir,
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
@@ -136,7 +138,9 @@ PROTECTED_TARGET_NAMES = frozenset(
     }
 )
 
-REGISTRY_RELPATH = Path("target") / ".disk_guard" / "registry.jsonl"
+# The guard's registry lives in the artifact root's Cargo target, whose
+# layout molt.dx owns (HF-145).
+REGISTRY_NAME = Path(".disk_guard") / "registry.jsonl"
 LOG_RELDIR = Path("logs") / "disk_guard"
 
 
@@ -536,8 +540,10 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
     if rp.name in PROTECTED_TARGET_NAMES:
         return None
     parts = rp.relative_to(root).parts
+    sessions = _session_targets(root).relative_to(root).parts
+    target = _target_root(root).relative_to(root).parts
     # sessions/<child>
-    if len(parts) == 3 and parts[0] == "target" and parts[1] == "sessions":
+    if len(parts) == len(sessions) + 1 and parts[: len(sessions)] == sessions:
         return "sessions"
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
@@ -546,11 +552,21 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
     if len(parts) == 1 and parts[0].startswith("cargo-target-"):
         return "cargo-target"
     # per-lane isolated target dir directly under <root>/target/
-    if len(parts) == 2 and parts[0] == "target":
-        name = parts[1]
+    if len(parts) == len(target) + 1 and parts[: len(target)] == target:
+        name = parts[-1]
         if any(_fnmatch(name, g) for g in lane_globs):
             return "lane"
     return None
+
+
+def _target_root(owner_root: Path) -> Path:
+    """The artifact root's unscoped Cargo target, as molt.dx lays it out."""
+    return cargo_target_dir_for_artifact_root(owner_root, None)
+
+
+def _session_targets(owner_root: Path) -> Path:
+    """The directory holding the artifact root's pinned session targets."""
+    return session_targets_dir(_target_root(owner_root))
 
 
 def _fnmatch(name: str, pattern: str) -> bool:
@@ -736,7 +752,7 @@ class _FileLock:
 
 
 def _registry_path(root: Path) -> Path:
-    return root / REGISTRY_RELPATH
+    return _target_root(root) / REGISTRY_NAME
 
 
 def register_lane_target(
@@ -873,11 +889,11 @@ def discover_candidates(
         registry = read_registry(owner_root)
         guard_active = _has_active_guard(owner_root)
         # sessions/<child>
-        for child in _iter_dir(owner_root / "target" / "sessions"):
+        for child in _iter_dir(_session_targets(owner_root)):
             if child.is_dir():
                 add(child, "sessions", owner_root, guard_active=guard_active)
         # per-lane target dirs under target/
-        for child in _iter_dir(owner_root / "target"):
+        for child in _iter_dir(_target_root(owner_root)):
             if (
                 child.is_dir()
                 and _is_reclaimable(child, owner_root, config.lane_globs) == "lane"
@@ -915,7 +931,7 @@ def _iter_dir(path: Path) -> list[Path]:
 
 def _iter_quarantine_dirs(root: Path) -> list[Path]:
     out: list[Path] = []
-    target = root / "target"
+    target = _target_root(root)
     for state_parent in (target, *[p for p in _iter_dir(target) if p.is_dir()]):
         qroot = state_parent / ".molt_state" / "quarantine" / "cargo_incremental"
         if qroot.is_dir():
@@ -1178,9 +1194,10 @@ def reclaim_completed_lane(
 ) -> ReclaimResult:
     """Immediately reclaim one completed registered lane target."""
     env = os.environ if env is None else env
+    resolved_target = target.resolve()
     inferred_root = root or (
-        target.resolve().parents[1]
-        if target.resolve().parent.name == "target"
+        resolved_target.parents[1]
+        if _target_root(resolved_target.parents[1]) == resolved_target.parent
         else None
     )
     resolved_root = resolve_root(inferred_root, env=env)

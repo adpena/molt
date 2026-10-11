@@ -46,7 +46,20 @@ def release_exit_archive_filename(source_sha: str) -> str:
 
 
 def stable_release(version: str) -> bool:
+    """A stable release (major >= 1) claims the v1 public stable contract."""
     return int(normalized_version(version).split(".")[0]) >= 1
+
+
+def project_version(pyproject_text: str) -> str:
+    """Return the release version that `pyproject.toml` text declares."""
+    try:
+        project = tomllib.loads(pyproject_text)["project"]
+        raw = project["version"]
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(f"pyproject.toml declares no project version: {exc}") from exc
+    if not isinstance(raw, str):
+        raise ValueError(f"pyproject.toml project version is not a string: {raw!r}")
+    return normalized_version(raw)
 
 
 def phase_exit_filename(source_sha: str) -> str:

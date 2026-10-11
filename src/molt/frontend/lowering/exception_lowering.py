@@ -325,11 +325,9 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         # break/continue destinations still belong to the try's lexical site.
         self.loop_scopes = list(scope.lexical_loops)
         self.return_unwind_depth += 1
-        self.finally_depth += 1
         try:
             self._emit_guarded_body(scope.finalbody, abandon_on_unwind=pending_return)
         finally:
-            self.finally_depth -= 1
             self.return_unwind_depth -= 1
             self.loop_scopes = prior_loops
             scope.finalbody_running = prior_running

@@ -308,8 +308,11 @@ class TestWasmOptReduction:
 
         assert identity.find_wasm_opt() is None
 
+    @pytest.mark.parametrize(
+        "version", ("wasm-opt version 130", "wasm-opt version 130 (version_130)")
+    )
     def test_optimizer_attestation_binds_tool_pipeline_and_published_bytes(
-        self, tmp_path: Path
+        self, tmp_path: Path, version: str
     ) -> None:
         executable = (tmp_path / "wasm-opt").resolve()
         pipeline = list(
@@ -325,7 +328,7 @@ class TestWasmOptReduction:
         payload = build_wasm_optimizer_attestation(
             {
                 "ok": True,
-                "binaryen_version": "wasm-opt version 130 (version_130)",
+                "binaryen_version": version,
                 "wasm_opt_path": str(executable),
                 "wasm_opt_sha256": "1" * 64,
                 "optimization_level": "O1",
@@ -346,7 +349,7 @@ class TestWasmOptReduction:
         assert payload == {
             "schema": WASM_OPTIMIZER_ATTESTATION_SCHEMA,
             "status": "success",
-            "binaryen_version": "wasm-opt version 130 (version_130)",
+            "binaryen_version": version,
             "wasm_opt_sha256": "1" * 64,
             "optimization_level": "O1",
             "optimization_converge": False,
@@ -400,7 +403,7 @@ class TestWasmOptReduction:
         "version",
         (
             "unknown",
-            "wasm-opt version 130",
+            "wasm-opt version 0130",
             "wasm-opt version 130 (version_131)",
             "wasm-opt version 130 (version_130)\n",
             "wasm-opt version 130 (version_130) trailing",
@@ -459,17 +462,16 @@ class TestWasmOptReduction:
         source = tmp_path / "input.wasm"
         source.write_bytes(_exported_func_module("kept"))
         executable = tmp_path / "wasm-opt"
-        executable.write_bytes(b"binaryen-test-build")
+        executable.write_bytes(b"\x7fELFfixture")
+        executable.chmod(0o755)
         monkeypatch.setattr(mod, "find_wasm_opt", lambda: str(executable))
-        install_module_view(
-            monkeypatch,
-            "subprocess",
-            subprocess,
-            binaryen_identity,
-            run=lambda cmd, **_kwargs: subprocess.CompletedProcess(
-                cmd, returncode, stdout, stderr
-            ),
-        )
+        probes = []
+
+        def completed(command, **_kwargs):
+            probes.append(command)
+            return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+        monkeypatch.setattr(binaryen_identity, "run_completed_command", completed)
         invoked = False
 
         def reject_execution(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -487,6 +489,7 @@ class TestWasmOptReduction:
         assert result["status"] == "identity-error"
         assert "version identity is invalid" in str(result["error"])
         assert invoked is False
+        assert probes == [[str(executable), "--version"]]
 
     @pytest.mark.parametrize("level", WASM_OPT_LEVELS)
     def test_every_binaryen_level_preserves_exact_export_contract(
@@ -1020,3 +1023,240 @@ class TestDataSegmentDedup:
             f"Data section sizes differ too much: {data_a:,} vs {data_b:,} "
             f"(ratio {ratio:.2f}) — possible dedup issue"
         )
+
+
+@pytest.mark.parametrize("verify_tree", [False, True])
+def test_managed_optimizer_changed_executable_refuses_before_tree_or_version(
+    tmp_path, monkeypatch, verify_tree
+):
+    import json
+    from dataclasses import asdict, replace
+    from molt import binaryen_identity, wasm_optimizer_identity as identity
+    from molt.exact_json import canonical_json_bytes
+
+    selected = tmp_path / "selected tools"
+    asset = identity.binaryen_host_asset(ROOT)
+    installation = selected / "toolchains" / asset.archive_root
+    executable = installation / asset.executable
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"admitted optimizer image")
+    original = binaryen_identity.binaryen_installation_identity(
+        installation,
+        include_modes=asset.tree_includes_modes,
+        executable=asset.executable,
+    )
+    fields = asdict(
+        replace(
+            asset,
+            tree_entries=original.tree.entries,
+            tree_total_bytes=original.tree.total_bytes,
+            tree_sha256=original.tree.sha256,
+            executable_sha256=original.executable_sha256,
+        )
+    )
+    fields.pop("record_sha256")
+    asset = replace(
+        asset,
+        **fields,
+        record_sha256=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+    )
+    receipt = installation / binaryen_identity.INSTALL_RECEIPT_FILENAME
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": binaryen_identity.INSTALL_RECEIPT_SCHEMA,
+                "asset": asdict(asset),
+                "tree": original.tree.as_record(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    before_receipt = receipt.read_bytes()
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(selected))
+    monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
+    monkeypatch.setattr(
+        identity,
+        "binaryen_installation_identity",
+        lambda *a, **kw: pytest.fail("mismatched image reached tree traversal"),
+    )
+    monkeypatch.setattr(
+        identity,
+        "read_binaryen_version",
+        lambda *a, **kw: pytest.fail(
+            "mismatched image reached native version execution"
+        ),
+    )
+    # The valid receipt remains byte-identical; the live executable changed.
+    executable.write_bytes(b"unadmitted optimizer image")
+    with pytest.raises(
+        WasmOptimizerIdentityError,
+        match="executable differs from its manifest identity",
+    ):
+        identity.wasm_optimizer_executable_identity(
+            executable, verify_managed_installation=verify_tree
+        )
+    assert receipt.read_bytes() == before_receipt
+
+
+def test_installed_binaryen_discovery_uses_shared_home_without_writes(
+    tmp_path, monkeypatch
+):
+    import json
+    from dataclasses import asdict
+    from molt import binaryen_identity, wasm_optimizer_identity as identity
+
+    source = tmp_path / "bundle" / "source"
+    source.mkdir(parents=True)
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    asset = identity.binaryen_host_asset(ROOT)
+    installation = home / "target-root" / "toolchains" / asset.archive_root
+    executable = installation / asset.executable
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"discovery does not execute or admit this fixture image")
+    receipt = installation / binaryen_identity.INSTALL_RECEIPT_FILENAME
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": binaryen_identity.INSTALL_RECEIPT_SCHEMA,
+                "asset": asdict(asset),
+                "tree": {
+                    "schema": binaryen_identity.TREE_IDENTITY_SCHEMA,
+                    "entries": asset.tree_entries,
+                    "total_bytes": asset.tree_total_bytes,
+                    "sha256": asset.tree_sha256,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
+    monkeypatch.setenv("MOLT_HOME", str(home))
+    monkeypatch.setattr(identity, "compiler_source_root", lambda: source)
+    monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
+    install_module_view(
+        monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+    )
+    before = {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+    assert identity.find_wasm_opt() == str(executable)
+    assert identity._managed_binaryen_asset(executable.resolve()) == asset
+    assert {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    } == before
+    assert not (source / "target-root").exists()
+
+
+def test_explicit_external_optimizer_ignores_unused_invalid_managed_root(
+    tmp_path, monkeypatch
+):
+    import molt.wasm_optimizer_identity as identity
+
+    invalid = tmp_path / "invalid-state"
+    invalid.write_text("not a directory", encoding="utf-8")
+    executable = tmp_path / "external-wasm-opt"
+    executable.write_bytes(b"independent selected image")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(invalid))
+    seen = []
+    monkeypatch.setattr(
+        identity,
+        "read_binaryen_version",
+        lambda path, **kwargs: (
+            seen.append(path) or ("130", "wasm-opt version 130 (version_130)")
+        ),
+    )
+    actual = identity.wasm_optimizer_executable_identity(executable)
+    assert actual.path == executable
+    assert seen == [executable]
+    assert (
+        actual.executable.sha256 == hashlib.sha256(executable.read_bytes()).hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    "record", ("wasm-opt version 133", "wasm-opt version 133 (version_133)")
+)
+def test_external_optimizer_identity_and_cache_fact_retain_release_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    from molt import binaryen_identity, wasm_optimizer_identity as identity
+
+    executable = tmp_path / "wasm-opt"
+    executable.write_bytes(b"\x7fELFfixture")
+    executable.chmod(0o755)
+    monkeypatch.setattr(identity, "_managed_binaryen_asset", lambda _path: None)
+    monkeypatch.setattr(identity, "find_wasm_opt", lambda: str(executable))
+    probes = []
+
+    def completed(command, **_kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, record + "\n", "")
+
+    monkeypatch.setattr(binaryen_identity, "run_completed_command", completed)
+    observed = identity.wasm_optimizer_invocation_identity()
+    assert observed.binaryen_version == record
+    assert identity.wasm_optimizer_cache_fact() == {
+        "tool": "wasm-opt",
+        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "binaryen_version": record,
+    }
+    assert probes == [[str(executable), "--version"]] * 2
+
+
+@pytest.mark.parametrize("verify_tree", (False, True))
+@pytest.mark.parametrize("tagged", (False, True))
+def test_managed_optimizer_retains_tagged_release_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verify_tree: bool,
+    tagged: bool,
+) -> None:
+    from molt import binaryen_identity, wasm_optimizer_identity as identity
+
+    installation = tmp_path / "binaryen"
+    executable = installation / "bin" / "wasm-opt"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"\x7fELFfixture")
+    executable.chmod(0o755)
+    observed = binaryen_identity.binaryen_installation_identity(
+        installation, include_modes=False, executable="bin/wasm-opt"
+    )
+    asset = SimpleNamespace(
+        version="133",
+        executable="bin/wasm-opt",
+        executable_sha256=observed.executable_sha256,
+        tree_includes_modes=False,
+        tree_entries=observed.tree.entries,
+        tree_total_bytes=observed.tree.total_bytes,
+        tree_sha256=observed.tree.sha256,
+    )
+    monkeypatch.setattr(identity, "_managed_binaryen_asset", lambda _path: asset)
+    record = "wasm-opt version 133" + (" (version_133)" if tagged else "")
+    probes = []
+
+    def completed(command, **_kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, record + "\n", "")
+
+    monkeypatch.setattr(binaryen_identity, "run_completed_command", completed)
+    if tagged:
+        admitted = identity.wasm_optimizer_executable_identity(
+            executable, verify_managed_installation=verify_tree
+        )
+        assert admitted.binaryen_version == record
+    else:
+        with pytest.raises(
+            WasmOptimizerIdentityError, match="version differs from its manifest"
+        ):
+            identity.wasm_optimizer_executable_identity(
+                executable, verify_managed_installation=verify_tree
+            )
+    assert probes == [[str(executable), "--version"]]

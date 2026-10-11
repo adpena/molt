@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.process_guard_common import run_isolated_python_probe
+from molt import default_paths
 
 from molt import toolchain_identity as identity
 from tests.operation_probe import same_thread_probe
@@ -308,7 +309,7 @@ def test_user_tool_selectors_use_captured_home_not_ambient(
 def test_default_user_path_expansion_matches_pathlib(tmp_path, monkeypatch):
     home_key = "USERPROFILE" if os.name == "nt" else "HOME"
     monkeypatch.setenv(home_key, str(tmp_path))
-    assert identity.expand_user_path("~/bin") == Path("~/bin").expanduser()
+    assert default_paths.expand_user_path("~/bin") == Path("~/bin").expanduser()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows captured home contract")
@@ -324,18 +325,19 @@ def test_captured_windows_home_precedence_and_named_user(tmp_path, monkeypatch):
     }
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "ambient"))
     assert (
-        identity.expand_user_path("~/bin", environment=environment) == selected / "bin"
-    )
-    assert (
-        identity.expand_user_path("~selected/bin", environment=environment)
+        default_paths.expand_user_path("~/bin", environment=environment)
         == selected / "bin"
     )
     assert (
-        identity.expand_user_path("~other/bin", environment=environment)
+        default_paths.expand_user_path("~selected/bin", environment=environment)
+        == selected / "bin"
+    )
+    assert (
+        default_paths.expand_user_path("~other/bin", environment=environment)
         == parent / "other" / "bin"
     )
     assert (
-        identity.expand_user_path(
+        default_paths.expand_user_path(
             "~/bin",
             environment={
                 "HOMEDRIVE": selected.drive,
@@ -345,7 +347,7 @@ def test_captured_windows_home_precedence_and_named_user(tmp_path, monkeypatch):
         == selected / "bin"
     )
     with pytest.raises(ValueError, match="no user home"):
-        identity.expand_user_path("~/bin", environment={})
+        default_paths.expand_user_path("~/bin", environment={})
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX account database contract")
@@ -364,15 +366,15 @@ def test_captured_posix_home_and_named_account_have_separate_authorities(
     )
     environment = {"HOME": str(tmp_path / "selected")}
     assert (
-        identity.expand_user_path("~/bin", environment=environment)
+        default_paths.expand_user_path("~/bin", environment=environment)
         == tmp_path / "selected" / "bin"
     )
     assert (
-        identity.expand_user_path("~/bin", environment={})
+        default_paths.expand_user_path("~/bin", environment={})
         == tmp_path / "system" / "bin"
     )
     assert (
-        identity.expand_user_path("~other/bin", environment=environment)
+        default_paths.expand_user_path("~other/bin", environment=environment)
         == tmp_path / "named" / "bin"
     )
 

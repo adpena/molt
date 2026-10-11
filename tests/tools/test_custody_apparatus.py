@@ -11,6 +11,9 @@ admitted state root outside the watched tree.
 from __future__ import annotations
 
 import sys
+import copy
+import mmap
+import os
 from pathlib import Path
 
 import pytest
@@ -27,10 +30,407 @@ from molt.memory_guard_paths import (  # noqa: E402
 )
 from tools.proof_queue_pkg.execution_custody import (  # noqa: E402
     APPARATUS_GIT_INDEX_REFRESH,
+    APPARATUS_UV_ENVIRONMENT_LOCK,
     LiveCustodyMonitor,
     WatchSpec,
+    captured_uv_environment_locks,
     classify_apparatus_event,
+    validate_apparatus_events,
+    validated_uv_environment_lock_capture,
 )
+
+
+def _captured_lock_inputs(root: Path, *, content: bytes = b""):
+    """Independent projection inputs and real bytes, never an executable receipt.
+
+    Full toolchain validation belongs to the caller. This fixture supplies the
+    exact selected fields consumed by the finite projection; kernel tests below
+    use real files/events, and installed qualification supplies real captures.
+    """
+    import hashlib
+
+    root.mkdir()
+    root = root.resolve(strict=True)
+    lock = root / ".lock"
+    lock.write_bytes(content)
+    python = {
+        "identity_sha256": "1" * 64,
+        "location": {"prefix": str(root)},
+        "environment": {
+            "tree": {
+                "entries": [
+                    {
+                        "path": ".lock",
+                        "kind": "file",
+                        "node": "lock-node",
+                        "access": {
+                            "readable": True,
+                            "writable": True,
+                            "executable": False,
+                        },
+                    }
+                ],
+                "file_nodes": [
+                    {
+                        "id": "lock-node",
+                        "size": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                ],
+            }
+        },
+        "file_custody": [
+            {
+                "path": str(lock),
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+    }
+    return lock, [{"uv": {"identity_sha256": "2" * 64}}, {"python": python}]
+
+
+def _lock_captures(inputs):
+    return [captured_uv_environment_locks(capture) for capture in inputs]
+
+
+def _armed_lock_monitor(root: Path):
+    spec = WatchSpec(root)
+    monitor = LiveCustodyMonitor([spec])
+    monitor._transition("CREATED", "ARMED")
+    return spec, monitor
+
+
+def test_uv_lock_joins_separate_capture_owners_without_retaining_inventories(tmp_path):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    captures = _lock_captures(inputs)
+    inputs[1]["python"]["environment"]["tree"]["entries"].clear()
+    spec, monitor = _armed_lock_monitor(lock.parent)
+    monitor.admit_uv_environment_locks(captures)
+    monitor._record_event(spec, "inotify:0x8", lock)
+    monitor.drain()
+    receipt = monitor.receipt()
+    assert receipt["stable"] is True
+    assert receipt["events"] == []
+    assert receipt["apparatus_events"] == [
+        {
+            "action": "inotify:0x8",
+            "path": str(lock),
+            "apparatus": "uv-environment-lock-close",
+            "python_identity_sha256": "1" * 64,
+            "uv_identity_sha256": "2" * 64,
+        }
+    ]
+    validate_apparatus_events(receipt["apparatus_events"], captures)
+    with pytest.raises(ValueError, match="armed capture boundary"):
+        monitor.admit_uv_environment_locks(captures)
+
+
+@pytest.mark.parametrize(
+    "case", ["no-uv", "no-lock", "nonempty", "symlink-node", "executable"]
+)
+def test_uv_lock_projection_never_grants_by_filename_alone(tmp_path, case):
+    lock, inputs = _captured_lock_inputs(
+        tmp_path / "venv", content=b"x" if case == "nonempty" else b""
+    )
+    if case == "no-uv":
+        inputs.pop(0)
+    else:
+        tree = inputs[1]["python"]["environment"]["tree"]
+        if case == "no-lock":
+            tree["entries"].clear()
+        elif case == "symlink-node":
+            tree["entries"][0]["kind"] = "symlink"
+        elif case == "executable":
+            tree["entries"][0]["access"]["executable"] = True
+    spec, monitor = _armed_lock_monitor(lock.parent)
+    monitor.admit_uv_environment_locks(_lock_captures(inputs))
+    monitor._record_event(spec, "inotify:0x8", lock)
+    monitor.drain()
+    assert monitor.receipt()["events"] == [{"path": str(lock), "action": "inotify:0x8"}]
+    assert monitor.receipt()["stable"] is False
+
+
+def test_uv_lock_requires_the_same_empty_file_in_endpoint_custody(tmp_path):
+    _lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    inputs[1]["python"]["file_custody"] = []
+    with pytest.raises(ValueError, match="captured file custody"):
+        _lock_captures(inputs)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "outside-watch",
+        "changed-size",
+        "hardlink",
+        "symlink",
+        "ambiguous-uv",
+        "conflicting-python",
+    ],
+)
+def test_uv_lock_admission_refuses_changed_or_ambiguous_ownership(tmp_path, case):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    if case == "ambiguous-uv":
+        inputs.append({"uv": {"identity_sha256": "3" * 64}})
+    if case == "conflicting-python":
+        second = copy.deepcopy(inputs[1])
+        second["python"]["identity_sha256"] = "4" * 64
+        inputs.append(second)
+    captures = _lock_captures(inputs)
+    if case == "changed-size":
+        lock.write_bytes(b"x")
+    elif case == "hardlink":
+        os.link(lock, lock.with_name("other"))
+    elif case == "symlink":
+        original = lock.with_name("original")
+        lock.rename(original)
+        lock.symlink_to(original)
+    root = tmp_path / "unrelated" if case == "outside-watch" else lock.parent
+    root.mkdir(exist_ok=True)
+    _spec, monitor = _armed_lock_monitor(root)
+    with pytest.raises(ValueError):
+        monitor.admit_uv_environment_locks(captures)
+    monitor.drain()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "inotify:0xa",
+        "inotify:0xc",
+        "inotify:0x100",
+        "inotify:0x200",
+        "inotify:0x40",
+        "inotify:0x80",
+        "modified",
+        "fsevents:0x1000",
+    ],
+)
+def test_uv_lock_admission_keeps_all_nonpure_close_events(tmp_path, action):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    spec, monitor = _armed_lock_monitor(lock.parent)
+    monitor.admit_uv_environment_locks(_lock_captures(inputs))
+    monitor._record_event(spec, action, lock)
+    monitor.drain()
+    assert monitor.receipt()["events"] == [{"action": action, "path": str(lock)}]
+    assert monitor.receipt()["stable"] is False
+
+
+def test_uv_lock_admission_does_not_erase_earlier_or_neighbor_events(tmp_path):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    neighbor = lock.with_name("ordinary.py")
+    neighbor.write_bytes(b"")
+    spec, monitor = _armed_lock_monitor(lock.parent)
+    monitor._record_event(spec, "inotify:0x8", lock)
+    monitor.admit_uv_environment_locks(_lock_captures(inputs))
+    monitor._record_event(spec, "inotify:0x8", neighbor)
+    monitor.drain()
+    assert monitor.receipt()["events"] == [
+        {"action": "inotify:0x8", "path": str(lock)},
+        {"action": "inotify:0x8", "path": str(neighbor)},
+    ]
+
+
+@pytest.mark.parametrize("case", ["replacement", "metadata"])
+def test_uv_lock_drain_revalidates_stable_file_even_without_injected_events(
+    tmp_path, case
+):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    spec, monitor = _armed_lock_monitor(lock.parent)
+    monitor.admit_uv_environment_locks(_lock_captures(inputs))
+    monitor._record_event(spec, "inotify:0x8", lock)
+    if case == "replacement":
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"")
+        replacement.replace(lock)
+    else:
+        os.utime(lock, ns=(1_000_000_000, 1_000_000_000))
+    monitor.drain()
+    assert monitor.receipt()["stable"] is False
+    assert monitor.receipt()["errors"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "apparatus",
+        "removed-class",
+        "path",
+        "python_identity_sha256",
+        "uv_identity_sha256",
+        "action",
+    ],
+)
+def test_uv_lock_receiver_rejects_rebound_or_unclassified_events(tmp_path, field):
+    lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    captures = _lock_captures(inputs)
+    event = {
+        "action": "inotify:0x8",
+        "path": str(lock),
+        "apparatus": APPARATUS_UV_ENVIRONMENT_LOCK,
+        "python_identity_sha256": "1" * 64,
+        "uv_identity_sha256": "2" * 64,
+    }
+    if field == "removed-class":
+        event.pop("apparatus")
+    else:
+        event[field] = (
+            str(lock.with_name("other")) if field == "path" else "substituted"
+        )
+    with pytest.raises(ValueError):
+        validate_apparatus_events([event], captures)
+
+
+def test_apparatus_receiver_preserves_only_real_git_refresh_class(tmp_path):
+    git = tmp_path / ".git"
+    git.mkdir()
+    event = {
+        "action": "inotify:0x8",
+        "path": str(git / "index.lock"),
+        "apparatus": APPARATUS_GIT_INDEX_REFRESH,
+    }
+    validate_apparatus_events([event], [])
+    git.rmdir()
+    # A durable receipt does not require the historical Git directory to exist.
+    validate_apparatus_events([event], [])
+    event["path"] = str(tmp_path / ".lock")
+    with pytest.raises(ValueError, match="index-refresh authority"):
+        validate_apparatus_events([event], [])
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux inotify semantics"
+)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lock-no-write",
+        "source-no-write",
+        "source-mmap-restore",
+        "nonempty-mmap-restore",
+        "write-restore",
+        "truncate-restore",
+        "chmod-restore",
+        "replace",
+        "rename-restore",
+        "symlink-replace",
+    ],
+)
+def test_linux_uv_lock_custody_preserves_real_mutation_discriminators(tmp_path, case):
+    lock, inputs = _captured_lock_inputs(
+        tmp_path / "venv", content=b"abcd" if case == "nonempty-mmap-restore" else b""
+    )
+    source = lock.with_name("ordinary.py")
+    source.write_bytes(b"abcd")
+    target = source if case.startswith("source-") else lock
+    captures = _lock_captures(inputs)
+    monitor = LiveCustodyMonitor([WatchSpec(lock.parent)])
+    with monitor:
+        monitor.admit_uv_environment_locks(captures)
+        if case in {"lock-no-write", "source-no-write"}:
+            descriptor = os.open(target, os.O_RDWR)
+            os.close(descriptor)
+        elif case in {"nonempty-mmap-restore", "source-mmap-restore"}:
+            with target.open("r+b") as stream, mmap.mmap(stream.fileno(), 0) as mapping:
+                mapping[:] = b"wxyz"
+                mapping.flush()
+                mapping[:] = b"abcd"
+                mapping.flush()
+        elif case == "write-restore":
+            lock.write_bytes(b"changed")
+            lock.write_bytes(b"")
+        elif case == "truncate-restore":
+            with lock.open("r+b") as stream:
+                stream.truncate(8)
+                stream.truncate(0)
+        elif case == "chmod-restore":
+            mode = lock.stat().st_mode & 0o777
+            lock.chmod(mode ^ 0o100)
+            lock.chmod(mode)
+        elif case == "replace":
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"")
+            replacement.replace(lock)
+        elif case == "rename-restore":
+            moved = lock.with_name("moved")
+            lock.rename(moved)
+            moved.rename(lock)
+        elif case == "symlink-replace":
+            lock.unlink()
+            lock.symlink_to(source)
+    receipt = monitor.receipt()
+    if case == "lock-no-write":
+        assert receipt["stable"] is True
+        assert receipt["events"] == []
+        assert receipt["apparatus_events"]
+        validate_apparatus_events(receipt["apparatus_events"], captures)
+    else:
+        assert receipt["stable"] is False
+        assert receipt["events"]
+    if case in {"nonempty-mmap-restore", "source-mmap-restore"}:
+        assert target.read_bytes() == b"abcd"
+        assert {event["action"] for event in receipt["events"]} == {"inotify:0x8"}
+
+
+def test_uv_lock_receiver_requires_semantic_python_owner_digest(tmp_path):
+    _lock, inputs = _captured_lock_inputs(tmp_path / "venv")
+    python = inputs[1]["python"]
+    # Supply the exact full-identity outer shape, but retain a stale semantic
+    # identity after changing its lock node. Transport rehashing cannot repair it.
+    python.update(
+        {
+            "schema": "molt.proof-python-toolchain.v3",
+            "identity_kind": "executable",
+            "source_root": str(tmp_path),
+            "node_custody": [],
+            "inventory_profile": {},
+            "process_images": [],
+        }
+    )
+    python["environment"]["tree"]["file_nodes"][0]["size"] = 1
+    with pytest.raises(ValueError, match="python toolchain identity digest is invalid"):
+        validated_uv_environment_lock_capture({"python": python})
+
+
+def test_uv_lock_receiver_requires_semantic_uv_owner_digest(tmp_path):
+    from molt.exact_json import canonical_json_sha256
+
+    executable = tmp_path / "uv"
+    executable.write_bytes(b"owned uv identity fixture, never executed")
+    from tools.proof_queue_pkg.process_image_capture import capture_image
+
+    image = capture_image("uv-launcher", executable, preserve_path=True)
+    uv = {
+        "version": "uv 0.12.23 (fixture)",
+        "path": str(executable),
+        "content_path": str(executable),
+        "launcher_sha256": image["sha256"],
+        "executable_sha256": image["sha256"],
+        "process_images": [image],
+    }
+    uv["identity_sha256"] = canonical_json_sha256(uv)
+    assert (
+        validated_uv_environment_lock_capture({"uv": uv}).uv_identity_sha256
+        == uv["identity_sha256"]
+    )
+    uv["identity_sha256"] = "0" * 64
+    with pytest.raises(
+        ValueError, match="uv operational owner identity digest is invalid"
+    ):
+        validated_uv_environment_lock_capture({"uv": uv})
+
+
+def test_unrelated_capture_has_no_uv_lock_policy_work(monkeypatch):
+    from tools import proof_plan
+
+    def unexpected_policy_read(*args, **kwargs):
+        pytest.fail("a capture without Python or uv must not load their policy")
+
+    monkeypatch.setattr(proof_plan.ProofPlan, "load", unexpected_policy_read)
+    capture = validated_uv_environment_lock_capture({"node": {}})
+    assert capture.uv_identity_sha256 is None
+    assert capture.environments == ()
 
 
 @pytest.mark.parametrize(

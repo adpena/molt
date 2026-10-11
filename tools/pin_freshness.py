@@ -61,10 +61,9 @@ from molt.wasi_sdk_identity import (  # noqa: E402
     WasiSdkIdentityError,
     read_wasi_sdk_version_identity,
 )
-from tools import provision_binaryen, provision_wasi_sdk  # noqa: E402
+from tools import finding_status, provision_binaryen, provision_wasi_sdk  # noqa: E402
 
 PROOF_PLAN = Path("tools/proof_plan.toml")
-LEDGER = Path("docs/agent/V1_HANDOFF_FINDINGS.md")
 USER_AGENT = "molt-pin-freshness"
 TIMEOUT_SECONDS = 60
 
@@ -280,12 +279,6 @@ def collect_pins(
             f"{manifest} tools without an upstream resolver: {sorted(unowned)!r}"
         )
     return pins
-
-
-def open_ledger_rows(root: Path) -> set[str]:
-    text = (root / LEDGER).read_text(encoding="utf-8")
-    open_sections = text.split("\n## Fixed", 1)[0]
-    return set(re.findall(r"^\| (HF-\d+) \|", open_sections, re.MULTILINE))
 
 
 def check(
@@ -723,7 +716,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.check:
-            return check(collect_pins(args.root), open_ledger_rows(args.root))
+            open_rows = set(finding_status.read_ledger(args.root).open_keys)
+            return check(collect_pins(args.root), open_rows)
         print(update(args.root, args.update))
         return 0
     except (

@@ -35,7 +35,7 @@ from molt.cli.config_resolution import (
     _select_codegen_backend,
     resolve_stdlib_profile,
 )
-from molt.cli.default_paths import _default_molt_bin
+from molt.default_paths import _default_molt_bin
 from molt.cli.env_overrides import temporary_env_overrides
 from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,
@@ -158,11 +158,12 @@ _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
-    "MOLT_HASH_SEED",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
     "MOLT_DEAD_MODULE_ELIMINATION",
     STATIC_IMPORT_MODULES_ENV,
+    # External build inputs share this environment; backend payload determinism
+    # alone does not prove cross-seed equivalence of the complete wrapper build.
     "PYTHONHASHSEED",
     "PYTHONPATH",
 )

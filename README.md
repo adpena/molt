@@ -98,7 +98,9 @@ Binary bundles require explicit dependency setup with
 `molt setup --install-cli-dependencies`; normal launches do not install or repair
 dependencies. Platform wheels use their pip environment. `molt doctor` identifies
 the active installation, runtime availability, and competing PATH entries.
-Source contributors use the checkout instructions below.
+Source contributors use the checkout instructions below. The compiler host must
+use CPython 3.12+; Python 3.14 hosts require 3.14.1 or newer. See the
+[host and target requirements](packaging/INSTALL.md#requirements).
 
 - Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
 - Packaging details: [packaging/README.md](packaging/README.md)
@@ -178,6 +180,7 @@ For compatibility and proof detail:
 - Contributor map: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 - Operations and multi-agent workflow: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 - Build storage, output lifetimes, and proof custody: [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#cargo-output-placement)
+- Proof run evidence retention (`molt queue retention`): [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#run-evidence-retention)
 - Shared frontend analysis, streaming AST/tooling identities, and live import resolution:
   [source scan authority](docs/internals/source_scan_authority.md)
 - Benchmark workflows: [docs/BENCHMARKING.md](docs/BENCHMARKING.md)

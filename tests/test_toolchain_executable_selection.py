@@ -8,8 +8,9 @@ import types
 
 import pytest
 
+from molt.default_paths import executable_environment_value
+
 from molt.toolchain_identity import (
-    executable_environment_value,
     executable_name_candidates,
     executable_search_directories,
 )

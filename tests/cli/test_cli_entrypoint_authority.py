@@ -112,7 +112,6 @@ def test_completion_reuses_the_parser_that_selected_the_command(
         return parser
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(entrypoint, "ensure_hash_seed", lambda: None)
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", selected_parser)
     monkeypatch.setattr(entrypoint_parser, "_build_entrypoint_parser", selected_parser)
     monkeypatch.setattr(sys, "argv", ["molt", "completion", "--shell", shell, "--json"])
@@ -137,7 +136,6 @@ def test_other_commands_do_not_project_shell_completion(
         raise AssertionError("ordinary CLI commands must not project shell completion")
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(entrypoint, "ensure_hash_seed", lambda: None)
     monkeypatch.setattr(arg_helpers, "_completion_script", unexpected_projection)
     monkeypatch.setattr(sys, "argv", ["molt", "config", "--json"])
 
@@ -168,7 +166,6 @@ def test_install_leading_literal_is_owned_by_the_selected_parser(
         return 17
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(entrypoint, "ensure_hash_seed", lambda: None)
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", lambda: parser)
     monkeypatch.setattr(entrypoint_dispatch, "install_add", persist)
     monkeypatch.setattr(entrypoint_dispatch, "install", install)

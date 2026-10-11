@@ -23,8 +23,10 @@ TREE_IDENTITY_SCHEMA = "molt.binaryen-tree.v3"
 MAX_TREE_ENTRIES = 10_000
 MAX_TREE_BYTES = 2 * 1024 * 1024 * 1024
 _HEX = frozenset("0123456789abcdef")
-_VERSION_RE = re.compile(r"[1-9]\d*")
-_VERSION_OUTPUT_RE = re.compile(r"wasm-opt version ([1-9]\d*) \(version_\1\)")
+_VERSION_RE = re.compile(r"[1-9][0-9]*")
+# Binaryen v133 CMake adds Git metadata only when its source has a .git entry.
+# Source archive builds legitimately emit the numeric release alone.
+_VERSION_OUTPUT_RE = re.compile(r"wasm-opt version ([1-9][0-9]*)(?: \(version_\1\))?")
 _ASSET_ID_RE = re.compile(r"(?:linux|macos|windows)-(?:x86_64|aarch64)")
 
 
@@ -37,14 +39,12 @@ def is_binaryen_version(value: object) -> TypeGuard[str]:
 
 
 def parse_binaryen_version_output(output: str) -> tuple[str, str]:
-    """Parse Binaryen's one canonical ``wasm-opt --version`` record."""
+    """Parse an exact release record, retaining optional upstream Git metadata."""
 
     canonical = output[:-1] if output.endswith("\n") else output
     match = _VERSION_OUTPUT_RE.fullmatch(canonical)
     if match is None:
-        raise BinaryenIdentityError(
-            f"provisioned wasm-opt reported an invalid version: {output!r}"
-        )
+        raise BinaryenIdentityError(f"wasm-opt reported an invalid version: {output!r}")
     return match.group(1), canonical
 
 

@@ -143,7 +143,6 @@ def test_declared_python_cargo_driver_keeps_complete_output_policy(monkeypatch):
 
 def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
     import json
-    import os
     import socket
     import sys
     import threading
@@ -194,7 +193,6 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
         {"python": {"executable": exact[0], "base_executable": sys._base_executable}},
     )
     env = {
-        **os.environ,
         **environment,
         **updates,
         "MOLT_PROOF_CHILD_CUSTODY_JSON": json.dumps(
@@ -409,3 +407,95 @@ def test_repository_wrapper_component_aliases_keep_inner_authority(spelling):
     )
     assert envelope["argv"] == ["python", "-m", "pytest", "tests"]
     assert command_admission.command_proof_kind(envelope) == "test-execution"
+
+
+@pytest.mark.parametrize("seed", [None, "0", "123", "random"])
+@pytest.mark.parametrize("flags", [[], ["-E"], ["-I"], ["-R"]])
+def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, flags):
+    import json
+    import os
+    import sys
+    from pathlib import Path
+    from tests.process_guard_common import run_custody_subject_process
+    from tools.proof_queue_pkg import command_identity, execution_environment
+
+    payload = "import json,os,sys;print(json.dumps([hash('molt-seed'),hash(b'molt-seed'),os.environ.get('PYTHONHASHSEED'),sys.flags.hash_randomization,sys.flags.ignore_environment,sys.flags.isolated]))"
+    environment = dict(os.environ)
+    if seed is None:
+        environment.pop("PYTHONHASHSEED", None)
+    else:
+        environment["PYTHONHASHSEED"] = seed
+    command = [
+        sys.executable,
+        "tools/venv_exec.py",
+        "--venv",
+        str(Path(sys.prefix)),
+        "--",
+        "python",
+        *flags,
+        "-c",
+        payload,
+    ]
+    envelope = command_admission.envelope_for_command(command)
+    selected = execution_environment._wrapper_execution_environment(
+        envelope, environment
+    )
+    assert selected.get("PYTHONHASHSEED") == seed
+    exact = command_identity._exact_command(envelope, cwd=tmp_path, env=selected)
+    reference = run_custody_subject_process(
+        exact, cwd=tmp_path, env=selected, capture_output=True, text=True, timeout=30
+    )
+    completed, events, _, _ = _run_under_real_child_audit(
+        envelope, exact, selected, tmp_path
+    )
+    assert reference.returncode == completed.returncode == 0, (
+        reference.stderr,
+        completed.stderr,
+    )
+    direct = json.loads(reference.stdout)
+    wrapped = json.loads(completed.stdout)
+    assert wrapped[2:] == direct[2:]
+    assert wrapped[2] == seed
+    if not flags and seed in {"0", "123"}:
+        assert wrapped == direct  # independently started same-interpreter literal seed
+    else:
+        assert wrapped[3] == 1  # random starts: no probabilistic unequal-hash oracle
+    assert [event["event"] for event in events] == ["hook-start", "hook-end"]
+
+
+@pytest.mark.parametrize("seed", [None, "123"])
+def test_actual_molt_help_has_one_custodied_interpreter_without_restart(tmp_path, seed):
+    import os
+    import sys
+    from pathlib import Path
+    from tools.proof_queue_pkg import command_identity, execution_environment
+
+    environment = dict(os.environ)
+    if seed is None:
+        environment.pop("PYTHONHASHSEED", None)
+    else:
+        environment["PYTHONHASHSEED"] = seed
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+    submitted = [
+        sys.executable,
+        "tools/venv_exec.py",
+        "--venv",
+        str(Path(sys.prefix)),
+        "--",
+        "python",
+        "-m",
+        "molt.cli",
+        "--help",
+    ]
+    envelope = command_admission.envelope_for_command(submitted)
+    selected = execution_environment._wrapper_execution_environment(
+        envelope, environment
+    )
+    assert selected.get("PYTHONHASHSEED") == seed
+    exact = command_identity._exact_command(envelope, cwd=tmp_path, env=selected)
+    completed, events, _, _ = _run_under_real_child_audit(
+        envelope, exact, selected, tmp_path
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout
+    assert [event["event"] for event in events] == ["hook-start", "hook-end"]
