@@ -259,6 +259,7 @@
     "tools/proof_queue_pkg/cargo_output_environment.py",
     "tools/proof_queue_pkg/cargo_output_layout.py",
     "tools/proof_queue_pkg/cargo_output_lifecycle.py",
+    "tools/proof_queue_pkg/run_retention.py",
     "tools/proof_queue_pkg/scheduling.py",
     "tools/proof_queue_pkg/state.py",
     "tools/proof_supervisor/build.py",
@@ -332,6 +333,7 @@
     "tests/tools/test_proof_queue_cargo_reclamation.py",
     "tests/tools/test_proof_queue_disk_capacity.py",
     "tests/tools/test_proof_queue_output_lifetime.py",
+    "tests/tools/test_proof_queue_run_retention.py",
     "tests/tools/test_proof_queue_output_layout.py",
     "tests/tools/test_named_lanes.py",
     "tests/tools/test_proof_supervisor_environment.py",
@@ -342,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a8f05fc6cd6299f1964c2316747d693f70bffc40226d44eca25cd170c2e4d5a6",
+  "authority_sha256": "968bd1948dfd492866ad759918c023219ec096ec6155d8dec095ce73394ec381",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2777,6 +2779,7 @@
         "tests/tools/test_proof_queue_lane_maturity.py",
         "tests/tools/test_proof_queue_live_transcripts.py",
         "tests/tools/test_proof_queue_output_lifetime.py",
+        "tests/tools/test_proof_queue_run_retention.py",
         "tests/tools/test_proof_wrapper_transparency.py",
         "tests/tools/test_release_exit_gate.py",
         "tests/tools/test_runtime_wasm_final_preflight.py",

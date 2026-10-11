@@ -11,6 +11,7 @@ from tools.proof_queue_pkg import (
     diagnostic_build_rules,
     diagnostic_link_rules,
     diagnostic_runtime_rules,
+    state,
 )
 from tools.proof_queue_pkg.diagnostic_evidence import (
     _guard_infrastructure_diagnostic,
@@ -47,7 +48,42 @@ SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE = re.compile(
 )
 
 
+def _reclaimed_evidence_diagnostic(
+    row: sqlite3.Row, retention: dict[str, object]
+) -> dict[str, object]:
+    policy = retention.get("policy")
+    policy_text = (
+        f"runs={policy.get('runs')} bytes={policy.get('bytes')}"
+        if isinstance(policy, dict)
+        else "unknown"
+    )
+    return _diagnostic(
+        signal_id="proof-evidence-reclaimed",
+        severity="operator",
+        summary=(
+            "Queue retention reclaimed this run's log and evidence files; "
+            "the row, notes, DAG edges and receipt context remain."
+        ),
+        evidence=(
+            f"state={retention.get('state')} "
+            f"reclaimed_at={retention.get('reclaimed_at')} "
+            f"bytes={retention.get('bytes')} policy={policy_text}"
+        ),
+        next_action=(
+            "Read status and receipt facts from evidence JSON. Rerun the proof if "
+            "you need its log. Pin a run you cite with "
+            f"`note {row['run_id']} --kind retain` before it leaves the "
+            "retention window."
+        ),
+        scopes=("tools/proof_queue_pkg/run_retention.py", "docs/agent/PROOF_QUEUE.md"),
+    )
+
+
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
+    retention = state._evidence_retention(row)
+    if retention is not None:
+        # Never read reclaimed paths: a missing file here is policy, not loss.
+        return [_reclaimed_evidence_diagnostic(row, retention)]
     log_tail = _read_log_tail(Path(row["log_path"]))
     infrastructure = _guard_infrastructure_diagnostic(row, log_tail)
     if infrastructure is not None:
