@@ -190,10 +190,12 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
             -1
         );
         assert_eq!(INDEX_CALLS.with(|calls| calls.get()), 1);
-        let raised = errors::take_current_error().expect("original index exception");
-        assert_eq!(raised.value, error_view);
-        errors::with_preserved_error(|| drop(raised));
-        crate::clear_exception(&py);
+        // The callback raised in runtime custody; the public C API takes it
+        // from either exception domain with its original identity.
+        let raised = errors::PyErr_GetRaisedException();
+        assert_eq!(raised, error_view, "original index exception");
+        refcount::Py_DECREF(raised);
+        assert!(!crate::exception_pending(&py));
         refcount::Py_DECREF(key);
         assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(bound_view.addr()), before);
         for view in [bound_view, mapping_view] {
@@ -238,16 +240,27 @@ fn slice_projection_mirrors_do_not_root_a_managed_cycle() {
     });
 }
 
+/// CPython's `Py_REFCNT` for `object`: the bridge's semantic count for a
+/// managed view, else the physical count of an unpublished C object.
+unsafe fn cpython_refcount(object: *mut PyObject) -> usize {
+    unsafe { GLOBAL_BRIDGE.managed_semantic_refcount(object) }
+        .unwrap_or_else(|| usize::try_from(unsafe { (*object).ob_refcnt }).unwrap())
+}
+
 #[test]
 fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|_py| {
         // Mortal carriers prove that the slice owns start/stop references. Cached
-        // small integers are immortal and intentionally ignore INCREF.
+        // small integers are immortal and intentionally ignore INCREF. The
+        // oracle is CPython's reference count: `ob_refcnt` of a managed view
+        // also carries the runtime-owner bias and the slice view's private
+        // mirror of its runtime edge, so the bridge's semantic count is read.
         let start = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1002) };
         let stop = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1005) };
-        let start_refcnt_before = unsafe { (*start).ob_refcnt };
-        let stop_refcnt_before = unsafe { (*stop).ob_refcnt };
+        let start_refcnt_before = unsafe { cpython_refcount(start) };
+        let stop_refcnt_before = unsafe { cpython_refcount(stop) };
+        assert_eq!((start_refcnt_before, stop_refcnt_before), (1, 1));
         let slice =
             unsafe { molt_cpython_abi::api::slice::PySlice_New(start, stop, std::ptr::null_mut()) };
         assert!(!slice.is_null());
@@ -260,11 +273,13 @@ fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
         assert!(std::ptr::eq(unsafe { (*layout).start }, start));
         assert!(std::ptr::eq(unsafe { (*layout).stop }, stop));
         assert!(std::ptr::eq(unsafe { (*layout).step }, &raw mut Py_None));
-        assert_eq!(unsafe { (*start).ob_refcnt }, start_refcnt_before + 1);
-        assert_eq!(unsafe { (*stop).ob_refcnt }, stop_refcnt_before + 1);
+        assert_eq!(unsafe { cpython_refcount(start) }, start_refcnt_before + 1);
+        assert_eq!(unsafe { cpython_refcount(stop) }, stop_refcnt_before + 1);
 
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(slice);
+            assert_eq!(cpython_refcount(start), start_refcnt_before);
+            assert_eq!(cpython_refcount(stop), stop_refcnt_before);
             molt_cpython_abi::api::refcount::Py_DECREF(start);
             molt_cpython_abi::api::refcount::Py_DECREF(stop);
         }
