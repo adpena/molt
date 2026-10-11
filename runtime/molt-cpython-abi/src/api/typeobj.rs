@@ -1624,7 +1624,22 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
             if def.base.wrapper.is_none() {
                 continue;
             }
-            let wrapped = slot_wrapper_ptr(tp, def.slot);
+            let mut wrapped = slot_wrapper_ptr(tp, def.slot);
+            if wrapped.is_null()
+                && declaration_policy == Some(BuiltinSlotNamespacePolicy::ManualInheritance)
+                && builtin_slot_is_manually_inherited(tp, def.slot)
+                && !(*tp).tp_base.is_null()
+            {
+                // CPython's pre-3.14 static definitions explicitly repeat these
+                // Init/Str/GetAttr slots. Materialize the same declarations on
+                // first readiness, before general inheritance, so cold and
+                // restarted shells publish the same own namespace.
+                let storage = slot_wrapper_storage(tp, def.slot);
+                if !storage.is_null() {
+                    wrapped = slot_wrapper_ptr((*tp).tp_base, def.slot);
+                    storage.write(wrapped);
+                }
+            }
             if wrapped.is_null() || wrapped == def.base.function {
                 continue;
             }
@@ -2895,7 +2910,9 @@ unsafe fn visit_type_invalidation(
     let mut seen = HashSet::new();
     let mut work = Vec::new();
     for tp in roots {
-        if tp.is_null() {
+        if tp.is_null()
+            || unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0
+        {
             continue;
         }
         // Serialize lifetime observation through the existing runtime token.
@@ -2918,10 +2935,8 @@ unsafe fn visit_type_invalidation(
                 // registration for possible resurrection, but skip its subtree.
                 continue;
             };
-            if !seen.insert(current) {
-                continue;
-            }
             if unsafe { (*pointer).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0
+                || !seen.insert(current)
             {
                 continue;
             }
@@ -5851,6 +5866,91 @@ pub(crate) mod subclass_registry_tests {
         let watched = unsafe { &mut *object.cast::<RevokingWatcherType>() };
         watched.replacement_calls += 1;
         0
+    }
+
+    #[test]
+    fn invalidation_noop_roots_do_not_allocate_or_admit_lifetimes() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+
+        struct Watched {
+            object: Box<RevokingWatcherType>,
+            watcher: c_int,
+        }
+        impl Drop for Watched {
+            fn drop(&mut self) {
+                unregister_type_address((&raw mut self.object.ty).addr());
+                unsafe { PyType_ClearWatcher(self.watcher) };
+            }
+        }
+        let watcher = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+        assert!(watcher >= 0);
+        let before = crate::buffer_export_bench::allocs();
+        let object = std::hint::black_box(RevokingWatcherType::new());
+        let fixture_allocations = crate::buffer_export_bench::allocs() - before;
+        let mut watched = Watched { object, watcher };
+        if !cfg!(miri) {
+            assert!(
+                fixture_allocations > 0,
+                "the current-thread counter must observe allocation"
+            );
+        }
+        let pointer = &raw mut watched.object.ty;
+        unregister_type_address(pointer.addr());
+        watched.object.ty.tp_watched = 1 << watcher;
+        watched.object.ty.tp_flags &= !Py_TPFLAGS_VALID_VERSION_TAG;
+        watched.object.ty.tp_version_tag = 0;
+        // Initialize the public entry token before measuring this thread's
+        // allocation count. The root remains unregistered and invalid.
+        unsafe { PyType_Modified(ptr::null_mut()) };
+        assert!(!TYPE_SUBCLASSES.lock().live.contains_key(&pointer.addr()));
+
+        let before = crate::buffer_export_bench::allocs();
+        unsafe { TypeNamespaceInvalidation::prepare(&[]).commit() };
+        let empty_allocations = crate::buffer_export_bench::allocs() - before;
+        let before = crate::buffer_export_bench::allocs();
+        unsafe { PyType_Modified(pointer) };
+        let public_allocations = crate::buffer_export_bench::allocs() - before;
+        let before = crate::buffer_export_bench::allocs();
+        unsafe {
+            TypeNamespaceInvalidation::prepare(&[ptr::null_mut(), pointer, pointer]).commit();
+        }
+        let staged_allocations = crate::buffer_export_bench::allocs() - before;
+        // Miri uses its own allocator; it still exercises semantic controls.
+        if !cfg!(miri) {
+            assert_eq!(empty_allocations, 0);
+            assert_eq!(public_allocations, 0);
+            assert_eq!(staged_allocations, 0);
+        }
+        assert_eq!(watched.object.calls, 0);
+        assert_eq!(watched.object.ty.ob_base.ob_base.ob_refcnt, 1);
+        assert!(!TYPE_SUBCLASSES.lock().live.contains_key(&pointer.addr()));
+
+        // Positive control: the same live root, once cache-valid, must be
+        // admitted and notify its watcher through the real public entrypoint.
+        watched.object.ty.tp_flags |= Py_TPFLAGS_VALID_VERSION_TAG;
+        watched.object.ty.tp_version_tag = 41;
+        unsafe { PyType_Modified(pointer) };
+        assert_eq!(watched.object.calls, 1);
+        assert_eq!(watched.object.callback_refcnt, 2);
+        assert_eq!(watched.object.ty.ob_base.ob_base.ob_refcnt, 1);
+        assert_eq!(watched.object.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+        assert_eq!(watched.object.ty.tp_version_tag, 0);
+        assert!(TYPE_SUBCLASSES.lock().live.contains_key(&pointer.addr()));
+
+        // An invalid root already present in the lifetime registry is also a
+        // no-op, independent of the registry's retained hash-table capacity.
+        let before = crate::buffer_export_bench::allocs();
+        unsafe {
+            PyType_Modified(pointer);
+            TypeNamespaceInvalidation::prepare(&[pointer, pointer]).commit();
+        }
+        let registered_allocations = crate::buffer_export_bench::allocs() - before;
+        if !cfg!(miri) {
+            assert_eq!(registered_allocations, 0);
+        }
+        assert_eq!(watched.object.calls, 1);
     }
 
     #[test]

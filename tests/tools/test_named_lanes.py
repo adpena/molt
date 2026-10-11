@@ -56,7 +56,12 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
 
 
 @pytest.mark.parametrize(
-    "lane_id", ("runtime.abi-fixture-authorities", *PYTHON_LANE_IDS)
+    "lane_id",
+    (
+        "runtime.abi-fixture-authorities",
+        "runtime.allocation-observer-image",
+        *PYTHON_LANE_IDS,
+    ),
 )
 def test_runtime_and_reference_lanes_have_the_required_native_languages(
     lane_id: str,
@@ -67,6 +72,7 @@ def test_runtime_and_reference_lanes_have_the_required_native_languages(
     # WASM-only and reference-only lanes must not acquire native C custody.
     native_runtime = lane_id in {
         "runtime.abi-fixture-authorities",
+        "runtime.allocation-observer-image",
         "pact.witness.acceptance.native",
         "r6.target-version-parity.py312",
         "r6.target-version-parity.py313",
@@ -83,14 +89,23 @@ def test_runtime_and_reference_lanes_have_the_required_native_languages(
     )
 
 
-def test_abi_fixture_lane_declares_native_c_through_cargo_wrapping() -> None:
+@pytest.mark.parametrize(
+    ("lane_id", "languages"),
+    (
+        ("runtime.abi-fixture-authorities", ["c"]),
+        ("runtime.allocation-observer-image", ["c", "c++"]),
+    ),
+)
+def test_native_test_images_declare_compilers_through_cargo_wrapping(
+    lane_id: str, languages: list[str]
+) -> None:
     from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
 
-    lane = PLAN.named_lane("runtime.abi-fixture-authorities")
+    lane = PLAN.named_lane(lane_id)
     wrapped = _canonical_cargo_proof_command(list(lane.argv[1:]))
     envelope = command_admission.envelope_for_command(wrapped)
-    assert envelope["cargo_native_units"] == {"target": ["c"]}
-    assert envelope["delegated"]["cargo_native_units"] == {"target": ["c"]}
+    assert envelope["cargo_native_units"] == {"target": languages}
+    assert envelope["delegated"]["cargo_native_units"] == {"target": languages}
     assert {"cargo", "rustc", "python"} <= set(envelope["toolchains"])
     spec = pact._named_lane_spec(lane.id)
     assert spec["command"] == wrapped

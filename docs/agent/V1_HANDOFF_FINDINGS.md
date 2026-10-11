@@ -116,8 +116,8 @@ including ordinary semantic publication, both-channel restoration and native
 retirement. The remaining failure is a fixture that treats prior-error
 class-admission refusal as an attempted allocation failure; its correction
 distinguishes actual extent underflow from admission and retains the separate
-no-prior capacity controls. That fixture successor and the complete
-MemoryError-instance transport migration remain unexecuted. These shared state
+no-prior capacity controls. The fixture successor and MemoryError-instance transport now pass focused
+execution at `d5d570172`; full-family qualification remains open. These shared state
 and transport obligations require a coherent correction before another
 family-wide acceptance claim; a cascade is not evidence of hundreds of
 independent defects. The order-dependent class-name projection remains
@@ -165,7 +165,8 @@ and ABI-platform C allocation. Its real public error-transfer control covers
 reserve exhaustion and reuse with positive allocation/refusal controls. It has
 not executed; direct extension libc calls and variadic-shim scratch allocations
 are outside this observation boundary. Production builds omit the probe.
-Explicit resurrection and task-admission rollback evidence remains required.
+The actual terminal-retirement resurrection control passes at `d5d570172`;
+task-admission rollback and the allocator observer remain unqualified.
 
 The build at `353c795c8` also stops before execution: the migrated pending-error
 fixture still supplies an argument to the zero-argument transfer API. The
@@ -175,9 +176,30 @@ releasing detached owners. The shared reset now precedes callbacks for both
 recycling and shutdown. A callback may retain and mutate the value; its writes
 must survive. Mutation without a retained owner declines recycling and uses the
 existing terminal teardown, avoiding an unbounded reset loop. The same reset
-predicate governs reuse eligibility and shutdown work. These changes and their
-direct-C/managed resurrection controls still require compiled execution and
-allocation measurements; source review does not qualify them.
+predicate governs reuse eligibility and shutdown work. The optimized image at
+`d5d570172` compiles and passes 22 of 24 fresh-process controls, including
+direct-C/managed revival, unretained mutation teardown, reserve exhaustion and
+reuse, task ownership, singleton identity and ordinary raised-error retirement.
+The two failures concern builtin slot namespaces: pre-3.14 list
+`__getattribute__` is missing, and an exception `__str__` descriptor has an
+unexpected physical type. The strict three-case order reproducer now passes its
+canonical-name check but retains the same target-version failure. The full
+runtime, standalone ABI, allocator and performance gates remain unqualified.
+
+The slot successor materializes pre-3.14 builtin declarations from their ready
+base before namespace publication, using the existing manual-inheritance policy
+for the whole Init/Str/GetAttr family. General extension inheritance keeps its
+original order. The exception fixture now checks semantic wrapper kind and
+public declaring owner for managed carriers, retaining physical layout checks
+for native descriptors. Already-invalid roots return before traversal or
+lifetime admission; the existing test allocator and watcher controls cover the
+no-allocation path. These successor controls have not executed.
+
+The allocator observer build is now a named proof-plan image with its actual
+C/C++ subprocess requirements. An earlier ad hoc submission omitted those
+requirements and was refused by native process supervision before semantic
+execution. The canonical registration and delegated command controls pass 61
+tests; observer execution remains pending.
 
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an
