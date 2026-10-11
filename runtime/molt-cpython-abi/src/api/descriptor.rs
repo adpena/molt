@@ -7,6 +7,7 @@
 
 use crate::abi_types::{PyDescrGetFunc, PyDescrSetFunc, PyObject};
 use crate::api::callback::CallbackOperands;
+use crate::api::errors;
 use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks::{
     DecodedHandleResult, DescriptorMutationStatus, DescriptorProtocol, hooks_or_stubs,
