@@ -16,11 +16,41 @@ MODULE_NAMES = (
 RELATED_MODULE_NAMES = MODULE_NAMES + ("molt.gpu.turboquant",)
 
 
+_ABSENT = object()
+
+
 @pytest.fixture(autouse=True)
-def _clear_gpu_modules_after_test():
-    yield
-    for module_name in RELATED_MODULE_NAMES:
-        sys.modules.pop(module_name, None)
+def _restore_gpu_modules():
+    """Give each test fresh GPU modules, then restore the session's own.
+
+    Popping them for good left modules imported earlier (``tinygrad.tensor``)
+    bound to the first ``molt.gpu.tensor`` while ``tensor_movement`` resolved
+    a second one, so a later ``Tensor`` failed its own ``isinstance`` checks
+    and ``flip`` returned ``NotImplemented`` (HF-73). A module first imported
+    here, under fake intrinsics, must not outlive the test either.
+    """
+    import molt.gpu as gpu_package
+
+    saved_modules = {
+        name: sys.modules.get(name, _ABSENT) for name in RELATED_MODULE_NAMES
+    }
+    leaves = [name.rsplit(".", 1)[1] for name in RELATED_MODULE_NAMES]
+    saved_attributes = {
+        leaf: gpu_package.__dict__.get(leaf, _ABSENT) for leaf in leaves
+    }
+    try:
+        yield
+    finally:
+        for name, module in saved_modules.items():
+            if module is _ABSENT:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        for leaf, value in saved_attributes.items():
+            if value is _ABSENT:
+                gpu_package.__dict__.pop(leaf, None)
+            else:
+                setattr(gpu_package, leaf, value)
 
 
 def _install_fake_intrinsics(monkeypatch: pytest.MonkeyPatch):
