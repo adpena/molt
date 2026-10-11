@@ -11,7 +11,6 @@ use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Handle-id counter ─────────────────────────────────────────────────────

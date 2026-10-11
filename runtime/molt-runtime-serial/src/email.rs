@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;

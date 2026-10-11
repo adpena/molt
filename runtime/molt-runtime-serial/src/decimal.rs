@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
@@ -467,19 +465,6 @@ fn decimal_tuple_bits(_py: &PyToken, dec: &DecimalHandle) -> u64 {
     dec_ref_bits(_py, digit_bits);
     dec_ref_bits(_py, exp_bits);
     tuple_bits
-}
-
-fn compact_trailing_zeros(dec: &mut DecimalHandle) {
-    if dec.special != DecimalSpecial::Finite || dec.coeff.is_zero() {
-        if dec.coeff.is_zero() {
-            dec.exp = 0;
-        }
-        return;
-    }
-    while (&dec.coeff % 10u8).is_zero() {
-        dec.coeff /= 10u8;
-        dec.exp += 1;
-    }
 }
 
 /// Largest finite value representable in `ctx` (Nmax = (10^prec - 1) * 10^Etop),
