@@ -226,7 +226,7 @@ fn best_effort_version_tags_preserve_errors_for_malformed_physical_bases() {
         assert!(!original.as_ptr().is_null());
         molt_cpython_abi::api::refcount::Py_INCREF(original.as_ptr());
         errors::PyErr_SetRaisedException(original.as_ptr());
-        crate::builtins::exceptions::molt_exception_set_last(runtime);
+        crate::test_support::restore_runtime_raised(&py, runtime);
         assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 0);
         assert_eq!(crate::exception_last_bits_noinc(&py), Some(runtime));
         let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());

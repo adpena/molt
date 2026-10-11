@@ -33,6 +33,20 @@ thread_local! {
 static INSTALL_EXPECTED_PANIC_HOOK: Once = Once::new();
 static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
 
+// Restore independent already-owned channels without manufacturing a new raise
+// site. The matching/cleanup oracles intentionally retain both saved owners.
+pub(crate) fn restore_runtime_raised(py: &crate::PyToken<'_>, bits: u64) {
+    assert!(!crate::exception_pending(py));
+    use crate::builtins::exceptions::{RaisedSnapshot, resolve_raised};
+    crate::inc_ref_bits(py, bits);
+    let mut saved = Some(match crate::current_task_key() {
+        Some(task) => RaisedSnapshot::Task(task, bits),
+        None => RaisedSnapshot::Thread(bits),
+    });
+    resolve_raised(py, &mut saved);
+    assert!(saved.is_none());
+}
+
 /// Observe the allocation-free raised channel through the real C API. Callers
 /// install the hooks before denying allocation and keep the denial active here.
 pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {

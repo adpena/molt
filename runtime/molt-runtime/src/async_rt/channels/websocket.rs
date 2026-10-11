@@ -1566,15 +1566,20 @@ mod host_send_result_tests {
 
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for preserve_error in [false, true] {
+            for has_prior_error in [false, true] {
                 let mut left = 0;
                 let mut right = 0;
                 assert_eq!(unsafe { super::molt_ws_pair(0, &mut left, &mut right) }, 0);
                 assert!(!crate::ptr_from_bits(left).is_null());
                 assert!(!crate::ptr_from_bits(right).is_null());
-                let preserved_error = if preserve_error {
-                    crate::raise_exception::<()>(py, "ValueError", "preserve caller failure");
-                    Some(crate::builtins::exceptions::molt_exception_last_pending())
+                let _prior_error = if has_prior_error {
+                    crate::raise_exception::<()>(py, "ValueError", "prior caller failure");
+                    let prior = crate::builtins::exceptions::ExceptionValue::adopt(
+                        py,
+                        crate::builtins::exceptions::molt_exception_last_pending(),
+                    );
+                    assert!(crate::obj_from_bits(prior.bits()).as_ptr().is_some());
+                    Some(prior)
                 } else {
                     None
                 };
@@ -1590,24 +1595,15 @@ mod host_send_result_tests {
                 assert!(crate::ptr_from_bits(left).is_null());
                 assert!(crate::ptr_from_bits(right).is_null());
                 assert!(crate::exception_pending(py));
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
-                if let Some(preserved_error) = preserved_error {
-                    assert_eq!(error, preserved_error);
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                        py,
-                        error,
-                        "ValueError"
-                    ));
-                    crate::dec_ref_bits(py, preserved_error);
-                } else {
-                    // Allocation denial records the canonical nonallocating
-                    // emergency MemoryError marker. It is pending, but object
-                    // retrieval deliberately returns None because materializing
-                    // an exception object would allocate recursively.
-                    assert_eq!(error, crate::MoltObject::none().bits());
-                }
+                // A proven allocation failure replaces the prior error, as
+                // CPython PyErr_NoMemory does. Observe its class without
+                // materializing an exception or consuming the pending error.
+                assert_eq!(
+                    unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                );
+                assert!(crate::exception_pending(py));
                 crate::clear_exception(py);
-                crate::dec_ref_bits(py, error);
             }
         });
     }

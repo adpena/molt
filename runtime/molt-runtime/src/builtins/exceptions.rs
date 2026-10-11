@@ -2786,6 +2786,27 @@ pub extern "C" fn molt_exception_trace_prepend(exc_bits: u64) -> u64 {
     })
 }
 
+/// A semantic raise supersedes the native indicator as well as the runtime
+/// slot. Keep its detached owner alive through fallible metadata preparation,
+/// then retire it under the selected outcome, including on early returns.
+struct DisplacedCError(Option<molt_cpython_abi::api::errors::OwnedCError>);
+
+impl DisplacedCError {
+    fn take() -> Self {
+        Self(molt_cpython_abi::api::errors::take_current_error())
+    }
+}
+
+impl Drop for DisplacedCError {
+    fn drop(&mut self) {
+        if let Some(error) = self.0.take() {
+            crate::object::foreign::retire_native_reference(|| {
+                molt_cpython_abi::api::errors::retire_normalized_error(Some(error));
+            });
+        }
+    }
+}
+
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     record_exception_with_caller_frame(_py, ptr, false);
 }
@@ -2800,7 +2821,8 @@ fn record_exception_with_caller_frame(py: &PyToken<'_>, ptr: *mut u8, include_ca
     // Own both sides before metadata allocation or finalizer reentry. The
     // selected error is published only after the complete field transition.
     let selected = ExceptionValue::pin(py, bits);
-    let previous = match take_raised(py) {
+    let _previous_c = DisplacedCError::take();
+    let _previous = match take_raised(py) {
         RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => {
             Some(ExceptionValue::adopt(py, bits))
         }
@@ -2815,11 +2837,9 @@ fn record_exception_with_caller_frame(py: &PyToken<'_>, ptr: *mut u8, include_ca
                 .with(|cell| *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset));
         }
     });
-    let context = previous
-        .as_ref()
-        .map(ExceptionValue::bits)
-        .filter(|&previous| previous != bits)
-        .or_else(exception_context_active_bits);
+    // CPython errors.c::_PyErr_SetObject chains the handled exception. A
+    // displaced raised indicator is not an implicit exception context.
+    let context = exception_context_active_bits();
     if let Some(context) = context.filter(|&context| context != bits)
         && exception_is_instance(py, context)
     {
@@ -2876,27 +2896,16 @@ fn record_exception_with_caller_frame(py: &PyToken<'_>, ptr: *mut u8, include_ca
             return;
         }
     }
-    if exception_pending(py) {
+    if molt_cpython_abi::api::errors::raised_error_pending() {
         return;
     }
-    // Transfer the selected edge directly into the existing task/thread owner.
-    if let Some(key) = current_task_key() {
-        let old = task_last_exceptions(py)
-            .lock()
-            .unwrap()
-            .insert(key, PtrSlot(ptr));
-        assert!(old.is_none(), "recording cannot overwrite callback failure");
-        selected.into_bits();
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-    } else {
-        assert!(
-            thread_last_exception_raw_slot().is_none(),
-            "recording cannot overwrite callback failure"
-        );
-        THREAD_LAST_EXCEPTION.with(|slot| slot.set(ptr));
-        selected.into_bits();
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-    }
+    // Transfer through the same owner used by transport and task suspension.
+    let bits = selected.into_bits();
+    let mut raised = Some(match current_task_key() {
+        Some(task) => RaisedSnapshot::Task(task, bits),
+        None => RaisedSnapshot::Thread(bits),
+    });
+    resolve_raised(py, &mut raised);
     if debug_exception_flow() || debug_exception_rc() || debug_exceptions() {
         eprintln!(
             "molt exc record task=0x{:x} kind={} ptr=0x{:x}",
@@ -4725,6 +4734,7 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             clear_exception(_py);
             return MoltObject::none().bits();
         }
+        let _previous_c = DisplacedCError::take();
         if !exception_is_instance(_py, exc_bits) {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
         }
@@ -4741,25 +4751,12 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             record_exception_with_caller_frame(_py, ptr, true);
             return MoltObject::none().bits();
         }
-        let new_bits = MoltObject::from_ptr(ptr).bits();
-        if let Some(task_key) = current_task_key() {
-            let old_ptr = {
-                let mut guard = task_last_exceptions(_py).lock().unwrap();
-                guard.insert(task_key, PtrSlot(ptr))
-            };
-            if let Some(old_ptr) = old_ptr {
-                if old_ptr.0 != ptr {
-                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-                    dec_ref_bits(_py, old_bits);
-                    inc_ref_bits(_py, new_bits);
-                }
-            } else {
-                inc_ref_bits(_py, new_bits);
-            }
-            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-        } else {
-            thread_last_exception_replace_borrowed(_py, ptr, new_bits);
-        }
+        let bits = ExceptionValue::pin(_py, exc_bits).into_bits();
+        let mut raised = Some(match current_task_key() {
+            Some(task) => RaisedSnapshot::Task(task, bits),
+            None => RaisedSnapshot::Thread(bits),
+        });
+        resolve_raised(_py, &mut raised);
         MoltObject::none().bits()
     })
 }
