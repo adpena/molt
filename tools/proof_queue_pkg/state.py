@@ -58,7 +58,16 @@ NOTE_KIND_DESCRIPTIONS = {
     "decision": "chosen next structural move or rejected alternative",
     "followup": "bounded next action that remains after the run",
     "handoff": "context needed by another agent or future session",
+    "retain": "citation that pins the run's evidence files against queue retention",
 }
+
+RETAIN_NOTE_KIND = "retain"
+
+# Retention never deletes a row. This column holds the reclamation record of a
+# run whose evidence files were reclaimed, or NULL while the files remain.
+EVIDENCE_RETENTION_SCHEMA = "molt.proof-run-evidence-retention.v1"
+
+EVIDENCE_RETENTION_STATES = frozenset({"reclaiming", "reclaimed"})
 
 
 def _shorten(text: str, limit: int = 180) -> str:
@@ -451,6 +460,38 @@ def _connect(db: Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
     if "resource_mutex_key" not in columns:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN resource_mutex_key TEXT")
+    if "evidence_retention_json" not in columns:
+        conn.execute("ALTER TABLE proof_runs ADD COLUMN evidence_retention_json TEXT")
+    # A claim is the point of no return: lookups treat the files as gone from
+    # the moment the record exists. The record only moves forward, and the
+    # outcome and evidence paths of a claimed run stay fixed.
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_runs_evidence_retention_monotonic
+        BEFORE UPDATE OF evidence_retention_json ON proof_runs
+        WHEN OLD.evidence_retention_json IS NOT NULL AND (
+            NEW.evidence_retention_json IS NULL
+            OR json_extract(OLD.evidence_retention_json, '$.state') = 'reclaimed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'proof run evidence retention only moves forward');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_runs_reclaimed_evidence_immutable
+        BEFORE UPDATE OF status, returncode, log_path, summary_json ON proof_runs
+        WHEN OLD.evidence_retention_json IS NOT NULL
+          AND (OLD.status IS NOT NEW.status
+            OR OLD.returncode IS NOT NEW.returncode
+            OR OLD.log_path IS NOT NEW.log_path
+            OR OLD.summary_json IS NOT NEW.summary_json)
+        BEGIN
+            SELECT RAISE(ABORT, 'proof run with reclaimed evidence is immutable');
+        END
+        """
+    )
     claimed_active_mutexes: set[str] = set()
     for row in conn.execute(
         """
@@ -594,11 +635,16 @@ def _insert_note(
         allowed = ", ".join(sorted(NOTE_KINDS))
         raise SystemExit(f"unknown proof note kind {kind!r}; allowed: {allowed}")
     exists = conn.execute(
-        "SELECT 1 FROM proof_runs WHERE run_id = ?",
+        "SELECT evidence_retention_json FROM proof_runs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
     if exists is None:
         raise SystemExit(f"unknown proof run {run_id!r}")
+    if kind == RETAIN_NOTE_KIND and exists[0] is not None:
+        raise SystemExit(
+            f"proof run {run_id!r} evidence was already reclaimed; "
+            "a retain note cannot restore it"
+        )
     cursor = conn.execute(
         """
         INSERT INTO proof_notes (run_id, created_at, author, kind, body)
@@ -937,6 +983,28 @@ def _row_value(row: sqlite3.Row, key: str) -> object | None:
         return row[key]
     except (IndexError, KeyError):
         return None
+
+
+def _evidence_retention(row: sqlite3.Row) -> dict[str, object] | None:
+    """Return the reclamation record of a row, or None while its files remain."""
+    raw = _row_value(row, "evidence_retention_json")
+    if raw is None:
+        return None
+    try:
+        record = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"proof run {row['run_id']!r} evidence retention record is not JSON"
+        ) from exc
+    if (
+        not isinstance(record, dict)
+        or record.get("schema") != EVIDENCE_RETENTION_SCHEMA
+        or record.get("state") not in EVIDENCE_RETENTION_STATES
+    ):
+        raise ValueError(
+            f"proof run {row['run_id']!r} evidence retention record is malformed"
+        )
+    return record
 
 
 def _is_sqlite_locked_error(exc: BaseException) -> bool:

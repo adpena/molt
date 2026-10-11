@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
+"""Project the stdlib compatibility summary block of docs/spec/STATUS.md.
+
+The block is a pure function of the stdlib intrinsics audit and platform
+availability documents; the rest of STATUS.md is hand-written.
+"""
+
 from __future__ import annotations
 
-import argparse
 import re
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.generator_io import generator_main  # noqa: E402
+
 STATUS_DOC = ROOT / "docs/spec/STATUS.md"
 STDLIB_AUDIT_DOC = (
     ROOT / "docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md"
@@ -83,33 +92,12 @@ def _build_updated_status() -> str:
     return _replace_block(status_text, COMPAT_START, COMPAT_END, compat_block)
 
 
+def generated_outputs() -> dict[Path, str]:
+    return {STATUS_DOC: _build_updated_status()}
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--write", action="store_true")
-    mode.add_argument("--check", action="store_true")
-    args = parser.parse_args(argv)
-
-    try:
-        updated = _build_updated_status()
-    except (OSError, ValueError) as exc:
-        print(f"update_status_blocks: {exc}", file=sys.stderr)
-        return 1
-
-    current = STATUS_DOC.read_text(encoding="utf-8")
-    if args.check:
-        if updated != current:
-            print(
-                "update_status_blocks: docs/spec/STATUS.md is stale; run "
-                "python3 tools/update_status_blocks.py --write",
-                file=sys.stderr,
-            )
-            return 1
-        return 0
-
-    if updated != current:
-        STATUS_DOC.write_text(updated, encoding="utf-8")
-    return 0
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

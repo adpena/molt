@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.machinery
 import importlib.resources
+import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -17,6 +18,108 @@ from tools.import_file import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+_ADMISSION_MODULE = "_molt_package_import_custody"
+
+
+@pytest.fixture(params=["tool", "probe"])
+def package_admission_loader(request):
+    # Both bootstrap edges must obey the same independent loader/rollback
+    # oracles. Only their standard importlib mechanics are duplicated.
+    if request.param == "tool":
+        from tools import import_file as owner
+    else:
+        from molt import python_environment_identity as owner
+    return owner._load_package_import_custody
+
+
+def test_package_admission_reuses_one_neutral_module(package_admission_loader):
+    from tools import import_file
+
+    selected = ROOT / "src/molt/package_import_custody.py"
+    loaded = package_admission_loader(selected)
+    assert loaded is import_file._package_import_custody
+    assert loaded is sys.modules[_ADMISSION_MODULE]
+    assert "molt.package_import_custody" not in sys.modules
+    assert loaded.__name__ == _ADMISSION_MODULE
+    assert loaded.__package__ == ""
+    assert loaded.__file__ == str(selected.resolve())
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["name", "package", "file", "spec-name", "origin", "loader", "loader-path"],
+)
+def test_package_admission_refuses_incoherent_cached_identity(
+    package_admission_loader, field, monkeypatch, tmp_path
+):
+    selected = (ROOT / "src/molt/package_import_custody.py").resolve()
+    spec = importlib.util.spec_from_file_location(_ADMISSION_MODULE, selected)
+    assert spec is not None
+    loaded = importlib.util.module_from_spec(spec)
+    foreign = str(tmp_path / "foreign.py")
+    if field == "name":
+        loaded.__name__ = "foreign"
+    elif field == "package":
+        loaded.__package__ = "foreign"
+    elif field == "file":
+        loaded.__file__ = foreign
+    elif field == "spec-name":
+        spec.name = "foreign"
+    elif field == "origin":
+        spec.origin = foreign
+    elif field == "loader":
+        loaded.__loader__ = object()
+    else:
+        spec.loader.path = foreign
+    monkeypatch.setitem(sys.modules, _ADMISSION_MODULE, loaded)
+
+    with pytest.raises(ImportError, match="already loaded from another authority"):
+        package_admission_loader(selected)
+
+    assert sys.modules[_ADMISSION_MODULE] is loaded
+
+
+def test_package_admission_preserves_none_binding(
+    package_admission_loader, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, _ADMISSION_MODULE, None)
+    with pytest.raises(ImportError, match="already loaded from another authority"):
+        package_admission_loader(ROOT / "src/molt/package_import_custody.py")
+    assert _ADMISSION_MODULE in sys.modules
+    assert sys.modules[_ADMISSION_MODULE] is None
+
+
+def test_package_admission_rejects_a_second_source_owner(
+    package_admission_loader, tmp_path
+):
+    selected = ROOT / "src/molt/package_import_custody.py"
+    foreign = tmp_path / "package_import_custody.py"
+    foreign.write_bytes(selected.read_bytes())
+    prior = sys.modules[_ADMISSION_MODULE]
+    with pytest.raises(ImportError, match="already loaded from another authority"):
+        package_admission_loader(foreign)
+    assert sys.modules[_ADMISSION_MODULE] is prior
+
+
+def test_package_admission_rolls_back_failed_initial_load(
+    package_admission_loader, monkeypatch, tmp_path
+):
+    monkeypatch.delitem(sys.modules, _ADMISSION_MODULE)
+    broken = tmp_path / "package_import_custody.py"
+    broken.write_text("raise RuntimeError('ordinary failed body')\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="ordinary failed body"):
+        package_admission_loader(broken)
+    assert _ADMISSION_MODULE not in sys.modules
+
+
+def test_package_admission_disallows_package_alias_execution():
+    prior = sys.modules[_ADMISSION_MODULE]
+    with pytest.raises(ImportError, match="requires its selected file loader"):
+        load_module_from_path(
+            "molt.package_import_custody", ROOT / "src/molt/package_import_custody.py"
+        )
+    assert "molt.package_import_custody" not in sys.modules
+    assert sys.modules[_ADMISSION_MODULE] is prior
 
 
 def _namespace_package(name: str, locations: list[Path]) -> ModuleType:
@@ -61,6 +164,79 @@ def test_top_level_import_publishes_file_first_module_canonically(
         sys.modules.pop("import_file", None)
         sys.modules["tools.import_file"] = canonical
         tools_package.import_file = canonical
+
+
+@pytest.mark.parametrize("canonical_state", ["absent", "none"])
+@pytest.mark.parametrize("parent_state", ["absent", "existing"])
+@pytest.mark.parametrize("failure", ["missing", "body", "cached-none", "foreign"])
+def test_top_level_import_failure_preserves_alias_and_parent_bindings(
+    tmp_path, monkeypatch, canonical_state, parent_state, failure
+):
+    selected = tmp_path / "selected"
+    tools_root = selected / "tools"
+    tools_root.mkdir(parents=True)
+    (tools_root / "import_file.py").write_bytes(
+        (ROOT / "tools/import_file.py").read_bytes()
+    )
+    helper = selected / "src/molt/package_import_custody.py"
+    helper.parent.mkdir(parents=True)
+    if failure == "body":
+        helper.write_text(
+            "raise RuntimeError('ordinary helper body failure')\n", encoding="utf-8"
+        )
+    elif failure != "missing":
+        helper.write_bytes((ROOT / "src/molt/package_import_custody.py").read_bytes())
+
+    tools_package = sys.modules["tools"]
+    foreign_authority = sys.modules[_ADMISSION_MODULE]
+    marker = object()
+    expected_error, diagnostic = {
+        "missing": (FileNotFoundError, "package_import_custody"),
+        "body": (RuntimeError, "ordinary helper body failure"),
+        "cached-none": (ImportError, "already loaded from another authority"),
+        "foreign": (ImportError, "already loaded from another authority"),
+    }[failure]
+
+    # Scope altered imports to this operation so pytest/report hooks observe
+    # their original package bindings even when the regression assertion fails.
+    with monkeypatch.context() as scoped:
+        scoped.syspath_prepend(str(tools_root))
+        scoped.delitem(sys.modules, "import_file", raising=False)
+        if canonical_state == "none":
+            scoped.setitem(sys.modules, "tools.import_file", None)
+        else:
+            scoped.delitem(sys.modules, "tools.import_file", raising=False)
+        if parent_state == "existing":
+            scoped.setattr(tools_package, "import_file", marker, raising=False)
+        else:
+            scoped.delattr(tools_package, "import_file", raising=False)
+        if failure == "cached-none":
+            scoped.setitem(sys.modules, _ADMISSION_MODULE, None)
+        elif failure == "foreign":
+            scoped.setitem(sys.modules, _ADMISSION_MODULE, foreign_authority)
+        else:
+            scoped.delitem(sys.modules, _ADMISSION_MODULE, raising=False)
+
+        before = (
+            "tools.import_file" in sys.modules,
+            sys.modules.get("tools.import_file"),
+            hasattr(tools_package, "import_file"),
+            getattr(tools_package, "import_file", None),
+            _ADMISSION_MODULE in sys.modules,
+            sys.modules.get(_ADMISSION_MODULE),
+        )
+        with pytest.raises(expected_error, match=diagnostic):
+            importlib.import_module("import_file")
+
+        assert "import_file" not in sys.modules
+        assert (
+            "tools.import_file" in sys.modules,
+            sys.modules.get("tools.import_file"),
+            hasattr(tools_package, "import_file"),
+            getattr(tools_package, "import_file", None),
+            _ADMISSION_MODULE in sys.modules,
+            sys.modules.get(_ADMISSION_MODULE),
+        ) == before
 
 
 def test_repository_binding_repositions_selected_roots_ahead_of_foreign_paths(

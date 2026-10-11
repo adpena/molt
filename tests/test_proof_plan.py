@@ -207,7 +207,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 11
+    assert len(PLAN.families) == 12
     assert len(PLAN.scheduled_families) == 8
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
@@ -387,6 +387,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "generated_artifact_custody",
         "ir_contract_validation",
         "generated_object_abi_link",
+        "native_artifact_facts",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -1063,7 +1064,11 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
         command
         for command in PLAN.commands
         if command.id
-        in {"native.integration.bench-cli", "native.integration.capability-manifest"}
+        in {
+            "native.integration.bench-cli",
+            "native.integration.capability-manifest",
+            "native.integration.cli-smoke",
+        }
     ]
     native_build_seconds = sum(
         int(command.data["timeout_seconds"]) for command in native_builds
@@ -1378,8 +1383,16 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     assert not startup.dependencies
     runner = rows["wasm.host.runner-fixtures"]
     assert runner.dependencies == ("wasm.build.backend",)
+    # The import-collection cases that validate WASM with the pinned
+    # wasm-tools run here, where the job provisions it (HF-160).
     assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
-        "tests/test_wasm_runner_table_base.py"
+        "tests/test_wasm_runner_table_base.py",
+        *(
+            "tests/cli/test_cli_import_collection.py::"
+            f"test_backend_compile_stages_one_shot_output_into_cache[{case}-0]"
+            for case in ("False-False", "False-True", "True-False", "True-True")
+        ),
+        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard",
     }
     assert not set(startup.argv[6:]) & {
         arg for arg in runner.argv if arg.startswith("tests/")
@@ -1476,14 +1489,11 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     freestanding = by_id["wasm.test.freestanding-e2e"]
     parity = by_id["wasm.test.finally-pending-observer-parity"]
 
-    assert freestanding.argv[-2:] == (
-        "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
-        "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm",
-    )
+    assert freestanding.argv[-1] == "tests/test_wasm_freestanding.py"
     assert {"python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(freestanding)
     )
-    assert parity.argv[-1].endswith("test_finally_pending_observer_native_wasm_parity")
+    assert parity.argv[-1] == "tests/test_finally_pending_observer_parity.py"
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(parity)
     )
@@ -1756,6 +1766,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_verification_t3",
         "platform_portability",
         "python_unit",
+        "python_unit_collection",
         "repository_policy",
         "rust",
         "rust_security",
@@ -2150,6 +2161,7 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
         "repository_policy",
         "python_static",
         "python_unit",
+        "python_unit_collection",
         "native_integration",
         "wasm",
     }
@@ -4865,7 +4877,6 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.compile.hello",
         "wasm.compile.comprehension",
         "wasm.compile.sieve",
-        "wasm.test.freestanding-e2e",
     ):
         selected = {
             command.id
@@ -4879,8 +4890,10 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         for command in proof_plan._topological_commands(PLAN, command_id=split)
     } == {split, "wasm.build.backend", "wasm.build.split-runtime-release"}
     # The split artifact and browser VFS consumers execute Node, with no native
-    # precompile request. The native consumers below retain their host producer.
+    # precompile request. The native consumers below retain their host producer;
+    # the freestanding file's `--precompile` test is one of them.
     for name in (
+        "wasm.test.freestanding-e2e",
         "wasm.run.hello",
         "wasm.run.comprehension",
         "wasm.run.sieve",
@@ -4915,6 +4928,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "runtime.cost.candidate",
         "native.integration.bench-cli",
         "native.integration.capability-manifest",
+        "native.integration.cli-smoke",
         "llvm.test.differential",
         "llvm.build.backend",
         "mlir.test.backend",
@@ -5120,6 +5134,16 @@ def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypat
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "independent-process-boundary"
+
+
+def test_execution_authority_includes_promoted_tool_state_home_owner():
+    ROOT = Path(__file__).resolve().parents[1]
+    assert ROOT / "src/molt/default_paths.py" in python_capture_authority_paths(
+        source_root=ROOT
+    )
+    source = (ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    assert '"src/molt/default_paths.py"' in source
+    assert '"src/molt/cli/default_paths.py"' not in source
 
 
 def test_native_build_declaration_rejects_retired_field_and_normalizes_roles():

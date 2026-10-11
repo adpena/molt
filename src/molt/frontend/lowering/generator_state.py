@@ -114,7 +114,6 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
     "exception_stack_depth_baseline",
     "exception_stack_prev_baseline",
     "return_unwind_depth",
-    "finally_depth",
     "active_exceptions",
     "loop_scopes",
     "loop_layout_guards",
@@ -277,7 +276,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.exception_stack_depth_baseline = None
         self.exception_stack_prev_baseline = None
         self.return_unwind_depth = 0
-        self.finally_depth = 0
         self.return_label = None
         self.return_slot = None
         self.return_slot_offset = None
@@ -317,6 +315,9 @@ class GeneratorStateMixin(GeneratorMixinBase):
         optimization_profile: MidendProfile = "release",
         pgo_hot_functions: set[str] | None = None,
     ) -> None:
+        from molt.target_python import require_frontend_python
+
+        require_frontend_python()
         self._module_pressure_function_count = 0
         self._module_pressure_total_ops = 0
         self.funcs_map: dict[str, FuncInfo] = {

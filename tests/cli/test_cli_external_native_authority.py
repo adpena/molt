@@ -44,3 +44,29 @@ def test_wrapper_build_uses_external_native_authority_directly() -> None:
     source = inspect.getsource(wrapper_build)
     assert "cli._parse_external_static_packages" not in source
     assert "cli._resolve_external_package_native_artifact_plan" not in source
+
+
+def test_matching_stage_is_reused_and_a_stale_stage_is_replaced(tmp_path) -> None:
+    import hashlib
+
+    source = tmp_path / "pkg" / "ext.so"
+    source.parent.mkdir()
+    source.write_bytes(b"extension image")
+    digest = hashlib.sha256(b"extension image").hexdigest()
+    staged = tmp_path / "stage" / "ext.so"
+
+    external_native._stage_external_native_required_file(
+        source_path=source, staged_path=staged, expected_sha256=digest, label="ext"
+    )
+    first = staged.stat()
+    external_native._stage_external_native_required_file(
+        source_path=source, staged_path=staged, expected_sha256=digest, label="ext"
+    )
+    second = staged.stat()
+    assert (second.st_ino, second.st_mtime_ns) == (first.st_ino, first.st_mtime_ns)
+
+    staged.write_bytes(b"stale bytes from an interrupted build")
+    external_native._stage_external_native_required_file(
+        source_path=source, staged_path=staged, expected_sha256=digest, label="ext"
+    )
+    assert staged.read_bytes() == b"extension image"

@@ -75,8 +75,16 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
     events = directory / "events"
     driver = directory / "interpreter-driver.py"
     driver.write_text(
-        "import os, pathlib, platform, sys\n"
+        "import os, pathlib, platform, sys, sysconfig\n"
         "args = sys.argv[1:]\n"
+        "events = open(os.environ['EVENTS'], 'a')\n"
+        "if '-m' in args:\n"
+        "    module_at = args.index('-m')\n"
+        "    target = args[-1]\n"
+        "    options = ' '.join(args[module_at + 2:-1])\n"
+        "    stdlib = target == os.environ['FAKE_STDLIB']\n"
+        "    events.write(f\"{args[module_at + 1]}:{os.environ['ALIAS']}:{options}:{stdlib}\\n\")\n"
+        "    raise SystemExit(45 if os.environ['FAILURE'] == 'compile' else 0)\n"
         "code_at = args.index('-c')\n"
         "code = args[code_at + 1]\n"
         "sys.argv = ['-c', *args[code_at + 2:]]\n"
@@ -85,7 +93,10 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         "    sys.executable = os.environ['FAKE_OTHER']\n"
         "platform.python_version = lambda: '3.12.14' if os.environ['FAILURE'] == 'version' else '3.12.15'\n"
         "platform.python_implementation = lambda: 'PyPy' if os.environ['FAILURE'] == 'implementation' else 'CPython'\n"
-        "with open(os.environ['EVENTS'], 'a') as out: out.write('validate:' + os.environ['ALIAS'] + '\\n')\n"
+        "sysconfig.get_path = lambda name, *_a, **_k: os.environ['FAKE_STDLIB']\n"
+        "kind = 'stdlib' if 'sysconfig' in code else 'validate'\n"
+        "events.write(kind + ':' + os.environ['ALIAS'] + '\\n')\n"
+        "events.close()\n"
         "exec(compile(code, '<bootstrap validator>', 'exec'))\n",
         encoding="utf-8",
     )
@@ -132,6 +143,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         else "Linux",
         "FAKE_SELECTED": selected.as_posix(),
         "FAKE_OTHER": other.as_posix(),
+        "FAKE_STDLIB": (install / "lib" / "python3.12").as_posix(),
         "EVENTS": events.as_posix(),
         "FAILURE": failure,
     }
@@ -165,6 +177,8 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
         "validate:selected",
         "validate:python",
         "validate:python3",
+        "stdlib:selected",
+        "compileall:selected:-q -j 0 -o 0 -o 1 -o 2:True",
     ]
     assert "UV_PYTHON_DOWNLOADS=never\n" in exports["GITHUB_ENV"]
     assert "UV_MANAGED_PYTHON=true\n" in exports["GITHUB_ENV"]
@@ -184,6 +198,7 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
         ("version", "validate:selected"),
         ("implementation", "validate:selected"),
         ("alias", "validate:python3"),
+        ("compile", "compileall:selected:-q -j 0 -o 0 -o 1 -o 2:True"),
         ("injected-root", None),
     ],
 )

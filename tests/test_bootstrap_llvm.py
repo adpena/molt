@@ -132,9 +132,18 @@ def test_explicit_targets_parse_before_unknown_host_default(
 
 
 @pytest.mark.usefixtures("developer_host_context")
-def test_managed_paths_share_checkout_family_custody(tmp_path: Path) -> None:
+def test_managed_paths_share_checkout_family_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import dx
+
     # A checkout family: the main checkout and a worktree beside it. Where CI
-    # checks this repository out is not such a family.
+    # checks this repository out is not such a family. The synthetic family
+    # lives under pytest's temp root, which a hosted runner reports as host
+    # scratch; it is a family here, not host scratch.
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     family = tmp_path / "Molt"
     main_checkout = family / "molt-src"
     worktree = family / "worktrees" / "feature"
@@ -1316,3 +1325,27 @@ def test_cached_archive_uses_bytes_not_directory_brand(tmp_path, monkeypatch, na
         expected_size=len(b"owned LLVM archive"),
     )
     assert archive.read_bytes() == b"owned LLVM archive"
+
+
+def test_bootstrap_check_uses_selected_tool_state_for_default_prefix(
+    tmp_path, monkeypatch
+):
+    selected = tmp_path / "selected tools"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(selected))
+    pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    expected = selected / "toolchains" / f"llvm-{pin.default_release}"
+    observed = []
+
+    def verify(root, prefix, **kwargs):
+        observed.append(prefix)
+        return SimpleNamespace(
+            prefix=prefix,
+            llvm_config=prefix / "bin/llvm-config",
+            version=pin.default_release,
+        )
+
+    monkeypatch.setattr(bootstrap_llvm, "verify_llvm_toolchain_prefix", verify)
+    assert bootstrap_llvm.main(["--check"]) == 0
+    assert observed == [expected]
+    assert not selected.exists()

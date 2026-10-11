@@ -68,8 +68,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         return any(self._is_gpu_kernel_decorator(d) for d in node.decorator_list)
 
     def visit_Return(self, node: ast.Return) -> None:
-        if self.finally_depth > 0:
-            self._emit_syntax_warning(node, "'return' in a 'finally' block")
         val = self.visit(node.value) if node.value else None
         if val is None:
             val = MoltValue(self.next_var(), type_hint="None")

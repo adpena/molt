@@ -13,17 +13,21 @@ from molt.cli.config_resolution import (
 from molt.cli.entrypoint_dispatch import _dispatch_entrypoint_command
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.cli.project_roots import _find_project_root
-from molt.cli_entry import ensure_hash_seed
 from molt.cli.output import fail
 from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
 )
 from molt.process_guard import GuardInfrastructureError, guard_infrastructure_exit_code
+from molt.target_python import require_frontend_python
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
-    ensure_hash_seed()
+    try:
+        require_frontend_python()
+    except RuntimeError as exc:
+        print(f"molt: error: {exc}", file=sys.stderr)
+        return 2
     try:
         check_process_environment()
     except EnvironmentRegistryError as exc:

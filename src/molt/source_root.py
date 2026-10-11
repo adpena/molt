@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import sysconfig
 
+from molt.default_paths import executable_environment_value, expand_user_path
+
 
 MOLT_SOURCE_ROOT_ENV = "MOLT_SOURCE_ROOT"
+MANIFEST_NAME = "release-compiler-source.json"
 _DEFAULT_COMPILER_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -56,8 +60,37 @@ def packaged_distribution_root() -> Path | None:
         if package_parent not in libraries or "data" not in paths:
             continue
         root = Path(paths["data"]).joinpath(*PACKAGED_DISTRIBUTION_PATH)
-        if root.exists() or root.is_symlink():
+        return root
+    return None
+
+
+def installed_distribution_root(
+    source_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path | None:
+    """Classify installed layout without admitting any source or artifact bytes.
+
+    A known bundle/wheel remains installed when its manifest is missing or
+    damaged. Full manifest/content validation belongs to compiler_distribution.
+    """
+    source = source_root.resolve(strict=False)
+    marker = source / MANIFEST_NAME
+    if marker.exists() or marker.is_symlink():
+        return source.parent
+    env = os.environ if environ is None else environ
+    bundle = executable_environment_value(env, "MOLT_BUNDLE_ROOT")
+    if bundle:
+        root = expand_user_path(bundle, environment=env)
+        if not root.is_absolute():
+            root = (Path.cwd() if cwd is None else cwd) / root
+        root = root.resolve(strict=False)
+        if source == root / "source":
             return root
+    packaged = packaged_distribution_root()
+    if packaged is not None and source == (packaged / "source").resolve(strict=False):
+        return packaged.resolve(strict=False)
     return None
 
 

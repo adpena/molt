@@ -306,6 +306,17 @@ def _cargo_generation_terminal(
     return provenance, lifecycle
 
 
+def _row_peak_rss_bytes(row: sqlite3.Row | Mapping[str, Any]) -> int:
+    """Read the guard summary, or the value retention saved before it ran."""
+    retention = state._evidence_retention(row)
+    if retention is None:
+        return _queue_peak_rss_bytes(row["summary_json"])
+    peak = retention.get("peak_rss_bytes")
+    if type(peak) is not int or peak < 0:
+        raise ValueError("proof run evidence retention record has no peak RSS")
+    return peak
+
+
 def _queue_proof_receipt(
     row: sqlite3.Row | Mapping[str, Any],
 ) -> dict[str, object]:
@@ -395,7 +406,7 @@ def _queue_proof_receipt(
                 "timeout_seconds": None,
                 "started_at": row["started_at"],
                 "duration_seconds": row["elapsed_s"] or 0.0,
-                "peak_rss_bytes": _queue_peak_rss_bytes(row["summary_json"]),
+                "peak_rss_bytes": _row_peak_rss_bytes(row),
                 "cache_disposition": "unknown",
                 "status": "success" if succeeded else status,
                 "returncode": returncode,
@@ -435,6 +446,10 @@ def _row_to_payload(
         "finished_at": row["finished_at"],
         "elapsed_s": row["elapsed_s"],
     }
+    retention = state._evidence_retention(row)
+    if retention is not None:
+        # The paths above name reclaimed files; this record says so.
+        payload["evidence_retention"] = retention
     authority_raw = state._row_value(row, "command_envelope_json")
     if isinstance(authority_raw, str) and authority_raw:
         try:

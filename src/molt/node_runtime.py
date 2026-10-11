@@ -96,7 +96,7 @@ def resolve_node_runtime(
         )
 
     try:
-        pinned = pinned_executable("node", root)
+        pinned = pinned_executable("node", root, environ=env)
     except (OSError, RuntimeError, ValueError) as exc:
         raise NodeRuntimeError(f"pinned Node custody is invalid: {exc}") from exc
     if pinned is not None:

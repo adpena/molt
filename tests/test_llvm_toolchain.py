@@ -204,6 +204,10 @@ def test_mlir_environment_projects_one_prefix_to_every_binding(
     install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    _write(
+        tmp_path / "config/llvm_toolchain_releases.toml",
+        (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8"),
+    )
     prefix = tmp_path / "llvm 22"
     llvm_config = prefix / "bin" / "llvm-config.exe"
     _write(llvm_config, "")
@@ -247,6 +251,10 @@ def test_mlir_environment_rejects_wrong_llvm_version(
 ) -> None:
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    _write(
+        tmp_path / "config/llvm_toolchain_releases.toml",
+        (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8"),
+    )
     prefix = tmp_path / "llvm 21"
     llvm_config = prefix / "bin" / "llvm-config.exe"
     _write(llvm_config, "")
@@ -881,7 +889,7 @@ def test_apply_provisioned_wasm_toolchain_keeps_explicit_selectors_consistent(
     monkeypatch.setattr(
         llvm_toolchain,
         "provisioned_wasi_sdk_prefix",
-        lambda _root, *, environ=None: prefix,
+        lambda _root, *, environ=None, cwd=None: prefix,
     )
     asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
     sdk_bin = prefix.resolve() / SDK_DIRNAME / "bin"
@@ -952,7 +960,7 @@ def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
     monkeypatch.setattr(
         llvm_toolchain,
         "provisioned_wasi_sdk_prefix",
-        lambda _root, *, environ=None: tmp_path / "absent",
+        lambda _root, *, environ=None, cwd=None: tmp_path / "absent",
     )
     env = {"PATH": "host-bin"}
 
@@ -1137,11 +1145,6 @@ def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prefix = _write_wasi_sdk_installation(tmp_path)
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "provisioned_wasi_sdk_prefix",
-        lambda _root, *, environ: prefix,
-    )
     seen: list[tuple[str, Path, str, bool]] = []
     monkeypatch.setattr(
         llvm_toolchain,
@@ -1149,7 +1152,9 @@ def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
         _recording_tool_versions(seen),
     )
 
-    verification = llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+    verification = llvm_toolchain.verify_wasm_llvm_nm(
+        ROOT, environ={"MOLT_TARGET_ROOT": str(tmp_path), "PATH": ""}
+    )
 
     llvm_nm = prefix.resolve() / "sdk" / "bin" / verification.path.name
     assert verification.path == llvm_nm
@@ -1161,17 +1166,12 @@ def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
 
 
 def test_wasm_llvm_nm_lookup_never_provisions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    absent = tmp_path / "toolchains" / "wasi-sdk-absent"
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "provisioned_wasi_sdk_prefix",
-        lambda _root, *, environ: absent,
-    )
-
     with pytest.raises(LlvmToolchainConfigError, match="no wasi-sdk is provisioned"):
-        llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+        llvm_toolchain.verify_wasm_llvm_nm(
+            ROOT, environ={"MOLT_TARGET_ROOT": str(tmp_path), "PATH": ""}
+        )
 
     assert not (tmp_path / "toolchains").exists()
 
@@ -1207,9 +1207,14 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
         "quoted_path": f'"{selected}"',
     }[selection]
     if selection == "bare":
-        monkeypatch.setattr(
-            llvm_toolchain, "find_executable", lambda command, *, environment: selected
-        )
+
+        def find_executable(command, *, environment, cwd):
+            assert command == "llvm-nm"
+            assert environment == {"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)}
+            assert cwd is None
+            return selected
+
+        monkeypatch.setattr(llvm_toolchain, "find_executable", find_executable)
     commands = []
 
     def run(command, **kwargs):
@@ -1600,13 +1605,10 @@ def test_complete_prefix_verifier_rejects_mismatched_tool_version(
 def test_canonical_prefix_requires_exact_patch_for_every_companion_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
+    prefix = llvm_toolchain.managed_llvm_paths(ROOT).prefix
     _write_complete_llvm_prefix(prefix)
     _mock_llvm_config(prefix, monkeypatch)
-    monkeypatch.setattr(
-        "molt.llvm_toolchain.managed_llvm_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(prefix=prefix),
-    )
 
     def run(command, **_kwargs):
         if "-std=c++17" in command:
@@ -1770,14 +1772,11 @@ def test_complete_prefix_verifier_requires_real_compile_link_probe(
 def test_canonical_prefix_requires_exact_manifest_patch_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
+    prefix = llvm_toolchain.managed_llvm_paths(ROOT).prefix
     _write_complete_llvm_prefix(prefix)
     _mock_tool_process_versions(monkeypatch)
     _mock_llvm_config(prefix, monkeypatch, version="22.1.9")
-    monkeypatch.setattr(
-        "molt.llvm_toolchain.managed_llvm_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(prefix=prefix),
-    )
 
     with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
         verify_llvm_toolchain_prefix(
@@ -1791,14 +1790,11 @@ def test_canonical_prefix_requires_exact_manifest_patch_release(
 def test_canonical_prefix_accepts_supported_target_superset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
+    prefix = llvm_toolchain.managed_llvm_paths(ROOT).prefix
     _write_complete_llvm_prefix(prefix)
     _mock_tool_process_versions(monkeypatch)
     _mock_llvm_config(prefix, monkeypatch, targets="AArch64 WebAssembly X86")
-    monkeypatch.setattr(
-        "molt.llvm_toolchain.managed_llvm_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(prefix=prefix),
-    )
 
     verification = verify_llvm_toolchain_prefix(
         ROOT,
@@ -2187,15 +2183,22 @@ def test_managed_nm_recognizes_canonical_install_under_ancestor_alias(
     except OSError:
         pytest.skip("directory aliases unavailable")
     lexical = alias / prefix.relative_to(parent)
-    monkeypatch.setattr(
-        llvm_toolchain, "provisioned_wasi_sdk_prefix", lambda _root, *, environ: lexical
-    )
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
+    selected_path = lexical / "sdk" / "bin" / executable_filename("llvm-nm", asset.id)
     monkeypatch.setattr(
         llvm_toolchain,
         "_tool_version_fact_and_identity",
         lambda *args, **kwargs: pytest.fail("managed alias entered external verifier"),
     )
-    selected = llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+    selected = llvm_toolchain.verify_wasm_llvm_nm(
+        ROOT,
+        environ={
+            "MOLT_TARGET_ROOT": str(alias),
+            "MOLT_LLVM_NM": str(selected_path),
+            "PATH": "",
+        },
+    )
+    assert selected.path == selected_path
     assert isinstance(selected.executable_identity, llvm_toolchain.WasiSdkInstallation)
     assert selected.executable_identity.prefix == prefix.resolve()
 
@@ -2381,3 +2384,168 @@ def test_sdk_config_must_select_the_captured_library_and_header_roots(
         LlvmToolchainConfigError, match="escapes the admitted SDK layout"
     ):
         llvm_toolchain._llvm_link_closure(prefix, prefix / "bin/llvm-config")
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_sdk_and_native_llvm_share_selected_state_without_provisioning(
+    tmp_path, monkeypatch, installed
+):
+    from molt import source_root
+
+    source = ROOT
+    if installed:
+        source = tmp_path / "bundle" / "source"
+        (source / "config").mkdir(parents=True)
+        for name in ("llvm_toolchain_releases.toml", "llvm_toolchain_arches.toml"):
+            (source / "config" / name).write_bytes(
+                (ROOT / "config" / name).read_bytes()
+            )
+        (source / source_root.MANIFEST_NAME).write_text(
+            "classification only", encoding="utf-8"
+        )
+    selected = tmp_path / "child tools"
+    ambient = tmp_path / "ambient tools"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(ambient))
+    env = {"MOLT_TARGET_ROOT": str(selected)}
+    pin = required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    asset = llvm_toolchain.wasi_sdk_host_asset(source)
+    assert llvm_toolchain.provisioned_wasi_sdk_prefix(source, environ=env) == (
+        selected / "toolchains" / f"{asset.archive_root}-{asset.record_sha256[:16]}"
+    )
+    paths = llvm_toolchain.managed_llvm_paths(source, pin, environ=env)
+    assert paths.root == selected / "toolchains"
+    assert llvm_toolchain.managed_llvm_prefix(source, pin, environ=env) == paths.prefix
+    assert all(
+        selected in path.parents
+        for path in (paths.prefix, paths.archive, paths.source_root, paths.build_dir)
+    )
+    assert not selected.exists() and not ambient.exists()
+    if installed:
+        home = tmp_path / "home"
+        expected = home / "target-root" / "toolchains"
+        assert (
+            llvm_toolchain.managed_llvm_paths(
+                source, pin, environ={"MOLT_HOME": str(home)}
+            ).root
+            == expected
+        )
+        assert (
+            llvm_toolchain.provisioned_wasi_sdk_prefix(
+                source, environ={"MOLT_HOME": str(home)}
+            ).parent
+            == expected
+        )
+        assert not home.exists()
+
+
+@pytest.mark.parametrize("selector", ["native", "sdk"])
+def test_tool_state_errors_keep_llvm_admission_boundary(tmp_path, selector):
+    selected = tmp_path / "file-not-tool-state"
+    selected.write_text("invalid root", encoding="utf-8")
+    with pytest.raises(
+        LlvmToolchainConfigError, match="toolchain custody is unresolved"
+    ):
+        if selector == "native":
+            llvm_toolchain.managed_llvm_paths(
+                ROOT, environ={"MOLT_TARGET_ROOT": str(selected)}
+            )
+        else:
+            llvm_toolchain.provisioned_wasi_sdk_prefix(
+                ROOT, environ={"MOLT_TARGET_ROOT": str(selected)}
+            )
+
+
+def test_explicit_native_llvm_keeps_unused_invalid_tool_state_out_of_admission(
+    tmp_path, monkeypatch
+):
+    prefix = tmp_path / "external-llvm"
+    _write_complete_llvm_prefix(prefix)
+    _mock_tool_process_versions(monkeypatch)
+    _mock_llvm_config(prefix, monkeypatch)
+    invalid = tmp_path / "invalid-state"
+    invalid.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(invalid))
+    # Prefix verification uses a synthetic compiler. The actual guarded platform
+    # query boundary is covered by the harness owner, without mocking its env.
+    monkeypatch.setattr(
+        "molt.platform_toolchain.select_darwin_toolchain",
+        lambda _env: SimpleNamespace(environment=lambda: {}),
+    )
+    verification = verify_llvm_toolchain_prefix(
+        ROOT, prefix, expected_targets=("X86", "WebAssembly")
+    )
+    attestation = write_llvm_toolchain_attestation(
+        ROOT, verification, projects=("clang", "lld", "mlir", "polly")
+    )
+    assert (
+        json.loads(attestation.read_text(encoding="utf-8"))["custody"]
+        == "manifest-release-noncanonical-prefix"
+    )
+    with pytest.raises(LlvmToolchainConfigError, match="not a directory"):
+        llvm_toolchain.managed_llvm_paths(ROOT)
+
+
+def test_native_and_sdk_state_share_request_cwd_and_child_home(tmp_path, monkeypatch):
+    cwd = tmp_path / "request"
+    cwd.mkdir()
+    key = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(key, str(tmp_path / "ambient"))
+    child_home = tmp_path / "child"
+    for raw, expected in (("tools", cwd / "tools"), ("~/tools", child_home / "tools")):
+        env = {key: str(child_home), "MOLT_TARGET_ROOT": raw}
+        assert (
+            llvm_toolchain.managed_llvm_paths(ROOT, environ=env, cwd=cwd).root
+            == expected / "toolchains"
+        )
+        assert (
+            llvm_toolchain.provisioned_wasi_sdk_prefix(
+                ROOT, environ=env, cwd=cwd
+            ).parent
+            == expected / "toolchains"
+        )
+    assert (
+        llvm_toolchain.selected_wasi_sdk_prefix(
+            ROOT, environ={key: str(child_home), "WASI_SDK_PATH": "~/sdk"}, cwd=cwd
+        )
+        == child_home
+    )
+
+
+def test_external_wasm_nm_does_not_admit_unused_tool_state(tmp_path, monkeypatch):
+    selected = tmp_path / "external" / "llvm-nm"
+    _write(selected, "reader")
+    invalid = tmp_path / "not-a-directory"
+    invalid.write_text("file", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact_and_identity",
+        _recording_tool_versions(seen),
+    )
+    env = {"MOLT_LLVM_NM": str(selected), "MOLT_TARGET_ROOT": str(invalid), "PATH": ""}
+    actual = llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ=env)
+    assert actual.path == selected
+    assert actual.executable_identity.sha256 == hashlib.sha256(b"reader").hexdigest()
+    assert seen == [("llvm-nm", selected, WASI_LLVM, True)]
+    with pytest.raises(
+        LlvmToolchainConfigError, match="toolchain custody is unresolved"
+    ):
+        llvm_toolchain.provisioned_wasi_sdk_prefix(ROOT, environ=env)
+
+
+def test_sdk_generation_capture_uses_the_selected_request_cwd(tmp_path, monkeypatch):
+    cwd = tmp_path / "request"
+    prefix = _write_wasi_sdk_installation(cwd / "relative-tools")
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+    env = {"MOLT_TARGET_ROOT": "relative-tools"}
+    selected = llvm_toolchain.resolve_wasi_sdk_tool(
+        ROOT, "wasm-ld", environ=env, cwd=cwd
+    )
+    captured = llvm_toolchain.capture_wasi_sdk_selection(root=ROOT, env=env, cwd=cwd)
+    assert Path(captured["sdk"]) == prefix / "sdk"
+    assert selected.parent == Path(captured["sdk"]) / "bin"
+    assert Path(captured["receipt"]["path"]).parent == prefix
+    assert not (ambient / "relative-tools").exists()

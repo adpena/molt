@@ -85,7 +85,7 @@ the tree at HEAD (2026-06-24):
 | Asset | Path | What it already does | Gap this arc fills |
 |---|---|---|---|
 | **Tuned Cargo profiles** | `Cargo.toml` shipping profiles | `release-output`/`release-size`/`wasm-release` share measured ThinLTO, cgu=16, debug=0, panic=abort, strip; package overrides own only hot-crate opt levels. `dev-release` is the sole symbol-bearing release profile. | **No `-Z share-generics`/polymorphize**; output still needs the Size-board projection below |
-| Native size analyser | `tools/binary_size_analysis.py` (831 ln) | nm symbol census, Mach-O segment/section breakdown, 5 symbol categories, `--compare` deltas, `--budget`, JSON | Budgets are **per-invocation magic constants** (35MB native / 20MB wasm, lines 107-108); **no history, no gate wiring, no per-tier budget, no compressed size, no cause attribution** |
+| Native size analyser | `tools/binary_size_analysis.py` | Compiler inspector section/symbol facts, disjoint file-byte attribution, explicit unknown naming, `--compare` deltas, `--budget`, JSON | Budgets are **per-invocation magic constants** (35MB native / 20MB wasm, lines 107-108); **no history, no gate wiring, no per-tier budget, no compressed size, no cause attribution** |
 | WASM size auditor | `tools/wasm_size_audit.py` | per-section LEB128 parse, code/data split, `--budget 16MB`/`--budget-code 10MB` gate (V8 OOM headroom) | Standalone; **not a board projection**; budgets are V8-OOM-driven not the 3MB Workers contract; no compressed size; no history |
 | Output+startup+size matrix | `tools/output_startup_size_audit.py` (1239 ln) | builds hello-world across `native/wasm/luau/mlir × dev/release × auto/llvm × stdlib-{micro,full}`; records artifact bytes, cold-first-sighting + page-cache-cold + same-path startup, CPython + C baselines, `--max-artifact-mb`/`--max-fresh-start-ms` budget checks | The right *matrix shape* but **budgets are opt-in CLI flags (default None → never gates)**; writes a timestamped JSON, **no history index, no regression gate, not a doc-64 projection, no cause attribution, stripped-only (no gzip/brotli)** |
 | WASM opt pipeline | `tools/wasm_optimize.py`, `tools/wasm_link.py`, `tools/wasm_pipeline.py` | `wasm-opt` invocation with the *load-bearing* feature flag set (`--disable-gc`, `--disable-custom-descriptors`, the rec-group flatten); export-contract preservation | `wasm-opt -Oz --converge` lane named as "high-value work" in doc 0931 but **not measured/gated**; the optimize step is not size-board-attributed |
@@ -319,9 +319,9 @@ top cold families.
 ### 3.4 FACT: compressed + sectioned size, not stripped-only — retires "the gzip blind spot"
 
 Every Size cell carries stripped bytes **and** gzip bytes **and** brotli bytes **and** the
-section/segment breakdown (Mach-O segments via the existing `binary_size_analysis.py`
-parser; WASM sections via the existing `wasm_size_audit.py` parser — *reused*, not
-rewritten). The edge-deploy contract (Cloudflare 3MB) is a **compressed** ceiling; gating
+section breakdown (native physical ranges via the compiler-owned facts consumed
+by `binary_size_analysis.py`; WASM sections via the existing `wasm_size_audit.py`
+owner). The edge-deploy contract (Cloudflare 3MB) is a **compressed** ceiling; gating
 on stripped-only (the current default) can pass a cell that fails in production. **Class
 retired:** "an optimization that shrank uncompressed bytes but grew the compressed
 artifact" (real — opt choices that add entropy can do this).
@@ -673,7 +673,7 @@ Performance-Constitution dimension in fact, not just in the constitution.**
   `rustflags` arrays, lines 8-34 — size-profile flags would be added via env/`RUSTFLAGS`
   not hard-coded here, per the file's "keep the baseline portable" rule).
 - Native size parser to reuse as a library (Phase 1): `tools/binary_size_analysis.py`
-  `analyse_native`/`_parse_macho_segments`/`_categorise_symbol` (200-378); the scattered
+  `analyse_native`/`_native_file_accounting`/`_categorise_symbol`; the scattered
   budgets to migrate to `SIZE_BUDGETS` (107-108).
 - WASM size parser to reuse (Phase 1): `tools/wasm_size_audit.py` section parser + the
   16MB/10MB/4MB budgets (51-53, V8-OOM-driven — distinct from the 3MB Workers *contract*
@@ -722,3 +722,84 @@ ceiling, a tier monotonicity invariant), per the doc-51 method. Once these facts
 gate, the entire family of silent-size-drift and cold-monomorphization-bloat bugs is gone
 from main — and every downstream arc inherits a size plane sharp enough to name the
 representation cause of the next byte it must remove.
+
+### Native analyzer attribution contract
+
+`tools/binary_size_analysis.py` consumes the existing `molt-backend` read-only
+`--scan-native-artifact-facts PATH` command. The maintained `object` reader owns
+ELF/Mach-O decoding and `rustc-demangle` owns Rust name decoding. Human-readable
+LLVM/nm output is not a data protocol. Raw names use tagged UTF-8 text with JSON
+escaping, or byte arrays only when the name is not UTF-8. Mach-O decoration is
+removed only for demangling and classification; the original name is retained.
+An optional demangled field is emitted only when it differs. Known workspace
+crate roots come from Cargo manifests and exact runtime ABI names from the
+intrinsics manifest. Classification describes names, not proven source
+ownership, language, reachability or callability. Unmatched names, including
+unproven user code and unowned crate roots, remain `unknown`.
+
+Native attribution schema 1 uses disjoint file intervals. Section offsets and
+lengths are bounded by the artifact or validated universal Mach-O slice.
+The section's declared size, compression format, physical range and uncompressed
+length remain separate; the ELF compressed section sh_size is not called a
+virtual extent.
+Compressed sections never borrow symbol virtual lengths as physical extents.
+Zero-fill sections have no file bytes. ELF declared function/object extents may
+attribute backed, uncompressed section bytes; aliases count once, conflicting
+names and overlapping sections remain unknown. Other bytes are explicitly
+`outside_sections`, with no invented claim that they are all debug or padding.
+Mach-O nlist has no symbol lengths: its names and counts are available, while
+symbol extents are unavailable. No next-address estimate enters file accounting.
+Native symbol tables may overlap and their declared sizes must not be summed.
+The endpoint sweep takes O(n log n) time and O(n) auxiliary space in the number
+of sections and symbols; it never allocates one entry per artifact byte.
+
+The inspector digest and size describe the exact parsed byte buffer. Input and
+complete JSON response are separately bounded by the existing backend request
+byte limit (`MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES`, default 512 MiB). It holds
+one bounded input, one bounded output, reader metadata and one temporary demangle;
+it does not construct a second owned tree of every name. The Python receiver
+holds the JSON and decoded tables plus sweep events under the existing process
+memory guard. Limits are ceilings, not predicted peak RSS; allocator capacity,
+JSON object expansion and large-artifact latency must be measured independently.
+The inspector adds compiler executable code, with no guest runtime hook.
+
+The analyzer selects an already admitted installed compiler or published
+feature-specific development compiler; `--native-facts-scanner` explicitly
+selects an existing inspector. Analysis never runs Cargo or auto-builds. Receipt
+byte identity is joined to stable executable capture before execution, and input
+and executable mutation fences close before publication. An old compiler that
+lacks this command fails; it does not fall back to symbol-text parsing.
+
+ELF and thin Mach-O are the actual retained format fixtures. Canonical big-endian
+fat32/fat64 headers are handled through maintained object readers and the existing
+native header authority; universal output remains an independent qualification
+cell. Swapped fat headers are explicitly unsupported by the maintained reader.
+COFF and archives were outside this analyzer's detected formats and remain outside
+this aperture. Unsupported/malformed facts and nonempty scanner stderr fail;
+missing tools do not produce empty success. WASM continues to use
+`molt.wasm_artifact`. JSON, comparisons and analysis capsules retain the native
+denominator, method, overlap counts and explicit unknowns. Native JSON from the
+retired symbol-sum schema must be regenerated.
+
+Native size inspection preserves ELF raw symbol values and projects the Arm
+Thumb function-state tag from the maintained reader's exact target and symbol
+type. Only that typed tag is removed when mapping function bytes; ordinary odd
+data addresses and other architectures remain unchanged. Mach-O dylib, dyld and
+bundle images share the existing native header's shared-image kind; symbol
+extents remain unavailable for all of them.
+
+Native comparisons retain each input digest, ordered slice context, inspector
+identity and naming-authority identities. Whole-file deltas remain available
+across formats. Category deltas are unavailable when symbol-extent capability,
+attribution method, inspector identity or naming authorities differ. This avoids
+presenting a change in measurement capability as an optimization. JSON CLI
+stdout contains one complete object; budget diagnostics use stderr in JSON mode
+and preserve the existing budget exit status.
+
+Native and WASM file inspectors share regular-artifact descriptor admission in
+the existing backend input owner. Unix uses nonblocking open before descriptor
+regular-file validation, so an unopened FIFO does not wait for a writer. Windows
+checks disk-handle type before regular-file metadata; unsupported host families
+refuse this file-inspection operation. This does not change stdin/stream inputs,
+WASM mmap storage, resource limits or guest execution. Windows and actual native
+format/large-artifact measurements remain explicit qualification coordinates.

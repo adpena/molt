@@ -29,7 +29,8 @@ from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _clear_path_caches() -> None:
-    from molt.cli import default_paths, module_graph_cache, module_source, runtime_paths
+    from molt import default_paths
+    from molt.cli import module_graph_cache, module_source, runtime_paths
 
     default_paths._default_molt_cache_cached.cache_clear()
     runtime_paths._build_state_root_cached.cache_clear()

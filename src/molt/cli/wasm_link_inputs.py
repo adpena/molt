@@ -12,10 +12,10 @@ import functools
 import os
 from pathlib import Path
 
+from molt.default_paths import executable_environment_value, expand_user_path
+
 from molt.cli.command_runtime import _run_completed_command
 from molt.toolchain_identity import (
-    executable_environment_value,
-    expand_user_path,
     find_executable,
     stable_executable_probe,
 )

@@ -6,7 +6,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import NoReturn
 
 _CANONICAL_MODULE_NAME = "tools.import_file"
 _current_module = sys.modules[__name__]
@@ -16,7 +15,8 @@ _reuse_canonical = False
 # A file-launched tool can initially see this file only as top-level
 # ``import_file``. If the canonical module is already present, make this import
 # return that exact object and do not create a second set of implementations.
-# Otherwise publish the file-launched object canonically before its body loads.
+# A new file-launched object is published canonically only after its body loads.
+# Python already registers its requested name for dataclasses and recursion.
 if __name__ == "import_file":
     if _canonical_module is not None and _canonical_module is not _current_module:
         canonical_file = getattr(_canonical_module, "__file__", None)
@@ -28,14 +28,52 @@ if __name__ == "import_file":
             )
         sys.modules[__name__] = _canonical_module
         _reuse_canonical = True
-    else:
-        sys.modules[_CANONICAL_MODULE_NAME] = _current_module
-        loaded_tools = sys.modules.get("tools")
-        if loaded_tools is not None:
-            setattr(loaded_tools, "import_file", _current_module)
 
 
 if not _reuse_canonical:
+
+    def _load_package_import_custody(path: Path) -> ModuleType:
+        """Load one neutral authority; never import it through a foreign parent."""
+        name = "_molt_package_import_custody"
+        selected = path.resolve(strict=True)
+        if name in sys.modules:
+            loaded = sys.modules[name]
+            spec = getattr(loaded, "__spec__", None)
+            loader = getattr(spec, "loader", None)
+            if (
+                type(loaded) is not ModuleType
+                or getattr(loaded, "__name__", None) != name
+                or getattr(loaded, "__package__", None) != ""
+                or getattr(loaded, "__file__", None) != str(selected)
+                or getattr(spec, "name", None) != name
+                or getattr(spec, "origin", None) != str(selected)
+                or type(loader) is not importlib.machinery.SourceFileLoader
+                or loader.name != name
+                or loader.path != str(selected)
+                or getattr(loaded, "__loader__", None) is not loader
+            ):
+                raise ImportError(
+                    f"package import custody already loaded from another authority; "
+                    f"selected {selected}, loaded {getattr(loaded, '__file__', None)!r}"
+                )
+            return loaded
+        spec = importlib.util.spec_from_file_location(name, selected)
+        if spec is None or spec.loader is None:
+            raise ImportError(
+                f"cannot load selected package import custody: {selected}"
+            )
+        loaded = importlib.util.module_from_spec(spec)
+        sys.modules[name] = loaded
+        try:
+            spec.loader.exec_module(loaded)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        return loaded
+
+    _package_import_custody = _load_package_import_custody(
+        Path(__file__).resolve().parents[1] / "src/molt/package_import_custody.py"
+    )
 
     @dataclass(frozen=True, slots=True)
     class _MissingModuleBinding:
@@ -51,59 +89,6 @@ if not _reuse_canonical:
             ).is_dir():
                 return candidate
         raise RuntimeError(f"cannot locate Molt repository root from {source}")
-
-    def _executable_origins(module: ModuleType) -> tuple[object, ...]:
-        origins: list[object] = []
-        module_file = getattr(module, "__file__", None)
-        if module_file is not None:
-            origins.append(module_file)
-        spec = getattr(module, "__spec__", None)
-        spec_origin = getattr(spec, "origin", None)
-        if spec_origin is not None:
-            origins.append(spec_origin)
-        return tuple(origins)
-
-    def _search_locations(module: ModuleType) -> tuple[object, ...]:
-        locations: list[object] = list(getattr(module, "__path__", ()))
-        spec = getattr(module, "__spec__", None)
-        spec_locations = getattr(spec, "submodule_search_locations", None)
-        if spec_locations is not None:
-            locations.extend(spec_locations)
-        return tuple(locations)
-
-    def _custody_mismatch(
-        name: str,
-        expected: Path,
-        values: tuple[object, ...],
-    ) -> NoReturn:
-        detail = ", ".join(str(value) for value in values) or "unknown"
-        raise RuntimeError(
-            f"repository import custody mismatch for {name}: expected {expected}, "
-            f"loaded {detail}"
-        )
-
-    def _require_selected_locations(
-        name: str,
-        expected: Path,
-        values: tuple[object, ...],
-    ) -> None:
-        if not values:
-            _custody_mismatch(name, expected, values)
-        for value in values:
-            if not isinstance(value, str) or value in {"built-in", "frozen"}:
-                _custody_mismatch(name, expected, values)
-            location = Path(value).resolve()
-            if not location.is_relative_to(expected):
-                _custody_mismatch(name, expected, values)
-
-    def _is_namespace_package(module: ModuleType) -> bool:
-        spec = getattr(module, "__spec__", None)
-        if spec is None or getattr(module, "__path__", None) is None:
-            return False
-        if getattr(spec, "submodule_search_locations", None) is None:
-            return False
-        loader = getattr(spec, "loader", None)
-        return loader is None or isinstance(loader, importlib.machinery.NamespaceLoader)
 
     def _canonical_namespace_prototype(package: str, expected: Path) -> ModuleType:
         search_locations = [str(expected)]
@@ -129,68 +114,6 @@ if not _reuse_canonical:
         spec.submodule_search_locations = search_locations
         return importlib.util.module_from_spec(spec)
 
-    def _validate_loaded_package(
-        package: str,
-        expected_root: Path,
-    ) -> tuple[tuple[str, ModuleType | None, Path], ...]:
-        expected = expected_root.resolve()
-        updates: list[tuple[str, ModuleType | None, Path]] = []
-        for name, loaded in tuple(sys.modules.items()):
-            if not name.startswith(f"{package}."):
-                continue
-            if loaded is None:
-                continue
-            origins = _executable_origins(loaded)
-            if not origins:
-                if not _is_namespace_package(loaded):
-                    _custody_mismatch(name, expected, origins)
-                suffix = name.removeprefix(f"{package}.").split(".")
-                namespace_root = expected.joinpath(*suffix)
-                if (
-                    not namespace_root.is_dir()
-                    or (namespace_root / "__init__.py").is_file()
-                ):
-                    _custody_mismatch(name, namespace_root, _search_locations(loaded))
-                updates.append(
-                    (
-                        name,
-                        loaded,
-                        namespace_root,
-                    )
-                )
-                continue
-            _require_selected_locations(
-                name,
-                expected,
-                origins + _search_locations(loaded),
-            )
-
-        loaded_root = sys.modules.get(package)
-        if loaded_root is None:
-            if not (expected / "__init__.py").is_file():
-                updates.append((package, None, expected))
-            return tuple(updates)
-        origins = _executable_origins(loaded_root)
-        if origins:
-            _require_selected_locations(
-                package,
-                expected,
-                origins + _search_locations(loaded_root),
-            )
-            return tuple(updates)
-        if not _is_namespace_package(loaded_root):
-            _custody_mismatch(package, expected, _search_locations(loaded_root))
-        if (expected / "__init__.py").is_file():
-            _custody_mismatch(package, expected, _search_locations(loaded_root))
-        updates.append(
-            (
-                package,
-                loaded_root,
-                expected,
-            )
-        )
-        return tuple(updates)
-
     def _install_namespace_metadata(
         loaded: ModuleType,
         prototype: ModuleType,
@@ -214,8 +137,12 @@ if not _reuse_canonical:
         root = _repository_root(source_file)
         source_root = root / "src"
         namespace_updates = (
-            *_validate_loaded_package("tools", root / "tools"),
-            *_validate_loaded_package("molt", source_root / "molt"),
+            *_package_import_custody.repository_namespace_updates(
+                "tools", root / "tools"
+            ),
+            *_package_import_custody.repository_namespace_updates(
+                "molt", source_root / "molt"
+            ),
         )
         # NamespaceLoader observes its parent package when constructed. Validate
         # the whole family first, then restore parents before nested namespaces.
@@ -312,3 +239,10 @@ if not _reuse_canonical:
             else:
                 sys.modules[package_name] = previous_package
             raise
+
+
+if __name__ == "import_file" and not _reuse_canonical:
+    sys.modules[_CANONICAL_MODULE_NAME] = _current_module
+    loaded_tools = sys.modules.get("tools")
+    if loaded_tools is not None:
+        setattr(loaded_tools, "import_file", _current_module)

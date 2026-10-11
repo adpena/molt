@@ -1874,3 +1874,19 @@ def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path,
         bench_tool.measure_molt_run(tmp_path / "probe"), bench_tool.MoltFailure
     )
     assert bench_tool.measure_runtime(["probe"]) is None
+
+
+def test_bench_env_shares_the_warm_target_unless_a_session_is_pinned(
+    tmp_path: Path,
+) -> None:
+    """A bench run must not build cold into a per-process target (HF-144)."""
+    ext_root = tmp_path / "ext-root"
+    shared = bench_tool._canonical_bench_env({"MOLT_EXT_ROOT": str(ext_root)})
+    assert Path(shared["CARGO_TARGET_DIR"]) == ext_root.resolve() / "target"
+
+    pinned = bench_tool._canonical_bench_env(
+        {"MOLT_EXT_ROOT": str(ext_root), "MOLT_SESSION_ID": "lane-a"}
+    )
+    assert Path(pinned["CARGO_TARGET_DIR"]) == (
+        ext_root.resolve() / "target" / "sessions" / "lane-a"
+    )

@@ -54,7 +54,7 @@ import re
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 
 
 # The content key is the 24-hex digest produced by ``_resolved_module_cache_key``;

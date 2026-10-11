@@ -140,7 +140,7 @@ from molt.capability_policy import (
 )
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import CodegenBackend, DEFAULT_CODEGEN_BACKEND
-from molt.cli.default_paths import (
+from molt.default_paths import (
     _default_home_str,
     _default_molt_bin,
     _default_molt_bin_cached,

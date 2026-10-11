@@ -1,10 +1,8 @@
 import base64
-import hashlib
 import importlib
 import json
 import os
 import platform
-import re
 import shutil
 import shlex
 import socketserver
@@ -19,42 +17,25 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
-import molt.cli_entry as cli_entry
 from molt.cli import build_output_layout as cli_build_output_layout
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.process_guard_common import install_module_view
 from tests.runtime_profile_fixtures import process_profile_payload
 
-DEFAULT_PATHS = importlib.import_module("molt.cli.default_paths")
+DEFAULT_PATHS = importlib.import_module("molt.default_paths")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _smoke_session_id() -> str:
-    raw = os.environ.get("PYTEST_CURRENT_TEST", "").strip()
-    if not raw:
-        return "tests-cli-smoke"
-    nodeid = raw.split(" ", 1)[0]
-    test_name = nodeid.rsplit("::", 1)[-1]
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", test_name).strip("-").lower()
-    if not slug:
-        slug = "case"
-    slug = slug[:32]
-    digest = hashlib.sha1(nodeid.encode("utf-8")).hexdigest()[:12]
-    return f"tests-cli-smoke-{slug}-{digest}"
-
-
 def _base_env() -> dict[str, str]:
+    # The pytest session already entered its Molt roots and shared Cargo
+    # target (RunContext.root_env, HF-114); nested CLI builds keep them, so
+    # they reuse the warm runtime and stay inside CI custody.
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
-    # Route nested CLI calls through a deterministic per-test session so
-    # one long-running smoke case cannot block unrelated cases on the same
-    # Cargo artifact directory lock.
-    env["MOLT_SESSION_ID"] = _smoke_session_id()
-    env.pop("CARGO_TARGET_DIR", None)
-    env.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     return env
 
 
@@ -439,108 +420,49 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
     assert cli._default_molt_home() == ext_root / ".molt_cache" / "home"
 
 
-def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class Completed:
-        returncode = 81
-
-    def fake_run(argv, *, env, check):
-        captured["argv"] = list(argv)
-        captured["env"] = dict(env)
-        captured["check"] = check
-        return Completed()
-
-    def fake_execvpe(*_args):
-        raise AssertionError("Windows hash-seed restart must not use os.execvpe")
-
-    def fake_exit(code):  # pragma: no cover - must never be reached
-        raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
-
-    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
-    monkeypatch.delenv(cli_entry.HASH_SEED_SENTINEL_ENV, raising=False)
-    monkeypatch.setenv(cli_entry.HASH_SEED_OVERRIDE_ENV, "123")
-    monkeypatch.setattr(cli_entry, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(
-        cli_entry,
-        "hash_seed_reexec_argv",
-        lambda: [sys.executable, "-m", "molt.cli", "doctor"],
-    )
-    monkeypatch.setattr(cli_entry.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli_entry.os, "execvpe", fake_execvpe)
-    monkeypatch.setattr(cli_entry.os, "_exit", fake_exit)
-
-    try:
-        cli_entry.ensure_hash_seed()
-    except SystemExit as exc:
-        assert exc.code == 81
-    else:  # pragma: no cover
-        raise AssertionError("expected Windows hash-seed handoff")
-
-    assert captured["argv"] == [sys.executable, "-m", "molt.cli", "doctor"]
-    env = captured["env"]
-    assert isinstance(env, dict)
-    assert env["PYTHONHASHSEED"] == "123"
-    assert env[cli_entry.HASH_SEED_SENTINEL_ENV] == "1"
-    assert captured["check"] is False
-
-
-def test_cli_hash_seed_reexec_argv_uses_active_python_executable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(cli_entry.sys, "executable", "venv-python")
-    monkeypatch.setattr(
-        cli_entry.sys,
-        "orig_argv",
-        ["uv-base-python", "-m", "molt.cli", "doctor"],
-        raising=False,
-    )
-
-    assert cli_entry.hash_seed_reexec_argv() == [
-        "venv-python",
-        "-m",
-        "molt.cli",
-        "doctor",
-    ]
-
-
-def test_cli_hash_seed_sentinel_requires_applied_seed(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    def hard_exit(code: int) -> None:  # pragma: no cover - must never be reached
-        raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
-
-    monkeypatch.setenv("PYTHONHASHSEED", "random")
-    monkeypatch.setenv(cli_entry.HASH_SEED_SENTINEL_ENV, "1")
-    monkeypatch.setenv(cli_entry.HASH_SEED_OVERRIDE_ENV, "123")
-    monkeypatch.setattr(cli_entry.os, "_exit", hard_exit)
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli_entry.ensure_hash_seed()
-
-    assert exc_info.value.code == 127
-    assert (
-        "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
-    )
-
-
-def test_cli_launcher_restarts_before_loading_the_cli() -> None:
-    # The restart happens before the CLI package loads, so a molt process
-    # imports the CLI once, in its final interpreter.
-    probe = run_cli_test_process(
-        [
-            sys.executable,
-            "-c",
-            "import sys, molt.cli_entry; print('molt.cli' in sys.modules)",
-        ],
+@pytest.mark.parametrize("seed", [None, "0", "123", "random"])
+def test_cli_entry_preserves_host_seed_without_restarting(seed: str | None) -> None:
+    env = _base_env()
+    if seed is None:
+        env.pop("PYTHONHASHSEED", None)
+    else:
+        env["PYTHONHASHSEED"] = seed
+    script = """
+import atexit, json, os, sys
+before = (os.getpid(), hash('molt-host-seed'), hash(b'molt-host-seed'), os.environ.get('PYTHONHASHSEED'))
+from molt.cli.entrypoint import main
+sys.argv = ['molt', '--help']
+def reject(*args, **kwargs):
+    raise AssertionError('CLI attempted a process restart')
+os.execvpe = reject
+os._exit = reject
+atexit.register(lambda: print('normal-atexit'))
+try:
+    main()
+except SystemExit as exc:
+    assert exc.code == 0
+else:
+    raise AssertionError('--help did not exit normally')
+after = (os.getpid(), hash('molt-host-seed'), hash(b'molt-host-seed'), os.environ.get('PYTHONHASHSEED'))
+assert after == before
+print('host-seed::' + json.dumps(after[1:]))
+"""
+    result = run_cli_test_process(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=env,
         capture_output=True,
         text=True,
-        check=True,
+        timeout=30,
     )
-    assert probe.stdout.strip() == "False"
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert result.stdout.rstrip().endswith("normal-atexit")
+    records = [
+        line for line in result.stdout.splitlines() if line.startswith("host-seed::")
+    ]
+    assert len(records) == 1
+    assert json.loads(records[0].removeprefix("host-seed::"))[-1] == seed
 
 
 def test_cli_doctor_json() -> None:
@@ -679,17 +601,18 @@ def test_cli_run_json(tmp_path: Path) -> None:
     assert "ok" in payload["data"].get("stdout", "")
 
 
-def test_base_env_uses_deterministic_per_test_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(
-        "PYTEST_CURRENT_TEST",
-        "tests/cli/test_cli_smoke.py::test_cli_run_json (call)",
-    )
+def test_base_env_keeps_the_session_roots(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "shared-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("MOLT_SESSION_ID", "pytest-session")
 
     env = _base_env()
 
-    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-test-cli-run-json-")
+    # Nested builds reuse the session's warm target instead of a cold
+    # per-test one that CI custody would refuse (HF-114).
+    assert env["CARGO_TARGET_DIR"] == str(target)
+    assert env["MOLT_SESSION_ID"] == "pytest-session"
+    assert env["PYTHONPATH"] == str(ROOT / "src")
 
 
 @pytest.mark.parametrize("profile", ["dev", "release"])
@@ -1701,7 +1624,7 @@ def test_cli_dx_env_json_has_cross_platform_defaults() -> None:
     assert payload["kind"] == "molt_dx_env"
     assert "os" in payload["host"]
     assert "arch" in payload["host"]
-    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-")
+    assert env["MOLT_SESSION_ID"] == os.environ["MOLT_SESSION_ID"]
     assert env["SCCACHE_DIR"].endswith(".sccache")
     assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" in env
 
@@ -2423,3 +2346,107 @@ def test_cli_extension_requires_subcommand() -> None:
     res = _run_cli(["extension"])
     assert res.returncode != 0
     assert "extension_command" in res.stderr
+
+
+def test_shared_default_home_uses_explicit_windows_environment_not_ambient(
+    tmp_path, monkeypatch
+):
+    from molt import default_paths
+
+    install_module_view(monkeypatch, "sys", sys, default_paths, platform="win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "ambient"))
+    selected = {"LOCALAPPDATA": str(tmp_path / "selected")}
+    other = {"LOCALAPPDATA": str(tmp_path / "other")}
+    assert (
+        default_paths._default_molt_home(environ=selected)
+        == tmp_path / "selected/Molt/home"
+    )
+    assert (
+        default_paths._default_molt_home(environ=other) == tmp_path / "other/Molt/home"
+    )
+    assert (
+        default_paths._default_molt_home(environ=selected)
+        == tmp_path / "selected/Molt/home"
+    )
+    assert not (tmp_path / "selected").exists()
+
+
+def test_shared_home_cache_and_bin_expand_only_selected_environment(
+    tmp_path, monkeypatch
+):
+    from molt import default_paths
+
+    key = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(key, str(tmp_path / "ambient"))
+    selected = tmp_path / "child"
+    env = {
+        key: str(selected),
+        "MOLT_CACHE": "~/cache",
+        "MOLT_HOME": "~/home",
+        "MOLT_BIN": "~/bin",
+    }
+    assert default_paths._default_molt_cache(environ=env) == selected / "cache"
+    assert default_paths._default_molt_home(environ=env) == selected / "home"
+    assert default_paths._default_molt_bin(environ=env) == selected / "bin"
+    assert not selected.exists()
+
+
+@pytest.mark.parametrize(
+    "owner,key", [("cache", "MOLT_CACHE"), ("home", "MOLT_HOME"), ("bin", "MOLT_BIN")]
+)
+def test_default_paths_do_not_expand_unselected_lower_priority_roots(
+    tmp_path, owner, key
+):
+    env = {
+        name: "~"
+        for name in (
+            "HOME",
+            "USERPROFILE",
+            "MOLT_CACHE",
+            "MOLT_HOME",
+            "MOLT_BIN",
+            "MOLT_EXT_ROOT",
+            "XDG_CACHE_HOME",
+            "LOCALAPPDATA",
+        )
+    }
+    selected = tmp_path / owner
+    env[key] = str(selected)
+    assert getattr(DEFAULT_PATHS, "_default_molt_" + owner)(environ=env) == selected
+    assert not selected.exists()
+
+
+def test_explicit_build_cache_does_not_consult_default_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli_build_output_layout,
+        "_default_molt_cache",
+        lambda: pytest.fail("explicit cache has priority"),
+    )
+    assert (
+        cli_build_output_layout._resolve_cache_root(tmp_path, "selected")
+        == tmp_path / "selected"
+    )
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_default_cache_does_not_expand_unused_platform_root(
+    tmp_path, monkeypatch, windows
+):
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        DEFAULT_PATHS,
+        platform="win32" if windows else "linux",
+    )
+    selected_key = "LOCALAPPDATA" if windows else "XDG_CACHE_HOME"
+    unused_key = "XDG_CACHE_HOME" if windows else "LOCALAPPDATA"
+    env = {
+        selected_key: str(tmp_path / "cache"),
+        unused_key: "~",
+        "HOME": "~",
+        "USERPROFILE": "~",
+    }
+    assert DEFAULT_PATHS._default_molt_cache(environ=env) == tmp_path / "cache" / (
+        "Molt" if windows else "molt"
+    )

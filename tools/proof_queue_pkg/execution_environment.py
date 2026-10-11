@@ -551,7 +551,6 @@ def _capture_toolchains(
         raise ValueError("located Python selection identity is unavailable")
     proof_python = command_identity._python_identity(
         envelope,
-        exact,
         cwd=cwd,
         env=env,
         source_root=source_root,
@@ -564,7 +563,6 @@ def _capture_toolchains(
         )
         proof_python = command_identity._python_identity(
             synthetic_envelope,
-            [sys.executable, "-c", "raise SystemExit('identity-only')"],
             cwd=cwd,
             env=env,
             source_root=source_root,
@@ -788,32 +786,8 @@ def _locate_toolchain_watch_roots(
             raise ValueError(
                 f"proof Python toolchain locator is invalid: {exc}"
             ) from exc
-        executable_raw = located.get("selected_executable")
-        base_executable_raw = located.get("base_executable")
-        prefix_raw = located.get("prefix")
-        if (
-            not isinstance(executable_raw, str)
-            or not isinstance(base_executable_raw, str)
-            or not isinstance(prefix_raw, str)
-        ):
-            raise ValueError("proof Python toolchain locator has no executable chain")
-        executable = process_image_capture.custody_file(Path(executable_raw))
-        if executable is None:
-            raise ValueError(
-                "proof Python toolchain locator has no selected executable"
-            )
-        base_executable = process_image_capture.custody_path(
-            Path(base_executable_raw)
-        ).resolve(strict=True)
-        prefix = Path(prefix_raw).resolve(strict=True)
-        if not prefix.is_dir():
-            raise ValueError("proof Python toolchain locator has no environment prefix")
         policy_identities["python"] = {
-            "executable": str(executable),
-            "executable_sha256": command_identity._hash_file(executable),
-            "base_executable": str(base_executable),
-            "base_executable_sha256": command_identity._hash_file(base_executable),
-            "prefix": str(prefix),
+            **command_identity.python_selection(located),
             "external_roots": [],
             "location": located,
         }

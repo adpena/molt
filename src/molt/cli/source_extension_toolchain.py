@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.default_paths import executable_environment_value, expand_user_path
+
 from molt.native_target_shape import native_artifact_shape
 
 import hashlib
@@ -31,8 +33,6 @@ from molt.cli.llvm_wasi_tools import (
     llvm_tool_is_wasi_sdk,
 )
 from molt.toolchain_identity import (
-    executable_environment_value,
-    expand_user_path,
     resolve_explicit_tool_command,
 )
 from molt.cli.source_extension_target import (

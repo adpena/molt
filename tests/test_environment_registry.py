@@ -2,8 +2,9 @@
 
 Oracles: ``tomllib`` on the TOML authority (not the loader), the rendered
 text of the generator (byte identity), and hand-built payloads for the
-diagnostic. Retired names are taken from the registry at run time so this
-file never spells one.
+diagnostic. General retirement cases take names from the registry at run
+time. The removed hash-seed contract keeps its former names as independent
+diagnostic inputs.
 """
 
 from __future__ import annotations
@@ -224,8 +225,6 @@ def test_cli_entry_fails_closed_on_a_retired_name(monkeypatch, capsys) -> None:
     from molt.cli import entrypoint
 
     row = _retired_fixed_name()
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-    monkeypatch.setenv("MOLT_HASH_SEED", "0")
     monkeypatch.setenv(row.name, "1")
     monkeypatch.setattr(sys, "argv", ["molt", "--help"])
     assert entrypoint.main(build_fn=lambda *a, **k: 0) == 2
@@ -239,3 +238,27 @@ def test_run_context_rejects_a_retired_name_before_any_custody_work(tmp_path) ->
     context = RunContext(tmp_path)
     with pytest.raises(DxConfigError, match=row.replacement):
         context.canonical_env({row.name: "1", "PATH": os.environ.get("PATH", "")})
+
+
+@pytest.mark.parametrize("name", ["MOLT_HASH_SEED", "MOLT_HASH_SEED_APPLIED"])
+@pytest.mark.parametrize("value", ["", "0", "123", "off", "random", "1"])
+def test_retired_hash_seed_settings_fail_before_cli_dispatch(
+    name, value, monkeypatch, capsys
+):
+    # The former names are independent diagnostic inputs, not registry rows:
+    # this proves the removed restart contract cannot be silently reselected.
+    from molt.cli import entrypoint
+
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["molt", "--help"])
+    assert (
+        entrypoint.main(
+            build_fn=lambda *a, **k: pytest.fail("retired input reached build")
+        )
+        == 2
+    )
+    diagnostic = capsys.readouterr()
+    assert not diagnostic.out
+    assert name in diagnostic.err
+    assert "Remove this variable" in diagnostic.err
+    assert "no longer changes the host hash seed or restarts Python" in diagnostic.err

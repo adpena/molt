@@ -15,9 +15,9 @@ import sys
 import tomllib
 from typing import Iterator, Mapping, Sequence
 
+from molt.default_paths import executable_environment_value
 from molt.exact_json import string_keyed_mapping
 from molt.toolchain_identity import (
-    executable_environment_value,
     find_executable,
     resolve_executable,
     stable_executable_probe,

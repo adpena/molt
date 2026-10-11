@@ -8,6 +8,9 @@ Ensures that:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import os
 import sys
@@ -26,40 +29,123 @@ BASIC_DIR = ROOT / "tests" / "differential" / "basic"
 FRONTEND_INIT = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 
 
+def _production_ir_record(ir: dict) -> dict:
+    """Transport actual serializer bytes; never normalize the IR in the test."""
+    from molt.cli import cache_keys
+
+    functions = ir.get("functions")
+    assert isinstance(functions, list) and functions, "compiler returned no functions"
+    assert any(isinstance(fn, dict) and fn.get("ops") for fn in functions), (
+        "compiler returned no ops"
+    )
+    json_bytes = cache_keys._backend_ir_bytes(ir)
+    streamed = io.StringIO()
+    cache_keys._write_backend_ir_text(streamed, ir)
+    streamed_bytes = streamed.getvalue().encode("utf-8")
+    assert streamed_bytes == json_bytes
+    encoding, msgpack_bytes = cache_keys._backend_ir_format_and_bytes(ir)
+    assert encoding == "msgpack", "msgpack proof must not silently use JSON fallback"
+    payload = cache_keys._cache_backend_payload_ir(ir)
+    payload_bytes = cache_keys._cache_json_payload_bytes(payload)
+    digest = cache_keys._cache_payload_digest(payload)
+    assert hashlib.sha256(payload_bytes).hexdigest() == digest
+    return {
+        "kind": "ir",
+        "json": base64.b64encode(json_bytes).decode("ascii"),
+        "streamed_json": base64.b64encode(streamed_bytes).decode("ascii"),
+        "msgpack": base64.b64encode(msgpack_bytes).decode("ascii"),
+        "cache_payload": base64.b64encode(payload_bytes).decode("ascii"),
+        "cache_digest": digest,
+        "cache_key": cache_keys._cache_key_for_payload_ir(
+            payload,
+            target="native",
+            target_triple=None,
+            variant="dev",
+            schema_version=cache_keys._CACHE_KEY_SCHEMA_VERSION,
+            compiler_fingerprint="same-admitted-compiler",
+            tooling_fingerprint="same-tooling",
+        ),
+    }
+
+
+def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
+    assert result.returncode == 0, (
+        f"compilation process failed ({result.returncode}): {result.stderr[:2000]}"
+    )
+    assert not result.stderr.strip(), (
+        f"unexpected compiler stderr: {result.stderr[:2000]}"
+    )
+    assert result.stdout.strip(), "compilation process produced no record"
+    record = json.loads(result.stdout)
+    assert isinstance(record, dict), "compilation record must be an object"
+    if record.get("kind") == "unsupported":
+        assert allow_unsupported, f"expected IR, got {record}"
+        assert set(record) == {"kind", "exception", "message"}
+        assert record["exception"] == "CompatibilityError"
+        assert isinstance(record["message"], str) and record["message"]
+    else:
+        assert set(record) == {
+            "kind",
+            "json",
+            "streamed_json",
+            "msgpack",
+            "cache_payload",
+            "cache_digest",
+            "cache_key",
+        }
+        assert record["kind"] == "ir"
+        decoded = {
+            name: base64.b64decode(record[name], validate=True)
+            for name in ("json", "streamed_json", "msgpack", "cache_payload")
+        }
+        assert all(decoded.values())
+        assert decoded["json"] == decoded["streamed_json"]
+        ir = json.loads(decoded["json"])
+        assert isinstance(ir, dict) and ir.get("functions")
+        assert any(isinstance(fn, dict) and fn.get("ops") for fn in ir["functions"])
+        import msgpack
+
+        packed_ir = msgpack.unpackb(decoded["msgpack"], strict_map_key=False)
+        assert isinstance(packed_ir, dict) and packed_ir.get("functions")
+        assert (
+            hashlib.sha256(decoded["cache_payload"]).hexdigest()
+            == record["cache_digest"]
+        )
+        assert isinstance(record["cache_key"], str) and len(record["cache_key"]) == 64
+    return result.stdout
+
+
 def _compile_source_to_ir(source_text: str) -> str:
-    """Compile *source_text* to IR JSON string using the in-process compiler.
+    from molt.frontend import compile_to_tir
 
-    Returns the JSON string (not parsed) so we can do byte-level comparison.
-    """
-    # Import here so collection doesn't fail if molt isn't installed yet.
-    from molt.frontend import compile_to_tir  # type: ignore[import-untyped]
-
-    ir_dict = compile_to_tir(source_text)
-    return json.dumps(ir_dict, sort_keys=True, indent=2)
+    return json.dumps(_production_ir_record(compile_to_tir(source_text)))
 
 
-def _compile_source_to_ir_subprocess(
+def _compile_ir_subprocess_with_env(
     source_text: str,
     *,
+    parse_codec: str,
+    extra_env: dict[str, str],
     pythonhashseed: str = "0",
-    parse_codec: str = "msgpack",
+    allow_unsupported: bool = False,
 ) -> str:
-    """Compile via a subprocess to ensure full process isolation."""
-    script = (
-        "import json, sys; "
-        "sys.path.insert(0, {src!r}); "
-        "from molt.frontend import compile_to_tir; "
-        "ir = compile_to_tir(sys.stdin.read(), parse_codec={codec!r}); "
-        "print(json.dumps(ir, sort_keys=True, indent=2))"
-    ).format(src=str(ROOT / "src"), codec=parse_codec)
-
-    env = os.environ.copy()
-    # ``pythonhashseed="random"`` exercises the *unpinned* path: a fresh,
-    # process-chosen hash seed on every run.  This is the only configuration
-    # that catches a hash-order leak that happens to agree across a fixed
-    # seed set (the #34 async-local-offset bug evaded a fixed-seed-only test).
-    env["PYTHONHASHSEED"] = pythonhashseed
-
+    # Imports stay outside the typed compiler-error boundary: missing dependencies,
+    # crashes, SystemExit and serializer failures must never become stable outcomes.
+    script = f"""
+import json, sys
+sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
+from molt.frontend import compile_to_tir, CompatibilityError
+from tests.determinism.test_ir_determinism import _production_ir_record
+source = sys.stdin.read()
+try:
+    ir = compile_to_tir(source, parse_codec={parse_codec!r})
+except CompatibilityError as exc:
+    record = {{'kind': 'unsupported', 'exception': 'CompatibilityError', 'message': str(exc)}}
+else:
+    record = _production_ir_record(ir)
+print(json.dumps(record))
+"""
+    env = {**os.environ, "PYTHONHASHSEED": pythonhashseed, **extra_env}
     result = run_native_test_process(
         [sys.executable, "-c", script],
         input=source_text,
@@ -68,55 +154,87 @@ def _compile_source_to_ir_subprocess(
         env=env,
         timeout=60,
     )
-    if result.returncode != 0:
-        pytest.fail(
-            f"Subprocess compilation failed (rc={result.returncode}):\n{result.stderr[:2000]}"
-        )
-    return result.stdout
+    return _decode_compilation_result(result, allow_unsupported=allow_unsupported)
+
+
+def _compile_source_to_ir_subprocess(
+    source_text: str, *, pythonhashseed: str = "0", parse_codec: str = "msgpack"
+) -> str:
+    return _compile_ir_subprocess_with_env(
+        source_text,
+        parse_codec=parse_codec,
+        extra_env={},
+        pythonhashseed=pythonhashseed,
+    )
 
 
 def _compile_outcome_subprocess(
-    source_text: str,
-    *,
-    pythonhashseed: str,
-    parse_codec: str,
+    source_text: str, *, pythonhashseed: str, parse_codec: str
 ) -> str:
-    """Return the deterministic *outcome* of compiling, success or failure.
-
-    On success this is the canonical IR JSON.  On a compile error it is a
-    normalized ``COMPILE_ERROR::<ExceptionType>::<message>`` string.  Either
-    way the outcome must be byte-identical across hash seeds — a program that
-    raises the *same* CompatibilityError on every seed is still deterministic;
-    only an outcome that *varies* with the seed is a leak.  (The plain IR
-    helper above ``pytest.fail``s on any error, which is right for programs
-    that are expected to compile but wrong for asserting determinism over a
-    set that may include legitimately-unsupported constructs.)
-    """
-    wrapper = (
-        "import json, sys\n"
-        "sys.path.insert(0, {src!r})\n"
-        "src = sys.stdin.read()\n"
-        "try:\n"
-        "    from molt.frontend import compile_to_tir\n"
-        "    ir = compile_to_tir(src, parse_codec={codec!r})\n"
-        "    sys.stdout.write('IR::' + json.dumps(ir, sort_keys=True))\n"
-        "except BaseException as exc:\n"
-        "    sys.stdout.write("
-        "'COMPILE_ERROR::' + type(exc).__name__ + '::' + str(exc))\n"
-    ).format(src=str(ROOT / "src"), codec=parse_codec)
-
-    env = os.environ.copy()
-    env["PYTHONHASHSEED"] = pythonhashseed
-
-    result = run_native_test_process(
-        [sys.executable, "-c", wrapper],
-        input=source_text,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
+    # Existing unsupported corpus coordinates prove typed diagnostic determinism;
+    # the finite supported witness below must produce real IR for every seed.
+    return _compile_ir_subprocess_with_env(
+        source_text,
+        parse_codec=parse_codec,
+        extra_env={},
+        pythonhashseed=pythonhashseed,
+        allow_unsupported=True,
     )
-    return result.stdout
+
+
+@pytest.mark.parametrize(
+    "status,stdout,stderr",
+    [
+        (9, "", "crashed"),
+        (0, "", ""),
+        (0, "not-json", ""),
+        (0, "{}", ""),
+        (0, "[]", ""),
+        (
+            0,
+            '{"kind":"unsupported","exception":"ImportError","message":"missing compiler"}',
+            "",
+        ),
+        (
+            0,
+            '{"kind":"unsupported","exception":"CompatibilityError","message":"unsupported"}',
+            "unexpected warning",
+        ),
+        (0, '{"kind":"ir"}', ""),
+    ],
+)
+def test_determinism_child_failure_cannot_be_a_stable_outcome(status, stdout, stderr):
+    from types import SimpleNamespace
+
+    with pytest.raises((AssertionError, ValueError)):
+        _decode_compilation_result(
+            SimpleNamespace(returncode=status, stdout=stdout, stderr=stderr),
+            allow_unsupported=True,
+        )
+
+
+@pytest.mark.parametrize("parse_codec", ["json", "msgpack"])
+def test_production_serializers_and_cache_payloads_ignore_host_seed(parse_codec):
+    source = """
+async def spill(x):
+    a, b, *tail = [x, x + 1, x + 2]
+    await x
+    return a + b + tail[0]
+def choose(value):
+    match value:
+        case {'left': left, 'right': right} if left < right:
+            return [captured := item + left for item in range(right)]
+        case _:
+            return []
+print(choose({'left': 1, 'right': 3}))
+"""
+    records = [
+        _compile_source_to_ir_subprocess(
+            source, pythonhashseed=seed, parse_codec=parse_codec
+        )
+        for seed in ("0", "1", "42", "12345", "random", "random")
+    ]
+    assert all(record == records[0] for record in records[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +359,7 @@ def test_ir_determinism_cross_process(program: Path) -> None:
 def test_ir_hashseed_independence(program: Path) -> None:
     """Different PYTHONHASHSEED values must not change compiler IR output."""
     source = program.read_text(encoding="utf-8")
-    seeds = ["0", "42", "12345", "99999"]
+    seeds = ["0", "42", "12345", "99999", "random", "random"]
     ir_results = []
     for seed in seeds:
         ir = _compile_source_to_ir_subprocess(source, pythonhashseed=seed)
@@ -276,7 +394,7 @@ def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
     happens to agree (which is exactly how #34 evaded the original test).
     """
     source = program.read_text(encoding="utf-8")
-    seeds = ["0", "1", "42", "12345", str(_random_seed()), "random"]
+    seeds = ["0", "1", "42", "12345", str(_random_seed()), "random", "random"]
     reference = _compile_outcome_subprocess(
         source, pythonhashseed=seeds[0], parse_codec=parse_codec
     )
@@ -364,43 +482,6 @@ def _midend_walltime_sensitive_programs() -> list[Path]:
 MIDEND_WALLTIME_SENSITIVE_PROGRAMS = _midend_walltime_sensitive_programs()
 
 
-def _compile_ir_subprocess_with_env(
-    source_text: str,
-    *,
-    parse_codec: str,
-    extra_env: dict[str, str],
-    pythonhashseed: str = "0",
-) -> str:
-    """Compile in a subprocess with *extra_env* applied; return canonical IR
-    (or a normalized ``COMPILE_ERROR::`` string)."""
-    wrapper = (
-        "import json, sys\n"
-        "sys.path.insert(0, {src!r})\n"
-        "src = sys.stdin.read()\n"
-        "try:\n"
-        "    from molt.frontend import compile_to_tir\n"
-        "    ir = compile_to_tir(src, parse_codec={codec!r})\n"
-        "    sys.stdout.write('IR::' + json.dumps(ir, sort_keys=True))\n"
-        "except BaseException as exc:\n"
-        "    sys.stdout.write("
-        "'COMPILE_ERROR::' + type(exc).__name__ + '::' + str(exc))\n"
-    ).format(src=str(ROOT / "src"), codec=parse_codec)
-
-    env = os.environ.copy()
-    env["PYTHONHASHSEED"] = pythonhashseed
-    env.update(extra_env)
-
-    result = run_native_test_process(
-        [sys.executable, "-c", wrapper],
-        input=source_text,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
-    )
-    return result.stdout
-
-
 # The spec's hash-seed sweep set for #73, plus the unpinned process-random
 # path.  The fixed seeds pin the regression to attributable values; ``random``
 # exercises a fresh process-chosen seed (the configuration that caught the #34
@@ -459,10 +540,6 @@ def test_midend_ir_independent_of_walltime_budget(
     source = program.read_text(encoding="utf-8")
     reference = _compile_ir_subprocess_with_env(
         source, parse_codec=parse_codec, extra_env={}, pythonhashseed="0"
-    )
-    assert not reference.startswith("COMPILE_ERROR::"), (
-        f"{program.name} [{parse_codec}] unexpectedly failed to compile: "
-        f"{reference[:300]}"
     )
 
     def _check(seed: str, budget: str | None) -> None:

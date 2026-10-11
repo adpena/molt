@@ -1,4 +1,5 @@
 import ast
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,12 @@ def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
     monkeypatch.setattr(
         target_python,
         "sys",
-        SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)),
+        SimpleNamespace(
+            version_info=namedtuple(
+                "HostVersion", "major minor micro releaselevel serial"
+            )(3, 12, 15, "final", 0),
+            implementation=SimpleNamespace(name="cpython"),
+        ),
     )
     with pytest.raises(SyntaxError) as failure:
         target_python._parse_source_for_target(
@@ -253,11 +259,13 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         "_wrapper_build_dependency_fingerprints",
         dependency_fingerprints,
     )
-    monkeypatch.setattr(
-        cli_wrapper_build,
-        "_cache_fingerprint",
-        lambda *, env, backend_features: "runtime",
-    )
+
+    def runtime_fingerprint(*, env, backend_features):
+        assert env == {}
+        assert backend_features == ("native-backend",)
+        return "runtime"
+
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", runtime_fingerprint)
     monkeypatch.setattr(
         cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "frontend"
     )
@@ -354,3 +362,80 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         if op.get("kind") == "call" and op.get("s_value") == "molt_sys_set_version_info"
     ]
     assert len(set_version_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "version,supported",
+    [
+        ((3, 11, 9), False),
+        ((3, 12, 0), True),
+        ((3, 13, 0), True),
+        ((3, 14, 0), False),
+        ((3, 14, 1), True),
+        ((3, 14, 8), True),
+        ((3, 15, 0), True),
+    ],
+)
+def test_compiler_host_capability_matches_package_admission(version, supported):
+    import tomllib
+    from packaging.specifiers import SpecifierSet
+    from molt.target_python import (
+        frontend_python_supported,
+        _parse_target_python_version,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    spec = metadata["project"]["requires-python"]
+    assert SpecifierSet(spec).contains(".".join(map(str, version))) is supported
+    assert frontend_python_supported(version, implementation="cpython") is supported
+    assert not frontend_python_supported(version, implementation="pypy")
+    # The excluded compiler host patch does not remove the Python 3.14 target.
+    assert _parse_target_python_version("3.14").feature_version == (3, 14)
+
+
+def test_defective_compiler_host_refuses_before_user_source_parse(monkeypatch):
+    from types import SimpleNamespace
+    import molt.target_python as target_python
+    from molt.frontend import compile_to_tir, SimpleTIRGenerator
+
+    monkeypatch.setattr(
+        target_python,
+        "sys",
+        SimpleNamespace(
+            version_info=(3, 14, 0),
+            implementation=SimpleNamespace(name="cpython"),
+        ),
+    )
+    # Invalid source would raise SyntaxError if parsing were reached.
+    for compile_source in (
+        lambda: compile_to_tir("this is not valid Python!"),
+        lambda: target_python._parse_source_for_target(
+            "this is not valid Python!",
+            target_python=target_python.TargetPythonVersion(3, 12, 0),
+        ),
+        SimpleTIRGenerator,
+    ):
+        with pytest.raises(RuntimeError, match=r"3\.14\.1\+"):
+            compile_source()
+
+
+def test_defective_compiler_host_cli_refuses_before_dispatch(monkeypatch, capsys):
+    from types import SimpleNamespace
+    import molt.target_python as target_python
+    from molt.cli import entrypoint
+
+    monkeypatch.setattr(
+        target_python,
+        "sys",
+        SimpleNamespace(
+            version_info=(3, 14, 0), implementation=SimpleNamespace(name="cpython")
+        ),
+    )
+
+    def unexpected_dispatch():
+        raise AssertionError("unsupported host entered argument dispatch")
+
+    monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", unexpected_dispatch)
+    assert entrypoint.main(build_fn=lambda **kwargs: 0) == 2
+    assert "3.14.1+" in capsys.readouterr().err

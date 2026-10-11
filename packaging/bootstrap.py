@@ -37,7 +37,7 @@ def _release_inputs(root: Path) -> tuple[Path, str]:
     inputs = {entry["path"]: entry for entry in manifest["files"]}
     identity = hashlib.sha256(json.dumps(manifest["git"], sort_keys=True).encode())
     home = None
-    for name in ("pyproject.toml", "uv.lock", "src/molt/cli/default_paths.py"):
+    for name in ("pyproject.toml", "uv.lock", "src/molt/default_paths.py"):
         path = root / "source" / name
         record = inputs[name]
         content = path.read_bytes()
@@ -45,8 +45,8 @@ def _release_inputs(root: Path) -> tuple[Path, str]:
         if (len(content), digest) != (record["size"], record["sha256"]):
             raise SystemExit(f"molt: bundled {name} differs from the release manifest")
         identity.update(bytes.fromhex(digest))
-        if name == "src/molt/cli/default_paths.py":
-            # Reuse the CLI's stdlib-only path authority without importing the
+        if name == "src/molt/default_paths.py":
+            # Reuse the shared stdlib-only path authority without importing the
             # CLI or running an unverified on-disk copy of this module.
             namespace = {"__name__": "molt_bootstrap_default_paths"}
             exec(compile(content, str(path), "exec"), namespace)

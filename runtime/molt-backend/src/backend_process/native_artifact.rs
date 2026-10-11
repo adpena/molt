@@ -1,9 +1,14 @@
 /// Backend request paths are Unicode strings. An unrepresentable environment
 /// path is an admission error, never an absent extraction request.
+#[cfg(any(
+    feature = "native-backend",
+    all(any(unix, test), feature = "wasm-backend")
+))]
 pub(crate) fn shared_stdlib_archive_path_from_env() -> std::io::Result<Option<String>> {
     decode_shared_stdlib_archive_path(std::env::var_os("MOLT_STDLIB_OBJ"))
 }
 
+#[cfg(any(test, feature = "native-backend", all(unix, feature = "wasm-backend")))]
 fn decode_shared_stdlib_archive_path(
     value: Option<std::ffi::OsString>,
 ) -> std::io::Result<Option<String>> {
@@ -26,6 +31,7 @@ pub(crate) enum NativeArtifactKind {
 impl NativeArtifactKind {
     /// Object transport owns the complete graph; shared extraction is an
     /// archive-only contract, including warm-cache and probe-only requests.
+    #[cfg(any(test, feature = "native-backend", all(unix, feature = "wasm-backend")))]
     pub(crate) fn validate_shared_stdlib(self, enabled: bool) -> Result<(), &'static str> {
         if self == Self::Object && enabled {
             return Err(
@@ -35,10 +41,12 @@ impl NativeArtifactKind {
         Ok(())
     }
 
-    // Daemon protocol/cache-key consumers compile on Unix, and their tests
-    // compile on every host. Match that caller boundary rather than removing
-    // an API solely because a normal Windows build cannot observe its caller.
-    #[cfg(any(unix, test))]
+    // Daemon cache-key consumers require a compiled backend on Unix; their
+    // protocol tests compile on every host, including feature-empty builds.
+    #[cfg(any(
+        test,
+        all(unix, any(feature = "native-backend", feature = "wasm-backend"))
+    ))]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Object => "object",

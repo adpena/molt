@@ -42,6 +42,30 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
     version.short: version for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
 }
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
+FRONTEND_PYTHON_REQUIREMENT = "CPython 3.12+ (Python 3.14 requires 3.14.1+)"
+
+
+def frontend_python_supported(
+    version: tuple[int, int, int], *, implementation: str
+) -> bool:
+    # CPython 3.14.0 emits PEP765 compiler warnings in AST-only parsing,
+    # independently of the requested target version. 3.14.1 fixes that defect.
+    # Reject the affected host rather than altering process-wide warning filters.
+    return (
+        implementation == "cpython" and version >= (3, 12, 0) and version != (3, 14, 0)
+    )
+
+
+def require_frontend_python() -> None:
+    if not frontend_python_supported(
+        sys.version_info[:3], implementation=sys.implementation.name
+    ):
+        raise RuntimeError(
+            f"Molt compilation requires {FRONTEND_PYTHON_REQUIREMENT}; "
+            "select a maintained CPython patch release and rerun setup"
+        )
+
+
 # Single authority for the set of supported target-Python short versions
 # ("3.12", "3.13", ...). This is the `TargetPythonVersion` authority; the
 # stdlib-coverage tooling (tools/stdlib_module_union.py baseline and
@@ -230,6 +254,7 @@ def _parse_source_for_target(
     filename: str = "<unknown>",
     target_python: TargetPythonVersion,
 ) -> ast.Module:
+    require_frontend_python()
     frontend_version = (sys.version_info.major, sys.version_info.minor)
     if frontend_version < target_python.feature_version:
         raise SyntaxError(

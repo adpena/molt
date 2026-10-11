@@ -78,7 +78,6 @@ class CompileWarningMixin(GeneratorMixinBase):
             if src_line:
                 self._deferred_runtime_warnings.append(f"  {src_line}")
 
-        scope_barriers = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         invert_bool_msg = (
             "Bitwise inversion '~' on bool is deprecated and will be "
             "removed in Python 3.16. This returns the bitwise inversion "
@@ -88,10 +87,9 @@ class CompileWarningMixin(GeneratorMixinBase):
             "inversion of the underlying int."
         )
 
-        stack: list[tuple[ast.AST, bool, bool]] = [(module_node, False, False)]
+        stack: list[ast.AST] = [module_node]
         while stack:
-            node, in_finally, finally_checks_blocked = stack.pop()
-
+            node = stack.pop()
             if (
                 isinstance(node, ast.UnaryOp)
                 and isinstance(node.op, ast.Invert)
@@ -104,51 +102,52 @@ class CompileWarningMixin(GeneratorMixinBase):
                     invert_bool_msg,
                 )
 
-            if in_finally and not finally_checks_blocked:
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+    def _emit_finally_transfer_warnings(self, module_node: ast.Module) -> None:
+        """Emit CPython 3.14 PEP765 diagnostics once, before source pruning."""
+        if self.target_python < (3, 14):
+            return
+        # CPython ast_preprocess uses the innermost function, loop-body or
+        # finally context. Loop else retains its enclosing context. A function's
+        # own finally replaces its function context; classes introduce none.
+        stack: list[tuple[ast.AST, tuple[bool, bool, bool]]] = [
+            (module_node, (False, False, False))
+        ]
+        while stack:
+            node, context = stack.pop()
+            in_finally, in_function, in_loop = context
+            if in_finally:
                 warn_msg = None
-                if isinstance(node, ast.Return):
+                if isinstance(node, ast.Return) and not in_function:
                     warn_msg = "'return' in a 'finally' block"
-                elif isinstance(node, ast.Break):
+                elif isinstance(node, ast.Break) and not in_loop:
                     warn_msg = "'break' in a 'finally' block"
-                elif isinstance(node, ast.Continue):
+                elif isinstance(node, ast.Continue) and not in_loop:
                     warn_msg = "'continue' in a 'finally' block"
                 if warn_msg is not None:
-                    record_warning(
-                        getattr(node, "lineno", 0),
-                        "SyntaxWarning",
-                        warn_msg,
-                    )
+                    self._emit_syntax_warning(node, warn_msg)
 
-            child_finally_checks_blocked = finally_checks_blocked or isinstance(
-                node, scope_barriers
-            )
-            child_entries: list[tuple[ast.AST, bool, bool]] = []
-            if isinstance(node, ast.Try):
-                for field_name, value in ast.iter_fields(node):
-                    if isinstance(value, list):
-                        children = [item for item in value if isinstance(item, ast.AST)]
-                    elif isinstance(value, ast.AST):
-                        children = [value]
-                    else:
-                        continue
-                    child_in_finally = in_finally or field_name == "finalbody"
-                    for child in children:
-                        child_entries.append(
-                            (
-                                child,
-                                child_in_finally,
-                                child_finally_checks_blocked,
-                            )
-                        )
-            else:
-                for child in ast.iter_child_nodes(node):
-                    child_entries.append(
-                        (
-                            child,
-                            in_finally,
-                            child_finally_checks_blocked,
-                        )
+            child_entries: list[tuple[ast.AST, tuple[bool, bool, bool]]] = []
+            for field_name, value in ast.iter_fields(node):
+                child_context = context
+                if field_name == "body":
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        child_context = (False, True, False)
+                    elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                        child_context = (False, False, True)
+                elif field_name == "finalbody" and isinstance(
+                    node, (ast.Try, ast.TryStar)
+                ):
+                    child_context = (True, False, False)
+                if isinstance(value, list):
+                    child_entries.extend(
+                        (child, child_context)
+                        for child in value
+                        if isinstance(child, ast.AST)
                     )
+                elif isinstance(value, ast.AST):
+                    child_entries.append((value, child_context))
             stack.extend(reversed(child_entries))
 
     def _emit_deferred_warnings(self) -> None:
@@ -167,20 +166,42 @@ class CompileWarningMixin(GeneratorMixinBase):
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
         """Emit a SyntaxWarning to stderr, matching CPython's format.
 
-        Deduplicated: each (file, line, message) triple is emitted at most
-        once per process, matching CPython's behaviour.
+        The single source pass owns emission, including multiple transfers on
+        one line. A warnings-as-errors filter becomes SyntaxError, as in
+        CPython's compiler diagnostic authority.
         """
         import warnings
 
         lineno = getattr(node, "lineno", 0)
         source = self.source_path or "<string>"
-        key = (source, lineno, message)
-        if key in self._emitted_syntax_warnings:
-            return
-        self._emitted_syntax_warnings.add(key)
-        warnings.warn_explicit(
-            message,
-            SyntaxWarning,
-            source,
-            lineno,
-        )
+        try:
+            warnings.warn_explicit(message, SyntaxWarning, source, lineno)
+        except SyntaxWarning:
+            import tokenize
+
+            # CPython reads the current encoded source file for SyntaxError;
+            # linecache may contain stale or entirely virtual source text.
+            text = None
+            try:
+                with tokenize.open(source) as stream:
+                    text = next(
+                        (
+                            line
+                            for index, line in enumerate(stream, 1)
+                            if index == lineno
+                        ),
+                        None,
+                    )
+            except (OSError, UnicodeError, LookupError, SyntaxError):
+                pass
+            raise SyntaxError(
+                message,
+                (
+                    source,
+                    lineno,
+                    getattr(node, "col_offset", 0) + 1,
+                    text,
+                    getattr(node, "end_lineno", lineno),
+                    getattr(node, "end_col_offset", 0) + 1,
+                ),
+            ) from None

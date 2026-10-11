@@ -195,7 +195,7 @@ def prefer_tool_release_prefixes(
 
     A lane that declares a tool the manifest pins (wasm-tools today) must run
     exactly that release, never whatever the ambient PATH happens to carry.
-    The release is provisioned under the checkout custody toolchain root
+    The release is provisioned under the selected child toolchain root
     (idempotent, digest-verified, fail-closed) before toolchains are located,
     so the version policy sees the pinned binary first.
     """
@@ -207,9 +207,11 @@ def prefer_tool_release_prefixes(
     if not names:
         return resolved, {}
     from molt import tool_releases
-    from molt.dx import checkout_custody
+    from molt.dx import canonical_toolchain_root
 
-    toolchain_root = checkout_custody(Path(cwd), dict(resolved)).toolchain_root
+    toolchain_root = canonical_toolchain_root(
+        state.ROOT, resolved, require_exists=False, cwd=Path(cwd)
+    )
     prefixes: dict[str, str] = {}
     for name in names:
         release = tool_releases.tool_release(name, state.ROOT)
@@ -252,12 +254,12 @@ def prefer_canonical_llvm_prefix(
         # Select and later attest the real SDK entrypoint. Never copy it into a
         # PATH lane or promote the WebAssembly-only SDK's native-looking tools.
         resolved["MOLT_WASM_LD"] = str(
-            resolve_wasi_sdk_tool(state.ROOT, "wasm-ld", environ=resolved)
+            resolve_wasi_sdk_tool(state.ROOT, "wasm-ld", environ=resolved, cwd=cwd)
         )
     if not llvm_tools - {"wasm-ld"}:
         return resolved, None
 
-    discovery = discover_llvm_toolchain(Path(cwd), environ=dict(resolved))
+    discovery = discover_llvm_toolchain(state.ROOT, environ=dict(resolved), cwd=cwd)
     if discovery is None:
         return resolved, None
     bin_dir = str((Path(discovery.prefix) / "bin").resolve())
@@ -825,6 +827,9 @@ def execute_guarded_request(request_path: Path) -> int:
                 "toolchain capture contains paths outside armed custody: "
                 + ", ".join(uncovered[:3])
             )
+        monitor.admit_uv_environment_locks(
+            [execution_custody.captured_uv_environment_locks(toolchains_full)]
+        )
         child_policy = execution_custody.child_policy(
             envelope,
             toolchains_full,

@@ -722,6 +722,23 @@ def persistent_daemon_paths_allowed(environ: Mapping[str, str], paths) -> bool:
         return False
 
 
+def _guardian_import_path(inherited: str | None) -> str:
+    """Put the owner's own `molt` and `tools` roots first on the guardian path.
+
+    The guardian runs from the guest project root, so neither its working
+    directory nor a relative inherited entry can find the custody modules the
+    owner loaded; the lease's source digest binds exactly those files.
+    """
+    from tools.memory_guard_core import process_model
+
+    roots = [
+        str(Path(__file__).resolve().parents[1]),
+        str(Path(process_model.__file__).resolve().parents[2]),
+    ]
+    entries = [entry for entry in (inherited or "").split(os.pathsep) if entry]
+    return os.pathsep.join(dict.fromkeys([*roots, *entries]))
+
+
 def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
     """A suite-owned daemon never inherits a command's scratch or guard token."""
     result = dict(environ)
@@ -792,6 +809,7 @@ class SuiteDaemonLease:
         try:
             path = directory / "lease.json"
             env = persistent_daemon_env(environ)
+            env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))
             with (directory / "guardian.log").open("ab") as log:
                 guardian = subprocess.Popen(
                     [

@@ -14,6 +14,7 @@ use std::path::Path;
 
 mod backend_process;
 mod fact_graph_emit;
+mod native_artifact_facts;
 use backend_process::*;
 use fact_graph_emit::{FactGraphEmitRequest, emit_fact_graph_for_ir};
 
@@ -100,7 +101,7 @@ fn publish_wasm_link_facts_atomically(
     layout: Option<molt_wasm_facts::CallableTableLayout>,
     role: molt_wasm_facts::CallableTableArtifactRole,
 ) -> Result<molt_wasm_facts::WasmLinkFacts, String> {
-    let file = std::fs::File::open(input)
+    let file = backend_process::open_regular_artifact(input)
         .map_err(|error| format!("cannot open wasm facts input {}: {error}", input.display()))?;
     let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
         .map_err(|error| format!("cannot map wasm facts input {}: {error}", input.display()))?;
@@ -141,6 +142,10 @@ fn main() -> io::Result<()> {
     install_process_memory_guard();
 
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--scan-native-artifact-facts") {
+        return native_artifact_facts::emit_cli(&args[2..]);
+    }
+
     if args.get(1).map(String::as_str) == Some("--native-codegen-identity") {
         #[cfg(feature = "native-backend")]
         {
@@ -180,7 +185,7 @@ fn main() -> io::Result<()> {
                             "--scan-wasm-link-facts accepts exactly one wasm path".to_string()
                         );
                     }
-                    let file = std::fs::File::open(path)
+                    let file = backend_process::open_regular_artifact(Path::new(path))
                         .map_err(|error| format!("cannot open wasm facts input {path}: {error}"))?;
                     // The linker hands this command an immutable finalized artifact and
                     // keeps the file descriptor alive for the scan. A read-only mapping

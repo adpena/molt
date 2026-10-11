@@ -186,7 +186,7 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     def forbidden(*args, **kwargs):
         pytest.fail("text output must not reach daemon lease creation or transport")
 
-    monkeypatch.setattr(backend_execution, "_write_backend_daemon_ir_lease", forbidden)
+    monkeypatch.setattr(backend_execution, "_write_backend_ir_lease", forbidden)
     monkeypatch.setattr(backend_execution, "_backend_daemon_request_bytes", forbidden)
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
         ir={"functions": []},
@@ -329,3 +329,21 @@ def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
     )
     assert issue is not None
     assert "missing partition definitions: molt_sys_helper" in issue
+
+
+def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    good = backend_execution._write_backend_ir_lease(
+        tmp_path / "project", {"functions": []}
+    )
+    lease_dir = good.parent
+    assert json.loads(good.read_text(encoding="utf-8")) == {"functions": []}
+
+    class Unencodable:
+        pass
+
+    # The first function streams out before the encoder meets the bad value.
+    ir = {"functions": [{"name": "main"}, {"name": Unencodable()}]}
+    with pytest.raises(TypeError):
+        backend_execution._write_backend_ir_lease(tmp_path / "project", ir)
+    assert sorted(lease_dir.iterdir()) == [good]

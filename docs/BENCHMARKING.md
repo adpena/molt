@@ -879,13 +879,13 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
 - Prefer `molt build --build-profile dev` for build-only iteration loops, and `--profile dev` for `molt run/compare/diff/test`; reserve release profiles for release gates and perf publication.
 - `--build-profile dev` routes build mode to Cargo `dev` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
-- Keep cache keys deterministic by default (`PYTHONHASHSEED=0` is enforced by CLI). Override via `MOLT_HASH_SEED=<value>` only when explicitly testing hash-seed sensitivity.
-- For whole-CLI `cProfile` captures, set `PYTHONHASHSEED` in the launching
-  environment to the selected `MOLT_HASH_SEED` (normally `0`) before Python
-  starts. Otherwise the CLI's deterministic-startup restart can profile a
-  waiting parent and overwrite the child's statistics. Use process-specific
-  output paths when intentionally profiling more than one interpreter; report
-  cache state and instrumentation overhead separately from normal build time.
+- Compiler IR and backend cache payload identities do not depend on the host
+  hash seed. The CLI never restarts Python to change the seed. Set ordinary
+  `PYTHONHASHSEED` before the interpreter starts only to control a benchmark
+  experiment.
+- For whole-CLI `cProfile` captures, use process-specific output paths when
+  you profile more than one interpreter. Report cache state and
+  instrumentation overhead separately from normal build time.
 - Enable Rust compile caching:
   - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
   - `sccache -s` to inspect hit rates

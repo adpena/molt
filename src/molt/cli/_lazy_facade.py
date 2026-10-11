@@ -653,11 +653,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_execution",
         "_write_backend_daemon_identity",
     ),
-    "_write_backend_daemon_ir_lease": (
-        "backend_execution",
-        "_write_backend_daemon_ir_lease",
-    ),
-    "_write_backend_ir_json_file": ("backend_execution", "_write_backend_ir_json_file"),
     "_write_backend_ir_lease": ("backend_execution", "_write_backend_ir_lease"),
     "_write_runtime_fingerprint": (
         "runtime_fingerprints",

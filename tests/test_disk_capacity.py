@@ -295,6 +295,7 @@ _CARGO_ADMISSION_EXCEPTIONS = {
     "tools/perf_calibration.py": "process names, not an argv",
     "tools/perf_scoreboard.py": "process names, not an argv",
     "tools/proof_queue_pkg/cargo_output_layout.py": "tool names, not an argv",
+    "tools/proof_queue_pkg/toolchain_capture.py": "a toolchains declaration, not an argv",
     "tools/release/verify_consumer.py": "tool names, not an argv",
 }
 

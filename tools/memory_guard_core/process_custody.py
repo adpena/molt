@@ -333,7 +333,7 @@ def termination_report_dispositions(
                 or action.result.startswith("skipped_")
             ):
                 incomplete.append(action)
-            elif action.result in {"still_live", "sent"}:
+            elif action.result in {"still_live", "sent", "refused"}:
                 if not later_exit and not (
                     action.result == "still_live" and later_root_handle
                 ):
@@ -631,15 +631,29 @@ class ChildExecutionClock:
     timestamp; scheduler wake latency remains part of the measured interval.
     POSIX no-rlimit launch begins immediately before Popen; an rlimit child's
     own start pipe replaces that boundary. Windows starts at the resume syscall.
+
+    ``exit_census`` is an optional process-table observation taken after the
+    child exits and before its reap. Until that reap the child's PID stays
+    reserved, and with it the process group and session the child leads, so
+    the census sees exactly the live members of that group.
     """
 
-    def __init__(self, proc, started: float):
+    def __init__(
+        self,
+        proc,
+        started: float,
+        *,
+        exit_census: Callable[[], Mapping[int, ProcessSample]] | None = None,
+    ):
         self.proc = proc
         self.original_wait = proc.wait
         self.started = started
         self.finished = None
         self.usage = None
         self.error = None
+        self.exit_census = exit_census
+        self.exit_census_samples: Mapping[int, ProcessSample] | None = None
+        self.exit_census_error: str | None = None
         self.done = threading.Event()
         self.usage_consumed = False
         self.posix_waitid = os.name == "posix" and all(
@@ -692,6 +706,7 @@ class ChildExecutionClock:
                     getattr(os, "WEXITED") | getattr(os, "WNOWAIT"),
                 )
                 finished = time.perf_counter()
+                self._take_exit_census()
                 with self.reap_signal_lock:
                     try:
                         _, status, usage = getattr(os, "wait4")(
@@ -767,8 +782,8 @@ class ChildExecutionClock:
     def _wait_kqueue_exit(self):
         # CPython 3.12 macOS has kqueue but no os.waitid. Kqueue observes exit
         # without reaping, retaining the child's PID reservation until commit.
-        if self._commit_reserved_exit(finished=None):
-            return
+        # A child that already exited answers the attach with ESRCH, which is
+        # the same exit evidence, so no reap ever precedes the exit census.
         queue = getattr(select, "kqueue")()
         try:
             event = getattr(select, "kevent")(
@@ -796,6 +811,7 @@ class ChildExecutionClock:
                         OSError(code, f"EVFILT_PROC registration failed: errno {code}")
                     )
                     return
+            self._take_exit_census()
             self._commit_exited_child(finished=finished)
         finally:
             queue.close()
@@ -804,11 +820,25 @@ class ChildExecutionClock:
         if exc.errno == errno.ESRCH:
             # The unreaped child keeps its PID, so ESRCH means it has exited
             # or is exiting: certain exit evidence.
-            self._commit_exited_child(finished=None)
+            finished = time.perf_counter()
+            self._take_exit_census()
+            self._commit_exited_child(finished=finished)
             return
+        # Exit is uncertain, so no census: a reap here may take the PID
+        # reservation with it, and closure stays with parentage custody.
         if self._commit_reserved_exit(finished=None):
             return
         raise exc
+
+    def _take_exit_census(self) -> None:
+        """Observe the process table while the exited child is still unreaped."""
+        if self.exit_census is None:
+            return
+        try:
+            self.exit_census_samples = self.exit_census()
+        except (KeyboardInterrupt, Exception) as exc:
+            # The census is evidence, never a precondition: the reap goes on.
+            self.exit_census_error = f"{type(exc).__name__}: {exc}"
 
     def _internal_poll(self, *_args, **_kwargs):
         # Popen.__del__ and subprocess._cleanup call this during collection
@@ -860,6 +890,46 @@ def _take_child_exit_usage(
         clock.usage_consumed = True
         return clock.usage
     return None
+
+
+def reserved_group_exit_census(
+    pgid: int,
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+) -> Mapping[int, ProcessSample]:
+    """Observe the exited root's group while the caller holds the root unreaped.
+
+    A census can only admit members a signal could reach. When the kernel
+    finds the group absent (ESRCH) or refuses the group probe (EPERM: XNU
+    answers it while every member exits or awaits its reap, so the exiting
+    root alone refuses), no such member exists and the census is empty,
+    without the cost of a process-table read. Otherwise ``sampler`` observes.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None:
+        try:
+            killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return {}
+        except OSError:
+            pass
+    return sampler()
+
+
+def take_child_exit_census(
+    proc: subprocess.Popen[str] | subprocess.Popen[bytes],
+) -> tuple[Mapping[int, ProcessSample] | None, str | None]:
+    """Return the owned child's pre-reap census and its error, once.
+
+    Both are None for a handle without a clock, a clock without a census, a
+    reap that is not yet published, or a census already taken.
+    """
+    clock = getattr(proc, "_molt_child_clock", None)
+    if clock is None or not clock.done.is_set():
+        return None, None
+    census, error = clock.exit_census_samples, clock.exit_census_error
+    clock.exit_census_samples = None
+    clock.exit_census_error = None
+    return census, error
 
 
 def _set_env_gb_ceiling(env: dict[str, str], name: str, limit_kb: int) -> None:
@@ -964,10 +1034,13 @@ _KILL_EXIT_OBSERVATION_S = 2.0
 def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) -> bool:
     """Probe with signal 0 until ESRCH or the end of a positive grace window.
 
-    ESRCH proves absence; any other OSError leaves the target unknown. A
-    window ends with an observation, so an exit at the deadline (an owned
-    child's reap racing the window) is seen. A zero window observes nothing
-    and reports not-proven, so the caller escalates.
+    ESRCH proves absence. EPERM proves presence, so the window keeps
+    observing: XNU refuses every process-group signal while all members are
+    exiting or wait for their reap, and the group vanishes only at that reap.
+    Any other OSError leaves the target unknown. A window ends with an
+    observation, so an exit at the deadline (an owned child's reap racing the
+    window) is seen. A zero window observes nothing and reports not-proven,
+    so the caller escalates.
     """
     if grace <= 0:
         return False
@@ -977,6 +1050,8 @@ def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) ->
             probe()
         except ProcessLookupError:
             return True
+        except PermissionError:
+            pass
         except OSError:
             return False
         remaining = deadline - time.monotonic()
@@ -1059,6 +1134,14 @@ def _send_process_group_signal_action(
     pgid: int,
     signum: int,
 ) -> GuardTerminationAction:
+    """Signal one process group; ``refused`` when no member accepted it.
+
+    EPERM means the kernel delivered the signal to no member. XNU answers it
+    for a group whose members are all exiting or wait for their reap, as
+    well as for members this process may not signal. Only a later
+    observation of the group decides which, so ``refused`` resolves like
+    ``sent``: by an observed exit, never by itself.
+    """
     killpg = getattr(os, "killpg", None)
     if killpg is None:
         return _termination_action(
@@ -1077,7 +1160,14 @@ def _send_process_group_signal_action(
             signum=signum,
             result="missing",
         )
-    except (PermissionError, OSError) as exc:
+    except PermissionError:
+        return _termination_action(
+            target_kind="process_group",
+            target_id=pgid,
+            signum=signum,
+            result="refused",
+        )
+    except OSError as exc:
         return _termination_action(
             target_kind="process_group",
             target_id=pgid,
@@ -1255,7 +1345,7 @@ def _terminate_process_group_if_identities_match_action(
         signal.SIGTERM,
         sampler=sampler,
     )
-    if action.result != "sent":
+    if action.result not in {"sent", "refused"}:
         return action
     terminated = _process_group_exited_or_unobservable(pgid, grace=grace)
     return _termination_action(
@@ -1389,7 +1479,7 @@ def terminate_watched_processes(
         remaining: set[int],
     ) -> None:
         actions.append(action)
-        if action.result not in {"sent", "missing"}:
+        if action.result not in {"sent", "refused", "missing"}:
             return
         terminal = _observe_termination_exit_action(
             action.target_kind,

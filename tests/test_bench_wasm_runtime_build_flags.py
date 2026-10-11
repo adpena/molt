@@ -503,3 +503,20 @@ def test_zero_duration_wasm_run_is_invalid_sample(monkeypatch) -> None:
     assert result.elapsed_s is None
     assert result.returncode == 0
     assert result.error_class == "invalid_timing"
+
+
+def test_runtime_target_is_shared_unless_a_session_is_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bench_wasm built cold into target/sessions/bench-wasm-<pid> (HF-144)."""
+    ext_root = tmp_path / "ext-root"
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    assert bench_wasm._cargo_target_root() == ext_root.resolve() / "target"
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "lane-a")
+    assert bench_wasm._cargo_target_root() == (
+        ext_root.resolve() / "target" / "sessions" / "lane-a"
+    )

@@ -26,7 +26,7 @@ inputs:
     description: Comma-separated Rust targets added to the selected role
     default: ""
   cache-uv:
-    description: Cache uv downloads
+    description: Restore uv's download cache through setup-uv (only main saves it)
     default: "true"
   cache-cargo:
     description: Cache non-incremental Cargo build artifacts and source downloads
@@ -124,11 +124,16 @@ runs:
         INPUT_SYNC_GROUPS: ${{ inputs.sync-groups }}
       run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"
 
+    # Only main saves caches. Branches, pull requests and dispatches restore
+    # main's entries; their own copies would duplicate content-keyed entries,
+    # pass the repository's 10 GB quota and evict main's Cargo caches.
     - name: Install exact uv
       if: steps.inputs.outputs.uv == 'true'
       uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       with:
         version: "0.12.23"
+        enable-cache: ${{ steps.inputs.outputs.cache-uv }}
+        save-cache: ${{ github.ref == 'refs/heads/main' }}
 
     - name: Provision and bind repository Python
       id: python
@@ -166,15 +171,6 @@ runs:
         RUST_TARGETS: ${{ steps.inputs.outputs.rust-targets }}
         RUST_TOOLCHAIN_ROLE: ${{ inputs.rust-toolchain }}
       run: python3 -I -B .github/actions/setup-project/provision-rust.py
-
-    - name: Cache uv downloads
-      if: steps.inputs.outputs.cache-uv == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/.cache/uv
-        key: >-
-          uv-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.python-version',
-          'pyproject.toml', 'uv.lock') }}
 
     - name: Configure non-incremental Cargo cache
       id: cargo-cache
@@ -216,8 +212,10 @@ runs:
         CARGO_CACHE_KEY: ${{ steps.cargo-restore.outputs.cache-primary-key }}
       run: printf 'MOLT_CARGO_CACHE_KEY=%s\n' "$CARGO_CACHE_KEY" >> "$GITHUB_ENV"
 
+    # Each cache below has a main twin (restore, then save after the job) and
+    # a restore-only twin for every other ref; the twins share path and key.
     - name: Cache Lean lake artifacts
-      if: steps.inputs.outputs.cache-lean == 'true'
+      if: steps.inputs.outputs.cache-lean == 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -229,9 +227,31 @@ runs:
           lean-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('formal/lean/lean-toolchain',
           'formal/lean/lakefile.lean') }}
 
+    - name: Restore Lean lake artifacts
+      if: steps.inputs.outputs.cache-lean == 'true' && github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.elan/toolchains
+          ~/.elan/update-hashes
+          formal/lean/.lake
+          formal/lean/lake-packages
+        key: >-
+          lean-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('formal/lean/lean-toolchain',
+          'formal/lean/lakefile.lean') }}
+
     - name: Cache actionlint toolchain
-      if: steps.inputs.outputs.actionlint == 'true'
+      if: steps.inputs.outputs.actionlint == 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/molt/toolchains
+        key: >-
+          actionlint-${{ runner.os }}-${{ runner.arch }}-${{
+          hashFiles('config/actionlint.toml', 'tools/bootstrap_actionlint.py') }}
+
+    - name: Restore actionlint toolchain
+      if: steps.inputs.outputs.actionlint == 'true' && github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/molt/toolchains
         key: >-

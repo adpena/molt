@@ -1520,8 +1520,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_Break(self, node: ast.Break) -> None:
-        if self.finally_depth > 0:
-            self._emit_syntax_warning(node, "'break' in a 'finally' block")
         if not self.loop_scopes:
             raise SyntaxError(f"'break' outside loop (line {node.lineno})")
         del node
@@ -1552,8 +1550,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_Continue(self, node: ast.Continue) -> None:
-        if self.finally_depth > 0:
-            self._emit_syntax_warning(node, "'continue' in a 'finally' block")
         if not self.loop_scopes:
             raise SyntaxError(f"'continue' not properly in loop (line {node.lineno})")
         del node

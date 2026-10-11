@@ -885,6 +885,52 @@ def test_loaded_census_change_rejects_closure_publication(
     assert snapshots == 2
 
 
+@pytest.mark.parametrize("later", ["unloaded", "unloaded-and-loaded", "realiased"])
+def test_census_may_only_lose_images_it_already_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later: str
+) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(_empty_pe_image())
+    provider = tmp_path / "wbemprox.dll"
+    provider.write_bytes(_empty_pe_image())
+    newcomer = tmp_path / "newcomer.dll"
+    newcomer.write_bytes(_empty_pe_image())
+    first = _loader_snapshot(
+        (executable, provider),
+        {"python.exe": executable, "wbemprox.dll": provider},
+    )
+    # Windows COM frees the WMI provider CPython's platform module loaded.
+    if later == "unloaded":
+        second = _loader_snapshot((executable,), {"python.exe": executable})
+    elif later == "unloaded-and-loaded":
+        second = _loader_snapshot(
+            (executable, newcomer),
+            {"python.exe": executable, "newcomer.dll": newcomer},
+        )
+    else:
+        second = _loader_snapshot((executable,), {"wbemprox.dll": executable})
+    snapshots = iter((first, second))
+    monkeypatch.setattr(
+        native, "_loaded_native_module_snapshot", lambda _os: next(snapshots)
+    )
+
+    def capture():
+        return native._native_dependency_closure(
+            {"base-executable": executable},
+            operating_system="windows",
+            architecture="x86_64",
+            policy=_NATIVE_DEPENDENCY_POLICIES["windows"],
+            pool=_FileNodePool(),
+        )
+
+    if later == "unloaded":
+        closure = capture()
+        assert closure["root_components"]
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError, match="census changed"):
+            capture()
+
+
 @pytest.mark.parametrize("change", ["paths", "aliases", "contracts"])
 def test_outer_capture_verification_rechecks_native_census_after_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str

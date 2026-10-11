@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
+import sys
 import time
 import tomllib
 import uuid
@@ -17,6 +19,7 @@ from tools.proof_queue_pkg import (
     custody,
     evidence,
     policy,
+    run_retention,
     runner,
     scheduling,
     state,
@@ -808,6 +811,76 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         print(f"{line} artifacts={', '.join(artifacts)}")
     print(f"pruned={pruned}")
     return 0
+
+
+def _size_text(size: object) -> str:
+    if not isinstance(size, int):
+        return "?"
+    for unit, scale in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if size >= scale:
+            return f"{size / scale:.1f} {unit}"
+    return f"{size} B"
+
+
+def _cmd_retention(args: argparse.Namespace) -> int:
+    """Report run-evidence retention; reclaim only with --apply."""
+    try:
+        bound = run_retention.configured_policy(
+            os.environ, runs=args.keep_runs, gb=args.keep_gb
+        )
+        report = run_retention.run_pass(
+            db=state._db_path(args),
+            result_root=state._logs_root(args),
+            policy=bound,
+            apply=args.apply,
+            limit=args.limit,
+        )
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"proof run retention failed: {exc}", file=sys.stderr)
+        return 2
+    errors = report.get("errors", [])
+    assert isinstance(errors, list)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 2 if errors else 0
+    mode = "apply" if args.apply else "dry run; add --apply to reclaim"
+    print(f"proof run retention ({mode})")
+    print(
+        f"policy: keep the newest {bound.count} reclaimable runs within "
+        f"{_size_text(bound.bytes)}"
+    )
+    print(f"result_root: {report['result_root']}")
+    classes = report["classes"]
+    assert isinstance(classes, dict)
+    for name, bucket in classes.items():
+        print(f"- {name}: runs={bucket['runs']} bytes={_size_text(bucket['bytes'])}")
+    unowned = report["unowned_files"]
+    assert isinstance(unowned, dict)
+    if unowned["files"]:
+        print(
+            f"unowned files (no row; never reclaimed): {unowned['files']} "
+            f"({_size_text(unowned['bytes'])})"
+        )
+    listed = report["reclaimed"] if args.apply else report["reclaim"]
+    assert isinstance(listed, list)
+    verb = "reclaimed" if args.apply else "would reclaim"
+    print(
+        f"{verb}: {len(listed)} runs ({_size_text(sum(run['bytes'] or 0 for run in listed))})"
+    )
+    for run in listed[:20]:
+        print(f"  {run['run_id']} {run['status']} {_size_text(run['bytes'])}")
+    if len(listed) > 20:
+        print(f"  ... {len(listed) - 20} more; use --json for the full list")
+    for key in ("recovered", "skipped"):
+        values = report.get(key)
+        if isinstance(values, list) and values:
+            print(f"{key}: {', '.join(map(str, values))}")
+    unverified = report.get("unverified")
+    if isinstance(unverified, list) and unverified:
+        print(f"custody-unverified (kept): {len(unverified)}; use --json for reasons")
+    for error in errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 2 if errors else 0
 
 
 def _cmd_evidence(args: argparse.Namespace) -> int:

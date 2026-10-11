@@ -19,7 +19,11 @@ from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )
-from molt.cli.default_paths import _default_molt_cache  # noqa: E402
+from molt.default_paths import (  # noqa: E402
+    _default_molt_bin,
+    _default_molt_cache,
+    _default_molt_home,
+)
 from molt.dx import (  # noqa: E402
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
     DEFAULT_MOLT_CACHE_MAX_GB,
@@ -71,11 +75,42 @@ def _entry_size_bytes(path: Path) -> int:
     return total
 
 
+def protected_cache_roots(cache_root: Path) -> tuple[Path, ...]:
+    """Return the top-level cache children that hold the selected home or bin.
+
+    The default Molt home lives in the cache and owns installed tool state
+    (``<MOLT_HOME>/target-root``) and the bin directory; neither is an evictable
+    cache entry. Defaults bind to the cache being pruned, even when
+    ``--cache-dir`` names another namespace than the process's ``MOLT_CACHE``.
+    """
+    root = cache_root.resolve(strict=False)
+    environment = dict(os.environ)
+    environment["MOLT_CACHE"] = os.fspath(root)
+    protected: set[Path] = set()
+    for selected in (
+        _default_molt_home(environ=environment),
+        _default_molt_bin(environ=environment),
+    ):
+        for candidate in (selected.absolute(), selected.resolve(strict=False)):
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            protected.add(root / relative.parts[0] if relative.parts else root)
+    return tuple(sorted(protected, key=os.fspath))
+
+
 def _collect_entries(cache_root: Path) -> list[CacheEntry]:
     entries: list[CacheEntry] = []
     if not cache_root.exists():
         return entries
+    root = cache_root.resolve(strict=False)
+    protected = protected_cache_roots(cache_root)
+    if root in protected:
+        return entries
     for child in cache_root.iterdir():
+        if root / child.name in protected:
+            continue
         if child.name == WASM_LINK_CACHE_DIRECTORY and child.is_dir():
             known_families: set[Path] = set()
             for family_name in sorted(WASM_LINK_CACHE_FAMILIES):
@@ -192,6 +227,7 @@ def _prune(
         "entries_removed": len(removed),
         "bytes_removed": removed_bytes,
         "bytes_removed_human": _format_bytes(removed_bytes),
+        "protected_state": [str(path) for path in protected_cache_roots(cache_root)],
     }
 
 

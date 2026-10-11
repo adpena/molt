@@ -35,7 +35,7 @@ from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_name
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
-from molt.cli.default_paths import _default_molt_home
+from molt.default_paths import _default_molt_home
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     NativeLinkCustodyAdmission,

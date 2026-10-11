@@ -2148,3 +2148,35 @@ def test_compiler_inventory_preserves_clustered_incremental_selection(arguments)
     )
     opaque = cargo_compiler_invocation(("rustc", "-gL", "-Cincremental=not_selected"))
     assert opaque.arguments_complete and opaque.incremental_dir is None
+
+
+def test_default_target_is_the_workspace_roots_not_the_working_directory(
+    tmp_path: Path,
+) -> None:
+    """Cargo builds a member crate into its workspace's target (HF-145)."""
+    from tools.memory_guard_core import cargo_quarantine as quarantine
+
+    workspace = tmp_path / "ws"
+    member = workspace / "crates" / "member"
+    (member / "src").mkdir(parents=True)
+    (workspace / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["crates/member"]\n', encoding="utf-8"
+    )
+    (member / "Cargo.toml").write_text(
+        '[package]\nname = "member"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    (standalone / "Cargo.toml").write_text(
+        '[package]\nname = "standalone"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+
+    assert quarantine._cargo_target_dir({}, member / "src") == (
+        workspace.resolve() / "target"
+    )
+    assert quarantine._cargo_target_dir({}, standalone) == (
+        standalone.resolve() / "target"
+    )
+    assert quarantine._cargo_target_dir({"CARGO_TARGET_DIR": "out"}, member) == (
+        member.resolve() / "out"
+    )

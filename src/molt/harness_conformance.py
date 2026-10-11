@@ -12,7 +12,7 @@ from molt.dx import (
 
 
 def build_molt_conformance_env(
-    project_root: Path, session_id: str, base: Mapping[str, str]
+    project_root: Path, session_id: str | None, base: Mapping[str, str]
 ) -> dict[str, str]:
     """Resolve a conformance run's DX roots from the caller's environment.
 
@@ -20,6 +20,10 @@ def build_molt_conformance_env(
     ephemeral custody root) decide where artifacts go; resolving from the
     session ID alone put them in the checkout, which CI custody refuses. The
     roots derived from them are recomputed, so ambient values never leak in.
+
+    A ``session_id`` pins the run's session, which scopes its Cargo target.
+    ``None`` lets the run context generate one, so the run builds in the warm
+    shared target.
     """
     selectors = {
         key: value
@@ -27,9 +31,11 @@ def build_molt_conformance_env(
         if key == ARTIFACT_ROOT_ENV
         or (key not in CANONICAL_RUN_ENV_KEYS and key != "PYTHONPATH")
     }
+    if session_id is not None:
+        selectors["MOLT_SESSION_ID"] = session_id
     return development_artifact_env(
         project_root,
-        {**selectors, "MOLT_SESSION_ID": session_id},
+        selectors,
         session_prefix="conformance",
         create_dirs=False,
     )

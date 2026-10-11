@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
 from molt.python_interpreter import PythonInterpreter, probe_python_command  # noqa: E402
-from molt.toolchain_identity import (  # noqa: E402
+from molt.default_paths import (  # noqa: E402
     executable_environment_value,
     expand_user_path,
 )

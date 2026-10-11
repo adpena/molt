@@ -221,13 +221,13 @@ def resolve_wasm_linker(
     environment = dict(os.environ if env is None else env)
     try:
         linker = resolve_wasi_sdk_tool(
-            compiler_source_root(), "wasm-ld", environ=environment
+            compiler_source_root(), "wasm-ld", environ=environment, cwd=cwd
         )
     except LlvmToolchainConfigError as exc:
         raise WasmLinkerContractError(str(exc)) from exc
     try:
         installation = selected_wasi_sdk_installation(
-            compiler_source_root(), environ=environment
+            compiler_source_root(), environ=environment, cwd=cwd
         )
         if installation is None:
             raise ValueError("the selected WASI SDK is not provisioned")

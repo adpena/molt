@@ -13,7 +13,12 @@ docs/design/CENTURY_SYSTEMS_PLAN.md §5 fixes the phase predicate:
       and signatures_and_hashes_verify
 
 Missing, stale, duplicate, waived, unevaluated, or indirectly inferred evidence
-evaluates false. This module implements exactly that predicate over a manifest
+evaluates false. `open_obligations` holds two kinds of entry: each aggregate
+phase obligation of config/phase_exit_requirements.toml whose requirement does
+not pass, and each finding that the findings ledger at the release commit still
+holds open. The release-exit bundle records that ledger join and its verifier
+reads the ledger blob at the bundle source, so this module keeps no list of
+findings. This module implements exactly that predicate over a manifest
 whose evidence rows are projected from the typed release-exit bundle
 (tools/release_exit_gate.py), the exact verified-subset matrix
 (tools/verified_subset.py matrix), the legacy inventory
@@ -80,6 +85,7 @@ from molt.toolchain_identity import (  # noqa: E402
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
+from tools import finding_status  # noqa: E402
 from tools import legacy_inventory  # noqa: E402
 from tools import pact_witness_receipt as pwr  # noqa: E402
 from tools import perf_authority as pa  # noqa: E402
@@ -91,7 +97,7 @@ from tools.git_identity import is_git_object_id  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS_PATH = ROOT / "config" / "phase_exit_requirements.toml"
 REQUIREMENTS_SCHEMA = "molt.phase-exit-requirements.v1"
-MANIFEST_SCHEMA = "molt.phase-exit-manifest.v1"
+MANIFEST_SCHEMA = "molt.phase-exit-manifest.v2"
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
 E3_WILDCARD_ROLE = "e3_*"
@@ -217,6 +223,11 @@ def load_phases(path: Path = REQUIREMENTS_PATH) -> dict[str, Phase]:
                 raise ValueError(f"{path}: {phase_id} obligation fields are mistyped")
             if raw["id"] in seen_obligations:
                 raise ValueError(f"{path}: {phase_id} obligation ids must be unique")
+            if finding_status.is_finding_key(raw["id"]):
+                raise ValueError(
+                    f"{path}: {phase_id} obligation {raw['id']} uses a finding ID; "
+                    "open findings come from the findings ledger"
+                )
             if raw["closed_by"] not in seen_ids:
                 raise ValueError(
                     f"{path}: {phase_id} obligation {raw['id']} closes on unknown "
@@ -612,7 +623,11 @@ def _project_phase_manifest(
     phase = phases[phase_id]
     matrix = generated_matrix()
     requirements = expand_requirements(phase, matrix)
-    evidence = project_evidence(resolve_owned_path(bundle_manifest), requirements)
+    bundle_path = resolve_owned_path(bundle_manifest)
+    evidence = project_evidence(bundle_path, requirements)
+    open_findings = reg.recorded_open_findings(
+        _load_json(bundle_path, label="release-exit manifest")
+    )
     passing = {
         row["requirement_id"] for row in evidence if row["status"] == STATUS_PASS
     }
@@ -629,11 +644,14 @@ def _project_phase_manifest(
             )
         )
     }
-    open_obligations = sorted(
-        obligation.id
-        for obligation in phase.obligations
-        if obligation.closed_by not in closed_requirements
-    )
+    open_obligations = [
+        *sorted(
+            obligation.id
+            for obligation in phase.obligations
+            if obligation.closed_by not in closed_requirements
+        ),
+        *open_findings,
+    ]
     legacy = legacy_inventory.inventory(root)
     return {
         "schema": MANIFEST_SCHEMA,
@@ -717,7 +735,7 @@ def _verify_phase_content(
 
     # schema_valid
     if manifest.get("schema") != MANIFEST_SCHEMA:
-        problems.append("schema: manifest schema is not molt.phase-exit-manifest.v1")
+        problems.append(f"schema: manifest schema is not {MANIFEST_SCHEMA}")
     if set(manifest) != _MANIFEST_KEYS:
         problems.append(
             "schema: manifest keys must be exactly " + ", ".join(sorted(_MANIFEST_KEYS))
@@ -822,6 +840,9 @@ def _verify_phase_content(
                 + ", ".join(sorted(required - covered))
             )
 
+    # The bundle verifier reads the findings ledger at the bundle source.
+    bundle_report = reg.verify_release_bundle(bundle_manifest, repo_root=root, now=now)
+
     # open_obligations == []
     open_obligations = manifest.get("open_obligations")
     if isinstance(open_obligations, list) and open_obligations:
@@ -830,6 +851,7 @@ def _verify_phase_content(
             + ", ".join(map(str, open_obligations))
         )
     declared = {obligation.id for obligation in phase.obligations}
+    open_findings = bundle_report.open_findings
     passing_ids = {
         rid
         for rid, rows in rows_by_requirement.items()
@@ -860,8 +882,19 @@ def _verify_phase_content(
                 f"obligations: {obligation.id} is listed open but its requirement passes"
             )
     if isinstance(open_obligations, list):
-        for unknown in sorted(set(map(str, open_obligations)) - declared):
-            problems.append(f"obligations: {unknown} is not declared for {phase.id}")
+        listed_open = set(map(str, open_obligations))
+        for finding in open_findings:
+            if finding not in listed_open:
+                problems.append(
+                    f"obligations: open finding {finding} is not listed as open"
+                )
+        for unknown in sorted(listed_open - declared - set(open_findings)):
+            problems.append(
+                f"obligations: {unknown} is not declared for {phase.id} and is "
+                "not an open finding"
+            )
+        if len(open_obligations) != len(listed_open):
+            problems.append("obligations: open_obligations repeats an entry")
 
     # legacy_count == 0, and it must equal the live inventory (no stale count)
     live_legacy = legacy_inventory.inventory(root).legacy_count
@@ -874,7 +907,6 @@ def _verify_phase_content(
         problems.append(f"legacy: legacy_count is {live_legacy}, not 0")
 
     # signatures_and_hashes_verify
-    bundle_report = reg.verify_release_bundle(bundle_manifest, repo_root=root, now=now)
     if not bundle_report.passed:
         problems.append(
             "hashes: release-exit bundle does not verify: "

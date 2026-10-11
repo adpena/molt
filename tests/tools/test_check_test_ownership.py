@@ -19,7 +19,9 @@ def _repo(root: Path, *, argv: list[str], tests: list[str]) -> Path:
     return root
 
 
-def test_files_named_by_path_node_or_directory_are_owned(tmp_path: Path) -> None:
+def test_files_named_by_path_or_directory_are_owned_but_a_node_is_not(
+    tmp_path: Path,
+) -> None:
     root = _repo(
         tmp_path,
         argv=["tests/test_a.py", "tests/test_b.py::test_ok", "tests/model"],
@@ -33,7 +35,7 @@ def test_files_named_by_path_node_or_directory_are_owned(tmp_path: Path) -> None
         ],
     )
 
-    assert ownership.unowned(root) == {"tests/test_d.py"}
+    assert ownership.unowned(root) == {"tests/test_b.py", "tests/test_d.py"}
 
 
 def test_a_new_unowned_file_fails_and_cannot_be_baselined(tmp_path: Path) -> None:

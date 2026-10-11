@@ -88,9 +88,17 @@ runs:
 
     # The archive cache is keyed by the host asset's manifest digest; the
     # provisioner still re-verifies size and SHA-256 before any reuse.
-    - name: Restore verified wasi-sdk archive
-      if: inputs.wasi == 'true'
+    # Only main saves the archive cache; every other ref restores main's entry.
+    - name: Cache verified wasi-sdk archive
+      if: inputs.wasi == 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/molt-wasi-sdk-downloads
+        key: ${{ steps.contract.outputs.wasi_sdk_cache_key }}
+
+    - name: Restore verified wasi-sdk archive
+      if: inputs.wasi == 'true' && github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/molt-wasi-sdk-downloads
         key: ${{ steps.contract.outputs.wasi_sdk_cache_key }}

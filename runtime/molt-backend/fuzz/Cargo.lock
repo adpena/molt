@@ -509,6 +509,7 @@ dependencies = [
  "molt-wasm-facts",
  "object",
  "rmp-serde",
+ "rustc-demangle",
  "serde",
  "serde_json",
  "sha2",
@@ -715,6 +716,12 @@ dependencies = [
  "rmp",
  "serde",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"

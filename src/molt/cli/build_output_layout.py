@@ -4,15 +4,13 @@ import functools
 import os
 from pathlib import Path
 import re
-import sys
 
 from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
-from molt.cli.default_paths import (
-    _configured_artifact_root_text,
-    _default_home_str,
+from molt.default_paths import (
     _default_molt_bin,
-    _default_molt_cache_cached,
-    _default_molt_home_cached,
+    _default_molt_cache,
+    _default_molt_home,
+    configured_artifact_root_text,
 )
 from molt.cli.models import _BuildOutputLayout
 
@@ -80,68 +78,26 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     return _wasm_runtime_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        _configured_artifact_root_text(os.environ),
+        configured_artifact_root_text(os.environ),
         os.fspath(Path.cwd()),
     )
 
 
 @functools.lru_cache(maxsize=256)
-def _default_build_root_cached(
-    output_base: str,
-    home_override: str | None,
-    cache_override: str | None,
-    xdg_cache_home: str | None,
-    cwd_str: str,
-    home_str: str | None,
-    platform_name: str,
-    ext_root_str: str | None,
-) -> Path:
-    safe_base = _safe_output_base(output_base)
-    home_root = _default_molt_home_cached(
-        home_override,
-        cache_override,
-        xdg_cache_home,
-        cwd_str,
-        home_str,
-        platform_name,
-        ext_root_str,
-    )
-    return home_root / "build" / safe_base
+def _default_build_root_cached(output_base: str, home_root_str: str) -> Path:
+    return Path(home_root_str) / "build" / _safe_output_base(output_base)
 
 
 def _default_build_root(output_base: str) -> Path:
-    return _default_build_root_cached(
-        output_base,
-        os.environ.get("MOLT_HOME"),
-        os.environ.get("MOLT_CACHE"),
-        os.environ.get("XDG_CACHE_HOME"),
-        os.fspath(Path.cwd()),
-        _default_home_str(),
-        sys.platform,
-        _configured_artifact_root_text(os.environ),
-    )
+    return _default_build_root_cached(output_base, os.fspath(_default_molt_home()))
 
 
 @functools.lru_cache(maxsize=256)
 def _resolve_cache_root_cached(
-    project_root_str: str,
-    cache_dir: str | None,
-    cache_override: str | None,
-    xdg_cache_home: str | None,
-    cwd_str: str,
-    home_str: str | None,
-    platform_name: str,
-    ext_root_str: str | None,
+    project_root_str: str, cache_dir: str | None, default_cache_str: str
 ) -> Path:
     if not cache_dir:
-        return _default_molt_cache_cached(
-            cache_override,
-            xdg_cache_home,
-            cwd_str,
-            home_str,
-            platform_name,
-            ext_root_str,
-        )
+        return Path(default_cache_str)
     project_root = Path(project_root_str)
     path = Path(cache_dir).expanduser()
     if not path.is_absolute():
@@ -153,12 +109,7 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
     return _resolve_cache_root_cached(
         os.fspath(project_root),
         cache_dir,
-        os.environ.get("MOLT_CACHE"),
-        os.environ.get("XDG_CACHE_HOME"),
-        os.fspath(Path.cwd()),
-        _default_home_str(),
-        sys.platform,
-        _configured_artifact_root_text(os.environ),
+        "" if cache_dir else os.fspath(_default_molt_cache()),
     )
 
 

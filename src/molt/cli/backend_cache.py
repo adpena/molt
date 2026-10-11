@@ -36,7 +36,7 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactValidationError,
 )
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
     StableRegularFileIdentity,

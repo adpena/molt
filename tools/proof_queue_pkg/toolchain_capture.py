@@ -17,9 +17,9 @@ import tempfile
 import time
 from typing import TYPE_CHECKING, Iterable, Mapping, Sequence, cast
 
+from molt.default_paths import executable_environment_value
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
-    executable_environment_value,
     find_executable,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,

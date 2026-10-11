@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from molt import binaryen_toolchain
+from molt import binaryen_identity, binaryen_toolchain
 from molt.binaryen_toolchain import BinaryenConfigError
 from molt.source_root import source_file_revision
 
@@ -182,3 +182,55 @@ def test_manifest_rejects_noncanonical_release_and_asset_identities(
         binaryen_toolchain._load_binaryen_manifest_cached(
             str(manifest), source_file_revision(manifest)
         )
+
+
+@pytest.mark.parametrize(
+    ("version", "valid"),
+    (
+        ("1", True),
+        ("133", True),
+        ("134", True),
+        ("0", False),
+        ("0133", False),
+        ("1\u0663\u0663", False),
+        ("13\uff13", False),
+        ("1\u0969" + "3", False),
+        ("\u0661" + "33", False),
+        ("133\n", False),
+        (133, False),
+        (None, False),
+    ),
+)
+def test_release_version_predicate_requires_ascii_decimal(version, valid) -> None:
+    assert binaryen_identity.is_binaryen_version(version) is valid
+
+
+@pytest.mark.parametrize(
+    ("suffix", "valid"),
+    (("0", True), ("\u0663", False), ("\uff13", False), ("\u0969", False)),
+)
+def test_manifest_version_grammar_with_coherent_release_references(
+    tmp_path: Path, suffix: str, valid: bool
+) -> None:
+    source = (ROOT / "config/binaryen_releases.toml").read_text(encoding="utf-8")
+    original = binaryen_toolchain.load_binaryen_manifest(ROOT).release.version
+    version = original + suffix
+    # Move every version-derived reference together; a stale URL/archive root
+    # must not cause a false-positive rejection before the grammar is checked.
+    changed = source.replace(f'version = "{original}"', f'version = "{version}"')
+    changed = changed.replace(f"version_{original}", f"version_{version}")
+    assert changed != source
+    manifest = tmp_path / "binaryen_releases.toml"
+    manifest.write_text(changed, encoding="utf-8")
+    if valid:
+        observed = binaryen_toolchain._load_binaryen_manifest_cached(
+            str(manifest), source_file_revision(manifest)
+        )
+        assert observed.release.version == version
+    else:
+        with pytest.raises(
+            BinaryenConfigError, match="invalid Binaryen release identity"
+        ):
+            binaryen_toolchain._load_binaryen_manifest_cached(
+                str(manifest), source_file_revision(manifest)
+            )

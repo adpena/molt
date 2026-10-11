@@ -10,6 +10,7 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
     print(
         "molt queue status\n"
         "molt queue run --detach --queue-size 3\n"
+        "molt queue retention\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
         '--id focused-cargo-proof --reason "why this proves the Rust contract" '

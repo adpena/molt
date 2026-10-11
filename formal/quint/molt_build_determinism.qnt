@@ -147,7 +147,9 @@ module molt_build_determinism {
       cache.get(m).digest == -1 or cache.get(m) == compile(m)
     )
 
-  // I3: Hash seed pinning — PYTHONHASHSEED never drifts from 0.
+  // I3: The model's host hash seed is one constant. The compiler does not
+  // pin PYTHONHASHSEED; its output must not depend on the seed, which
+  // tests/determinism/test_ir_determinism.py validates.
   val hashSeedPinned = hashSeed == 0
 
   // I4: Final determinism — once all modules built, digest matches canonical.

@@ -65,7 +65,7 @@ def _isolated_runtime_wasm_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "runtime-cache"))
-    from molt.cli import default_paths
+    from molt import default_paths
 
     default_paths._default_molt_cache_cached.cache_clear()
 

@@ -178,7 +178,8 @@ class GuardedCommand:
             payload = json.loads(self.summary_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise RuntimeError(
-                f"guard exited without startup/terminal child custody; inspect {self.evidence_path}"
+                f"guard exited with status {result} without startup/terminal "
+                f"child custody; inspect {self.evidence_path}"
             ) from exc
         valid_startup = bool(
             isinstance(startup, dict)
