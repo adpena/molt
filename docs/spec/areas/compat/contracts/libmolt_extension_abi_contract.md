@@ -521,14 +521,21 @@ error projection. Operand publication continues after a failure while preserving
 the exact first error, including reserved instances. Non-consuming C error
 queries borrow the actual pending class without consuming or normalizing the
 instance or materializing its traceback. `PyErr_NoMemory` uses the required
-`RuntimeHooks::memory_error` callback (hook ABI 66). Each admitted runtime owns
-16 free exact `MemoryError` instances and a persistent last-resort instance.
+`RuntimeHooks::memory_error` callback (hook ABI 66). Each runtime prepares
+16 free exact `MemoryError` instances and a persistent last-resort instance
+before admission; retained or terminally discarded values reduce the free pool.
 Acquisition transfers an ordinary owner; exhaustion shares the last-resort
 instance without resetting its live fields. The primary runtime prepares their
 canonical C views before application admission, so public Get/Fetch transfers
 the real instance under allocation denial. Isolates retain managed ownership
 without process C projection. Allocation failure before this reserve exists is
 a runtime admission failure.
+Raw host scratch allocation also operates before interpreter admission. It
+returns its typed null-address sentinel on refusal without bootstrapping Python
+state or fabricating a pending exception. Browser and native host consumers
+check that sentinel directly. Once a runtime owner exists, the same failure
+publishes the real reserved `MemoryError`; failure during interpreter bootstrap
+still obeys the reserve's initialization invariant.
 Exact constructors use the same reserve. Terminal reference retirement can
 refill it only after finalization and weakref checks, mutable-edge retirement,
 and resurrection checks. No reserve lock spans callbacks. Shutdown closes

@@ -2754,18 +2754,21 @@ mod sequence_builder_tests {
                     let budget = deny_allocations();
                     assert!(allocate(size).is_null());
                     assert!(exception_pending(py), "mode={mode}, size={size}");
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
                     drop(budget);
-                    clear_exception(py);
                     let _ = raise_exception::<u64>(py, "ValueError", "keep the caller error");
                     let pending = crate::builtins::exceptions::molt_exception_last_pending();
                     let budget = deny_allocations();
                     assert!(allocate(size).is_null());
+                    assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
+                    assert_eq!(
+                        refs(pending),
+                        1,
+                        "allocation failure retires the prior indicator"
+                    );
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
                     drop(budget);
-                    let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert_eq!(still_pending, pending);
-                    dec_ref_bits(py, still_pending);
                     dec_ref_bits(py, pending);
-                    clear_exception(py);
                 }
             }
         });
@@ -2858,7 +2861,7 @@ mod sequence_builder_tests {
     }
 
     #[test]
-    fn hash_storage_success_with_prior_error_preserves_edges_and_allocation_failure_status() {
+    fn hash_storage_success_preserves_prior_error_and_failure_replaces_it() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let item = bits_from_ptr(alloc_string(py, b"prior-error-hash-owner"));
@@ -2894,6 +2897,7 @@ mod sequence_builder_tests {
                     crate::builtins::exceptions::molt_exception_last_pending(),
                 );
                 assert_eq!(observed.bits(), original.bits());
+                drop(observed);
                 drop(result);
                 assert_eq!(refs(item), baseline);
                 let budget = deny_allocations();
@@ -2901,31 +2905,27 @@ mod sequence_builder_tests {
                     construct().is_null(),
                     "actual allocation denial still fails"
                 );
-                drop(budget);
                 assert_eq!(refs(item), baseline);
-                let observed = crate::builtins::exceptions::ExceptionValue::adopt(
-                    py,
-                    crate::builtins::exceptions::molt_exception_last_pending(),
-                );
+                assert_ne!(crate::exception_last_bits_noinc(py), Some(original.bits()));
                 assert_eq!(
-                    observed.bits(),
-                    original.bits(),
-                    "raw emergency allocation retains its first-error policy"
+                    refs(original.bits()),
+                    1,
+                    "only the fixture retains the displaced error"
                 );
-                clear_exception(py);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(budget);
             }
         });
     }
 
     #[test]
-    fn hash_storage_capacity_overflow_raises_and_preserves_first_error() {
+    fn hash_storage_capacity_overflow_replaces_prior_error_without_allocation() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
                 for capacity in [usize::MAX, usize::MAX / 2] {
                     assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
-                    assert!(exception_pending(py));
-                    clear_exception(py);
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
                     let _ = raise_exception::<u64>(
                         py,
                         "ValueError",
@@ -2934,12 +2934,15 @@ mod sequence_builder_tests {
                     let pending = crate::builtins::exceptions::molt_exception_last_pending();
                     let budget = deny_allocations();
                     assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
+                    assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
+                    assert_eq!(
+                        refs(pending),
+                        1,
+                        "extent failure retires the prior indicator"
+                    );
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
                     drop(budget);
-                    let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert_eq!(still_pending, pending);
-                    dec_ref_bits(py, still_pending);
                     dec_ref_bits(py, pending);
-                    clear_exception(py);
                 }
             }
         });

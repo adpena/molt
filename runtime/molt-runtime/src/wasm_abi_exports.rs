@@ -376,15 +376,32 @@ mod tests {
     fn scratch_alloc_cold_resource_denial_is_null_and_nounwind() {
         const CHILD: &str = "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD";
         if std::env::var_os(CHILD).is_some() {
+            use crate::state::runtime_state::{runtime_is_initialized, runtime_state_for_gil};
+
+            assert!(!runtime_is_initialized());
+            assert!(runtime_state_for_gil().is_none());
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(8),
                 ..Default::default()
             })));
+            let _reset = TrackerReset;
+            // Both layout/host-width refusal and the real resource budget
+            // return the raw null sentinel without creating Python state.
+            assert_eq!(super::molt_scratch_alloc(u64::MAX), 0);
             let denied = super::molt_scratch_alloc(16);
             assert_eq!(denied, 0);
-            assert_eq!(crate::molt_exception_pending(), 1);
-            let _ = crate::molt_exception_clear();
             assert_eq!(crate::molt_exception_pending(), 0);
+            assert!(!runtime_is_initialized());
+            assert!(runtime_state_for_gil().is_none());
+            // Refusal must leave the full budget available, and raw success
+            // must likewise leave interpreter admission to the caller.
+            let allowed = super::molt_scratch_alloc(8);
+            assert_ne!(allowed, 0);
+            super::molt_scratch_free(allowed, 8);
+            let again = super::molt_scratch_alloc(8);
+            assert_ne!(again, 0);
+            super::molt_scratch_free(again, 8);
+            assert!(runtime_state_for_gil().is_none());
             return;
         }
 

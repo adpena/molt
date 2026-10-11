@@ -1960,13 +1960,16 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
             let _execution = nested.then(RuntimeExecutionGuard::enter);
             for channel in 0..3 {
                 errors::PyErr_Clear();
-                with_gil(|py| match channel {
-                    0 => crate::record_exception(
-                        &py,
-                        crate::obj_from_bits(prior_bits).as_ptr().unwrap(),
-                    ),
-                    1 => errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr())),
-                    _ => crate::record_memory_error_without_allocation(&py),
+                let raised_before = with_gil(|py| {
+                    match channel {
+                        0 => crate::record_exception(
+                            &py,
+                            crate::obj_from_bits(prior_bits).as_ptr().unwrap(),
+                        ),
+                        1 => errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr())),
+                        _ => crate::record_memory_error_without_allocation(&py),
+                    }
+                    crate::exception_last_bits_noinc(&py)
                 });
                 assert_eq!(gil_owned_by_current_thread(), nested);
                 let attached = object::runtime_execution_thread_is_attached();
@@ -1985,7 +1988,9 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
                 );
                 if channel == 2 {
                     with_gil(|py| {
-                        assert!(crate::exception_last_bits_noinc(&py).is_none());
+                        assert!(raised_before.is_some(), "the reserve owns a real instance");
+                        assert_eq!(crate::exception_last_bits_noinc(&py), raised_before);
+                        crate::test_support::assert_and_clear_emergency_memory_error(&py);
                     });
                 } else {
                     let raised =

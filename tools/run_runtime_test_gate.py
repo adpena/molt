@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-bound runtime gate: parallel ordinary tests and mandatory fresh processes.
+"""Source-bound runtime semantic and allocation-observer proof policies.
 
 Lifecycle tests intentionally mutate process-global publication/shutdown state.
 The isolated GIL custody case still launches real concurrent worker threads; its
@@ -7,7 +7,9 @@ libtest harness has one test, not a single-threaded runtime. Performance probes
 are declared unrun and never credited as semantic passes. Owning tests that
 re-execute the runtime image are credited only with their source/image-bound
 descendant receipts (tools/runtime_descendant_receipts.py); this gate has no
-CPython target-minor coordinate authority.
+CPython target-minor coordinate authority. The allocation observer policy builds
+both feature images once and runs only its declared controls in fresh processes;
+process-global allocator counters and refusal must never share a libtest run.
 """
 
 from __future__ import annotations
@@ -69,6 +71,75 @@ PROBE_PLATFORMS: dict[str, frozenset[str]] = {
 }
 
 
+# These are semantic obligations and isolation policy, not inventory snapshots.
+# Cargo owns image paths/features; libtest owns the discovered test identities.
+OBSERVER_FEATURE = "l7-attestation-probe"
+OBSERVER_CASES = {
+    "molt_runtime": (
+        "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
+        "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
+        "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",
+        "object::gc::tests::repeated_reachable_collection_workspace_allocations",
+        "cpython_abi_hooks::exception_rendering_tests::decimal_output_limits::rejected_decimal_magnitude_does_not_allocate_decimal_storage",
+        "object::ops::unpack_transaction_tests::exact_builtin_unpack_hot_path_performs_zero_allocator_calls",
+        "state::runtime_state::tests::encoded_core_gil_entry_is_allocation_free_after_warmup",
+    ),
+    "l7_numeric_runtime_perf_attestation": (
+        "integer_byte_encoder_runs_with_allocation_denied_after_preparation",
+        "prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_allocation",
+    ),
+}
+
+
+OBSERVER_PERFORMANCE_PROBES = {
+    "molt_runtime": (
+        "builtins::module_table::tests::import_catalog_perf_attestation",
+        "object::gc::tests::cycle_capable_registry_hot_path_bench",
+    ),
+    "l7_numeric_runtime_perf_attestation": (
+        "l7_numeric_runtime_performance_attestation",
+        "shared_hash_storage_performance_attestation",
+    ),
+}
+
+
+def unrun_reason(policy: str, target: str, name: str, platform: str) -> str:
+    if (
+        policy == "semantic"
+        or name in OBSERVER_PERFORMANCE_PROBES[target]
+        or (target == "molt_runtime" and name in probes_for(platform))
+    ):
+        return "performance probe"
+    return "outside declared allocation-observer controls"
+
+
+def image_targets(policy: str) -> dict[str, str]:
+    targets = {"molt_runtime": "rlib"}
+    if policy == "allocation-observer":
+        targets["l7_numeric_runtime_perf_attestation"] = "test"
+    return targets
+
+
+def observer_selections(
+    inventory: list[str], target: str
+) -> dict[str, tuple[list[str], set[str]]]:
+    if len(inventory) != len(set(inventory)):
+        raise RuntimeError("duplicate test discovery identity")
+    required = OBSERVER_CASES[target]
+    missing = set(required) - set(inventory)
+    if missing:
+        raise RuntimeError(
+            f"{target}: missing required observer cases: {sorted(missing)}"
+        )
+    return {
+        name: (
+            ["--exact", name, "--include-ignored", "--test-threads=1", "--nocapture"],
+            {name},
+        )
+        for name in required
+    }
+
+
 def probes_for(platform: str) -> tuple[str, ...]:
     """Return the probes the runtime inventory must carry on ``platform``."""
     return tuple(
@@ -122,10 +193,13 @@ def validate_children(
     run_id: str,
     binary: Path,
     identity: tuple[int, str],
+    require_passed: bool = False,
+    invocations: set[str] | None = None,
 ) -> dict[str, dict[str, object] | None]:
     if set(children) != set(selection):
         raise RuntimeError("aggregate lacks exact complete child ledger")
-    invocations: set[str] = set()
+    if invocations is None:
+        invocations = set()
     verified: dict[str, dict[str, object] | None] = {}
     for name, (argv, expected) in selection.items():
         receipts = children[name]
@@ -149,6 +223,8 @@ def validate_children(
             raise RuntimeError(f"{name}: executable custody mismatch")
         if receipt.get("inherited_args") != argv:
             raise RuntimeError(f"{name}: wrong test selection")
+        if require_passed and receipt.get("required_passed_tests") != sorted(expected):
+            raise RuntimeError(f"{name}: wrong required-pass contract")
         problem = accounting_problem(receipt)
         if (
             problem
@@ -181,15 +257,39 @@ def validate_children(
     return verified
 
 
-def validate_artifact(artifact: dict[str, str]) -> None:
+def validate_artifact(
+    artifact: dict[str, str],
+    target_name: str = "molt_runtime",
+    target_kind: str = "rlib",
+) -> None:
     # Cargo target.kind follows crate-type: this runtime declares rlib, not lib.
     # Do not normalize arbitrary binary artifacts into the runtime authority.
     if (
-        artifact["target_name"] != "molt_runtime"
-        or artifact["target_kind"] != "rlib"
+        artifact["target_name"] != target_name
+        or artifact["target_kind"] != target_kind
         or not artifact["package"].startswith("molt-runtime@")
     ):
-        raise RuntimeError("Cargo artifact is not the runtime rlib test authority")
+        raise RuntimeError(
+            f"Cargo artifact is not the {target_name}/{target_kind} test authority"
+        )
+
+
+def select_artifacts(
+    artifacts: dict[str, dict[str, str]], policy: str
+) -> dict[str, dict[str, str]]:
+    targets = image_targets(policy)
+    selected = {}
+    for artifact in artifacts.values():
+        name = artifact["target_name"]
+        if name not in targets or name in selected:
+            raise RuntimeError(f"unexpected or duplicate Cargo test target: {name}")
+        validate_artifact(artifact, name, targets[name])
+        selected[name] = artifact
+    if set(selected) != set(targets):
+        raise RuntimeError(
+            f"missing Cargo test targets: {sorted(set(targets) - set(selected))}"
+        )
+    return selected
 
 
 def observed_build(
@@ -323,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="release-output")
     parser.add_argument(
+        "--policy", choices=("semantic", "allocation-observer"), default="semantic"
+    )
+    parser.add_argument(
         "--parallel-threads", type=int, default=max(2, min(8, os.cpu_count() or 2))
     )
     parser.add_argument("--build-timeout-seconds", type=float, default=6300)
@@ -338,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         / "runtime-gate-runs",
     )
     args = parser.parse_args(argv)
-    if args.parallel_threads < 2 or any(
+    if (args.policy == "semantic" and args.parallel_threads < 2) or any(
         not math.isfinite(value) or value <= 0
         for value in (args.build_timeout_seconds, args.child_timeout_seconds)
     ):
@@ -347,13 +450,16 @@ def main(argv: list[str] | None = None) -> int:
     run = args.receipt_root / run_id
     run.mkdir(parents=True, exist_ok=False)
     aggregate: dict = {
-        "schema": "molt.runtime-test-gate.v1",
+        "schema": "molt.runtime-test-gate.v2",
+        "policy": args.policy,
         "run_id": run_id,
         "status": "failed",
-        "performance_probes": [
-            {"identity": name, "status": "unrun"} for name in probes_for(sys.platform)
-        ],
-        "children": {},
+        "scope": (
+            "full default-feature runtime semantics; performance probes unrun"
+            if args.policy == "semantic"
+            else "declared untimed allocation/refusal controls only; no timed performance acceptance"
+        ),
+        "images": {},
     }
     try:
         source = truth.git_source_identity()
@@ -370,6 +476,15 @@ def main(argv: list[str] | None = None) -> int:
             "--no-run",
             "--message-format=json",
         ]
+        if args.policy == "allocation-observer":
+            command.extend(
+                [
+                    "--test",
+                    "l7_numeric_runtime_perf_attestation",
+                    "--features",
+                    OBSERVER_FEATURE,
+                ]
+            )
         metadata = COMMANDS.run(
             ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
             cwd=ROOT,
@@ -432,98 +547,147 @@ def main(argv: list[str] | None = None) -> int:
         artifacts = truth.expected_test_binaries(
             build.stdout, truth.package_identities_from_metadata(metadata.stdout)
         )
-        if len(artifacts) != 1:
-            raise RuntimeError("Cargo must publish exactly one runtime lib test binary")
-        artifact = next(iter(artifacts.values()))
-        validate_artifact(artifact)
-        observed = observed_build(
-            build.stdout, artifact, args.profile, aggregate["build_environment"]
-        )
-        binary = Path(artifact["executable"])
-        identity = truth._file_identity(binary)
-        aggregate["build"] = {
-            "argv": command,
-            "profile": args.profile,
-            "observed": observed,
-            "artifact": artifact,
-            "executable_size": identity[0],
-            "executable_sha256": identity[1],
-            "stdout_sha256": truth._file_identity(run / "build.stdout.jsonl")[1],
-        }
+        selected_artifacts = select_artifacts(artifacts, args.policy)
         if truth.git_source_identity() != source:
             raise RuntimeError("source changed during Cargo compilation")
-        runner._ACTIVE_EVIDENCE_DIR = run / "discovery-evidence"
-        runner._ACTIVE_EVIDENCE_DIR.mkdir()
-        inventory, discovery = runner.listed_tests(
-            str(binary), [], timeout_seconds=args.child_timeout_seconds
-        )
-        if not discovery.succeeded:
-            raise RuntimeError("runtime discovery failed")
-        aggregate["discovery"] = discovery.receipt()
-        aggregate["inventory"] = inventory
-        selection = selections(inventory, args.parallel_threads, sys.platform)
-        children: dict[str, list[dict]] = {}
-        failures = []
-        for index, (name, (child_args, _)) in enumerate(selection.items()):
-            directory = run / f"child-{index}"
-            directory.mkdir()
-            child_command = [
-                sys.executable,
-                str(ROOT / "tools/cargo_test_binary_runner.py"),
-                "--timeout-seconds",
-                str(args.child_timeout_seconds),
-                "--receipt-dir",
-                str(directory),
-                "--run-id",
-                run_id,
-                "--source-identity-json",
-                json.dumps(source),
-                "--",
-                str(binary),
-                *child_args,
-            ]
-            child = COMMANDS.run(
-                child_command,
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=args.child_timeout_seconds + 60,
-                encoding="utf-8",
+        # Inventory every required image before launching any selected test.
+        images = {}
+        for target, artifact in selected_artifacts.items():
+            observed = observed_build(
+                build.stdout, artifact, args.profile, aggregate["build_environment"]
             )
-            (directory / "driver.stdout.log").write_text(child.stdout, encoding="utf-8")
-            (directory / "driver.stderr.log").write_text(child.stderr, encoding="utf-8")
-            children[name] = truth.load_binary_receipts(
-                directory, expected_run_id=run_id, expected_source_identity=source
-            )
-            aggregate["children"][name] = {
-                "returncode": child.returncode,
-                "receipts": [str(path) for path in directory.glob("*.json")],
-            }
-            if child.returncode:
-                failures.append(name)
-                print(
-                    child_failure_summary(
-                        name, child.returncode, children[name], child.stderr
-                    ),
-                    file=sys.stderr,
+            if (
+                args.policy == "allocation-observer"
+                and OBSERVER_FEATURE not in observed["features"]
+            ):
+                raise RuntimeError(
+                    f"{target}: observer feature absent from compiled image"
                 )
-        if failures:
-            raise RuntimeError(f"failed child processes: {failures}")
-        aggregate["runtime_descendants"] = validate_children(
-            children,
-            selection,
-            source=source,
-            run_id=run_id,
-            binary=binary,
-            identity=identity,
-        )
-        if (
-            truth.git_source_identity() != source
-            or truth._file_identity(binary) != identity
+            binary = Path(artifact["executable"])
+            identity = truth._file_identity(binary)
+            runner._ACTIVE_EVIDENCE_DIR = run / target / "discovery-evidence"
+            runner._ACTIVE_EVIDENCE_DIR.mkdir(parents=True)
+            inventory, discovery = runner.listed_tests(
+                str(binary), [], timeout_seconds=args.child_timeout_seconds
+            )
+            if not discovery.succeeded:
+                raise RuntimeError(f"{target}: runtime discovery failed")
+            selection = (
+                observer_selections(inventory, target)
+                if args.policy == "allocation-observer"
+                else selections(inventory, args.parallel_threads, sys.platform)
+            )
+            selected_tests = set().union(
+                *(expected for _, expected in selection.values())
+            )
+            images[target] = (binary, identity, selection)
+            aggregate["images"][target] = {
+                "build": {
+                    "observed": observed,
+                    "artifact": artifact,
+                    "executable_size": identity[0],
+                    "executable_sha256": identity[1],
+                    "stdout_sha256": truth._file_identity(run / "build.stdout.jsonl")[
+                        1
+                    ],
+                },
+                "discovery": discovery.receipt(),
+                "inventory": inventory,
+                "unrun": [
+                    {
+                        "identity": name,
+                        "status": "unrun",
+                        "reason": unrun_reason(args.policy, target, name, sys.platform),
+                    }
+                    for name in sorted(set(inventory) - selected_tests)
+                ],
+                "children": {},
+            }
+        failures = []
+        verification_errors = {}
+        invocations: set[str] = set()
+        for target, (binary, identity, selection) in images.items():
+            image = aggregate["images"][target]
+            children: dict[str, list[dict]] = {}
+            for index, (name, (child_args, expected)) in enumerate(selection.items()):
+                directory = run / target / f"child-{index}"
+                directory.mkdir()
+                child_command = [
+                    sys.executable,
+                    str(ROOT / "tools/cargo_test_binary_runner.py"),
+                    "--timeout-seconds",
+                    str(args.child_timeout_seconds),
+                    "--receipt-dir",
+                    str(directory),
+                    "--run-id",
+                    run_id,
+                    "--source-identity-json",
+                    json.dumps(source),
+                ]
+                if args.policy == "allocation-observer":
+                    for test in sorted(expected):
+                        child_command.extend(["--require-passed-test", test])
+                child_command.extend(["--", str(binary), *child_args])
+                child = COMMANDS.run(
+                    child_command,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=args.child_timeout_seconds + 60,
+                    encoding="utf-8",
+                )
+                (directory / "driver.stdout.log").write_text(
+                    child.stdout, encoding="utf-8"
+                )
+                (directory / "driver.stderr.log").write_text(
+                    child.stderr, encoding="utf-8"
+                )
+                children[name] = truth.load_binary_receipts(
+                    directory, expected_run_id=run_id, expected_source_identity=source
+                )
+                image["children"][name] = {
+                    "returncode": child.returncode,
+                    "receipts": [str(path) for path in directory.glob("*.json")],
+                }
+                if child.returncode:
+                    failures.append(f"{target}:{name}")
+                    print(
+                        child_failure_summary(
+                            name, child.returncode, children[name], child.stderr
+                        ),
+                        file=sys.stderr,
+                    )
+            try:
+                image["runtime_descendants"] = validate_children(
+                    children,
+                    selection,
+                    source=source,
+                    run_id=run_id,
+                    binary=binary,
+                    identity=identity,
+                    require_passed=args.policy == "allocation-observer",
+                    invocations=invocations,
+                )
+            except RuntimeError as exc:
+                # A red image cannot claim a pass, but the other image's
+                # independent controls still produce useful first-run evidence.
+                image["verification_error"] = str(exc)
+                verification_errors[target] = str(exc)
+            else:
+                image["passed_test_count"] = sum(
+                    len(expected) for _, expected in selection.values()
+                )
+        if failures or verification_errors:
+            raise RuntimeError(
+                f"failed child processes: {failures}; image verification errors: {verification_errors}"
+            )
+        if truth.git_source_identity() != source or any(
+            truth._file_identity(binary) != identity
+            for binary, identity, _ in images.values()
         ):
             raise RuntimeError("source/binary changed during aggregate verification")
-        aggregate["semantic_pass_count"] = len(inventory) - len(
-            probes_for(sys.platform)
+        aggregate["passed_test_count"] = sum(
+            image["passed_test_count"] for image in aggregate["images"].values()
         )
         aggregate["status"] = "success"
     except Exception as exc:

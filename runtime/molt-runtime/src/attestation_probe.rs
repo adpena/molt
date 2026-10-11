@@ -28,6 +28,205 @@ pub struct Snapshot {
     pub numeric_hook_calls: u64,
 }
 
+// Fixed recording storage and its lock are initialized before tracing.
+// Recording callbacks only mutate that storage; they never allocate or format.
+const REQUEST_LIMIT: usize = 128;
+static TRACE_REQUESTS: AtomicBool = AtomicBool::new(false);
+static REQUESTS: std::sync::Mutex<RequestState> = std::sync::Mutex::new(RequestState::EMPTY);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AllocationOperation {
+    Allocate,
+    Zeroed,
+    Reallocate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AllocationOutcome {
+    Pending,
+    Granted,
+    Denied,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocationRequest {
+    pub ordinal: usize,
+    pub operation: AllocationOperation,
+    pub size: usize,
+    pub alignment: usize,
+    pub outcome: AllocationOutcome,
+}
+
+impl AllocationRequest {
+    const EMPTY: Self = Self {
+        ordinal: 0,
+        operation: AllocationOperation::Allocate,
+        size: 0,
+        alignment: 0,
+        outcome: AllocationOutcome::Pending,
+    };
+
+    fn matches(&self, other: &Self) -> bool {
+        self.ordinal == other.ordinal
+            && self.operation == other.operation
+            && self.size == other.size
+            && self.alignment == other.alignment
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AllocationTrace {
+    requests: [AllocationRequest; REQUEST_LIMIT],
+    len: usize,
+    pub overflowed: bool,
+    pub prefix_mismatch: bool,
+}
+
+impl AllocationTrace {
+    const EMPTY: Self = Self {
+        requests: [AllocationRequest::EMPTY; REQUEST_LIMIT],
+        len: 0,
+        overflowed: false,
+        prefix_mismatch: false,
+    };
+
+    pub fn requests(&self) -> &[AllocationRequest] {
+        &self.requests[..self.len]
+    }
+}
+
+struct RequestState {
+    actual: AllocationTrace,
+    expected: [AllocationRequest; REQUEST_LIMIT],
+    expected_len: usize,
+}
+
+impl RequestState {
+    const EMPTY: Self = Self {
+        actual: AllocationTrace::EMPTY,
+        expected: [AllocationRequest::EMPTY; REQUEST_LIMIT],
+        expected_len: 0,
+    };
+}
+
+/// Records real Rust allocator requests; optionally refuses only the final
+/// request of an exactly matching previously observed successful prefix. A
+/// changed prefix disables refusal, and makes the proof visibly fail instead
+/// of denying an unrelated infallible allocation. Own the process exclusively.
+pub struct AllocationTraceGuard;
+
+pub fn trace_allocations(deny_prefix: Option<&[AllocationRequest]>) -> AllocationTraceGuard {
+    assert!(
+        !TRACK.load(Ordering::Relaxed),
+        "allocation probe already active"
+    );
+    assert!(
+        !TRACE_REQUESTS.load(Ordering::Relaxed),
+        "request trace already active"
+    );
+    assert!(
+        !DENY_ALLOCATIONS.load(Ordering::Relaxed),
+        "allocation denial already active"
+    );
+    let prefix = deny_prefix.unwrap_or(&[]);
+    assert!(
+        prefix.len() <= REQUEST_LIMIT,
+        "request prefix exceeds bounded storage"
+    );
+    assert!(
+        prefix
+            .iter()
+            .all(|request| request.outcome == AllocationOutcome::Granted)
+    );
+    reset();
+    DENIED_ALLOCATIONS.store(0, Ordering::Relaxed);
+    {
+        let mut state = REQUESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = RequestState::EMPTY;
+        state.expected[..prefix.len()].copy_from_slice(prefix);
+        state.expected_len = prefix.len();
+    }
+    TRACE_REQUESTS.store(true, Ordering::Relaxed);
+    set_tracking(true);
+    AllocationTraceGuard
+}
+
+impl AllocationTraceGuard {
+    pub fn finish(self) -> AllocationTrace {
+        drop(self);
+        REQUESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .actual
+    }
+}
+
+impl Drop for AllocationTraceGuard {
+    fn drop(&mut self) {
+        set_tracking(false);
+        TRACE_REQUESTS.store(false, Ordering::Relaxed);
+    }
+}
+
+fn request_allocation(
+    operation: AllocationOperation,
+    size: usize,
+    alignment: usize,
+) -> (Option<usize>, bool) {
+    let mut denied = TRACK.load(Ordering::Relaxed) && DENY_ALLOCATIONS.load(Ordering::Relaxed);
+    let mut recorded = None;
+    if TRACE_REQUESTS.load(Ordering::Relaxed) {
+        let mut state = REQUESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = state.actual.len;
+        if index == REQUEST_LIMIT {
+            state.actual.overflowed = true;
+        } else {
+            let mut request = AllocationRequest {
+                ordinal: index + 1,
+                operation,
+                size,
+                alignment,
+                outcome: AllocationOutcome::Pending,
+            };
+            if index < state.expected_len && !state.actual.prefix_mismatch {
+                if !request.matches(&state.expected[index]) {
+                    state.actual.prefix_mismatch = true;
+                } else if index + 1 == state.expected_len {
+                    denied = true;
+                }
+            }
+            if denied {
+                request.outcome = AllocationOutcome::Denied;
+            }
+            state.actual.requests[index] = request;
+            state.actual.len += 1;
+            recorded = Some(index);
+        }
+    }
+    if denied {
+        DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+    (recorded, denied)
+}
+
+fn complete_request(index: Option<usize>, succeeded: bool) {
+    if let Some(index) = index {
+        let mut state = REQUESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.actual.requests[index].outcome = if succeeded {
+            AllocationOutcome::Granted
+        } else {
+            AllocationOutcome::Failed
+        };
+    }
+}
+
 pub struct CountingMiMalloc;
 
 impl CountingMiMalloc {
@@ -70,11 +269,16 @@ fn record_deallocation(size: usize) {
 unsafe impl GlobalAlloc for CountingMiMalloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let track = TRACK.load(Ordering::Relaxed);
-        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
-            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let (request, denied) = if track {
+            request_allocation(AllocationOperation::Allocate, layout.size(), layout.align())
+        } else {
+            (None, false)
+        };
+        if denied {
             return std::ptr::null_mut();
         }
         let ptr = unsafe { mimalloc::MiMalloc.alloc(layout) };
+        complete_request(request, !ptr.is_null());
         if !ptr.is_null() && track {
             record_allocation(layout.size());
         }
@@ -90,11 +294,16 @@ unsafe impl GlobalAlloc for CountingMiMalloc {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let track = TRACK.load(Ordering::Relaxed);
-        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
-            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let (request, denied) = if track {
+            request_allocation(AllocationOperation::Zeroed, layout.size(), layout.align())
+        } else {
+            (None, false)
+        };
+        if denied {
             return std::ptr::null_mut();
         }
         let ptr = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
+        complete_request(request, !ptr.is_null());
         if !ptr.is_null() && track {
             record_allocation(layout.size());
         }
@@ -103,11 +312,16 @@ unsafe impl GlobalAlloc for CountingMiMalloc {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let track = TRACK.load(Ordering::Relaxed);
-        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
-            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let (request, denied) = if track {
+            request_allocation(AllocationOperation::Reallocate, new_size, layout.align())
+        } else {
+            (None, false)
+        };
+        if denied {
             return std::ptr::null_mut();
         }
         let next = unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) };
+        complete_request(request, !next.is_null());
         if !next.is_null() && track {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);

@@ -407,43 +407,47 @@ mod tests {
 
     #[test]
     fn public_no_memory_transfers_real_values_after_reserve_exhaustion_without_allocation() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            // Every transferred value remains owned until all acquisitions have
-            // completed: no test release can secretly replenish the reserve.
-            let mut values: [Option<OwnedPyObject>; CAPACITY + 2] = std::array::from_fn(|_| None);
-            let _denial = AllocationDenial::enter();
-            for slot in &mut values {
-                unsafe {
-                    assert!(errors::PyErr_NoMemory().is_null());
-                    let value = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
-                    assert!(!value.as_ptr().is_null());
-                    assert_eq!((*value.as_ptr()).ob_type, &raw mut PyExc_MemoryError);
-                    assert!(errors::PyErr_Occurred().is_null());
-                    *slot = Some(value);
+        // This proves boot capacity. Other tests may legitimately retire a
+        // reserve value whose finalizer mutates it without retaining an owner.
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                // Every transferred value remains owned until all acquisitions have
+                // completed: no test release can secretly replenish the reserve.
+                let mut values: [Option<OwnedPyObject>; CAPACITY + 2] =
+                    std::array::from_fn(|_| None);
+                let _denial = AllocationDenial::enter();
+                for slot in &mut values {
+                    unsafe {
+                        assert!(errors::PyErr_NoMemory().is_null());
+                        let value = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!value.as_ptr().is_null());
+                        assert_eq!((*value.as_ptr()).ob_type, &raw mut PyExc_MemoryError);
+                        assert!(errors::PyErr_Occurred().is_null());
+                        *slot = Some(value);
+                    }
                 }
-            }
-            for (index, value) in values[..CAPACITY].iter().enumerate() {
-                for later in &values[index + 1..] {
-                    assert_ne!(
-                        value.as_ref().unwrap().as_ptr(),
-                        later.as_ref().unwrap().as_ptr(),
-                        "every retained reserve value is distinct from the rest and the fallback"
-                    );
+                for (index, value) in values[..CAPACITY].iter().enumerate() {
+                    for later in &values[index + 1..] {
+                        assert_ne!(
+                            value.as_ref().unwrap().as_ptr(),
+                            later.as_ref().unwrap().as_ptr(),
+                            "every retained reserve value is distinct from the rest and the fallback"
+                        );
+                    }
                 }
-            }
-            assert_eq!(
-                values[CAPACITY].as_ref().unwrap().as_ptr(),
-                values[CAPACITY + 1].as_ref().unwrap().as_ptr(),
-                "exhaustion uses the interpreter's retained last-resort object"
-            );
-            // Return owners while denial remains active, then prove both public
-            // transfer forms on a freshly selected (replenished) reserve value.
-            for value in &mut values {
-                drop(value.take());
-            }
-            record_memory_error_without_allocation(py);
-            crate::test_support::assert_and_clear_emergency_memory_error(py);
+                assert_eq!(
+                    values[CAPACITY].as_ref().unwrap().as_ptr(),
+                    values[CAPACITY + 1].as_ref().unwrap().as_ptr(),
+                    "exhaustion uses the interpreter's retained last-resort object"
+                );
+                // Return owners while denial remains active, then prove both public
+                // transfer forms on a freshly selected (replenished) reserve value.
+                for value in &mut values {
+                    drop(value.take());
+                }
+                record_memory_error_without_allocation(py);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+            });
         });
     }
 

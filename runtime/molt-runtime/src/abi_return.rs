@@ -74,7 +74,14 @@ pub(crate) fn fail<D: AbiReturnDomain>(
 #[inline]
 pub(crate) fn fail_memory<D: AbiReturnDomain>(py: &PyToken<'_>) -> D::Repr {
     let _ = D::KIND;
-    crate::record_memory_error_without_allocation(py);
+    // Raw host allocation is also valid before interpreter admission. Its
+    // typed failure sentinel is sufficient there: obtaining runtime_state
+    // would bootstrap an interpreter while the allocation is being refused.
+    // Existing admitted/bootstrap/finalization owners retain the ordinary
+    // exception contract and the reserve's own initialization invariant.
+    if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+        crate::record_memory_error_without_allocation(py);
+    }
     D::FAILURE
 }
 

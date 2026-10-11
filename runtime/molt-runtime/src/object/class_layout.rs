@@ -1778,11 +1778,7 @@ mod tests {
                 // with a second owner that hides the broken physical invariant.
                 *tail = MoltObject::from_int(99).bits();
                 dec_ref_bits(py, backing);
-                assert!(
-                    super::super::ops::dict_like_bits_from_ptr(py, ptr)
-                        .unwrap()
-                        .is_none()
-                );
+                assert!(super::super::ops::dict_like_bits_from_ptr(py, ptr).is_err());
                 assert!(exception_pending(py));
                 assert_eq!(*tail, MoltObject::from_int(99).bits());
                 clear_exception(py);

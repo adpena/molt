@@ -934,34 +934,41 @@ pub(crate) unsafe fn numeric_result_class(
     result: *mut PyObject,
     expected: *mut PyTypeObject,
 ) -> Result<(*mut PyTypeObject, NumericResultKind), crate::ErrorIndicatorSet> {
-    if crate::api::errors::raised_error_pending() {
-        return Err(crate::ErrorIndicatorSet);
-    }
-    let actual = unsafe { crate::bridge::semantic_type(result) };
-    if actual.is_null() {
-        if !crate::api::errors::raised_error_pending() {
-            unsafe { crate::bridge::ensure_result_error(c"numeric result class unavailable") };
+    // Type resolution is preparation, after the native slot has seen the
+    // caller's raised errors. Distinguish a new lookup failure from those
+    // incoming owners without projecting either error channel.
+    let classify = || {
+        let actual = unsafe { crate::bridge::semantic_type(result) };
+        if actual.is_null() {
+            if !crate::api::errors::raised_error_pending() {
+                unsafe { crate::bridge::ensure_result_error(c"numeric result class unavailable") };
+            }
+            return Err(crate::ErrorIndicatorSet);
         }
-        return Err(crate::ErrorIndicatorSet);
-    }
+        if crate::api::errors::raised_error_pending() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        if actual == expected {
+            return Ok((actual, NumericResultKind::Exact));
+        }
+        let subtype = unsafe { crate::api::typeobj::PyType_IsSubtype(actual, expected) };
+        if crate::api::errors::raised_error_pending() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        Ok((
+            actual,
+            if subtype != 0 {
+                NumericResultKind::Subtype
+            } else {
+                NumericResultKind::Other
+            },
+        ))
+    };
     if crate::api::errors::raised_error_pending() {
-        return Err(crate::ErrorIndicatorSet);
+        crate::api::errors::with_saved_error(classify)
+    } else {
+        classify()
     }
-    if actual == expected {
-        return Ok((actual, NumericResultKind::Exact));
-    }
-    let subtype = unsafe { crate::api::typeobj::PyType_IsSubtype(actual, expected) };
-    if crate::api::errors::raised_error_pending() {
-        return Err(crate::ErrorIndicatorSet);
-    }
-    Ok((
-        actual,
-        if subtype != 0 {
-            NumericResultKind::Subtype
-        } else {
-            NumericResultKind::Other
-        },
-    ))
 }
 
 /// Numeric conversion diagnostics use CPython's caller-selected byte precision. Reuse
@@ -1037,12 +1044,26 @@ pub unsafe fn exact_integer_result(result: *mut PyObject) -> *mut PyObject {
     if kind == NumericResultKind::Exact {
         return result;
     }
-    let has_payload =
-        kind == NumericResultKind::Subtype && unsafe { numbers::has_layout_long(result) };
-    if conversion_exception_pending() {
+    // Physical subtype resolution is also fallible preparation. Its pending
+    // check must not mistake the restored incoming error for a lookup failure.
+    let inspect_payload = || {
+        let has_payload =
+            kind == NumericResultKind::Subtype && unsafe { numbers::has_layout_long(result) };
+        if conversion_exception_pending() {
+            Err(crate::ErrorIndicatorSet)
+        } else {
+            Ok(has_payload)
+        }
+    };
+    let payload = if conversion_exception_pending() {
+        crate::api::errors::with_saved_error(inspect_payload)
+    } else {
+        inspect_payload()
+    };
+    let Ok(has_payload) = payload else {
         unsafe { crate::api::refcount::Py_DECREF(result) };
         return ptr::null_mut();
-    }
+    };
     let exact = if has_payload {
         unsafe { numbers::copy_layout_long_to_exact(result) }
     } else {

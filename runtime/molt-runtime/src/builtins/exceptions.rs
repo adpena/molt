@@ -373,11 +373,9 @@ pub(crate) fn raise_exception_bytes<T: ExceptionSentinel>(
     if !ptr.is_null() {
         record_exception_owned(_py, ptr);
     } else {
-        // CPython keeps a preallocated MemoryError for precisely this case.
-        // Molt's heap exception representation cannot be constructed without
-        // allocation, so retain the same semantic fact in the canonical
-        // exception state without allocating or recursively bootstrapping the
-        // runtime. A later successful raise replaces this marker normally.
+        // Preserve an error already selected by the allocator or a callback.
+        // If neither channel owns one, the prepared reserve supplies a real
+        // MemoryError instance without allocation or recursive bootstrap.
         record_emergency_memory_error(_py);
     }
     T::exception_sentinel()

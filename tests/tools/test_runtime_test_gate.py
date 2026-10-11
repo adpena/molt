@@ -535,3 +535,241 @@ def test_new_fresh_semantic_owner_cannot_remain_ignored(tmp_path, name):
     children[name][0]["test_results"][0]["status"] = "ignored"
     with pytest.raises(RuntimeError):
         gate.validate_children(children, selected, **binding)
+
+
+# Independent required controls from their Rust owners, not a test-count quota.
+OBSERVER_WITNESSES = {
+    "molt_runtime": {
+        "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
+        "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
+        "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",
+        "object::gc::tests::repeated_reachable_collection_workspace_allocations",
+        "cpython_abi_hooks::exception_rendering_tests::decimal_output_limits::rejected_decimal_magnitude_does_not_allocate_decimal_storage",
+        "object::ops::unpack_transaction_tests::exact_builtin_unpack_hot_path_performs_zero_allocator_calls",
+        "state::runtime_state::tests::encoded_core_gil_entry_is_allocation_free_after_warmup",
+    },
+    "l7_numeric_runtime_perf_attestation": {
+        "integer_byte_encoder_runs_with_allocation_denied_after_preparation",
+        "prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_allocation",
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "missing_case",
+        "missing_image",
+        "wrong_target",
+        "missing_feature",
+        "ignored",
+        "required_pass",
+        "same_process",
+        "changed_image",
+        "changed_source",
+        "first_image_failure",
+    ],
+)
+def test_observer_builds_once_and_requires_isolated_source_bound_controls(
+    monkeypatch, tmp_path, mutation
+):
+    import json
+    from types import SimpleNamespace
+
+    # Real capture files and the existing receipt validators are used; Cargo
+    # and libtest launch themselves are fake, so this test cannot build Rust.
+    images = {name: support.make_image(tmp_path / name) for name in OBSERVER_WITNESSES}
+    package_id = "path+file:///runtime#molt-runtime@0.1.0"
+    metadata = {
+        "packages": [{"id": package_id, "name": "molt-runtime", "version": "0.1.0"}]
+    }
+    artifacts = [
+        {
+            "reason": "compiler-artifact",
+            "package_id": package_id,
+            "target": {
+                "name": name,
+                "kind": ["rlib" if name == "molt_runtime" else "test"],
+            },
+            "profile": {"test": True, "debug_assertions": False, "opt_level": "3"},
+            "features": ["l7-attestation-probe", "stdlib_full"],
+            "executable": str(binary),
+        }
+        for name, binary in images.items()
+    ]
+    if mutation == "missing_image":
+        artifacts.pop()
+    elif mutation == "wrong_target":
+        artifacts[-1]["target"]["kind"] = ["bin"]
+    elif mutation == "missing_feature":
+        artifacts[-1]["features"] = ["stdlib_full"]
+    inventories = {
+        name: [*sorted(required), "ordinary_not_selected", "timed_probe_not_selected"]
+        for name, required in OBSERVER_WITNESSES.items()
+    }
+    if mutation == "missing_case":
+        inventories["l7_numeric_runtime_perf_attestation"].pop(0)
+    source_reads = 0
+
+    def source_identity():
+        nonlocal source_reads
+        source_reads += 1
+        if mutation == "changed_source" and source_reads > 2:
+            return dict(support.SOURCE, head="changed")
+        return support.SOURCE
+
+    monkeypatch.setattr(gate.truth, "git_source_identity", source_identity)
+    discoveries = []
+
+    def discover(binary, inherited_args, **kwargs):
+        name = next(name for name, path in images.items() if str(path) == binary)
+        discoveries.append(name)
+        return inventories[name], SimpleNamespace(
+            succeeded=True, receipt=lambda: {"argv": [binary, "--list"]}
+        )
+
+    monkeypatch.setattr(gate.runner, "listed_tests", discover)
+    builds = []
+    children = []
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            result = SimpleNamespace(stdout="", stderr="", returncode=0)
+            if argv[:2] == ["cargo", "metadata"]:
+                result.stdout = json.dumps(metadata)
+            elif argv[:2] == ["cargo", "test"]:
+                builds.append(argv)
+                result.stdout = "\n".join(json.dumps(item) for item in artifacts)
+            elif argv[0] in {"cargo", "rustc"}:
+                result.stdout = "fixture-toolchain"
+            else:
+                # Both inventories must be admitted before any test starts.
+                assert set(discoveries) == set(OBSERVER_WITNESSES)
+                split = argv.index("--")
+                binary = Path(argv[split + 1])
+                args = argv[split + 2 :]
+                name = args[args.index("--exact") + 1]
+                assert args == [
+                    "--exact",
+                    name,
+                    "--include-ignored",
+                    "--test-threads=1",
+                    "--nocapture",
+                ]
+                assert argv[argv.index("--require-passed-test") + 1] == name
+                directory = Path(argv[argv.index("--receipt-dir") + 1])
+                receipt = support.binary_receipt(
+                    directory,
+                    binary,
+                    [name],
+                    [],
+                    args=args,
+                    run_id=argv[argv.index("--run-id") + 1],
+                    invocation=(
+                        f"child-{len(children) - 1}"
+                        if mutation == "same_process"
+                        and binary == images["l7_numeric_runtime_perf_attestation"]
+                        else f"child-{len(children)}"
+                    ),
+                    statuses=(
+                        {name: "ignored"}
+                        if mutation == "ignored"
+                        else {name: "fail"}
+                        if mutation == "first_image_failure"
+                        and binary == images["molt_runtime"]
+                        else None
+                    ),
+                )
+                if (
+                    mutation == "first_image_failure"
+                    and binary == images["molt_runtime"]
+                ):
+                    result.returncode = 1
+                receipt["required_passed_tests"] = (
+                    [] if mutation == "required_pass" else [name]
+                )
+                gate.runner.write_receipt(directory / "receipt.json", receipt)
+                children.append((binary, name))
+                if mutation == "changed_image":
+                    binary.write_bytes(b"replacement-image")
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    root = tmp_path / "receipts"
+    code = gate.main(["--policy", "allocation-observer", "--receipt-root", str(root)])
+    receipt = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    assert len(builds) == 1
+    command = builds[0]
+    assert "--lib" in command and "--no-run" in command
+    assert command[command.index("--test") + 1] == "l7_numeric_runtime_perf_attestation"
+    assert command[command.index("--features") + 1] == "l7-attestation-probe"
+    if mutation:
+        assert code == 1 and receipt["status"] == "failed"
+        if mutation in {
+            "missing_case",
+            "missing_image",
+            "wrong_target",
+            "missing_feature",
+        }:
+            assert children == []
+        if mutation == "first_image_failure":
+            assert "verification_error" in receipt["images"]["molt_runtime"]
+            assert "passed_test_count" not in receipt["images"]["molt_runtime"]
+            assert {
+                name
+                for binary, name in children
+                if binary == images["l7_numeric_runtime_perf_attestation"]
+            } == OBSERVER_WITNESSES["l7_numeric_runtime_perf_attestation"]
+            assert (
+                "verification_error"
+                not in receipt["images"]["l7_numeric_runtime_perf_attestation"]
+            )
+        return
+    assert code == 0 and receipt["status"] == "success"
+    assert receipt["schema"] == "molt.runtime-test-gate.v2"
+    assert receipt["policy"] == "allocation-observer"
+    assert set(receipt["images"]) == set(OBSERVER_WITNESSES)
+    for target, required in OBSERVER_WITNESSES.items():
+        image = receipt["images"][target]
+        assert set(image["children"]) == required
+        assert {
+            name for binary, name in children if binary == images[target]
+        } == required
+        assert len(
+            [name for binary, name in children if binary == images[target]]
+        ) == len(required)
+        assert {row["identity"] for row in image["unrun"]} == {
+            "ordinary_not_selected",
+            "timed_probe_not_selected",
+        }
+        assert all(row["status"] == "unrun" for row in image["unrun"])
+        assert image["build"]["artifact"]["target_name"] == target
+    assert receipt["passed_test_count"] == sum(map(len, OBSERVER_WITNESSES.values()))
+
+
+def test_observer_discovery_rejects_duplicate_case():
+    names = sorted(OBSERVER_WITNESSES["molt_runtime"])
+    with pytest.raises(RuntimeError, match="duplicate"):
+        gate.observer_selections([*names, names[0]], "molt_runtime")
+
+
+def test_feature_only_performance_probes_are_unrun_without_changing_default_policy():
+    for name in (
+        "builtins::module_table::tests::import_catalog_perf_attestation",
+        "object::gc::tests::cycle_capable_registry_hot_path_bench",
+    ):
+        assert name not in gate.probes_for("linux")
+        assert (
+            gate.unrun_reason("allocation-observer", "molt_runtime", name, "linux")
+            == "performance probe"
+        )
+    assert (
+        gate.unrun_reason(
+            "allocation-observer",
+            "l7_numeric_runtime_perf_attestation",
+            "l7_numeric_runtime_performance_attestation",
+            "linux",
+        )
+        == "performance probe"
+    )

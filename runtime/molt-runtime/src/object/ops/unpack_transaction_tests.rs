@@ -129,21 +129,41 @@ fn zero_target_unpack_validates_arity_without_output_memory() {
 
 #[test]
 fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
+    use molt_cpython_abi::api::{errors, refcount, sequences};
+
     let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let source_ptr = crate::alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
-        let source_bits = MoltObject::from_ptr(source_ptr).bits();
+        let item = MoltObject::from_int(7).bits();
+        FAILING_ITER_VALUE.store(item, Ordering::Relaxed);
+        FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
+        let source_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
         let result = unsafe { molt_unpack_sequence(source_bits, 1, 0) };
         assert_eq!(result, MoltObject::none().bits());
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        let exc_ptr = obj_from_bits(exc_bits)
-            .as_ptr()
-            .expect("MemoryError must be an exception object");
-        let message = crate::format_exception_message(_py, exc_ptr);
-        assert!(message.contains("sequence unpack result allocation failed"));
-        let _ = crate::molt_exception_clear();
-        dec_ref_bits(_py, exc_bits);
+        assert_eq!(FAILING_ITER_CALLS.load(Ordering::Relaxed), 0);
+        unsafe {
+            let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!raised.as_ptr().is_null());
+            let args =
+                refcount::OwnedPyObject::from_owned(errors::PyException_GetArgs(raised.as_ptr()));
+            assert!(!args.as_ptr().is_null());
+            assert_eq!(sequences::PyTuple_Size(args.as_ptr()), 0);
+            errors::PyErr_SetRaisedException(raised.into_ptr());
+        }
+        crate::test_support::assert_and_clear_emergency_memory_error(_py);
+        // The same real iterator succeeds once output storage exists. This
+        // proves that the zero-call failure witness observes actual iteration.
+        let mut output = [MoltObject::none().bits()];
+        let result = unsafe {
+            molt_unpack_sequence(
+                source_bits,
+                1,
+                crate::provenance::abi::expose_address(output.as_mut_ptr()),
+            )
+        };
+        assert_eq!(result, 0);
+        assert_eq!(output, [item]);
+        assert_eq!(FAILING_ITER_CALLS.load(Ordering::Relaxed), 2);
+        assert!(!exception_pending(_py));
         dec_ref_bits(_py, source_bits);
     });
 }

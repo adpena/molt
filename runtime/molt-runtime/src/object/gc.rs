@@ -4618,21 +4618,26 @@ mod tests {
         use molt_cpython_abi::api::errors;
         use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 
-        let witness = unsafe { &mut *object.cast::<ModuleClearWitness>() };
-        witness.releases += 1;
-        // Reenter the bridge: publication must have released its lock before
-        // this ordinary C decref invokes the module's finalizer.
-        witness.saw_empty_module = GLOBAL_BRIDGE.cfunction_module(witness.callable_bits)
-            == Some(Ok(MoltObject::none().bits()));
-        witness.saw_receiver_mirror =
-            unsafe { (*witness.callable.cast::<PyCFunctionObject>()).m_self == witness.receiver }
-                && GLOBAL_BRIDGE.mirrored_c_refcount(witness.receiver.addr()) > 0;
-        unsafe {
-            errors::PyErr_SetString(
-                (&raw mut PyExc_ValueError).cast(),
-                c"module finalizer".as_ptr(),
-            )
-        };
+        // Ordinary tp_dealloc owns preservation of its incoming error. The
+        // raw detached-edge sink does not promise collector-level suppression.
+        errors::with_preserved_error(|| {
+            let witness = unsafe { &mut *object.cast::<ModuleClearWitness>() };
+            witness.releases += 1;
+            // Reenter the bridge: publication must have released its lock before
+            // this ordinary C decref invokes the module's finalizer.
+            witness.saw_empty_module = GLOBAL_BRIDGE.cfunction_module(witness.callable_bits)
+                == Some(Ok(MoltObject::none().bits()));
+            witness.saw_receiver_mirror =
+                unsafe {
+                    (*witness.callable.cast::<PyCFunctionObject>()).m_self == witness.receiver
+                } && GLOBAL_BRIDGE.mirrored_c_refcount(witness.receiver.addr()) > 0;
+            unsafe {
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_ValueError).cast(),
+                    c"module finalizer".as_ptr(),
+                )
+            };
+        });
     }
 
     #[test]
@@ -4701,6 +4706,16 @@ mod tests {
             };
             assert!(unsafe { (*callable.cast::<PyCFunctionObject>()).m_module }.is_null());
             assert_eq!(module.releases, 0, "publishing NULL must not run callbacks");
+            let prior = unsafe {
+                errors::PyErr_SetString(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast(),
+                    c"incoming module-clear error".as_ptr(),
+                );
+                let prior = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!prior.as_ptr().is_null());
+                errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                prior
+            };
             sink.release_all(py);
             assert_eq!(module.releases, 1);
             assert!(module.saw_empty_module && module.saw_receiver_mirror);
@@ -4708,10 +4723,16 @@ mod tests {
                 GLOBAL_BRIDGE.mirrored_c_refcount(receiver_view.addr()),
                 mirrors
             );
-            assert!(
-                unsafe { errors::PyErr_Occurred() }.is_null(),
-                "module-finalizer errors are drained"
+            let restored =
+                unsafe { refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException()) };
+            assert_eq!(
+                restored.as_ptr(),
+                prior.as_ptr(),
+                "the native destructor must preserve the exact incoming raised object"
             );
+            drop(restored);
+            drop(prior);
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
             unsafe {
                 super::super::heap_lifecycle::clear_cycle_edges_with_sink(py, runtime, &mut sink)
             };

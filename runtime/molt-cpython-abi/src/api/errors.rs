@@ -486,8 +486,8 @@ pub fn with_saved_error<T, F: FnOnce() -> Result<T, crate::ErrorIndicatorSet>>(
         .result
         .expect("preparation hook must call back synchronously");
     if matches!(&result, Ok(Err(_))) {
-        // The runtime has retained the selected failure, including an emergency
-        // with no C representation. Ordinary retirement may move that exact
+        // The runtime has retained the selected failure, including a reserved
+        // MemoryError instance. Ordinary retirement may move that exact
         // failure between channels; do not republish or drain after it.
         retire_normalized_error(error);
     } else if let Some(error) = error {

@@ -958,16 +958,11 @@ fn exact_string_reads_setdefault_reservation_failure_keeps_entries_and_owners() 
                 })));
                 let result =
                     dict_setdefault_in_place(py, dict, key, (!empty_list).then_some(default));
-                set_tracker(Box::new(UnlimitedTracker));
                 assert_eq!(result, None);
-                // The zero-allocation budget also prevents constructing a
-                // heap exception. The canonical raised state keeps its
-                // allocation-free MemoryError marker, not an exception object.
-                assert!(exception_pending(py));
-                let raised = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(obj_from_bits(raised).is_none());
-                crate::clear_exception(py);
-                assert!(!exception_pending(py));
+                // The prepared reserve publishes and transfers a real instance
+                // while the same zero-allocation resource budget is active.
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                set_tracker(Box::new(UnlimitedTracker));
                 assert!(
                     dict_live_entries(dict)
                         .flat_map(|row| [row.key, row.value])

@@ -947,9 +947,61 @@ fn shared_hash_storage_performance_attestation() {
     );
 }
 
+// A plain alloc/free pair may be removed or treated as infallible by the
+// optimizer. Call the image's real global entry points through opaque function
+// pointers, and require both actual storage and observed denial. black_box is
+// only an optimization hint: these assertions, not the hint, establish that
+// this compiled image is sensitive to its selected global allocator.
+fn assert_global_allocator_sensitivity() {
+    use std::alloc::Layout;
+
+    let allocate = black_box(std::alloc::alloc as unsafe fn(Layout) -> *mut u8);
+    let deallocate = black_box(std::alloc::dealloc as unsafe fn(*mut u8, Layout));
+    let layout = Layout::from_size_align(17, 1).unwrap();
+    attestation_probe::reset();
+    attestation_probe::set_tracking(true);
+    let storage = unsafe { allocate(black_box(layout)) };
+    let storage_ok = if storage.is_null() {
+        false
+    } else {
+        unsafe {
+            storage.write(0xa5);
+            black_box(storage).read() == 0xa5
+        }
+    };
+    attestation_probe::set_tracking(false);
+    let observed = attestation_probe::snapshot();
+    if !storage.is_null() {
+        unsafe { deallocate(black_box(storage), layout) };
+    }
+    assert!(
+        storage_ok,
+        "global allocation must provide actual usable storage"
+    );
+    assert_eq!(
+        observed.allocations, 1,
+        "global observer did not see the request"
+    );
+    assert_eq!(observed.allocated_bytes, layout.size() as u64);
+    assert_eq!(observed.c_allocation_attempts, 0);
+
+    let denial = attestation_probe::deny_allocations();
+    let refused = unsafe { allocate(black_box(layout)) };
+    drop(denial);
+    let denied = attestation_probe::denied_allocations();
+    if !refused.is_null() {
+        unsafe { deallocate(black_box(refused), layout) };
+    }
+    assert!(
+        refused.is_null(),
+        "the selected global allocator did not refuse the request"
+    );
+    assert_eq!(denied, 1);
+    assert_eq!(attestation_probe::denied_c_allocations(), 0);
+}
+
 #[test]
 fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
-    use std::alloc::{Layout, alloc, dealloc};
     initialize_runtime();
     let hooks = molt_cpython_abi::hooks::hooks().expect("real numeric hooks");
     let source = [0x35u8; 33];
@@ -962,15 +1014,7 @@ fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
         unsafe { (hooks.int_to_bytes)(bits, output.as_mut_ptr(), output.len(), 1, 0) },
         0
     );
-    let layout = Layout::from_size_align(17, 1).unwrap();
-    let denial = attestation_probe::deny_allocations();
-    let refused = unsafe { alloc(layout) };
-    drop(denial);
-    if !refused.is_null() {
-        unsafe { dealloc(refused, layout) };
-    }
-    assert!(refused.is_null());
-    assert_eq!(attestation_probe::denied_allocations(), 1);
+    assert_global_allocator_sensitivity();
     let denial = attestation_probe::deny_allocations();
     let heap_status =
         unsafe { (hooks.int_to_bytes)(bits, output.as_mut_ptr(), output.len(), 1, 0) };
@@ -1110,17 +1154,15 @@ fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_alloc
     use molt_cpython_abi::api::memory::{
         PyMem_RawCalloc, PyMem_RawFree, PyMem_RawMalloc, PyMem_RawRealloc,
     };
-    use std::alloc::{Layout, alloc, dealloc};
 
     initialize_runtime();
     assert_no_pending_exception();
-    let layout = Layout::from_size_align(17, 1).unwrap();
+    assert_global_allocator_sensitivity();
 
-    // Sensitivity controls call the real allocator APIs, observe actual storage,
+    // C sensitivity controls call the real allocator APIs, observe actual storage,
     // and then refuse those same calls. Realloc denial preserves its old owner.
     attestation_probe::reset();
     attestation_probe::set_tracking(true);
-    let rust = unsafe { alloc(layout) };
     let c = unsafe { PyMem_RawMalloc(17) };
     let zeroed = unsafe { PyMem_RawCalloc(1, 17) };
     let zeroed_ok = !zeroed.is_null()
@@ -1133,21 +1175,17 @@ fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_alloc
     attestation_probe::set_tracking(false);
     let observed = attestation_probe::snapshot();
     unsafe {
-        if !rust.is_null() {
-            dealloc(rust, layout);
-        }
         PyMem_RawFree(zeroed);
         PyMem_RawFree(if grown.is_null() { c } else { grown });
     }
-    assert!(!rust.is_null() && !c.is_null() && zeroed_ok && retained_ok);
-    assert_eq!(observed.allocations, 1);
+    assert!(!c.is_null() && zeroed_ok && retained_ok);
+    assert_eq!(observed.allocations, 0);
     assert_eq!(observed.c_allocation_attempts, 3);
 
     let old = unsafe { PyMem_RawMalloc(17) };
     assert!(!old.is_null());
     unsafe { *old.cast::<u8>() = 0x5a };
     let denial = attestation_probe::deny_allocations();
-    let refused_rust = unsafe { alloc(layout) };
     let refused_malloc = unsafe { PyMem_RawMalloc(17) };
     let refused_calloc = unsafe { PyMem_RawCalloc(1, 17) };
     let refused_realloc = unsafe { PyMem_RawRealloc(old, 33) };
@@ -1156,9 +1194,6 @@ fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_alloc
     let denied_c = attestation_probe::denied_c_allocations();
     let old_preserved = refused_realloc.is_null() && unsafe { *old.cast::<u8>() } == 0x5a;
     unsafe {
-        if !refused_rust.is_null() {
-            dealloc(refused_rust, layout);
-        }
         PyMem_RawFree(refused_malloc);
         PyMem_RawFree(refused_calloc);
         PyMem_RawFree(if refused_realloc.is_null() {
@@ -1167,9 +1202,9 @@ fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_alloc
             refused_realloc
         });
     }
-    assert!(refused_rust.is_null() && refused_malloc.is_null() && refused_calloc.is_null());
+    assert!(refused_malloc.is_null() && refused_calloc.is_null());
     assert!(old_preserved);
-    assert_eq!(denied_rust, 1);
+    assert_eq!(denied_rust, 0);
     assert_eq!(denied_c, 3);
 
     // First observe the prepared transport without a warmup that could silently
