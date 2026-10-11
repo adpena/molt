@@ -11,7 +11,7 @@ use molt_cpython_abi::abi_types::{
 use std::ptr;
 
 use molt_cpython_abi::hooks::PendingExceptionClass;
-thread_local! { static EMERGENCY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! { static PARTIAL_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static UNADMITTED_TEXT_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 fn init() -> support::AbiTestThreadStateTransaction {
@@ -25,25 +25,27 @@ fn init() -> support::AbiTestThreadStateTransaction {
         0
     }
     unsafe extern "C" fn pending() -> std::ffi::c_int {
-        EMERGENCY.with(|state| i32::from(state.get()))
+        PARTIAL_PENDING.with(|state| i32::from(state.get()))
     }
     unsafe extern "C" fn pending_class() -> PendingExceptionClass {
-        if EMERGENCY.with(std::cell::Cell::get) {
-            PendingExceptionClass::EmergencyMemoryError
+        if PARTIAL_PENDING.with(std::cell::Cell::get) {
+            PendingExceptionClass::NativeClass(
+                &raw mut molt_cpython_abi::abi_types::PyExc_MemoryError,
+            )
         } else {
             PendingExceptionClass::None
         }
     }
     unsafe extern "C" fn clear() {
-        EMERGENCY.with(|state| state.set(false));
+        PARTIAL_PENDING.with(|state| state.set(false));
     }
     unsafe extern "C" fn save_pending(
         callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int,
         context: *mut std::ffi::c_void,
     ) {
-        let saved = EMERGENCY.with(|state| state.replace(false));
+        let saved = PARTIAL_PENDING.with(|state| state.replace(false));
         if unsafe { callback(context) } == 0 {
-            EMERGENCY.with(|state| state.set(saved));
+            PARTIAL_PENDING.with(|state| state.set(saved));
         }
     }
     let mut hooks = support::stub_runtime_hooks();
@@ -89,11 +91,11 @@ fn test_no_exception_initially() {
 }
 
 #[test]
-fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
+fn partial_provider_class_query_does_not_require_value_projection() {
     use molt_cpython_abi::abi_types::{PyExc_Exception, PyExc_MemoryError};
     use molt_cpython_abi::api::{errors, refcount};
     let _abi_test = init();
-    EMERGENCY.with(|state| state.set(true));
+    PARTIAL_PENDING.with(|state| state.set(true));
     unsafe {
         assert_eq!(
             errors::PyErr_Occurred(),
@@ -114,7 +116,7 @@ fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
         errors::PyErr_Clear();
         assert!(errors::PyErr_Occurred().is_null());
     }
-    assert!(!EMERGENCY.with(std::cell::Cell::get));
+    assert!(!PARTIAL_PENDING.with(std::cell::Cell::get));
 }
 
 #[test]
@@ -886,14 +888,14 @@ mod native_retirement {
                 0
             );
             errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
-            EMERGENCY.with(|state| state.set(true));
+            PARTIAL_PENDING.with(|state| state.set(true));
             let result = errors::with_saved_error(|| {
                 assert!(!errors::raised_error_pending());
                 Ok(37)
             });
             assert_eq!(result.unwrap(), 37);
             assert!(
-                EMERGENCY.with(Cell::get),
+                PARTIAL_PENDING.with(Cell::get),
                 "success restores allocation-free runtime state"
             );
             let restored = errors::take_current_error().expect("incoming C state restored");
@@ -924,13 +926,13 @@ mod native_retirement {
 
             for protected_cleanup in [false, true] {
                 errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
-                EMERGENCY.with(|state| state.set(true));
+                PARTIAL_PENDING.with(|state| state.set(true));
                 if protected_cleanup {
                     assert_eq!(
                         errors::with_preserved_error(|| {
                             assert!(!errors::raised_error_pending());
                             errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr()));
-                            EMERGENCY.with(|state| state.set(true));
+                            PARTIAL_PENDING.with(|state| state.set(true));
                             53
                         }),
                         53
@@ -940,7 +942,7 @@ mod native_retirement {
                         let _: Result<(), _> = errors::with_saved_error(|| {
                             assert!(!errors::raised_error_pending());
                             errors::PyErr_SetRaisedException(object::Py_NewRef(next.as_ptr()));
-                            EMERGENCY.with(|state| state.set(true));
+                            PARTIAL_PENDING.with(|state| state.set(true));
                             panic!("preparation unwind oracle");
                         });
                     }));
@@ -949,7 +951,7 @@ mod native_retirement {
                         "unwind resumes only after the C callback returns"
                     );
                 }
-                assert!(EMERGENCY.with(Cell::get));
+                assert!(PARTIAL_PENDING.with(Cell::get));
                 let restored = errors::take_current_error().expect("incoming C state restored");
                 assert_eq!(restored.value, prior.as_ptr());
                 assert_eq!(restored.traceback, &raw mut traceback);
@@ -960,7 +962,7 @@ mod native_retirement {
     }
 
     #[test]
-    fn failed_saved_error_scope_keeps_unprojectable_emergency_selected() {
+    fn failed_saved_error_scope_keeps_partial_provider_failure_selected() {
         let _abi_test = init();
         let (class, _input_class) = classes();
         let _pending = PendingReset;
@@ -968,16 +970,16 @@ mod native_retirement {
             unsafe {
                 errors::PyErr_SetRaisedException(exception(class.as_ptr(), 0).into_ptr());
             }
-            EMERGENCY.with(|state| state.set(incoming_runtime));
+            PARTIAL_PENDING.with(|state| state.set(incoming_runtime));
             let allocations = UNADMITTED_TEXT_ALLOCATIONS.with(Cell::get);
             let result: Result<(), _> = errors::with_saved_error(|| {
                 assert!(!errors::raised_error_pending());
-                EMERGENCY.with(|state| state.set(true));
+                PARTIAL_PENDING.with(|state| state.set(true));
                 Err(molt_cpython_abi::ErrorIndicatorSet)
             });
             assert!(result.is_err());
             assert!(errors::take_current_error().is_none());
-            assert!(EMERGENCY.with(Cell::get));
+            assert!(PARTIAL_PENDING.with(Cell::get));
             assert_eq!(UNADMITTED_TEXT_ALLOCATIONS.with(Cell::get), allocations);
             unsafe {
                 assert_eq!(
@@ -986,8 +988,8 @@ mod native_retirement {
                 );
                 assert!(errors::PyErr_GetRaisedException().is_null());
                 assert!(
-                    EMERGENCY.with(Cell::get),
-                    "failed projection does not consume the emergency"
+                    PARTIAL_PENDING.with(Cell::get),
+                    "failed projection does not consume the partial provider state"
                 );
                 errors::PyErr_Clear();
             }

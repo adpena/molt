@@ -477,3 +477,74 @@ fn managed_metaclass_override_precedes_immutability_and_keeps_original_name() {
         }
     });
 }
+
+#[test]
+fn builtin_slot_namespace_rebuild_keeps_inherited_init_out_of_str() {
+    use crate::cpython_abi_hooks::native_test_fixture::NativeType;
+    use molt_cpython_abi::abi_types::{PyFloat_Type, PyList_Type, PyUnicode_Type};
+    use molt_cpython_abi::api::{mapping, typeobj};
+
+    unsafe extern "C" fn declared_repr(
+        _object: *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject {
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"declared repr".as_ptr()) }
+    }
+
+    // Each epoch projects the builtin shells, then retires only their runtime
+    // roots. Their inherited physical slots survive into the next epoch.
+    for epoch in 0..3 {
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            crate::with_gil_entry_nopanic!(py, {
+                unsafe {
+                    for kind in [
+                        &raw mut PyUnicode_Type,
+                        &raw mut PyFloat_Type,
+                        &raw mut PyList_Type,
+                    ] {
+                        assert_eq!(typeobj::PyType_Ready(kind), 0);
+                    }
+                    let lookup = |kind: *mut PyTypeObject, name: &std::ffi::CStr| {
+                        let value =
+                            mapping::_PyDict_GetItemStringWithError((*kind).tp_dict, name.as_ptr());
+                        assert!(!crate::exception_pending(py));
+                        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+                        value
+                    };
+                    // CPython's own-namespace oracle: an inherited init is not
+                    // a str declaration, while float's own repr is retained.
+                    assert!(
+                        lookup(&raw mut PyUnicode_Type, c"__init__").is_null(),
+                        "epoch {epoch}"
+                    );
+                    assert!(!lookup(&raw mut PyFloat_Type, c"__repr__").is_null());
+                    if (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)() < 14 {
+                        // The pre-3.14 explicit manual-inheritance exception.
+                        assert!(!lookup(&raw mut PyList_Type, c"__getattribute__").is_null());
+                    }
+                    let (name, spelling, class) = subclass_name(py);
+                    let _names =
+                        [name, spelling, class].map(|bits| ExceptionValue::adopt(py, bits));
+                    assert!(
+                        !(*crate::header_from_obj_ptr(obj_from_bits(name).as_ptr().unwrap()))
+                            .has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW),
+                        "native inherited init projected the managed result in epoch {epoch}"
+                    );
+
+                    // A genuine extension-owned static declaration is not in
+                    // the builtin cohort, even when it explicitly repeats the
+                    // base function pointer. Public readiness must keep it.
+                    let mut native = NativeType::subtype(
+                        &raw mut PyBaseObject_Type,
+                        c"fixture.ExplicitObjectInit",
+                    );
+                    native.tp_init = PyBaseObject_Type.tp_init;
+                    native.tp_repr = Some(declared_repr);
+                    assert_eq!(native.ready(), 0);
+                    assert!(!lookup(&raw mut *native, c"__init__").is_null());
+                    assert!(!lookup(&raw mut *native, c"__repr__").is_null());
+                }
+            });
+        });
+    }
+}

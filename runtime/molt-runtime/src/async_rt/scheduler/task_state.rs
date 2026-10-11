@@ -100,7 +100,9 @@ pub(crate) fn task_exception_depths(_py: &PyToken<'_>) -> &'static Mutex<HashMap
     &runtime_state(_py).task_exception_depths
 }
 
-pub(crate) fn task_last_exceptions(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, PtrSlot>> {
+pub(crate) fn task_last_exceptions(
+    _py: &PyToken<'_>,
+) -> &'static Mutex<HashMap<PtrSlot, Option<PtrSlot>>> {
     &runtime_state(_py).task_last_exceptions
 }
 
@@ -124,7 +126,7 @@ pub(crate) fn task_visit_owned_edges(
             visit(bits);
         }
     }
-    if let Some(exception) = task_last_exceptions(_py).lock().unwrap().get(&slot) {
+    if let Some(Some(exception)) = task_last_exceptions(_py).lock().unwrap().get(&slot) {
         visit(MoltObject::from_ptr(exception.0).bits());
     }
     if let Some(&bits) = runtime_state(_py).task_results.lock().unwrap().get(&slot) {

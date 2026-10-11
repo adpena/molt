@@ -93,6 +93,19 @@ Static binding replaces that whole domain, including across runtime restarts;
 physical readiness, protocol and GC flags remain C-owned. Both runtime producers
 and test stubs use the canonical version constant.
 
+Process-static type storage has one cohort with separate lifecycle-readiness and
+builtin-namespace policies. Private buffer and sequence-iterator shells join
+both policies; datetime extension types and the internal managed carrier keep
+extension declaration rules. Runtime restart rebuilds namespaces without
+redeclaring inherited builtin slots. Target Python 3.12/3.13 retain CPython's
+manual-inheritance exceptions; 3.14 uses its paired hash/comparison rule.
+Initial compiled-target publication stages any changed declarations in the
+existing namespace transaction. Exact owned wrappers may be removed, while
+explicit replacements survive. All namespaces and runtime epochs commit before
+native tags are cleared, watchers run, or displaced values retire. One shared
+postorder traversal deduplicates descendants across affected roots; same-policy
+publication does not stage native namespaces.
+
 ### Unicode percent formatting
 
 `PyUnicode_Format` enters the runtime's declaring `str.__mod__` operation through
@@ -181,7 +194,7 @@ payload only after override handling. Empty format specs retain their `str`
 route; explicit nonempty base `__format__` calls retain their payload route.
 Physical BigInt/Float tags are not a second formatting admission authority.
 Explicit numeric base repr distinguishes physical scalar C storage from a
-managed Int/Float subclass's generic C view. RuntimeHooks version 65 exposes the
+managed Int/Float subclass's generic C view. RuntimeHooks exposes the
 latter's sealed intrinsic field through `scalar_payload_borrowed`; the numeric
 kind is explicit, absence is distinct from invalid storage, and the admitted
 original receiver owns the borrowed payload through canonical rendering. A
@@ -446,14 +459,14 @@ Already-normalized restoration uses the owned-transfer authority directly;
 restoring two independent channels does not create a new raise site.
 Public raised-error transfer gives the C indicator precedence
 when both channels are populated. Explicit shielded cleanup instead detaches and
-restores both exact channels independently, including allocation-free emergency
-runtime errors; it does not project C views or materialize lazy tracebacks.
+restores both exact channels independently, including reserved `MemoryError`
+instances; it does not project C views or materialize lazy tracebacks.
 The synchronous cleanup hook keeps ownership on the caller and runtime stacks,
 drains cleanup errors, and restores both channels before resuming a Rust panic.
 Fallible preparation uses the same saved-state authority with explicit completion:
 success restores the incoming state, while failure retains the new error and
-retires the displaced owner. This includes allocation-free runtime emergency
-errors; preparing a C exception projection is not required to preserve them.
+retires the displaced owner. Reserved errors use the same ordinary owned
+instance representation; saving them does not prepare a C exception projection.
 Native warning requests share the runtime emitter used by managed protocols;
 an unloaded Python warnings module is not a reason to import or fail. The
 actual warning category and signed stack level cross the ABI, and cold emission
@@ -503,12 +516,25 @@ process-static C type publication.
 Delayed native and test snapshots use the same runtime raised-state authority.
 Native callback completion detects either raised channel without requiring C
 error projection. Operand publication continues after a failure while preserving
-the exact first error, including emergency runtime state. Non-consuming C error
+the exact first error, including reserved instances. Non-consuming C error
 queries borrow the actual pending class without consuming or normalizing the
-instance or materializing its traceback. An emergency MemoryError maps directly
-to the canonical C type even before runtime class bootstrap. Consuming instance
-queries still require a materializable exception instance; an emergency without
-one remains pending instead of becoming an unrelated synthetic exception.
+instance or materializing its traceback. `PyErr_NoMemory` uses the required
+`RuntimeHooks::memory_error` callback (hook ABI 66). Each admitted runtime owns
+16 free exact `MemoryError` instances and a persistent last-resort instance.
+Acquisition transfers an ordinary owner; exhaustion shares the last-resort
+instance without resetting its live fields. The primary runtime prepares their
+canonical C views before application admission, so public Get/Fetch transfers
+the real instance under allocation denial. Isolates retain managed ownership
+without process C projection. Allocation failure before this reserve exists is
+a runtime admission failure.
+Exact constructors use the same reserve. Terminal reference retirement can
+refill it only after finalization and weakref checks, mutable-edge retirement,
+and resurrection checks. No reserve lock spans callbacks. Shutdown closes
+refill first, retains the fallback through the callback fixed point, then
+retires it before canonical classes. Actual task producers admit their raised
+slot before execution; later raised publication cannot allocate a map row.
+`PyErr_NoMemory` follows CPython's direct raised-instance publication and does
+not add handled context. Ordinary raises keep their distinct context rule.
 For a genuinely native pending exception, the instance owns its exact native
 class; querying that class does not allocate a runtime class wrapper.
 `PyErr_SetObject` and `PyErr_NormalizeException` use the generic subclass
@@ -847,7 +873,7 @@ a `PyObject` exporter; genuine native exporters use `bf_getbuffer` and
 Native allocation failures set an exception at their origin, including size
 overflow, unsupported GC layout and failed collector-identity publication.
 Cleanup preserves that exception and releases temporary heap-type ownership.
-Actual runtime allocation or extent failure selects emergency `MemoryError`
+Actual runtime allocation or extent failure selects a reserved `MemoryError`
 without allocating its instance. It publishes that failure before retiring any
 displaced C or runtime error owner, then completes legal native error transport
 through the existing retirement boundary. Constructor validation, hash/equality

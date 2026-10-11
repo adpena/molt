@@ -251,12 +251,14 @@ impl WrapperMember {
 }
 
 /// A prepared class-namespace transaction. Preparation performs all allocation
-/// and metadata lookup; commit cannot call Python or fail. Until commit, live
+/// and metadata lookup; commit cannot fail. Native watchers run only after all
+/// namespaces, runtime epochs and native tags are coherent. Until commit, live
 /// dictionaries, class versions, and the publication receipt remain untouched.
 pub(crate) struct WrapperMembersPublication {
     version_key: u64,
     staged_owners: Vec<PtrDropGuard>,
-    publications: Vec<(*mut u8, *mut u8, *mut u8)>,
+    publications: Vec<(Option<*mut u8>, *mut u8, *mut u8)>,
+    native_invalidation: molt_cpython_abi::api::typeobj::TypeNamespaceInvalidation,
 }
 
 impl WrapperMembersPublication {
@@ -267,12 +269,16 @@ impl WrapperMembersPublication {
                 crate::object::ops::dict_publish_staged(py, live, staged);
             }
             for &(class, _, _) in &self.publications {
-                class_bump_layout_version(class);
+                if let Some(class) = class {
+                    class_bump_layout_version(class);
+                }
             }
             runtime_state(py)
                 .attributes
                 .wrapper_members_version
                 .store(self.version_key, Ordering::Release);
+            // All runtime state is coherent before a native watcher can run.
+            crate::object::foreign::retire_native_reference(|| self.native_invalidation.commit());
             // This is the first release of displaced values; all namespaces,
             // derived class versions and target-publication state are coherent.
             drop(self.staged_owners);
@@ -300,18 +306,23 @@ pub(crate) fn prepare_wrapper_members(
         // The receipt fingerprints the table's enabled projection, not an
         // independently parsed/capped Python version. Every gate comes from the
         // same rows, so even unusually large version integers cannot collide.
+        use molt_cpython_abi::api::typeobj::{self, BuiltinSlotNamespacePolicy};
+        const SLOT_POLICY_BIT: u32 = WRAPPER_MEMBERS.len() as u32 + 1;
+        let slot_policy = BuiltinSlotNamespacePolicy::for_minor(minor);
         let version_key = WRAPPER_MEMBERS
             .iter()
             .enumerate()
             .fold(1u64, |key, (index, member)| {
                 key | ((member.enabled(major, minor) as u64) << (index + 1))
-            });
+            })
+            | (slot_policy.receipt_bit() << SLOT_POLICY_BIT);
         let previous_version = attributes.wrapper_members_version.load(Ordering::Acquire);
         if previous_version == version_key {
             return Some(WrapperMembersPublication {
                 version_key,
                 staged_owners: Vec::new(),
                 publications: Vec::new(),
+                native_invalidation: typeobj::TypeNamespaceInvalidation::prepare(&[]),
             });
         }
         let mut callbacks = [0; 3];
@@ -459,13 +470,125 @@ pub(crate) fn prepare_wrapper_members(
                     return None;
                 }
             }
-            publications.push((class, live, staged));
+            publications.push((Some(class), live, staged));
         }
 
+        // Hook installation readies static types before the compiled entry can
+        // publish its target. Reconcile only changed slot policy, in the same
+        // private copies as other versioned namespace members.
+        let previous_policy = if previous_version & (1 << SLOT_POLICY_BIT) == 0 {
+            BuiltinSlotNamespacePolicy::ManualInheritance
+        } else {
+            BuiltinSlotNamespacePolicy::PairedInheritance
+        };
+        let mut native_roots = Vec::new();
+        if previous_version != 0 && previous_policy != slot_policy {
+            use molt_cpython_abi::abi_types;
+            use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            for entry in abi_types::builtin_static_type_runtime_cohort()
+                .filter(|entry| entry.builtin_slot_namespace)
+            {
+                let native = entry.type_ptr;
+                let object = native.cast::<abi_types::PyObject>();
+                match typeobj::builtin_slot_namespace_needs_update(
+                    native,
+                    previous_policy,
+                    slot_policy,
+                ) {
+                    Ok(false) => continue,
+                    Ok(true) => {}
+                    Err(_) => {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "static namespace policy observation",
+                        );
+                        return None;
+                    }
+                }
+                // Runtime-created builtin namespaces are exact managed dicts;
+                // observe their existing binding without creating a second one.
+                let dictionary = GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj((*native).tp_dict)
+                    .map(|handle| handle.bits());
+                let Some(dictionary) = dictionary else {
+                    raise_exception::<()>(
+                        py,
+                        "SystemError",
+                        "builtin namespace has no runtime dictionary owner",
+                    );
+                    return None;
+                };
+                let Some(live) = obj_from_bits(dictionary).as_ptr() else {
+                    raise_exception::<()>(
+                        py,
+                        "SystemError",
+                        "builtin namespace has invalid dictionary storage",
+                    );
+                    return None;
+                };
+                if object_type_id(live) != TYPE_ID_DICT {
+                    raise_exception::<()>(
+                        py,
+                        "SystemError",
+                        "builtin namespace requires exact dictionary storage",
+                    );
+                    return None;
+                }
+                let staged = if let Some((_, _, staged)) = publications
+                    .iter()
+                    .find(|(_, candidate, _)| *candidate == live)
+                {
+                    *staged
+                } else {
+                    let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
+                    let staged = obj_from_bits(staged_bits).as_ptr()?;
+                    staged_owners.push(PtrDropGuard::new(staged));
+                    if exception_pending(py) {
+                        return None;
+                    }
+                    let class = GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(object)
+                        .and_then(|handle| obj_from_bits(handle.bits()).as_ptr())
+                        .filter(|&ptr| object_type_id(ptr) == TYPE_ID_TYPE);
+                    publications.push((class, live, staged));
+                    staged
+                };
+                let staged_view = crate::object::foreign::NativeObjectOwner::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_ptr(staged).bits()),
+                );
+                if staged_view.as_ptr().is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "static namespace staging projection",
+                    );
+                    return None;
+                }
+                match typeobj::stage_builtin_slot_namespace(
+                    native,
+                    staged_view.as_ptr(),
+                    previous_policy,
+                    slot_policy,
+                ) {
+                    Ok(true) => native_roots.push(native),
+                    Ok(false) => {}
+                    Err(_) => {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "static namespace target staging",
+                        );
+                        return None;
+                    }
+                }
+            }
+        }
+        // Preparation records lifetime-qualified identities only. It changes no
+        // namespace or cache flag and performs all traversal allocation now.
+        let native_invalidation = typeobj::TypeNamespaceInvalidation::prepare(&native_roots);
         Some(WrapperMembersPublication {
             version_key,
             staged_owners,
             publications,
+            native_invalidation,
         })
     })();
     if result.is_none() && !exception_pending(py) {
@@ -945,6 +1068,43 @@ mod tests {
                 }
             }
         }
+        static WATCH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static WATCH_COHERENT: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(true);
+        unsafe extern "C" fn observe_publication(
+            _kind: *mut molt_cpython_abi::abi_types::PyObject,
+        ) -> std::ffi::c_int {
+            use molt_cpython_abi::abi_types::{PyList_Type, PyMemoryView_Type};
+            unsafe {
+                let coherent = (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)()
+                    == 14
+                    && PyList_Type.tp_version_tag == 0
+                    && PyMemoryView_Type.tp_version_tag == 0;
+                WATCH_COHERENT.fetch_and(coherent, Ordering::Relaxed);
+                WATCH_CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            0
+        }
+        struct Watcher(std::ffi::c_int);
+        impl Drop for Watcher {
+            fn drop(&mut self) {
+                unsafe {
+                    for kind in [
+                        &raw mut molt_cpython_abi::abi_types::PyList_Type,
+                        &raw mut molt_cpython_abi::abi_types::PyMemoryView_Type,
+                    ] {
+                        molt_cpython_abi::api::typeobj::PyType_Unwatch(self.0, kind.cast());
+                    }
+                    molt_cpython_abi::api::typeobj::PyType_ClearWatcher(self.0);
+                }
+            }
+        }
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+            }
+        }
         // Every epoch starts cold, so both receipt reset and the real compiler
         // startup order (builtins first, compiled version second) are exercised.
         for minor in [12, 14, 12, 14] {
@@ -972,15 +1132,97 @@ mod tests {
                         let namespace = class_dict_bits(root);
                         let dictionary = obj_from_bits(namespace).as_ptr().unwrap();
                         let name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                        let _name_owner =
+                            crate::builtins::exceptions::ExceptionValue::adopt(py, name);
                         let release = attr_name_bits_from_bytes(py, b"final").unwrap();
+                        let _release_owner =
+                            crate::builtins::exceptions::ExceptionValue::adopt(py, release);
                         let version =
                             attr_name_bits_from_bytes(py, format!("3.{minor}.0").as_bytes())
                                 .unwrap();
+                        let _version_owner =
+                            crate::builtins::exceptions::ExceptionValue::adopt(py, version);
                         assert!(
                             dict_get_in_place(py, dictionary, name)
                                 .expect("dictionary lookup succeeds")
                                 .is_none()
                         );
+                        use molt_cpython_abi::abi_types::{PyFloat_Type, PyList_Type};
+                        use molt_cpython_abi::api::{errors, mapping, refcount, typeobj};
+                        let list = &raw mut PyList_Type;
+                        let float = &raw mut PyFloat_Type;
+                        assert_eq!(typeobj::PyType_Ready(list), 0);
+                        assert_eq!(typeobj::PyType_Ready(float), 0);
+                        let own_member =
+                            |kind: *mut molt_cpython_abi::abi_types::PyTypeObject,
+                             member: &std::ffi::CStr| {
+                                let value = mapping::_PyDict_GetItemStringWithError(
+                                    (*kind).tp_dict,
+                                    member.as_ptr(),
+                                );
+                                assert!(errors::PyErr_Occurred().is_null());
+                                assert!(!exception_pending(py));
+                                value
+                            };
+                        // Source-pinned own-dictionary oracle, not inherited
+                        // lookup: renderer ownership and declaration differ.
+                        let exception_str_declarations = |target_minor: i64| {
+                            use molt_cpython_abi::abi_types::*;
+                            for (kind, declared) in [
+                                (&raw mut PyExc_AttributeError, target_minor < 14),
+                                (&raw mut PyExc_NameError, target_minor < 14),
+                                (&raw mut PyExc_Exception, false),
+                                (&raw mut PyExc_ImportError, true),
+                                (&raw mut PyExc_BaseException, true),
+                            ] {
+                                assert_eq!(typeobj::PyType_Ready(kind), 0);
+                                let member = own_member(kind, c"__str__");
+                                assert_eq!(!member.is_null(), declared);
+                                if declared {
+                                    assert_eq!((*member).ob_type, &raw mut PyWrapperDescr_Type);
+                                    assert_eq!(
+                                        (*member.cast::<PyWrapperDescrObject>()).d_common.d_type,
+                                        kind
+                                    );
+                                }
+                            }
+                        };
+                        exception_str_declarations(12);
+                        // Independent CP 3.12 own-namespace declarations before
+                        // the compiled target is published after bootstrap.
+                        let initial_getattribute = own_member(list, c"__getattribute__");
+                        assert!(!initial_getattribute.is_null());
+                        let initial_repr = refcount::OwnedPyObject::from_owned(
+                            molt_cpython_abi::api::object::Py_NewRef(own_member(
+                                float,
+                                c"__repr__",
+                            )),
+                        );
+                        assert!(!initial_repr.as_ptr().is_null());
+                        WATCH_CALLS.store(0, Ordering::Relaxed);
+                        WATCH_COHERENT.store(true, Ordering::Relaxed);
+                        let _watcher = if minor >= 14 {
+                            let memoryview =
+                                &raw mut molt_cpython_abi::abi_types::PyMemoryView_Type;
+                            assert_eq!(typeobj::PyType_Ready(memoryview), 0);
+                            assert!(!own_member(memoryview, c"__getattribute__").is_null());
+                            let id = typeobj::PyType_AddWatcher(Some(observe_publication));
+                            assert!(id >= 0);
+                            let owner = Watcher(id);
+                            for kind in [list, memoryview] {
+                                assert_eq!(typeobj::PyType_Watch(id, kind.cast()), 0);
+                            }
+                            Some(owner)
+                        } else {
+                            None
+                        };
+                        assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(list), 1);
+                        let initial_tag = (*list).tp_version_tag;
+                        let initial_epoch = class_layout_version_bits(root);
+                        let initial_receipt = runtime_state(py)
+                            .attributes
+                            .wrapper_members_version
+                            .load(Ordering::Acquire);
                         let publish = || {
                             crate::object::ops_sys::molt_sys_set_version_info(
                                 MoltObject::from_int(3).bits(),
@@ -991,7 +1233,111 @@ mod tests {
                                 version,
                             )
                         };
+                        if minor >= 14 {
+                            // Real allocation denial cannot partially publish
+                            // target facts, namespaces, epochs or cache tags.
+                            let tracker = RestoreTracker;
+                            crate::resource::set_tracker(Box::new(
+                                crate::resource::LimitedTracker::new(
+                                    &crate::resource::ResourceLimits {
+                                        max_memory: Some(0),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ));
+                            publish();
+                            assert_eq!(
+                                errors::PyErr_Occurred(),
+                                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                            );
+                            drop(tracker);
+                            errors::PyErr_Clear();
+                            molt_exception_clear();
+                            assert_eq!(
+                                crate::object::ops_sys::runtime_target_python_info(runtime_state(
+                                    py
+                                ))
+                                .minor,
+                                12
+                            );
+                            assert_eq!(class_dict_bits(root), namespace);
+                            assert_eq!(class_layout_version_bits(root), initial_epoch);
+                            assert_eq!((*list).tp_version_tag, initial_tag);
+                            assert_eq!(own_member(list, c"__getattribute__"), initial_getattribute);
+                            assert_eq!(
+                                runtime_state(py)
+                                    .attributes
+                                    .wrapper_members_version
+                                    .load(Ordering::Acquire),
+                                initial_receipt
+                            );
+                            assert_eq!(WATCH_CALLS.load(Ordering::Relaxed), 0);
+                            exception_str_declarations(12);
+                        }
                         publish();
+                        assert!(!exception_pending(py));
+                        assert!(errors::PyErr_Occurred().is_null());
+                        assert_eq!(own_member(list, c"__getattribute__").is_null(), minor >= 14);
+                        assert_eq!(own_member(float, c"__repr__"), initial_repr.as_ptr());
+                        exception_str_declarations(minor);
+                        if minor >= 14 {
+                            assert_eq!((*list).tp_version_tag, 0);
+                            assert!(WATCH_CALLS.load(Ordering::Relaxed) >= 2);
+                            assert!(WATCH_COHERENT.load(Ordering::Relaxed));
+                        } else {
+                            assert_eq!((*list).tp_version_tag, initial_tag);
+                        }
+                        // Stage the reverse projection on a private dictionary:
+                        // public startup rejects conflicting target versions.
+                        // Existing user/extension replacements must survive.
+                        let copy = refcount::OwnedPyObject::from_owned(mapping::PyDict_Copy(
+                            (*list).tp_dict,
+                        ));
+                        assert!(!copy.as_ptr().is_null());
+                        use typeobj::BuiltinSlotNamespacePolicy::{
+                            ManualInheritance, PairedInheritance,
+                        };
+                        if minor >= 14 {
+                            assert!(
+                                typeobj::stage_builtin_slot_namespace(
+                                    list,
+                                    copy.as_ptr(),
+                                    PairedInheritance,
+                                    ManualInheritance
+                                )
+                                .unwrap()
+                            );
+                            assert!(
+                                !mapping::_PyDict_GetItemStringWithError(
+                                    copy.as_ptr(),
+                                    c"__getattribute__".as_ptr()
+                                )
+                                .is_null()
+                            );
+                        }
+                        assert_eq!(
+                            mapping::PyDict_SetItemString(
+                                copy.as_ptr(),
+                                c"__getattribute__".as_ptr(),
+                                &raw mut molt_cpython_abi::abi_types::Py_None
+                            ),
+                            0
+                        );
+                        typeobj::stage_builtin_slot_namespace(
+                            list,
+                            copy.as_ptr(),
+                            ManualInheritance,
+                            PairedInheritance,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            mapping::_PyDict_GetItemStringWithError(
+                                copy.as_ptr(),
+                                c"__getattribute__".as_ptr()
+                            ),
+                            &raw mut molt_cpython_abi::abi_types::Py_None
+                        );
+                        assert!(errors::PyErr_Occurred().is_null());
                         assert!(!exception_pending(py));
                         let descriptor = dict_get_in_place(py, dictionary, name)
                             .expect("dictionary lookup succeeds");
@@ -1026,6 +1372,8 @@ mod tests {
                         // descriptors or advance the version receipt.
                         let conflicting =
                             attr_name_bits_from_bytes(py, b"conflicting version").unwrap();
+                        let _conflicting_owner =
+                            crate::builtins::exceptions::ExceptionValue::adopt(py, conflicting);
                         crate::object::ops_sys::molt_sys_set_version_info(
                             MoltObject::from_int(3).bits(),
                             MoltObject::from_int(13).bits(),
@@ -1050,9 +1398,6 @@ mod tests {
                                 .load(Ordering::Acquire),
                             receipt
                         );
-                        for value in [conflicting, version, release, name] {
-                            dec_ref_bits(py, value);
-                        }
                     }
                 });
             });

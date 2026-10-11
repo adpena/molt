@@ -179,7 +179,7 @@ def _rust_type_static_ptr_names() -> set[str]:
     source = (root / "runtime" / "molt-cpython-abi" / "src" / "abi_types.rs").read_text(
         encoding="utf-8"
     )
-    marker = "pub fn type_static_ptrs() -> Vec<*mut PyObject> {"
+    marker = "pub fn type_static_ptrs() -> impl Iterator<Item = *mut PyObject> {"
     start = source.index(marker)
     body = source[start : source.index("\n}", start)]
     return set(re.findall(r"&raw mut (\w+) as \*mut PyObject", body))

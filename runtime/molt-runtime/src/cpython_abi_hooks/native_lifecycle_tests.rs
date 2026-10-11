@@ -91,7 +91,6 @@ pub(super) unsafe fn assert_c_exception_symbols_preserve_pending() {
 
     molt_cpython_abi_test_support::link();
     let expected: Vec<_> = molt_cpython_abi::abi_types::exc_singleton_ptrs()
-        .into_iter()
         .filter(|pointer| {
             molt_cpython_abi::abi_types::exc_singleton_name(*pointer)
                 != Some("PyExc_ExceptionGroup")

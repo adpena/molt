@@ -98,6 +98,7 @@ pub(crate) use exception_group::{
 mod exception_identity_tests;
 
 mod exception_payload;
+pub(crate) mod memory_error;
 mod raised_state;
 mod unraisable;
 pub(crate) use exception_group::{
@@ -417,11 +418,6 @@ pub(crate) fn raise_import_error(
     MoltObject::none().bits()
 }
 
-#[inline]
-fn emergency_memory_error_pending_for_current() -> bool {
-    THREAD_LAST_EXCEPTION.with(|state| state.emergency_memory_error_is_pending(current_task_ptr()))
-}
-
 /// Exception construction may fail because a callback already selected its own
 /// error. Only supply the emergency fallback when neither raised channel owns
 /// that failure; actual allocation failures select it at the allocator below.
@@ -442,23 +438,16 @@ fn record_emergency_memory_error(py: &PyToken<'_>) {
 pub(crate) fn record_memory_error_without_allocation(py: &PyToken<'_>) {
     let old_c = molt_cpython_abi::api::errors::take_current_error();
     let mut old_runtime = Some(take_raised(py));
-    let mut selected = Some(RaisedSnapshot::Emergency(PtrSlot(current_task_ptr())));
+    let bits = memory_error::acquire(py);
+    let mut selected = Some(match current_task_key() {
+        Some(task) => RaisedSnapshot::Task(task, bits),
+        None => RaisedSnapshot::Thread(bits),
+    });
     resolve_raised(py, &mut selected);
     raised_state::release_raised(py, &mut old_runtime);
     crate::object::foreign::retire_native_reference(|| {
         molt_cpython_abi::api::errors::retire_normalized_error(old_c);
     });
-}
-
-#[inline]
-fn clear_emergency_memory_error_for_current() {
-    THREAD_LAST_EXCEPTION.with(|state| state.clear_emergency_memory_error(current_task_ptr()));
-}
-
-#[inline]
-fn clear_all_emergency_memory_error_state() {
-    let _ = THREAD_LAST_EXCEPTION
-        .try_with(state::ThreadExceptionState::clear_all_emergency_memory_error);
 }
 
 pub(crate) fn raise_unicode_decode_error<T: ExceptionSentinel>(
@@ -696,15 +685,19 @@ fn alloc_exception_obj_with_args_payload(
     else {
         return std::ptr::null_mut();
     };
-    let ptr = alloc_object_with_aux(
-        _py,
-        total,
-        TYPE_ID_EXCEPTION,
-        ObjectAuxPreselection::ClassInline,
-    );
+    let recycled = memory_error::take_for_constructor(_py, class_bits);
+    let ptr = recycled.unwrap_or_else(|| {
+        alloc_object_with_aux(
+            _py,
+            total,
+            TYPE_ID_EXCEPTION,
+            ObjectAuxPreselection::ClassInline,
+        )
+    });
     if ptr.is_null() {
         return ptr;
     }
+    let retired = recycled.map(|ptr| unsafe { exception_detach_owned_edges(ptr) });
     let none = MoltObject::none().bits();
     let common_edges = [
         msg_bits,
@@ -732,7 +725,9 @@ fn alloc_exception_obj_with_args_payload(
                 inc_ref_bits(_py, raw);
             }
         }
-        if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
+        if recycled.is_none()
+            && !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned)
+        {
             for (offset, bits) in common_edges.into_iter().enumerate() {
                 *(ptr.add(offset * std::mem::size_of::<u64>()) as *mut u64) = 0;
                 dec_ref_bits(_py, bits);
@@ -749,6 +744,15 @@ fn alloc_exception_obj_with_args_payload(
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         }
+    }
+    if let Some(retired) = retired {
+        for bits in retired.bits[..retired.len].iter().copied() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    if !memory_error::prepare_constructed(_py, ptr, class_bits) {
+        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+        return std::ptr::null_mut();
     }
     ptr
 }
@@ -1985,8 +1989,7 @@ fn thread_last_exception_pending_slot() -> Option<PtrSlot> {
 fn thread_last_exception_take() -> Option<PtrSlot> {
     let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(std::ptr::null_mut()));
     if current_task_key().is_none() {
-        CURRENT_EXCEPTION_PENDING
-            .with(|pending| pending.set(emergency_memory_error_pending_for_current()));
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
     }
     if ptr.is_null() {
         None
@@ -2002,23 +2005,19 @@ pub(crate) fn thread_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64>
 /// Synchronize the inline pending byte whenever the scheduler changes the
 /// current execution context on this native thread.
 pub(crate) fn sync_current_exception_pending(_py: &PyToken<'_>, task_ptr: *mut u8) {
-    let pending = emergency_memory_error_pending_for_current()
-        || if task_ptr.is_null() {
-            thread_last_exception_raw_slot().is_some()
-        } else {
-            task_last_exceptions(_py)
-                .lock()
-                .unwrap()
-                .contains_key(&PtrSlot(task_ptr))
-        };
+    let pending = if task_ptr.is_null() {
+        thread_last_exception_raw_slot().is_some()
+    } else {
+        task_last_exceptions(_py)
+            .lock()
+            .unwrap()
+            .get(&PtrSlot(task_ptr))
+            .is_some_and(Option::is_some)
+    };
     CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(pending));
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
-    if emergency_memory_error_pending_for_current() {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-        return true;
-    }
     if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         return false;
     }
@@ -2026,7 +2025,7 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     if let Some(task_key) = current_task_key() {
         let pending_ptr = {
             let guard = task_last_exceptions(_py).lock().unwrap();
-            match guard.get(&task_key).copied() {
+            match guard.get(&task_key).copied().flatten() {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
                 Some(_) => panic!("owned task exception slot must reference a live exception"),
                 None => None,
@@ -2069,6 +2068,7 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
             .unwrap()
             .get(&task_key)
             .copied()
+            .flatten()
             .map(|ptr| MoltObject::from_ptr(ptr.0).bits());
     }
     thread_last_exception_bits_noinc(_py)
@@ -2076,7 +2076,6 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
 
 pub(crate) fn take_thread_exception_for_teardown(_py: &PyToken<'_>) -> Option<u64> {
     crate::gil_assert();
-    clear_all_emergency_memory_error_state();
     let ptr = THREAD_LAST_EXCEPTION
         .try_with(|slot| {
             let ptr = slot.replace(std::ptr::null_mut());
@@ -2588,6 +2587,41 @@ pub(crate) fn task_exception_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
+/// Reserve the existing task raised-state entry before the task can execute.
+/// Failure is selected after the map lock is released; later publication never
+/// allocates, including while the runtime allocation budget is exhausted.
+pub(crate) fn task_raised_slot_admit(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    let admitted = {
+        let mut slots = task_last_exceptions(py).lock().unwrap();
+        if slots.try_reserve(1).is_err() {
+            false
+        } else {
+            assert!(
+                slots.insert(PtrSlot(ptr), None).is_none(),
+                "task raised slot admitted twice"
+            );
+            true
+        }
+    };
+    if !admitted {
+        record_memory_error_without_allocation(py);
+    }
+    admitted
+}
+
+/// Terminal destruction follows cycle-edge detachment. The empty admission
+/// row is structural state, not a GC edge, and cannot survive pointer reuse.
+pub(crate) fn task_raised_slot_forget(py: &PyToken<'_>, ptr: *mut u8) {
+    let old = task_last_exceptions(py)
+        .lock()
+        .unwrap()
+        .remove(&PtrSlot(ptr));
+    assert!(
+        old.flatten().is_none(),
+        "terminal task still owns a raised exception"
+    );
+}
+
 /// Publish every task exception side registry empty without running Python.
 ///
 /// Terminal deallocation and cyclic clear use this as one phase of their
@@ -2612,17 +2646,11 @@ pub(crate) fn task_exception_detach_owned_edges(
         sink.detach_if_heap(bits);
     }
 
-    let state = runtime_state(_py);
-    let last = {
-        let mut exceptions = task_last_exceptions(_py).lock().unwrap();
-        let last = exceptions.remove(&slot);
-        if exceptions.is_empty() {
-            state
-                .task_last_exception_pending
-                .store(false, AtomicOrdering::Release);
-        }
-        last
-    };
+    let last = task_last_exceptions(_py)
+        .lock()
+        .unwrap()
+        .get_mut(&slot)
+        .and_then(Option::take);
     if let Some(exception) = last {
         sink.detach(MoltObject::from_ptr(exception.0).bits());
     }
@@ -2632,7 +2660,11 @@ pub(crate) fn task_exception_detach_owned_edges(
         .unwrap()
         .remove(&slot);
     task_exception_depths(_py).lock().unwrap().remove(&slot);
-    state.task_exception_baselines.lock().unwrap().remove(&slot);
+    runtime_state(_py)
+        .task_exception_baselines
+        .lock()
+        .unwrap()
+        .remove(&slot);
 }
 
 pub(crate) fn task_exception_handler_stack_take(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<usize> {
@@ -2713,7 +2745,8 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     let old_ptr = task_last_exceptions(_py)
         .lock()
         .unwrap()
-        .remove(&PtrSlot(ptr));
+        .get_mut(&PtrSlot(ptr))
+        .and_then(Option::take);
     if current_task_ptr() == ptr {
         CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
     }
@@ -2733,6 +2766,7 @@ pub(crate) fn task_last_exception_contains_valid(_py: &PyToken<'_>, ptr: *mut u8
         .unwrap()
         .get(&PtrSlot(ptr))
         .copied()
+        .flatten()
         .is_some_and(exception_slot_is_valid)
 }
 
@@ -2809,7 +2843,7 @@ fn record_exception_with_caller_frame(py: &PyToken<'_>, ptr: *mut u8, include_ca
         RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => {
             Some(ExceptionValue::adopt(py, bits))
         }
-        RaisedSnapshot::None | RaisedSnapshot::Emergency(_) => None,
+        RaisedSnapshot::None => None,
     };
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow().last()
@@ -2910,9 +2944,12 @@ pub(crate) fn record_exception_owned(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
     crate::gil_assert();
-    clear_emergency_memory_error_for_current();
     if let Some(task_key) = current_task_key() {
-        let old_ptr = task_last_exceptions(_py).lock().unwrap().remove(&task_key);
+        let old_ptr = task_last_exceptions(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&task_key)
+            .and_then(Option::take);
         CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
         if let Some(old_ptr) = old_ptr {
             let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
@@ -4739,7 +4776,7 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => {
                 Some(ExceptionValue::adopt(_py, bits))
             }
-            RaisedSnapshot::None | RaisedSnapshot::Emergency(_) => None,
+            RaisedSnapshot::None => None,
         };
         let bits = selected.into_bits();
         let mut raised = Some(match current_task_key() {
@@ -5953,7 +5990,7 @@ mod tests {
             super::task_last_exceptions(_py)
                 .lock()
                 .unwrap()
-                .insert(task_slot, crate::PtrSlot(last));
+                .insert(task_slot, Some(crate::PtrSlot(last)));
             let state = runtime_state(_py);
             state
                 .task_exception_handler_stacks
@@ -5970,9 +6007,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(task_slot, 2);
-            state
-                .task_last_exception_pending
-                .store(true, Ordering::Release);
 
             let mut sink =
                 crate::object::heap_lifecycle::DetachedEdgeSink::try_with_capacities(2, 0)
@@ -5986,10 +6020,11 @@ mod tests {
                     .contains_key(&task_slot)
             );
             assert!(
-                !super::task_last_exceptions(_py)
+                super::task_last_exceptions(_py)
                     .lock()
                     .unwrap()
-                    .contains_key(&task_slot)
+                    .get(&task_slot)
+                    .is_some_and(Option::is_none)
             );
             assert!(
                 !state
@@ -6012,9 +6047,9 @@ mod tests {
                     .unwrap()
                     .contains_key(&task_slot)
             );
-            assert!(!state.task_last_exception_pending.load(Ordering::Acquire));
 
             sink.release_all(_py);
+            super::task_raised_slot_forget(_py, task);
             dec_ref_bits(_py, MoltObject::from_ptr(task).bits());
             dec_ref_bits(_py, stacked_bits);
             dec_ref_bits(_py, last_bits);
@@ -6298,6 +6333,8 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let task_a = Box::into_raw(Box::new(0_u8));
             let task_b = Box::into_raw(Box::new(0_u8));
+            assert!(super::task_raised_slot_admit(_py, task_a));
+            assert!(super::task_raised_slot_admit(_py, task_b));
             let thread_exc = alloc_exception(_py, "ValueError", "thread");
             let task_a_exc = alloc_exception(_py, "TypeError", "task-a");
             let task_b_exc = alloc_exception(_py, "RuntimeError", "task-b");
@@ -6349,6 +6386,8 @@ mod tests {
             dec_ref_bits(_py, task_a_bits);
             dec_ref_bits(_py, thread_bits);
             unsafe {
+                super::task_raised_slot_forget(_py, task_b);
+                super::task_raised_slot_forget(_py, task_a);
                 drop(Box::from_raw(task_b));
                 drop(Box::from_raw(task_a));
             }
@@ -6360,6 +6399,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let task = Box::into_raw(Box::new(0_u8));
+            assert!(super::task_raised_slot_admit(_py, task));
             let exc_ptr = alloc_exception(_py, "RuntimeError", "same-owner");
             let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
             let refcount = || unsafe { (*header_from_obj_ptr(exc_ptr)).ref_count_snapshot() };
@@ -6382,6 +6422,7 @@ mod tests {
             crate::replace_current_task(_py, std::ptr::null_mut());
 
             dec_ref_bits(_py, exc_bits);
+            super::task_raised_slot_forget(_py, task);
             unsafe { drop(Box::from_raw(task)) };
         });
     }

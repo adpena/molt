@@ -7,21 +7,14 @@ pub(crate) enum RaisedSnapshot {
     None,
     Thread(u64),
     Task(PtrSlot, u64),
-    Emergency(PtrSlot),
 }
 
 pub(crate) fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
-    if emergency_memory_error_pending_for_current() {
-        let owner = PtrSlot(current_task_ptr());
-        clear_emergency_memory_error_for_current();
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
-        return RaisedSnapshot::Emergency(owner);
-    }
     let raised = if let Some(key) = current_task_key() {
         let mut guard = task_last_exceptions(_py)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match guard.get(&key).copied() {
+        match guard.get(&key).copied().flatten() {
             None => RaisedSnapshot::None,
             Some(slot) => {
                 assert!(
@@ -29,7 +22,8 @@ pub(crate) fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
                     "owned task exception slot must reference a live exception"
                 );
                 let removed = guard
-                    .remove(&key)
+                    .get_mut(&key)
+                    .and_then(Option::take)
                     .expect("validated task exception slot must remain present");
                 RaisedSnapshot::Task(key, MoltObject::from_ptr(removed.0).bits())
             }
@@ -62,10 +56,7 @@ pub(super) fn release_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
         {
             dec_ref_bits(_py, bits);
         }
-        RaisedSnapshot::None
-        | RaisedSnapshot::Emergency(_)
-        | RaisedSnapshot::Thread(_)
-        | RaisedSnapshot::Task(_, _) => {}
+        RaisedSnapshot::None | RaisedSnapshot::Thread(_) | RaisedSnapshot::Task(_, _) => {}
     }
 }
 
@@ -75,13 +66,6 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
     };
     match saved_snapshot {
         RaisedSnapshot::None => {}
-        RaisedSnapshot::Emergency(owner) => {
-            THREAD_LAST_EXCEPTION.with(|state| state.set_emergency_memory_error(owner.0));
-            *saved = None;
-            if current_task_ptr() == owner.0 {
-                CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-            }
-        }
         RaisedSnapshot::Thread(bits) => {
             if let Some(ptr) = obj_from_bits(bits).as_ptr() {
                 let old = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(ptr));
@@ -100,7 +84,10 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
                 let mut guard = task_last_exceptions(_py)
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let old = guard.insert(key, PtrSlot(ptr));
+                let slot = guard
+                    .get_mut(&key)
+                    .expect("executing task owns an admitted raised slot");
+                let old = slot.replace(PtrSlot(ptr));
                 drop(guard);
                 // Map publication transfers the saved strong edge.
                 *saved = None;
@@ -200,18 +187,18 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             record_memory_error_without_allocation(py);
+            let original = exception_last_bits_noinc(py).expect("reserved MemoryError");
             assert!(with_saved_raised_exception(py, || {
                 assert!(!exception_pending(py));
-                assert!(!emergency_memory_error_pending_for_current());
                 true
             }));
-            assert!(emergency_memory_error_pending_for_current());
+            assert_eq!(exception_last_bits_noinc(py), Some(original));
             assert!(exception_pending(py));
             assert!(!with_saved_raised_exception(py, || {
                 raise_exception::<u64>(py, "ValueError", "replacement");
                 false
             }));
-            assert!(!emergency_memory_error_pending_for_current());
+            assert_ne!(exception_last_bits_noinc(py), Some(original));
             let raised = molt_exception_last_pending();
             assert!(exception_matches_builtin_name(py, raised, "ValueError"));
             clear_exception(py);

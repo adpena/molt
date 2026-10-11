@@ -483,8 +483,9 @@ pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObjec
     }
 }
 
-/// Process-owned type shells private to this ABI. Neither is a canonical
-/// builtin, but lazy `PyType_Ready` gives each a runtime-owned dict, bases,
+/// Process-owned type shells private to this ABI. Neither is bound to a
+/// managed builtin class; both model CPython static builtin types. Lazy
+/// `PyType_Ready` gives each a runtime-owned dict, bases,
 /// MRO and slot-wrapper descriptors. They therefore join the builtin
 /// retirement cohort: otherwise shutdown finds their descriptors still live
 /// after the last callback drain and the lifecycle fails terminally.
@@ -1322,30 +1323,302 @@ pub unsafe extern "C" fn PyType_GetSlot(tp: *mut PyTypeObject, slot: c_int) -> *
     unsafe { slot_wrapper_ptr(tp, wrapper) }
 }
 
+/// CPython 3.12/3.13 preserve these explicitly repeated builtin slots in
+/// their own namespaces even when their pointer equals the base slot. This is
+/// declaration policy, not a second inventory of process-owned type storage.
+fn builtin_slot_is_manually_inherited(tp: *mut PyTypeObject, slot: SlotWrapper) -> bool {
+    use crate::abi_types::*;
+    let exception = exc_singleton_name(tp.cast()).and_then(|name| name.strip_prefix("PyExc_"));
+    match slot {
+        SlotWrapper::Direct(DirectSlot::Init) => {
+            !matches!(
+                exception,
+                Some(
+                    "BaseException"
+                        | "BaseExceptionGroup"
+                        | "ImportError"
+                        | "NameError"
+                        | "OSError"
+                        | "StopIteration"
+                        | "SyntaxError"
+                        | "UnicodeDecodeError"
+                        | "UnicodeEncodeError"
+                )
+            ) && ![
+                &raw mut PyBool_Type,
+                &raw mut PyBytes_Type,
+                &raw mut PyMemoryView_Type,
+                &raw mut PyComplex_Type,
+                &raw mut PyFloat_Type,
+                &raw mut PyFrozenSet_Type,
+                &raw mut PyLong_Type,
+                &raw mut PyRange_Type,
+                &raw mut PySlice_Type,
+                &raw mut PyTuple_Type,
+                &raw mut PyUnicode_Type,
+            ]
+            .contains(&tp)
+        }
+        SlotWrapper::Direct(DirectSlot::Str) => {
+            matches!(exception, Some("AttributeError" | "NameError"))
+        }
+        SlotWrapper::Direct(DirectSlot::LegacyGetAttr | DirectSlot::GetAttr) => {
+            exception == Some("BaseException")
+                || [
+                    &raw mut PyByteArray_Type,
+                    &raw mut PyBytes_Type,
+                    &raw mut PyComplex_Type,
+                    &raw mut PyDict_Type,
+                    &raw mut PyLong_Type,
+                    &raw mut PyList_Type,
+                    &raw mut PyMemoryView_Type,
+                    &raw mut PyRange_Type,
+                    &raw mut PySet_Type,
+                    &raw mut PySlice_Type,
+                    &raw mut PyTuple_Type,
+                ]
+                .contains(&tp)
+        }
+        _ => false,
+    }
+}
+
+/// The two upstream namespace projections admitted by the target contract.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum BuiltinSlotNamespacePolicy {
+    ManualInheritance,
+    PairedInheritance,
+}
+
+impl BuiltinSlotNamespacePolicy {
+    pub fn for_minor(minor: i64) -> Self {
+        if minor < 14 {
+            Self::ManualInheritance
+        } else {
+            Self::PairedInheritance
+        }
+    }
+
+    pub fn receipt_bit(self) -> u64 {
+        u64::from(self == Self::PairedInheritance)
+    }
+}
+
+unsafe fn builtin_slot_is_inherited(
+    tp: *mut PyTypeObject,
+    slot: SlotWrapper,
+    wrapped: *mut c_void,
+    policy: BuiltinSlotNamespacePolicy,
+) -> bool {
+    unsafe {
+        // Exception constructor dispatch shares a C adapter across distinct
+        // declared layouts. Its schema, not adapter equality, owns declaration.
+        if matches!(slot, SlotWrapper::Direct(DirectSlot::Init))
+            && let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
+                .and_then(|name| name.strip_prefix("PyExc_"))
+                .and_then(molt_lang_obj_model::builtin_exception_spec)
+            && spec.introduced_layout_root().is_some()
+        {
+            return false;
+        }
+        let base = (*tp).tp_base;
+        if base.is_null() || wrapped != slot_wrapper_ptr(base, slot) {
+            return false;
+        }
+        if policy == BuiltinSlotNamespacePolicy::ManualInheritance {
+            return !builtin_slot_is_manually_inherited(tp, slot);
+        }
+        // CPython 3.14 inherits hash and rich comparison as one pair.
+        let paired = match slot {
+            SlotWrapper::Direct(DirectSlot::Hash) => Some(DirectSlot::RichCompare),
+            SlotWrapper::Direct(DirectSlot::RichCompare) => Some(DirectSlot::Hash),
+            _ => None,
+        };
+        paired.is_none_or(|paired| {
+            slot_wrapper_ptr(tp, SlotWrapper::Direct(paired))
+                == slot_wrapper_ptr(base, SlotWrapper::Direct(paired))
+        })
+    }
+}
+
+/// Complete builtin declaration policy, shared by readiness and target changes.
+/// Renderer ownership does not by itself decide own-namespace visibility:
+/// pre-3.14 CPython explicitly repeats two inherited exception str slots.
+unsafe fn builtin_slot_is_declared(
+    tp: *mut PyTypeObject,
+    slot: SlotWrapper,
+    wrapped: *mut c_void,
+    policy: BuiltinSlotNamespacePolicy,
+) -> bool {
+    if let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
+        .and_then(|name| name.strip_prefix("PyExc_"))
+        .and_then(molt_lang_obj_model::builtin_exception_spec)
+    {
+        let declared = match slot {
+            SlotWrapper::Direct(DirectSlot::Repr) => spec.declares_repr(),
+            SlotWrapper::Direct(DirectSlot::Str) => {
+                spec.declared_str_slot().is_some()
+                    || (policy == BuiltinSlotNamespacePolicy::ManualInheritance
+                        && builtin_slot_is_manually_inherited(tp, slot))
+            }
+            _ => true,
+        };
+        if !declared {
+            return false;
+        }
+    }
+    !unsafe { builtin_slot_is_inherited(tp, slot, wrapped, policy) }
+}
+
+unsafe fn builtin_slot_policy_delta(
+    tp: *mut PyTypeObject,
+    def: &slot_wrappers::SlotWrapperDef,
+    previous: BuiltinSlotNamespacePolicy,
+    next: BuiltinSlotNamespacePolicy,
+) -> Option<bool> {
+    unsafe {
+        if def.base.wrapper.is_none() {
+            return None;
+        }
+        let wrapped = slot_wrapper_ptr(tp, def.slot);
+        if wrapped.is_null() || wrapped == def.base.function {
+            return None;
+        }
+        let before = builtin_slot_is_declared(tp, def.slot, wrapped, previous);
+        let after = builtin_slot_is_declared(tp, def.slot, wrapped, next);
+        (before != after).then_some(after)
+    }
+}
+
+/// Observe only current ready builtin shells. No readiness, projection or
+/// namespace mutation is performed while the target transaction is preparing.
+/// The caller supplies a member of the canonical static teardown cohort.
+pub unsafe fn builtin_slot_namespace_needs_update(
+    tp: *mut PyTypeObject,
+    previous: BuiltinSlotNamespacePolicy,
+    next: BuiltinSlotNamespacePolicy,
+) -> Result<bool, crate::ErrorIndicatorSet> {
+    unsafe {
+        if previous == next
+            || tp.is_null()
+            || (*tp).tp_dict.is_null()
+            || (*tp).tp_flags & crate::abi_types::Py_TPFLAGS_READY == 0
+            || GLOBAL_BRIDGE.type_uses_runtime_slots(tp)
+        {
+            return Ok(false);
+        }
+        for def in SLOT_WRAPPER_DEFS {
+            let Some(enabled) = builtin_slot_policy_delta(tp, def, previous, next) else {
+                continue;
+            };
+            if builtin_slot_change_needed(tp, (*tp).tp_dict, def, enabled)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+unsafe fn builtin_slot_change_needed(
+    tp: *mut PyTypeObject,
+    dictionary: *mut PyObject,
+    def: &slot_wrappers::SlotWrapperDef,
+    enabled: bool,
+) -> Result<bool, crate::ErrorIndicatorSet> {
+    unsafe {
+        let existing =
+            crate::api::mapping::_PyDict_GetItemStringWithError(dictionary, def.base.name);
+        if crate::api::errors::raised_error_pending() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        if enabled {
+            return Ok(existing.is_null());
+        }
+        if existing.is_null()
+            || (*existing).ob_type != &raw mut crate::abi_types::PyWrapperDescr_Type
+        {
+            return Ok(false);
+        }
+        // Exact declaration custody, never deletion based on a name alone.
+        let wrapper = &*existing.cast::<crate::abi_types::PyWrapperDescrObject>();
+        Ok(wrapper.d_common.d_type == tp
+            && wrapper.d_base == (&raw const def.base).cast_mut()
+            && wrapper.d_wrapped == slot_wrapper_ptr(tp, def.slot))
+    }
+}
+
+/// Change only affected declarations in the caller's private dictionary copy.
+/// Existing replacements survive; the runtime transaction owns live publication.
+pub unsafe fn stage_builtin_slot_namespace(
+    tp: *mut PyTypeObject,
+    staged: *mut PyObject,
+    previous: BuiltinSlotNamespacePolicy,
+    next: BuiltinSlotNamespacePolicy,
+) -> Result<bool, crate::ErrorIndicatorSet> {
+    unsafe {
+        let mut changed = false;
+        for def in SLOT_WRAPPER_DEFS {
+            let Some(enabled) = builtin_slot_policy_delta(tp, def, previous, next) else {
+                continue;
+            };
+            if !builtin_slot_change_needed(tp, staged, def, enabled)? {
+                continue;
+            }
+            if !enabled {
+                if crate::api::mapping::PyDict_DelItemString(staged, def.base.name) < 0 {
+                    return Err(crate::ErrorIndicatorSet);
+                }
+            } else {
+                let wrapped = slot_wrapper_ptr(tp, def.slot);
+                let hash_not_implemented =
+                    matches!(def.slot, SlotWrapper::Direct(DirectSlot::Hash))
+                        && wrapped == PyObject_HashNotImplemented as *const () as *mut c_void;
+                let descriptor =
+                    crate::api::refcount::OwnedPyObject::from_owned(if hash_not_implemented {
+                        crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None)
+                    } else {
+                        PyDescr_NewWrapper(tp, (&raw const def.base).cast_mut(), wrapped)
+                    });
+                if descriptor.as_ptr().is_null() {
+                    return Err(crate::ErrorIndicatorSet);
+                }
+                if crate::api::mapping::PyDict_SetItemString(
+                    staged,
+                    def.base.name,
+                    descriptor.as_ptr(),
+                ) < 0
+                {
+                    return Err(crate::ErrorIndicatorSet);
+                }
+            }
+            changed = true;
+        }
+        Ok(changed)
+    }
+}
+
 unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
         let dict = (*tp).tp_dict;
+        let policy = BuiltinSlotNamespacePolicy::for_minor(
+            (crate::hooks::hooks_or_stubs().target_python_minor)()
+        );
+        // Static builtin slots survive runtime retirement; their dictionaries
+        // do not. Rebuilding must not turn inherited slots into declarations.
+        // Reuse the canonical teardown cohort, never all non-heap native types.
+        let static_builtin = crate::abi_types::builtin_static_type_runtime_cohort()
+            .any(|entry| entry.type_ptr == tp && entry.builtin_slot_namespace);
         for def in SLOT_WRAPPER_DEFS {
             // Mutation-only declarations (__getattr__/__new__) have their own
             // Python publication protocols and no physical wrapper adapter.
             if def.base.wrapper.is_none() {
                 continue;
             }
-            // Builtin exception rendering declarations come from the shared
-            // schema. PyType_Ready has already inherited C slots, but an
-            // inherited slot does not introduce a descriptor in this dict.
-            if let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
-                .and_then(|name| name.strip_prefix("PyExc_"))
-                .and_then(molt_lang_obj_model::builtin_exception_spec)
-                && ((matches!(def.slot, SlotWrapper::Direct(DirectSlot::Repr))
-                    && !spec.declares_repr())
-                    || (matches!(def.slot, SlotWrapper::Direct(DirectSlot::Str))
-                        && spec.declared_str_slot().is_none()))
-            {
-                continue;
-            }
             let wrapped = slot_wrapper_ptr(tp, def.slot);
             if wrapped.is_null() || wrapped == def.base.function {
+                continue;
+            }
+            if static_builtin && !builtin_slot_is_declared(tp, def.slot, wrapped, policy) {
                 continue;
             }
             let name = def.base.name;
@@ -2537,111 +2810,165 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
     unsafe { PyType_IsSubtype(meta, type_type) }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
-    unsafe fn invalidate_one(identity: TypeIdentity) {
-        let Some(tp) = (unsafe { identity.live_type(&TYPE_SUBCLASSES.lock()) }) else {
-            return;
-        };
-        let watched = unsafe { (*tp).tp_watched };
-        // Retention admits the lifetime before any field writes. Watched types
-        // also need that owner across callbacks and unraisable reporting,
-        // outside the registry lock.
-        // A managed view's teardown pin can keep its C header positive after
-        // runtime death is committed. Checked retention rejects that window
-        // before either watcher callbacks or version-flag writes.
-        let Some(_owner) =
-            (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
-        else {
-            return;
-        };
-        if watched != 0 {
-            for watcher_id in 0..TYPE_MAX_WATCHERS {
-                if watched & (1 << watcher_id) == 0 {
-                    continue;
-                }
-                // A prior callback may clear or replace a later slot. Keep the
-                // watched-bit snapshot, but resolve each callback at dispatch.
-                let callback = {
-                    let watcher_state = TYPE_WATCHER_STATE.lock();
-                    debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
-                    watcher_state.callbacks[watcher_id]
-                };
-                if let Some(callback) = callback {
-                    if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
-                        return;
-                    }
-                    crate::api::errors::with_preserved_error(|| unsafe {
-                        let status = callback(tp.cast::<PyObject>());
-                        if status < 0 && !crate::api::errors::raised_error_pending() {
-                            crate::api::errors::PyErr_SetString(
-                                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
-                                c"type watcher callback failed without an exception".as_ptr(),
-                            );
-                        }
-                        if crate::api::errors::raised_error_pending() {
-                            let context = if identity.is_live(&TYPE_SUBCLASSES.lock()) {
-                                tp.cast()
-                            } else {
-                                ptr::null_mut()
-                            };
-                            crate::api::errors::PyErr_WriteUnraisable(context);
-                        }
-                    });
-                }
-            }
-            if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
-                return;
-            }
-        }
-        unsafe {
-            (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
-            (*tp).tp_version_tag = 0;
-            if let Some(heap) = heap_type_storage(tp) {
-                (*heap)._spec_cache.getitem = ptr::null_mut();
-            }
-        }
-    }
-    if tp.is_null() {
-        return;
-    }
-    // Serialize lifetime observation and retaining a live type through the
-    // existing runtime token. Never take a bridge/refcount lock under the
-    // subclass registry lock.
-    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-    let Some(root) = type_identity(&mut TYPE_SUBCLASSES.lock(), tp) else {
+unsafe fn invalidate_type_identity(identity: TypeIdentity) {
+    let Some(tp) = (unsafe { identity.live_type(&TYPE_SUBCLASSES.lock()) }) else {
         return;
     };
-    // Explicit post-order traversal preserves CPython's subclass-before-base
-    // callback order without consuming one Rust stack frame per hierarchy
-    // level. Children are pushed in reverse so their registration order is
-    // observed deterministically.
+    let watched = unsafe { (*tp).tp_watched };
+    // Retention admits the lifetime before any field writes. Watched types
+    // also need that owner across callbacks and unraisable reporting,
+    // outside the registry lock.
+    // A managed view's teardown pin can keep its C header positive after
+    // runtime death is committed. Checked retention rejects that window
+    // before either watcher callbacks or version-flag writes.
+    let Some(_owner) =
+        (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
+    else {
+        return;
+    };
+    if watched != 0 {
+        for watcher_id in 0..TYPE_MAX_WATCHERS {
+            if watched & (1 << watcher_id) == 0 {
+                continue;
+            }
+            // A prior callback may clear or replace a later slot. Keep the
+            // watched-bit snapshot, but resolve each callback at dispatch.
+            let callback = {
+                let watcher_state = TYPE_WATCHER_STATE.lock();
+                debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
+                watcher_state.callbacks[watcher_id]
+            };
+            if let Some(callback) = callback {
+                if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
+                    return;
+                }
+                crate::api::errors::with_preserved_error(|| unsafe {
+                    let status = callback(tp.cast::<PyObject>());
+                    if status < 0 && !crate::api::errors::raised_error_pending() {
+                        crate::api::errors::PyErr_SetString(
+                            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                            c"type watcher callback failed without an exception".as_ptr(),
+                        );
+                    }
+                    if crate::api::errors::raised_error_pending() {
+                        let context = if identity.is_live(&TYPE_SUBCLASSES.lock()) {
+                            tp.cast()
+                        } else {
+                            ptr::null_mut()
+                        };
+                        crate::api::errors::PyErr_WriteUnraisable(context);
+                    }
+                });
+            }
+        }
+        if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
+            return;
+        }
+    }
+    unsafe {
+        (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
+        (*tp).tp_version_tag = 0;
+        if let Some(heap) = heap_type_storage(tp) {
+            (*heap)._spec_cache.getitem = ptr::null_mut();
+        }
+    }
+}
+
+unsafe fn visit_type_invalidation(
+    roots: impl IntoIterator<Item = *mut PyTypeObject>,
+    mut visit: impl FnMut(TypeIdentity),
+) {
+    // One traversal owns deduplication across every changed root. Shared
+    // descendants are visited once, including for overlapping root cohorts.
     let mut seen = HashSet::new();
-    let mut work = vec![(root, false)];
-    while let Some((current, expanded)) = work.pop() {
-        if expanded {
-            unsafe { invalidate_one(current) };
+    let mut work = Vec::new();
+    for tp in roots {
+        if tp.is_null() {
             continue;
         }
-        let mut registry = TYPE_SUBCLASSES.lock();
-        let Some(pointer) = (unsafe { current.live_type(&registry) }) else {
-            // Live subclasses retain their bases, so a dying type cannot
-            // have a live subtree. Keep registration for possible resurrection.
+        // Serialize lifetime observation through the existing runtime token.
+        // Never take a bridge/refcount lock under the subclass registry lock.
+        let Some(root) = type_identity(&mut TYPE_SUBCLASSES.lock(), tp) else {
             continue;
         };
-        if !seen.insert(current) {
-            continue;
+        // Explicit post-order traversal preserves CPython's subclass-before-base
+        // callback order without consuming a Rust frame per hierarchy level.
+        // Reverse pushes preserve deterministic child registration order.
+        work.push((root, false));
+        while let Some((current, expanded)) = work.pop() {
+            if expanded {
+                visit(current);
+                continue;
+            }
+            let mut registry = TYPE_SUBCLASSES.lock();
+            let Some(pointer) = (unsafe { current.live_type(&registry) }) else {
+                // Live subclasses retain their bases. Keep a dying type's
+                // registration for possible resurrection, but skip its subtree.
+                continue;
+            };
+            if !seen.insert(current) {
+                continue;
+            }
+            if unsafe { (*pointer).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0
+            {
+                continue;
+            }
+            work.push((current, true));
+            if let Some(entry) = registry.subclasses.get_mut(&current) {
+                // Extend directly under the membership lock without allocating
+                // a temporary child list for each parent.
+                entry.compact();
+                work.extend(entry.order.iter().rev().map(|&child| (child, false)));
+            }
         }
-        if unsafe { (*pointer).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0 {
-            continue;
+    }
+}
+
+/// Allocation-complete native cache invalidation for one staged multi-namespace
+/// publication. Identities use the existing weak subclass/lifetime authority;
+/// no new registry or callback-capable owners are retained by this plan.
+pub struct TypeNamespaceInvalidation {
+    identities: Vec<TypeIdentity>,
+}
+
+impl TypeNamespaceInvalidation {
+    /// Prepare after all allocating namespace work, under the runtime GIL.
+    pub unsafe fn prepare(roots: &[*mut PyTypeObject]) -> Self {
+        let mut identities = Vec::new();
+        unsafe {
+            visit_type_invalidation(roots.iter().copied(), |identity| identities.push(identity));
         }
-        work.push((current, true));
-        if let Some(entry) = registry.subclasses.get_mut(&current) {
-            // Copy identities directly into the traversal queue under the
-            // membership lock, without a temporary allocation per parent.
-            entry.compact();
-            work.extend(entry.order.iter().rev().map(|&child| (child, false)));
+        Self { identities }
+    }
+
+    /// Every dictionary and runtime class epoch is already published. Clear
+    /// all native tags before the first watcher can read a sibling namespace.
+    pub unsafe fn commit(self) {
+        unsafe {
+            for &identity in &self.identities {
+                let Some(tp) = identity.live_type(&TYPE_SUBCLASSES.lock()) else {
+                    continue;
+                };
+                (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
+                (*tp).tp_version_tag = 0;
+                if let Some(heap) = heap_type_storage(tp) {
+                    (*heap)._spec_cache.getitem = ptr::null_mut();
+                }
+            }
+            for identity in self.identities {
+                invalidate_type_identity(identity);
+            }
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    unsafe {
+        visit_type_invalidation(std::iter::once(tp), |identity| {
+            invalidate_type_identity(identity)
+        });
     }
 }
 

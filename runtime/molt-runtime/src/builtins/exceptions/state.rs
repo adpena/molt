@@ -45,12 +45,6 @@ thread_local! {
 
 pub(crate) struct ThreadExceptionState {
     slot: Cell<*mut u8>,
-    /// Allocation-free MemoryError fallback for paths where constructing the
-    /// ordinary heap exception is itself impossible. The owner is the active
-    /// task pointer (null for the native-thread exception domain), so a task
-    /// switch cannot leak emergency state into an unrelated execution context.
-    emergency_memory_error_pending: Cell<bool>,
-    emergency_memory_error_owner: Cell<*mut u8>,
 }
 
 #[cfg(test)]
@@ -70,8 +64,6 @@ impl ThreadExceptionState {
     const fn new() -> Self {
         Self {
             slot: Cell::new(std::ptr::null_mut()),
-            emergency_memory_error_pending: Cell::new(false),
-            emergency_memory_error_owner: Cell::new(std::ptr::null_mut()),
         }
     }
 
@@ -87,27 +79,6 @@ impl ThreadExceptionState {
     pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
         arm_thread_exception_release(ptr);
         self.slot.replace(ptr)
-    }
-
-    pub(crate) fn emergency_memory_error_is_pending(&self, owner: *mut u8) -> bool {
-        self.emergency_memory_error_pending.get()
-            && self.emergency_memory_error_owner.get() == owner
-    }
-
-    pub(crate) fn set_emergency_memory_error(&self, owner: *mut u8) {
-        self.emergency_memory_error_owner.set(owner);
-        self.emergency_memory_error_pending.set(true);
-    }
-
-    pub(crate) fn clear_emergency_memory_error(&self, owner: *mut u8) {
-        if self.emergency_memory_error_is_pending(owner) {
-            self.clear_all_emergency_memory_error();
-        }
-    }
-
-    pub(crate) fn clear_all_emergency_memory_error(&self) {
-        self.emergency_memory_error_pending.set(false);
-        self.emergency_memory_error_owner.set(std::ptr::null_mut());
     }
 }
 
@@ -167,6 +138,7 @@ impl Drop for ThreadExceptionRelease {
 const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 15;
 
 pub(crate) struct ExceptionsRuntimeState {
+    pub(super) memory_error: super::memory_error::MemoryErrorReserve,
     pub(super) base_exception_class_cache: AtomicU64,
     pub(super) exception_class_cache: AtomicU64,
     pub(super) key_error_class_cache: AtomicU64,
@@ -187,6 +159,7 @@ pub(crate) struct ExceptionsRuntimeState {
 impl ExceptionsRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            memory_error: super::memory_error::MemoryErrorReserve::new(),
             base_exception_class_cache: AtomicU64::new(0),
             exception_class_cache: AtomicU64::new(0),
             key_error_class_cache: AtomicU64::new(0),

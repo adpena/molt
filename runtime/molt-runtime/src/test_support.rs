@@ -50,13 +50,13 @@ pub(crate) fn restore_runtime_raised(py: &crate::PyToken<'_>, bits: u64) {
 /// Observe the allocation-free raised channel through the real C API. Callers
 /// install the hooks before denying allocation and keep the denial active here.
 pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {
-    use molt_cpython_abi::{abi_types, api::errors};
+    use molt_cpython_abi::{
+        abi_types,
+        api::{errors, refcount},
+    };
     assert!(crate::exception_pending(py));
-    assert_eq!(
-        crate::builtins::exceptions::molt_exception_last_pending(),
-        crate::MoltObject::none().bits(),
-        "allocation denial must not publish a partial exception object"
-    );
+    let bits =
+        crate::exception_last_bits_noinc(py).expect("MemoryError is an owned reserved instance");
     unsafe {
         assert_eq!(
             errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_MemoryError).cast()),
@@ -66,11 +66,33 @@ pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {
             errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_TypeError).cast()),
             0
         );
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(bits));
+        let selected = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert!(
-            crate::exception_pending(py),
-            "matching must preserve raised state"
+            !selected.as_ptr().is_null(),
+            "zero-budget take transfers a real instance"
         );
-        errors::PyErr_Clear();
+        assert_eq!(
+            (*selected.as_ptr()).ob_type,
+            &raw mut abi_types::PyExc_MemoryError
+        );
+        assert!(!crate::exception_pending(py));
+        let identity = selected.as_ptr();
+        errors::PyErr_SetRaisedException(selected.into_ptr());
+        let mut class = std::ptr::null_mut();
+        let mut value = std::ptr::null_mut();
+        let mut traceback = std::ptr::null_mut();
+        errors::PyErr_Fetch(&raw mut class, &raw mut value, &raw mut traceback);
+        let _class = refcount::OwnedPyObject::from_owned(class);
+        let _value = refcount::OwnedPyObject::from_owned(value);
+        let _traceback = refcount::OwnedPyObject::from_owned(traceback);
+        assert_eq!(class, (&raw mut abi_types::PyExc_MemoryError).cast());
+        assert_eq!(
+            value, identity,
+            "Fetch preserves the taken instance under allocation denial"
+        );
+        assert!(traceback.is_null());
+        assert!(errors::PyErr_Occurred().is_null());
     }
     assert!(!crate::exception_pending(py));
 }
@@ -229,20 +251,19 @@ fn pending_exception_snapshot_preserves_emergency_runtime_state() {
     let _transaction = RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         crate::record_memory_error_without_allocation(py);
+        let original = crate::exception_last_bits_noinc(py).expect("reserved owner");
         let snapshot = PendingExceptionSnapshot::detach();
-        assert!(matches!(
-            snapshot.runtime_error,
-            Some(RaisedSnapshot::Emergency(_))
-        ));
+        assert!(
+            matches!(snapshot.runtime_error, Some(RaisedSnapshot::Thread(bits)) if bits == original)
+        );
         assert!(!crate::exception_pending(py));
         crate::record_memory_error_without_allocation(py);
         snapshot.restore();
         assert!(crate::exception_pending(py));
         let restored = PendingExceptionSnapshot::detach();
-        assert!(matches!(
-            restored.runtime_error,
-            Some(RaisedSnapshot::Emergency(_))
-        ));
+        assert!(
+            matches!(restored.runtime_error, Some(RaisedSnapshot::Thread(bits)) if bits == original)
+        );
         restored.restore();
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     });

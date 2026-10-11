@@ -635,6 +635,10 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         unsafe {
             (*header_from_obj_ptr(obj_ptr)).fetch_or_flags(crate::object::HEADER_FLAG_RAW_ALLOC);
             if !object_init_poll_fn_unpublished(obj_ptr, anext_default_poll_fn_addr())
+                || !crate::object::object_init_shape_unpublished(
+                    obj_ptr,
+                    crate::object::task_shape_for_poll_fn(anext_default_poll_fn_addr()),
+                )
                 || !object_init_state_unpublished(obj_ptr, 0)
             {
                 dec_ref_bits(_py, obj_bits);
@@ -646,6 +650,10 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
             *payload_ptr.add(1) = default_bits;
             inc_ref_bits(_py, default_bits);
             *payload_ptr.add(2) = MoltObject::none().bits();
+        }
+        if !crate::builtins::exceptions::task_raised_slot_admit(_py, obj_ptr) {
+            dec_ref_bits(_py, obj_bits);
+            return MoltObject::none().bits();
         }
         obj_bits
     })
