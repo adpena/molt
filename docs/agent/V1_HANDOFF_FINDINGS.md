@@ -58,6 +58,13 @@ newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
+Guarded development commands and benchmark interpreter selection now preserve
+the selected virtual-environment entrypoint through working-directory changes.
+Eight focused checks pass, including actual interpreter execution and imports
+from a distinct environment through relative, absolute and PATH selections.
+The change reuses the lexical executable-path authority and adds no work to
+emitted binaries. Windows execution remains unverified.
+
 Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
 Windows reports changed CPython runtime/import selection in its installed-record
