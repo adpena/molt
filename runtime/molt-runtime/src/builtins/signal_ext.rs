@@ -1776,7 +1776,7 @@ pub extern "C" fn molt_signal_valid_signals() -> u64 {
         let int_bits: Vec<u64> = valid.iter().map(|&v| int_bits_from_i64(_py, v)).collect();
         let set_ptr = alloc_set_with_entries(_py, &int_bits);
         if set_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(set_ptr).bits()
     })

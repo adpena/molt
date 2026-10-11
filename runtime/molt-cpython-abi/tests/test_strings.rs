@@ -8,14 +8,31 @@ use std::ptr;
 
 thread_local! {
     static STRING_ALLOCATION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SELECTED_ALLOCATION_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAILED_ALLOCATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 unsafe extern "C" fn alloc_string(data: *const u8, len: usize) -> u64 {
     if STRING_ALLOCATION_ENABLED.with(std::cell::Cell::get) {
         unsafe { support::fake_strings::alloc_str(data, len) }
     } else {
-        0
+        unsafe { fail_allocation(data, len) }
     }
+}
+
+unsafe extern "C" fn fail_allocation(_data: *const u8, _len: usize) -> u64 {
+    FAILED_ALLOCATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let selected = SELECTED_ALLOCATION_ERROR.with(std::cell::Cell::get);
+    if selected != 0 {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetRaisedException(
+                molt_cpython_abi::api::object::Py_NewRef(std::ptr::with_exposed_provenance_mut(
+                    selected,
+                )),
+            );
+        }
+    }
+    0
 }
 
 unsafe extern "C" fn classify(bits: u64) -> u8 {
@@ -30,6 +47,8 @@ fn init() -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
     hooks.alloc_str = Some(alloc_string);
+    hooks.alloc_bytes = fail_allocation;
+    hooks.alloc_bytearray = fail_allocation;
     hooks.classify_heap = Some(classify);
     support::enter_runtime_class_abi_test(hooks)
 }
@@ -40,10 +59,9 @@ fn init() -> support::AbiTestThreadStateTransaction {
 
 #[test]
 fn test_unicode_from_string_fails_closed_on_alloc_failure() {
-    // F4 teeth: with stub hooks, alloc_str returns 0 (allocation failure).
-    // PyUnicode_FromString MUST fail closed with NULL + MemoryError (CPython's
-    // Objects/unicodeobject.c contract), NOT a fabricated Py_None placeholder
-    // that reads as a non-NULL success and defeats `if (s == NULL)`.
+    // A missing producer returns zero without selecting an error. The public
+    // boundary diagnoses that refusal; it must never publish a None placeholder.
+    // Actual allocator-selected errors are covered independently below.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"hello".as_ptr()) };
@@ -70,7 +88,7 @@ fn test_unicode_from_string_empty_fails_closed_under_stubs() {
     // Even the empty string routes through alloc_str, which the stub table fails
     // (returns 0) — so under stubs the construction fails closed with NULL. With a
     // real runtime this returns the interned empty str; the stub table proves the
-    // OOM path never fabricates a placeholder.
+    // refusal path never fabricates a placeholder.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"".as_ptr()) };
@@ -85,7 +103,7 @@ fn test_unicode_from_string_empty_fails_closed_under_stubs() {
 
 #[test]
 fn test_unicode_from_string_and_size_fails_closed_on_alloc_failure() {
-    // F4 teeth: alloc_str fails under stubs => NULL + MemoryError, not a placeholder.
+    // F4 teeth: alloc_str fails under stubs => NULL + SystemError, not a placeholder.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let data = b"world\0";
@@ -278,7 +296,7 @@ fn test_unicode_substring_null_returns_null() {
 
 #[test]
 fn test_bytes_from_string_and_size_fails_closed_on_alloc_failure() {
-    // F4 teeth: alloc_bytes fails under stubs => NULL + MemoryError, not a
+    // F4 teeth: alloc_bytes fails under stubs => NULL + SystemError, not a
     // placeholder None (Objects/bytesobject.c contract).
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -331,7 +349,7 @@ fn test_bytes_from_string_and_size_zero_length_fails_closed_under_stubs() {
 
 #[test]
 fn test_bytes_from_string_fails_closed_on_alloc_failure() {
-    // F4 teeth: alloc_bytes fails under stubs => NULL + MemoryError.
+    // F4 teeth: alloc_bytes fails under stubs => NULL + SystemError.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyBytes_FromString(c"data".as_ptr()) };
@@ -445,7 +463,7 @@ fn test_bytes_concat_null_args_are_noops() {
 #[test]
 fn test_unicode_concat_fails_closed_on_alloc_failure() {
     // F4 teeth: PyUnicode_Concat allocates the joined string via alloc_str, which
-    // the stub fails => NULL + MemoryError, never a fabricated None placeholder.
+    // the stub fails => NULL + SystemError, never a fabricated None placeholder.
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let left = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"a".as_ptr()) };
@@ -568,7 +586,7 @@ fn public_bytearray_constructor_fails_closed_without_runtime_allocation() {
         );
         assert_eq!(
             molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
             ),
             1
         );
@@ -607,4 +625,115 @@ unsafe fn foreign_bytearray_fixture(
         (*object).ob_start = bytes;
     }
     object.cast()
+}
+
+#[test]
+fn string_and_bytes_constructors_forward_the_selected_failure_once() {
+    use molt_cpython_abi::abi_types::{PyExc_LookupError, PyExc_ValueError, PyObject};
+    use molt_cpython_abi::api::{errors, object, refcount, strings};
+
+    let _abi_test = init();
+    unsafe {
+        errors::PyErr_Clear();
+        errors::PyErr_SetNone((&raw mut PyExc_LookupError).cast());
+        let prior = errors::PyErr_GetRaisedException();
+        let _prior_owner = refcount::OwnedPyObject::from_owned(prior);
+        assert!(!prior.is_null());
+        errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast());
+        let other = errors::PyErr_GetRaisedException();
+        let _other_owner = refcount::OwnedPyObject::from_owned(other);
+        assert!(!other.is_null());
+
+        struct ResetAllocationError;
+        impl Drop for ResetAllocationError {
+            fn drop(&mut self) {
+                SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
+            }
+        }
+        let _reset = ResetAllocationError;
+        for incoming in [false, true] {
+            for selected in [prior, other] {
+                for constructor in 0..4 {
+                    if incoming {
+                        errors::PyErr_SetRaisedException(object::Py_NewRef(prior));
+                    }
+                    SELECTED_ALLOCATION_ERROR.with(|slot| slot.set(selected.addr()));
+                    FAILED_ALLOCATION_CALLS.with(|calls| calls.set(0));
+                    let result: *mut PyObject = match constructor {
+                        0 => strings::PyUnicode_FromString(c"failure payload".as_ptr()),
+                        1 => strings::PyBytes_FromString(c"failure payload".as_ptr()),
+                        2 => strings::PyBytes_FromStringAndSize(c"failure payload".as_ptr(), 15),
+                        _ => {
+                            strings::PyByteArray_FromStringAndSize(c"failure payload".as_ptr(), 15)
+                        }
+                    };
+                    let _result_owner = refcount::OwnedPyObject::from_owned(result);
+                    let raised = errors::PyErr_GetRaisedException();
+                    let _raised_owner = refcount::OwnedPyObject::from_owned(raised);
+                    assert!(result.is_null(), "constructor {constructor}");
+                    assert_eq!(
+                        raised, selected,
+                        "constructor {constructor}, prior {incoming}"
+                    );
+                    assert_eq!(FAILED_ALLOCATION_CALLS.with(std::cell::Cell::get), 1);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error() {
+    use molt_cpython_abi::abi_types::{PyExc_LookupError, PyExc_SystemError, PyObject};
+    use molt_cpython_abi::api::{errors, object, refcount, strings};
+
+    // This is a registered partial provider: the transaction supplies native
+    // GC and class custody, but text allocation remains absent. Diagnostic
+    // construction must not recursively invoke its unavailable allocator.
+    let _abi_test = support::enter_runtime_class_abi_test(support::stub_runtime_hooks());
+    assert!(
+        molt_cpython_abi::hooks::hooks_or_stubs()
+            .native_gc_allocate
+            .is_some()
+    );
+    assert!(
+        molt_cpython_abi::hooks::hooks_or_stubs()
+            .runtime_class_borrowed
+            .is_some()
+    );
+    assert!(
+        molt_cpython_abi::hooks::hooks_or_stubs()
+            .alloc_str
+            .is_none()
+    );
+    unsafe {
+        errors::PyErr_Clear();
+        errors::PyErr_SetNone((&raw mut PyExc_LookupError).cast());
+        let prior = errors::PyErr_GetRaisedException();
+        let _prior_owner = refcount::OwnedPyObject::from_owned(prior);
+        assert!(!prior.is_null());
+        for incoming in [false, true] {
+            for constructor in 0..4 {
+                if incoming {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior));
+                }
+                let result: *mut PyObject = match constructor {
+                    0 => strings::PyUnicode_FromString(c"unavailable text".as_ptr()),
+                    1 => strings::PyBytes_FromString(c"unavailable text".as_ptr()),
+                    2 => strings::PyBytes_FromStringAndSize(ptr::null(), 3),
+                    _ => strings::PyByteArray_FromStringAndSize(ptr::null(), 3),
+                };
+                let _result_owner = refcount::OwnedPyObject::from_owned(result);
+                assert!(result.is_null());
+                assert_eq!(
+                    errors::PyErr_Occurred(),
+                    (&raw mut PyExc_SystemError).cast()
+                );
+                let selected = errors::PyErr_GetRaisedException();
+                let _selected_owner = refcount::OwnedPyObject::from_owned(selected);
+                assert!(!selected.is_null());
+                assert_ne!(selected, prior);
+            }
+        }
+    }
 }

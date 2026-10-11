@@ -27,7 +27,6 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 fn str_bits(_py: &PyToken<'_>, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
-        crate::record_memory_error_without_allocation(_py);
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(ptr).bits()

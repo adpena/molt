@@ -44,7 +44,7 @@ fn alloc_string_result(_py: &PyToken<'_>, s: &[u8]) -> u64 {
     }
     let ptr = alloc_string(_py, s);
     if ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(ptr).bits()
 }

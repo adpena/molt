@@ -50,17 +50,16 @@ pub extern "C" fn molt_importlib_reload(
                 }
                 return Err(importlib_modules_runtime_error(_py));
             };
-            let in_sys_modules = match unsafe {
-                dict_get_in_place(_py, modules_ptr, module_name_bits)
-            } {
-                Ok(value) => value.is_some_and(|bits| bits == module_bits),
-                Err(()) => {
-                    if !obj_from_bits(module_name_bits).is_none() {
-                        dec_ref_bits(_py, module_name_bits);
+            let in_sys_modules =
+                match unsafe { dict_get_in_place(_py, modules_ptr, module_name_bits) } {
+                    Ok(value) => value.is_some_and(|bits| bits == module_bits),
+                    Err(()) => {
+                        if !obj_from_bits(module_name_bits).is_none() {
+                            dec_ref_bits(_py, module_name_bits);
+                        }
+                        return Err(MoltObject::none().bits());
                     }
-                    return Err(MoltObject::none().bits());
-                }
-            };
+                };
             if !in_sys_modules {
                 let display = crate::object::ops_format::format_obj_str_bytes(
                     _py,
@@ -448,7 +447,7 @@ pub extern "C" fn molt_importlib_find_spec_payload(
                     if !obj_from_bits(origin_bits).is_none() {
                         dec_ref_bits(_py, origin_bits);
                     }
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
             },
             None => MoltObject::none().bits(),
@@ -589,13 +588,13 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
         let resolved_paths_bits = match alloc_string_list_bits(_py, &payload.resolved_search_paths)
         {
             Some(bits) => bits,
-            None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+            None => return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
         };
         let pythonpath_bits = match alloc_string_list_bits(_py, &payload.pythonpath_entries) {
             Some(bits) => bits,
             None => {
                 dec_ref_bits(_py, resolved_paths_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
         };
         let module_roots_bits = match alloc_string_list_bits(_py, &payload.module_roots_entries) {
@@ -603,7 +602,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
             None => {
                 dec_ref_bits(_py, resolved_paths_bits);
                 dec_ref_bits(_py, pythonpath_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
         };
         let venv_site_packages_bits =
@@ -613,7 +612,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
                     dec_ref_bits(_py, resolved_paths_bits);
                     dec_ref_bits(_py, pythonpath_bits);
                     dec_ref_bits(_py, module_roots_bits);
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
             };
         let pwd_bits = match alloc_str_bits(_py, &payload.pwd) {
@@ -922,7 +921,8 @@ pub extern "C" fn molt_importlib_parent_search_paths(
                         if !obj_from_bits(parent_key_bits).is_none() {
                             dec_ref_bits(_py, parent_key_bits);
                         }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     (
                         true,
@@ -963,7 +963,7 @@ pub extern "C" fn molt_importlib_parent_search_paths(
                         dec_ref_bits(_py, bits);
                     }
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
             pairs.push(key_bits);
@@ -978,7 +978,7 @@ pub extern "C" fn molt_importlib_parent_search_paths(
             }
         }
         if payload_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(payload_ptr).bits()
         }
@@ -1091,7 +1091,7 @@ pub extern "C" fn molt_importlib_search_paths(
         let resolved = importlib_search_paths(&search_paths, module_file);
         match alloc_string_list_bits(_py, &resolved) {
             Some(bits) => bits,
-            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
+            None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
         }
     })
 }
@@ -1129,7 +1129,7 @@ pub extern "C" fn molt_importlib_namespace_paths(
         let resolved = importlib_namespace_paths(&package, &search_paths, module_file);
         match alloc_string_list_bits(_py, &resolved) {
             Some(bits) => bits,
-            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
+            None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
         }
     })
 }

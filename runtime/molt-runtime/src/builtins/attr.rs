@@ -2109,11 +2109,13 @@ pub(crate) unsafe fn descriptor_bind(
     unsafe { bind_descriptor(py, value, owner, instance, DescriptorCallPolicy::Required) }
 }
 
-/// These contracts apply only to binding, never to errors from the called
-/// Python body. CPython changed optional special-method lookup in 3.14.
+/// These contracts apply to descriptor binding, never to the body of the
+/// resulting callable. Generic attribute suppression is version-independent;
+/// CPython changed optional special-method lookup in 3.14.
 #[derive(Clone, Copy)]
 pub(crate) enum DescriptorCallPolicy {
     Required,
+    AttributeLookup,
     Optional,
     RichComparison,
 }
@@ -2128,6 +2130,7 @@ fn descriptor_hook_result(
     }
     let suppress = match policy {
         DescriptorCallPolicy::Required => false,
+        DescriptorCallPolicy::AttributeLookup => clear_attribute_error_if_pending(py),
         DescriptorCallPolicy::Optional => {
             crate::object::ops_sys::runtime_target_at_least(py, 3, 14)
                 && clear_attribute_error_if_pending(py)
@@ -2180,11 +2183,9 @@ unsafe fn bind_descriptor(
                 }
                 Err(()) => Err(()),
             },
-            TYPE_ID_NATIVE_DESCRIPTOR => descriptor_hook_result(
-                py,
-                crate::builtins::types::native_descriptor_get(py, value, instance, owner),
-                policy,
-            ),
+            TYPE_ID_NATIVE_DESCRIPTOR => {
+                crate::builtins::types::native_descriptor_get(py, value, instance, owner).map(Some)
+            }
             crate::TYPE_ID_FOREIGN => {
                 let result = molt_cpython_abi::bridge::molt_foreign_descriptor_get(
                     crate::object::foreign::foreign_ptr_from_obj(pointer),
@@ -2199,7 +2200,7 @@ unsafe fn bind_descriptor(
                     }
                     molt_cpython_abi::hooks::DecodedHandleResult::Error => {
                         crate::cpython_abi_hooks::propagate_native_failure(py, "native descriptor");
-                        descriptor_hook_result(py, Err(()), policy)
+                        Err(())
                     }
                 }
             }
@@ -2217,11 +2218,10 @@ unsafe fn bind_descriptor(
                         _ => fn_key!(crate::molt_property_get),
                     },
                 )? {
-                    return descriptor_hook_result(
-                        py,
-                        crate::builtins::types::wrappers::wrapper_get(py, value, instance, owner),
-                        policy,
-                    );
+                    return crate::builtins::types::wrappers::wrapper_get(
+                        py, value, instance, owner,
+                    )
+                    .map(Some);
                 }
                 let result = call_descriptor_method(
                     py,
@@ -2238,10 +2238,17 @@ unsafe fn bind_descriptor(
                         inc_ref_bits(py, value);
                         Ok(Some(value))
                     }
-                    Err(()) => descriptor_hook_result(py, Err(()), policy),
+                    Err(()) => Err(()),
                 }
             }
         })();
+        // Apply the lookup's policy once, while the selected descriptor and
+        // both receiver pins still exist. Every binding failure shares this
+        // boundary, including receiver preparation and wrapper classification.
+        let result = match result {
+            Err(()) => descriptor_hook_result(py, Err(()), policy),
+            value => value,
+        };
         if let Some(owner) = owner {
             dec_ref_bits(py, owner);
         }
@@ -2908,15 +2915,24 @@ unsafe fn object_attr_lookup_inner(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         crate::gil_assert();
+        let descriptor_policy = if suppress {
+            DescriptorCallPolicy::AttributeLookup
+        } else {
+            DescriptorCallPolicy::Required
+        };
         let class_bits = type_of_bits(_py, obj_bits);
         let result = with_class_descriptor_snapshot(_py, class_bits, attr_bits, |snapshot| {
             let class_ptr_opt = snapshot.and_then(|entry| obj_from_bits(entry.class_bits).as_ptr());
             if let Some(bits) = snapshot.and_then(|entry| entry.data_desc_bits) {
-                if let Some(bound) =
-                    descriptor_bind(_py, bits, Some(type_of_bits(_py, obj_bits)), Some(obj_bits))?
-                {
-                    return Ok(Some(bound));
-                }
+                // A data descriptor terminates lookup even when its
+                // AttributeError is suppressed; the instance cannot shadow it.
+                return bind_descriptor(
+                    _py,
+                    bits,
+                    Some(type_of_bits(_py, obj_bits)),
+                    Some(obj_bits),
+                    descriptor_policy,
+                );
             }
             // A logical class edge never grants access to inline words in a
             // fixed type object or a task's separately owned capture payload.
@@ -2994,9 +3010,13 @@ unsafe fn object_attr_lookup_inner(
             // Dictionary callbacks may change both the class namespace and
             // __class__. Keep the selected value, but bind to the live owner.
             match snapshot.and_then(|entry| entry.class_attr_bits) {
-                Some(bits) => {
-                    descriptor_bind(_py, bits, Some(type_of_bits(_py, obj_bits)), Some(obj_bits))
-                }
+                Some(bits) => bind_descriptor(
+                    _py,
+                    bits,
+                    Some(type_of_bits(_py, obj_bits)),
+                    Some(obj_bits),
+                    descriptor_policy,
+                ),
                 None => Ok(None),
             }
         })?;
@@ -3301,6 +3321,11 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         crate::gil_assert();
+        let descriptor_policy = if suppress {
+            DescriptorCallPolicy::AttributeLookup
+        } else {
+            DescriptorCallPolicy::Required
+        };
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if desc_ptr.is_null() {
@@ -3325,11 +3350,15 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
         }
         with_class_descriptor_snapshot(_py, class_bits, attr_bits, |snapshot| {
             if let Some(bits) = snapshot.and_then(|entry| entry.data_desc_bits) {
-                if let Some(bound) =
-                    descriptor_bind(_py, bits, Some(type_of_bits(_py, obj_bits)), Some(obj_bits))?
-                {
-                    return Ok(Some(bound));
-                }
+                // A data descriptor terminates lookup even when its
+                // AttributeError is suppressed; the instance cannot shadow it.
+                return bind_descriptor(
+                    _py,
+                    bits,
+                    Some(type_of_bits(_py, obj_bits)),
+                    Some(obj_bits),
+                    descriptor_policy,
+                );
             }
             let instance = if let Some(dictionary) = dictionary {
                 crate::object::accessors::attribute_dictionary_lookup(
@@ -3345,9 +3374,13 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
                 return Ok(instance);
             }
             match snapshot.and_then(|entry| entry.class_attr_bits) {
-                Some(bits) => {
-                    descriptor_bind(_py, bits, Some(type_of_bits(_py, obj_bits)), Some(obj_bits))
-                }
+                Some(bits) => bind_descriptor(
+                    _py,
+                    bits,
+                    Some(type_of_bits(_py, obj_bits)),
+                    Some(obj_bits),
+                    descriptor_policy,
+                ),
                 None => Ok(None),
             }
         })

@@ -95,7 +95,10 @@ pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let Some(count) = usize::try_from(count).ok() else {
-            return raise_exception::<_>(_py, "MemoryError", "code slot count too large");
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         };
         let slots = (0..count).map(|_| CompiledCodeSlot::default()).collect();
         let _ = runtime_state(_py).code_slots.set(slots);
@@ -275,11 +278,8 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                 .map(CompiledCodeSlot::frame_plan)
                 .unwrap_or_default();
             if !crate::builtins::frames::frame_stack_enter_homes(plan) {
-                return raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "cannot allocate frame binding homes",
-                );
+                crate::record_memory_error_without_allocation(_py);
+                return MoltObject::none().bits();
             }
         }
         // The frame stack now owns the code edge; an owned-result sink must
@@ -2034,9 +2034,6 @@ fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u
         }
         let state = super::builders::alloc_dict_with_capacity_and_pairs(py, names.len(), &[]);
         if state.is_null() {
-            if !exception_pending(py) {
-                raise_exception::<()>(py, "MemoryError", "instance slot state allocation failed");
-            }
             return None;
         }
         let mut owner = crate::PtrDropGuard::new(state);
@@ -2462,11 +2459,7 @@ pub extern "C" fn molt_print_builtin(
             if obj.is_none() {
                 let ptr = alloc_string(_py, default);
                 if ptr.is_null() {
-                    return raise_exception::<_>(
-                        _py,
-                        "MemoryError",
-                        "print separator allocation failed",
-                    );
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 return Some(MoltObject::from_ptr(ptr).bits());
             }

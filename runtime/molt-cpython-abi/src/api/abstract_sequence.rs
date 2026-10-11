@@ -694,6 +694,11 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                     if cb != 0 {
                         return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(cb) };
                     }
+                    unsafe {
+                        crate::bridge::ensure_result_error(
+                            c"runtime string allocator returned no value",
+                        )
+                    };
                 }
                 return ptr::null_mut();
             }
@@ -1050,6 +1055,11 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 if nb != 0 {
                     return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
                 }
+                unsafe {
+                    crate::bridge::ensure_result_error(
+                        c"runtime string/bytes allocator returned no value",
+                    )
+                };
                 return ptr::null_mut();
             }
             unsafe {
@@ -1073,6 +1083,11 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 if nb != 0 {
                     return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
                 }
+                unsafe {
+                    crate::bridge::ensure_result_error(
+                        c"runtime string/bytes allocator returned no value",
+                    )
+                };
                 return ptr::null_mut();
             }
             unsafe {
@@ -1139,6 +1154,11 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
             if nb != 0 {
                 return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
             }
+            unsafe {
+                crate::bridge::ensure_result_error(
+                    c"runtime string/bytes allocator returned no value",
+                )
+            };
             return ptr::null_mut();
         }
         if tag == tag_bytes()
@@ -1150,6 +1170,11 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
             if nb != 0 {
                 return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
             }
+            unsafe {
+                crate::bridge::ensure_result_error(
+                    c"runtime string/bytes allocator returned no value",
+                )
+            };
             return ptr::null_mut();
         }
     }

@@ -468,7 +468,7 @@ pub extern "C" fn molt_json_encode_basestring_obj(obj_bits: u64) -> u64 {
         let encoded = json_encode_basestring_impl(value.as_str(), false);
         let ptr = alloc_string(_py, encoded.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -485,7 +485,7 @@ pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
         let encoded = json_encode_basestring_impl(value.as_str(), true);
         let ptr = alloc_string(_py, encoded.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -513,7 +513,7 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
             Ok((decoded, idx)) => {
                 let decoded_ptr = alloc_string(_py, decoded.as_bytes());
                 if decoded_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let tuple_ptr = alloc_tuple(
                     _py,
@@ -523,7 +523,7 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
                     ],
                 );
                 if tuple_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(tuple_ptr).bits()
             }
@@ -1636,11 +1636,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
     fn alloc_string_bytes(&self, bytes: &[u8]) -> Result<u64, JsonParseError> {
         let ptr = alloc_string(self._py, bytes);
         if ptr.is_null() {
-            return Err(JsonParseError::Raised(raise_exception::<u64>(
-                self._py,
-                "MemoryError",
-                "failed to allocate string",
-            )));
+            return Err(JsonParseError::Raised(MoltObject::none().bits()));
         }
         Ok(MoltObject::from_ptr(ptr).bits())
     }
@@ -1826,11 +1822,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
             self.index += 1;
             let ptr = alloc_list(self._py, &[]);
             if ptr.is_null() {
-                return Err(JsonParseError::Raised(raise_exception::<u64>(
-                    self._py,
-                    "MemoryError",
-                    "failed to allocate list",
-                )));
+                return Err(JsonParseError::Raised(MoltObject::none().bits()));
             }
             return Ok(MoltObject::from_ptr(ptr).bits());
         }
@@ -1875,11 +1867,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
         let ptr = alloc_list(self._py, &items);
         release_bits(self._py, &items);
         if ptr.is_null() {
-            return Err(JsonParseError::Raised(raise_exception::<u64>(
-                self._py,
-                "MemoryError",
-                "failed to allocate list",
-            )));
+            return Err(JsonParseError::Raised(MoltObject::none().bits()));
         }
         Ok(MoltObject::from_ptr(ptr).bits())
     }
@@ -1893,22 +1881,14 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                 dec_ref_bits(self._py, val_bits);
                 if tuple_ptr.is_null() {
                     release_bits(self._py, &tuple_bits);
-                    return Err(JsonParseError::Raised(raise_exception::<u64>(
-                        self._py,
-                        "MemoryError",
-                        "failed to allocate tuple",
-                    )));
+                    return Err(JsonParseError::Raised(MoltObject::none().bits()));
                 }
                 tuple_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
             }
             let list_ptr = alloc_list(self._py, &tuple_bits);
             release_bits(self._py, &tuple_bits);
             if list_ptr.is_null() {
-                return Err(JsonParseError::Raised(raise_exception::<u64>(
-                    self._py,
-                    "MemoryError",
-                    "failed to allocate list",
-                )));
+                return Err(JsonParseError::Raised(MoltObject::none().bits()));
             }
             let list_bits = MoltObject::from_ptr(list_ptr).bits();
             let out_bits = unsafe { call_callable1(self._py, hook_bits, list_bits) };
@@ -1930,11 +1910,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
             dec_ref_bits(self._py, val_bits);
         }
         if dict_ptr.is_null() {
-            return Err(JsonParseError::Raised(raise_exception::<u64>(
-                self._py,
-                "MemoryError",
-                "failed to allocate dict",
-            )));
+            return Err(JsonParseError::Raised(MoltObject::none().bits()));
         }
         let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
         if let Some(hook_bits) = self.options.object_hook {
@@ -2144,7 +2120,7 @@ pub extern "C" fn molt_json_dumps(
             Ok(()) => {
                 let ptr = alloc_string(_py, out.as_bytes());
                 if ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -2209,7 +2185,7 @@ pub extern "C" fn molt_json_dumps_ex(
             Ok(()) => {
                 let ptr = alloc_string(_py, out.as_bytes());
                 if ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -2313,7 +2289,7 @@ pub extern "C" fn molt_json_raw_decode_ex(
                 );
                 dec_ref_bits(_py, value_bits);
                 if tuple_ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "failed to allocate tuple");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(tuple_ptr).bits()
             }
@@ -2358,7 +2334,7 @@ pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64
             ],
         );
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -2376,7 +2352,7 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
         if let Some(s) = string_obj_to_owned(obj) {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             return MoltObject::from_ptr(ptr).bits();
         }
@@ -2389,7 +2365,7 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
                     if len == 0 {
                         let s_ptr = alloc_string(_py, b"");
                         if s_ptr.is_null() {
-                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                            return MoltObject::none().bits();
                         }
                         return MoltObject::from_ptr(s_ptr).bits();
                     }
@@ -2417,7 +2393,7 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
                     };
                     let s_ptr = alloc_string(_py, decoded.as_bytes());
                     if s_ptr.is_null() {
-                        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     return MoltObject::from_ptr(s_ptr).bits();
                 }
@@ -2442,7 +2418,7 @@ pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
         let item_ptr = alloc_string(_py, item_sep.as_bytes());
         let key_ptr = alloc_string(_py, key_sep.as_bytes());
         if item_ptr.is_null() || key_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let item_bits = MoltObject::from_ptr(item_ptr).bits();
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
@@ -2450,7 +2426,7 @@ pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
         dec_ref_bits(_py, item_bits);
         dec_ref_bits(_py, key_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -2489,7 +2465,7 @@ pub extern "C" fn molt_json_format_decode_error(
         let formatted = format!("{msg}: line {lineno} column {colno} (char {pos})");
         let ptr = alloc_string(_py, formatted.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -2515,14 +2491,14 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
                     if let Ok(pos) = pos_str.parse::<i64>() {
                         let msg_ptr = alloc_string(_py, msg.as_bytes());
                         if msg_ptr.is_null() {
-                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                            return MoltObject::none().bits();
                         }
                         let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
                         let pos_bits = MoltObject::from_int(pos).bits();
                         let tuple_ptr = alloc_tuple(_py, &[msg_bits, pos_bits]);
                         dec_ref_bits(_py, msg_bits);
                         if tuple_ptr.is_null() {
-                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                            return MoltObject::none().bits();
                         }
                         return MoltObject::from_ptr(tuple_ptr).bits();
                     }

@@ -438,7 +438,7 @@ fn array_lease_arc_from_bits(bits: u64) -> Option<Arc<ArrayBufferLease>> {
 fn array_bits(_py: &PyToken<'_>, handle: ArrayHandle) -> u64 {
     let bits = native_handle_new(_py, Arc::new(Mutex::new(handle)));
     if bits == 0 {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return MoltObject::none().bits();
     }
     bits
 }
@@ -750,7 +750,8 @@ pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        with_array_mut(_py, handle_bits, |_py, handle| {
+        let mut allocation_failed = false;
+        let result = with_array_mut(_py, handle_bits, |_py, handle| {
             let tc = handle.typecode;
             let items_obj = obj_from_bits(items_bits);
             let Some(list_ptr) = items_obj.as_ptr() else {
@@ -784,6 +785,10 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
             };
             let (encoded, final_len) = match encoded {
                 Ok(encoded) => encoded,
+                Err(("MemoryError", _)) => {
+                    allocation_failed = true;
+                    return MoltObject::none().bits();
+                }
                 Err((kind, message)) => return raise_exception::<u64>(_py, kind, message),
             };
             if !encoded.is_empty()
@@ -797,11 +802,18 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
                     .try_reserve_exact(final_len - handle.data.len())
                     .is_err()
             {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                allocation_failed = true;
+                return MoltObject::none().bits();
             }
             handle.data.extend_from_slice(&encoded);
             MoltObject::none().bits()
-        })
+        });
+        // The handle mutex and borrowed input slice are gone before selecting
+        // OOM: retiring the previous error may legally reenter this array.
+        if allocation_failed {
+            crate::record_memory_error_without_allocation(_py);
+        }
+        result
     })
 }
 
@@ -1179,7 +1191,7 @@ pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
             let s = ch.to_string();
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
         })
@@ -1201,7 +1213,7 @@ pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
         with_array_mut(_py, handle_bits, |_py, handle| {
             let ptr = alloc_bytes(_py, &handle.data);
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
         })
@@ -1263,7 +1275,7 @@ pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
                 dec_ref_bits(_py, *b);
             }
             if list_ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             MoltObject::from_ptr(list_ptr).bits()
         })
@@ -1282,7 +1294,7 @@ pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
             dec_ref_bits(_py, addr_bits);
             dec_ref_bits(_py, len_bits);
             if tuple_ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             MoltObject::from_ptr(tuple_ptr).bits()
         })

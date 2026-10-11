@@ -42,6 +42,11 @@ fn test_hooks_or_stubs_returns_stubs() {
             .decode(),
         DecodedHandleResult::Error
     ));
+    assert!(matches!(
+        unsafe { (h.scalar_payload_borrowed)(0, molt_cpython_abi::abi_types::MoltTypeTag::Float) }
+            .decode(),
+        DecodedHandleResult::Error
+    ));
     let mut payload = 99.0;
     assert_eq!(unsafe { (h.float_payload)(0, &raw mut payload) }, -1);
     assert_eq!(

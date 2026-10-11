@@ -702,7 +702,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 _ => return None,
             };
             if out_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return Some(MoltObject::from_ptr(out_ptr).bits());
         }
@@ -737,7 +737,12 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 )?;
                 let total = match elems.len().checked_mul(times) {
                     Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                    None => {
+                        return {
+                            crate::record_memory_error_without_allocation(_py);
+                            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                        };
+                    }
                 };
                 if elems.len() == 1 {
                     let val = elems[0];
@@ -777,27 +782,24 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     // The canonical fill allocator retains each repeated owner.
                     let out_ptr = crate::object::builders::alloc_list_filled(_py, total, val_obj);
                     if out_ptr.is_null() {
-                        if !exception_pending(_py) {
-                            crate::record_memory_error_without_allocation(_py);
-                        }
                         return None;
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 } else {
                     let mut combined = Vec::new();
                     if combined.try_reserve_exact(total).is_err() {
-                        return raise_exception(
-                            _py,
-                            "MemoryError",
-                            "sequence repeat allocation failed",
-                        );
+                        return {
+                            crate::record_memory_error_without_allocation(_py);
+                            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                        };
                     }
                     for _ in 0..times {
                         combined.extend_from_slice(&elems);
                     }
                     let out_ptr = alloc_list(_py, &combined);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 }
@@ -823,67 +825,77 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Err(_) => None,
                 }
             }
-            TYPE_ID_TUPLE => crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
-                let total = match elems.len().checked_mul(times) {
-                    Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
-                };
-                if elems.len() == 1 {
-                    let val = elems[0];
-                    let mut combined = Vec::new();
-                    if combined.try_reserve_exact(total).is_err() {
-                        return raise_exception(
-                            _py,
-                            "MemoryError",
-                            "sequence repeat allocation failed",
-                        );
+            TYPE_ID_TUPLE => {
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                    let total = match elems.len().checked_mul(times) {
+                        Some(total) => total,
+                        None => {
+                            return {
+                                crate::record_memory_error_without_allocation(_py);
+                                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                            };
+                        }
+                    };
+                    if elems.len() == 1 {
+                        let val = elems[0];
+                        let mut combined = Vec::new();
+                        if combined.try_reserve_exact(total).is_err() {
+                            return {
+                                crate::record_memory_error_without_allocation(_py);
+                                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                            };
+                        }
+                        combined.resize(total, val);
+                        let out_ptr = crate::object::builders::alloc_tuple_owned(_py, &combined);
+                        if out_ptr.is_null() {
+                            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+                        }
+                        if crate::object::refcount_opt::is_heap_ref(val) {
+                            let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
+                            let header = header_from_obj_ptr(obj_ptr);
+                            let flags = (*header).load_synchronized_flags();
+                            (*header).retain_owned_mirrored(
+                                val,
+                                total,
+                                "tuple repeat batch retain",
+                                flags,
+                            );
+                        }
+                        Some(MoltObject::from_ptr(out_ptr).bits())
+                    } else {
+                        let mut combined = Vec::new();
+                        if combined.try_reserve_exact(total).is_err() {
+                            return {
+                                crate::record_memory_error_without_allocation(_py);
+                                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                            };
+                        }
+                        for _ in 0..times {
+                            combined.extend_from_slice(elems);
+                        }
+                        let out_ptr = alloc_tuple(_py, &combined);
+                        if out_ptr.is_null() {
+                            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+                        }
+                        Some(MoltObject::from_ptr(out_ptr).bits())
                     }
-                    combined.resize(total, val);
-                    let out_ptr = crate::object::builders::alloc_tuple_owned(_py, &combined);
-                    if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                    }
-                    if crate::object::refcount_opt::is_heap_ref(val) {
-                        let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
-                        let header = header_from_obj_ptr(obj_ptr);
-                        let flags = (*header).load_synchronized_flags();
-                        (*header).retain_owned_mirrored(
-                            val,
-                            total,
-                            "tuple repeat batch retain",
-                            flags,
-                        );
-                    }
-                    Some(MoltObject::from_ptr(out_ptr).bits())
-                } else {
-                    let mut combined = Vec::new();
-                    if combined.try_reserve_exact(total).is_err() {
-                        return raise_exception(
-                            _py,
-                            "MemoryError",
-                            "sequence repeat allocation failed",
-                        );
-                    }
-                    for _ in 0..times {
-                        combined.extend_from_slice(elems);
-                    }
-                    let out_ptr = alloc_tuple(_py, &combined);
-                    if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                    }
-                    Some(MoltObject::from_ptr(out_ptr).bits())
-                }
-            })?,
+                })?
+            }
             TYPE_ID_STRING => {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
                 let total = match len.checked_mul(times) {
                     Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                    None => {
+                        return {
+                            crate::record_memory_error_without_allocation(_py);
+                            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                        };
+                    }
                 };
                 let out_ptr = alloc_inline_bytes_with_len(_py, total, InlineBytesKind::String);
                 if out_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let data_ptr = super::layout::InlineBytesStorage::data(out_ptr);
                 let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
@@ -895,11 +907,16 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 let total = match len.checked_mul(times) {
                     Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                    None => {
+                        return {
+                            crate::record_memory_error_without_allocation(_py);
+                            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                        };
+                    }
                 };
                 let out_ptr = alloc_inline_bytes_with_len(_py, total, InlineBytesKind::Bytes);
                 if out_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let data_ptr = super::layout::InlineBytesStorage::data(out_ptr);
                 let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
@@ -911,22 +928,26 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 let total = match len.checked_mul(times) {
                     Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                    None => {
+                        return {
+                            crate::record_memory_error_without_allocation(_py);
+                            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                        };
+                    }
                 };
                 let mut out = Vec::new();
                 if out.try_reserve_exact(total).is_err() {
-                    return raise_exception(
-                        _py,
-                        "MemoryError",
-                        "sequence repeat allocation failed",
-                    );
+                    return {
+                        crate::record_memory_error_without_allocation(_py);
+                        crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                    };
                 }
                 for _ in 0..times {
                     out.extend_from_slice(bytes);
                 }
                 let out_ptr = alloc_bytearray(_py, &out);
                 if out_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 Some(MoltObject::from_ptr(out_ptr).bits())
             }
@@ -1061,7 +1082,10 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             );
         };
         let Some(required_len) = bytearray_len(ptr).checked_add(payload.len()) else {
-            return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         };
         crate::object::buffer_exports::bytearray_mutate(_py, ptr, required_len, |elems| {
             elems.extend_from_slice(&payload)
@@ -2278,7 +2302,10 @@ fn build_union_type(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
         .as_deref()
         .unwrap_or(std::slice::from_ref(&right));
     let Some(capacity) = left_args.len().checked_add(right_args.len()) else {
-        return raise_exception(py, "MemoryError", "union argument size overflow");
+        return {
+            crate::record_memory_error_without_allocation(py);
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+        };
     };
     let mut merged: Option<crate::object::backing::TrackedVecOwner<u64>> = None;
     for &candidate in right_args {
@@ -2315,7 +2342,10 @@ fn build_union_type(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
         if merged.is_none() {
             let Some(ptr) = crate::object::backing::tracked_vec_box_from_slice(left_args, capacity)
             else {
-                return raise_exception(py, "MemoryError", "union argument allocation failed");
+                return {
+                    crate::record_memory_error_without_allocation(py);
+                    crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                };
             };
             merged = Some(unsafe { crate::object::backing::tracked_vec_box_from_raw(ptr) });
         }

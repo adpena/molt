@@ -246,7 +246,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         let args_buf = encode_string_list(&args);
         let args_ptr = alloc_bytes(_py, &args_buf);
         if args_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "args allocation failed");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let args_bits_obj = MoltObject::from_ptr(args_ptr).bits();
         let args_data = unsafe { bytes_data(args_ptr) } as u32;
@@ -260,7 +260,7 @@ pub unsafe extern "C" fn molt_process_spawn(
             let env_ptr = alloc_bytes(_py, &env_buf);
             if env_ptr.is_null() {
                 dec_ref_bits(_py, args_bits_obj);
-                return raise_exception::<_>(_py, "MemoryError", "env allocation failed");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             env_bits_obj = MoltObject::from_ptr(env_ptr).bits();
             env_data = unsafe { bytes_data(env_ptr) } as u32;
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                 if !obj_from_bits(env_bits_obj).is_none() {
                     dec_ref_bits(_py, env_bits_obj);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "cwd allocation failed");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             cwd_bits_obj = MoltObject::from_ptr(cwd_ptr).bits();
             cwd_data = unsafe { bytes_data(cwd_ptr) } as u32;

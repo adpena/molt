@@ -1044,7 +1044,7 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
 
         let list_ptr = alloc_list(_py, &completed_bits);
         if list_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -1178,7 +1178,7 @@ pub extern "C" fn molt_concurrent_wait(
         let done_set_ptr = alloc_set_with_entries(_py, &done_bits);
         let not_done_set_ptr = alloc_set_with_entries(_py, &not_done_bits);
         if done_set_ptr.is_null() || not_done_set_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let tuple_ptr = alloc_tuple(
             _py,
@@ -1188,7 +1188,7 @@ pub extern "C" fn molt_concurrent_wait(
             ],
         );
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })

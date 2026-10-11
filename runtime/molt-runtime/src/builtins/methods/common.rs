@@ -45,9 +45,6 @@ pub(crate) unsafe fn set_function_defaults(
         }
         let defaults_ptr = alloc_tuple(py, defaults);
         if defaults_ptr.is_null() {
-            if !exception_pending(py) {
-                raise_exception::<u64>(py, "MemoryError", "function defaults allocation failed");
-            }
             return false;
         }
         let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
@@ -98,11 +95,7 @@ pub(crate) fn configure_builtin_signature(
         if existing.is_none() {
             let mut names = Vec::new();
             if names.try_reserve_exact(arg_names.len()).is_err() {
-                raise_exception::<u64>(
-                    py,
-                    "MemoryError",
-                    "builtin argument names allocation failed",
-                );
+                crate::record_memory_error_without_allocation(py);
                 return false;
             }
             for name in arg_names {
@@ -110,13 +103,6 @@ pub(crate) fn configure_builtin_signature(
                 if name_ptr.is_null() {
                     for bits in names {
                         dec_ref_bits(py, bits);
-                    }
-                    if !exception_pending(py) {
-                        raise_exception::<u64>(
-                            py,
-                            "MemoryError",
-                            "builtin argument name allocation failed",
-                        );
                     }
                     return false;
                 }
@@ -127,13 +113,6 @@ pub(crate) fn configure_builtin_signature(
                 dec_ref_bits(py, bits);
             }
             if names_ptr.is_null() {
-                if !exception_pending(py) {
-                    raise_exception::<u64>(
-                        py,
-                        "MemoryError",
-                        "builtin argument tuple allocation failed",
-                    );
-                }
                 return false;
             }
             let names_bits = MoltObject::from_ptr(names_ptr).bits();
@@ -267,9 +246,6 @@ fn alloc_builtin_function_with_metadata(
     }
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
     if ptr.is_null() {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, "MemoryError", "builtin callable allocation failed");
-        }
         return 0;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -279,9 +255,6 @@ fn alloc_builtin_function_with_metadata(
             && configure_native_callable(py, ptr, spec);
         if !initialized {
             dec_ref_bits(py, bits);
-            if !exception_pending(py) {
-                raise_exception::<u64>(py, "MemoryError", "builtin callable initialization failed");
-            }
             return 0;
         }
     }

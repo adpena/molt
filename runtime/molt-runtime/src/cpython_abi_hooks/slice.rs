@@ -12,9 +12,6 @@ pub(super) unsafe extern "C" fn hook_slice_new(
         }
         let pointer = crate::alloc_slice_obj(&py, start, stop, step);
         if pointer.is_null() {
-            if !crate::exception_pending(&py) {
-                crate::raise_exception::<()>(&py, "MemoryError", "slice allocation failed");
-            }
             return OwnedHandleResult::error();
         }
         OwnedHandleResult::ok(MoltObject::from_ptr(pointer).bits())

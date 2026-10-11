@@ -422,32 +422,32 @@ fn emergency_memory_error_pending_for_current() -> bool {
     THREAD_LAST_EXCEPTION.with(|state| state.emergency_memory_error_is_pending(current_task_ptr()))
 }
 
+/// Exception construction may fail because a callback already selected its own
+/// error. Only supply the emergency fallback when neither raised channel owns
+/// that failure; actual allocation failures select it at the allocator below.
 #[inline]
-fn record_emergency_memory_error(_py: &PyToken<'_>) {
-    if emergency_memory_error_pending_for_current()
-        || current_task_key().map_or_else(
-            || thread_last_exception_raw_slot().is_some(),
-            |task_key| {
-                task_last_exceptions(_py)
-                    .lock()
-                    .unwrap()
-                    .contains_key(&task_key)
-            },
-        )
-    {
+fn record_emergency_memory_error(py: &PyToken<'_>) {
+    if exception_pending(py) || molt_cpython_abi::api::errors::raised_error_pending() {
         return;
     }
-    THREAD_LAST_EXCEPTION.with(|state| state.set_emergency_memory_error(current_task_ptr()));
-    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+    record_memory_error_without_allocation(py);
 }
 
-/// Record MemoryError without touching the heap, runtime class bootstrap, or
-/// the resource tracker. Raw ABI allocation failures use this entrypoint
-/// because attempting to allocate their exception can recursively fail before
-/// the runtime is warm.
+/// Select MemoryError after a proven allocation/extent failure, without touching
+/// the heap, class bootstrap, or resource tracker. Like CPython's PyErr_NoMemory,
+/// the new failure replaces either incoming raised channel before old owners
+/// retire. A finalizer may move the selected error between channels, so nothing
+/// clears or republishes it after retirement.
 #[inline]
-pub(crate) fn record_memory_error_without_allocation(_py: &PyToken<'_>) {
-    record_emergency_memory_error(_py);
+pub(crate) fn record_memory_error_without_allocation(py: &PyToken<'_>) {
+    let old_c = molt_cpython_abi::api::errors::take_current_error();
+    let mut old_runtime = Some(take_raised(py));
+    let mut selected = Some(RaisedSnapshot::Emergency(PtrSlot(current_task_ptr())));
+    resolve_raised(py, &mut selected);
+    raised_state::release_raised(py, &mut old_runtime);
+    crate::object::foreign::retire_native_reference(|| {
+        molt_cpython_abi::api::errors::retire_normalized_error(old_c);
+    });
 }
 
 #[inline]
@@ -1817,9 +1817,6 @@ pub(crate) fn exception_materialized_args_bits(_py: &PyToken<'_>, ptr: *mut u8) 
             alloc_tuple(_py, &[])
         };
         if tuple_ptr.is_null() {
-            if !exception_pending(_py) {
-                raise_exception::<()>(_py, "MemoryError", "exception args allocation failed");
-            }
             return false;
         }
         true
@@ -4644,11 +4641,7 @@ pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
                 let name = storage.class_name();
                 let ptr = alloc_string(_py, name.as_bytes());
                 if ptr.is_null() {
-                    return raise_exception::<u64>(
-                        _py,
-                        "MemoryError",
-                        "exception name allocation failed",
-                    );
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }

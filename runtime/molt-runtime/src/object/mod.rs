@@ -1755,8 +1755,10 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
     payload_bits: u64,
     allocate: impl FnOnce(usize) -> *mut u8,
 ) -> u64 {
-    let Some(plan) = boxed_object_total_size(py, payload_bits).and_then(object_allocation_plan)
-    else {
+    let Some(total_size) = boxed_object_total_size(py, payload_bits) else {
+        return MoltObject::none().bits();
+    };
+    let Some(plan) = object_allocation_plan(total_size) else {
         crate::record_memory_error_without_allocation(py);
         return MoltObject::none().bits();
     };
@@ -4596,6 +4598,64 @@ mod tests {
                 "impossible object layout must fail closed instead of panicking"
             );
             assert!(crate::exception_pending(_py));
+        });
+    }
+
+    #[test]
+    fn scoped_allocation_distinguishes_invalid_stride_from_failed_extent_and_storage() {
+        use molt_cpython_abi::api::{errors, refcount};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let called = std::cell::Cell::new(false);
+            let invalid = unsafe {
+                super::alloc_scoped_boxed_object(py, 1, |_| {
+                    called.set(true);
+                    std::ptr::null_mut()
+                })
+            };
+            let _unexpected = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), invalid)
+            };
+            assert!(crate::obj_from_bits(invalid).is_none());
+            assert!(
+                !called.get(),
+                "stride validation must precede storage admission"
+            );
+            unsafe {
+                assert_eq!(
+                    errors::PyErr_Occurred(),
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+                );
+                let selected =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!selected.as_ptr().is_null());
+            }
+            for payload in [u64::MAX - 7, 8] {
+                called.set(false);
+                let failed = unsafe {
+                    super::alloc_scoped_boxed_object(py, payload, |_| {
+                        called.set(true);
+                        std::ptr::null_mut()
+                    })
+                };
+                let _unexpected = unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), failed)
+                };
+                assert!(crate::obj_from_bits(failed).is_none());
+                assert_eq!(
+                    called.get(),
+                    payload == 8,
+                    "only a representable extent reaches its allocator"
+                );
+                unsafe {
+                    assert_eq!(
+                        errors::PyErr_Occurred(),
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                    );
+                    errors::PyErr_Clear();
+                }
+            }
         });
     }
 

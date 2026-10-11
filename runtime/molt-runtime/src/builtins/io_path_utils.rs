@@ -1401,7 +1401,7 @@ pub(crate) unsafe fn glob_iter_next_value(_py: &PyToken<'_>, iter_ptr: *mut u8) 
                 alloc_string(_py, path.as_bytes())
             };
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
         }

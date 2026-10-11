@@ -8,12 +8,13 @@ use crate::{
 pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Ok(capacity_hint) = usize::try_from(capacity_bits) else {
-            return aggregate_allocation_failed(_py);
+            crate::record_memory_error_without_allocation(_py);
+            return MoltObject::none().bits();
         };
         let ptr =
             crate::object::builders::alloc_dict_with_capacity_and_pairs(_py, capacity_hint, &[]);
         if ptr.is_null() {
-            return aggregate_allocation_failed(_py);
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -113,18 +114,10 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
     })
 }
 
-/// Constructor failures preserve an existing exception and never allocate a
-/// second exception while reporting exhaustion.
-fn aggregate_allocation_failed(py: &PyToken<'_>) -> u64 {
-    if !exception_pending(py) {
-        crate::record_memory_error_without_allocation(py);
-    }
-    MoltObject::none().bits()
-}
-
 fn set_like_new(py: &PyToken<'_>, capacity_bits: u64, type_id: u32) -> u64 {
     let Some(capacity) = usize_from_bits(capacity_bits) else {
-        return aggregate_allocation_failed(py);
+        crate::record_memory_error_without_allocation(py);
+        return MoltObject::none().bits();
     };
     let ptr = crate::object::builders::alloc_set_like_with_capacity_and_entries(
         py,
@@ -133,7 +126,7 @@ fn set_like_new(py: &PyToken<'_>, capacity_bits: u64, type_id: u32) -> u64 {
         type_id,
     );
     if ptr.is_null() {
-        return aggregate_allocation_failed(py);
+        return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
 }

@@ -123,6 +123,8 @@ unsafe extern "C" fn text_alloc(data: *const u8, length: usize) -> u64 {
         };
     }
     if FAIL_NEXT_TEXT_ALLOC.swap(false, Ordering::SeqCst) {
+        // Installed allocators select their failure; the constructor forwards it.
+        unsafe { errors::PyErr_SetNone((&raw mut PyExc_MemoryError).cast()) };
         return 0;
     }
     if length != 0

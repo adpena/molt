@@ -220,6 +220,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             alloc_bytes,
             alloc_bytearray,
             float_payload,
+            scalar_payload_borrowed,
             int_from_i64,
             int_from_u64,
             int_from_bytes,

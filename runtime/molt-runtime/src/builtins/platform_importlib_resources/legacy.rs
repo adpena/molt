@@ -165,7 +165,7 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
             };
             let out_ptr = alloc_bytes(_py, &bytes);
             if out_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(out_ptr).bits();
         }
@@ -232,7 +232,7 @@ pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits
         let out: Vec<String> = entries.into_iter().collect();
         match alloc_string_list_bits(_py, &out) {
             Some(bits) => bits,
-            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
+            None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
         }
     })
 }

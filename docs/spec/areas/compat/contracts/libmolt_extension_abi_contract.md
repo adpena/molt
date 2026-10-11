@@ -180,6 +180,15 @@ the shared projection before comparing subtype slots, then render the same
 payload only after override handling. Empty format specs retain their `str`
 route; explicit nonempty base `__format__` calls retain their payload route.
 Physical BigInt/Float tags are not a second formatting admission authority.
+Explicit numeric base repr distinguishes physical scalar C storage from a
+managed Int/Float subclass's generic C view. RuntimeHooks version 65 exposes the
+latter's sealed intrinsic field through `scalar_payload_borrowed`; the numeric
+kind is explicit, absence is distinct from invalid storage, and the admitted
+original receiver owns the borrowed payload through canonical rendering. A
+successful read performs no numeric conversion, user callback, identity attachment, or
+payload allocation. Complex subclasses retain their existing native scalar
+storage. Generic repr still calls subtype overrides; explicit base repr bypasses
+them without treating a generic view as a native numeric prefix.
 
 ### Shared target C data model and linked headers
 
@@ -833,6 +842,25 @@ a `PyObject` exporter; genuine native exporters use `bf_getbuffer` and
 Native allocation failures set an exception at their origin, including size
 overflow, unsupported GC layout and failed collector-identity publication.
 Cleanup preserves that exception and releases temporary heap-type ownership.
+Actual runtime allocation or extent failure selects emergency `MemoryError`
+without allocating its instance. It publishes that failure before retiring any
+displaced C or runtime error owner, then completes legal native error transport
+through the existing retirement boundary. Constructor validation, hash/equality
+callbacks and other semantic failures keep their own selected exception. Callers
+forward a failed producer's sentinel; they do not reconstruct `MemoryError` or
+retry an eligible cache miss after its allocation failed.
+
+Direct numeric, string, bytes and bytearray constructors use their declared
+result to determine success. An incoming exception does not turn a successful
+allocation into failure. A failed producer must select its error; an unavailable
+string/bytes/bytearray hook selects `SystemError`, not an invented allocation
+failure. Generic Python-callable result validation keeps its separate contract.
+The runtime cache constructs candidates outside publication locks because error
+owner retirement can reenter allocation. Publication rechecks the slot under its
+existing lock, makes only the winner immortal, and retires any losing candidate
+after unlocking. This publication rule does not qualify dynamic interning's
+retention policy; that remains an open V1-20 acceptance obligation.
+
 Both headers also share the linked allocation and initialization functions:
 raw allocation honors the type's physical size, variable initialization sets
 its real signed size, heap instances retain their type, and `GenericNew`

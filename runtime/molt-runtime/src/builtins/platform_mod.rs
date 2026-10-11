@@ -54,7 +54,7 @@ const PLATFORM_BITS: &str = "32bit";
 fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -146,7 +146,7 @@ pub extern "C" fn molt_platform_architecture() -> u64 {
         let bits_ptr = alloc_string(_py, PLATFORM_BITS.as_bytes());
         let link_ptr = alloc_string(_py, b"");
         if bits_ptr.is_null() || link_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let tuple_ptr = alloc_tuple(
             _py,
@@ -156,7 +156,7 @@ pub extern "C" fn molt_platform_architecture() -> u64 {
             ],
         );
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -226,7 +226,7 @@ pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
         let minor_ptr = alloc_string(_py, minor.as_bytes());
         let micro_ptr = alloc_string(_py, micro.as_bytes());
         if major_ptr.is_null() || minor_ptr.is_null() || micro_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let tuple_ptr = alloc_tuple(
             _py,
@@ -237,7 +237,7 @@ pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
             ],
         );
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -271,11 +271,11 @@ pub extern "C" fn molt_platform_uname() -> u64 {
         let ver_bits = make_str(&uname.version);
         let mach_bits = make_str(&uname.machine);
         if [sys_bits, node_bits, rel_bits, ver_bits, mach_bits].contains(&0) {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let tuple_ptr = alloc_tuple(_py, &[sys_bits, node_bits, rel_bits, ver_bits, mach_bits]);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })

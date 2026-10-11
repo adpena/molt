@@ -146,9 +146,6 @@ pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
 fn ws_pair_into_tuple(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
     let tuple_ptr = alloc_tuple(py, &[left, right]);
     if tuple_ptr.is_null() {
-        if !crate::exception_pending(py) {
-            crate::record_memory_error_without_allocation(py);
-        }
         // These integer handles own external channels, not refcounted objects.
         // Retire both unpublished owners without crossing an exception-gated
         // public ABI, preserving the allocation failure already pending.
@@ -848,20 +845,20 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
 
         let cert_ptr = alloc_string(_py, certfile.as_bytes());
         if cert_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let cert_bits = MoltObject::from_ptr(cert_ptr).bits();
         let key_ptr = alloc_string(_py, keyfile.as_bytes());
         if key_ptr.is_null() {
             dec_ref_bits(_py, cert_bits);
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let tuple_ptr = alloc_tuple(_py, &[cert_bits, key_bits]);
         dec_ref_bits(_py, cert_bits);
         dec_ref_bits(_py, key_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })

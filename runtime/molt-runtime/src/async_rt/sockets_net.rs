@@ -392,12 +392,6 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                 );
                 let sockaddr = sock_addr_from_storage(storage, len);
                 let sockaddr_bits = sockaddr_to_bits(_py, &sockaddr);
-                if obj_from_bits(sockaddr_bits).is_none()
-                    && sockaddr.as_socket().is_some()
-                    && !exception_pending(_py)
-                {
-                    crate::record_memory_error_without_allocation(_py);
-                }
                 if exception_pending(_py) {
                     dec_ref_bits(_py, sockaddr_bits);
                     break;
@@ -406,9 +400,6 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                     let name = CStr::from_ptr(ai.ai_canonname).to_string_lossy();
                     let ptr = alloc_string(_py, name.as_bytes());
                     if ptr.is_null() {
-                        if !exception_pending(_py) {
-                            crate::record_memory_error_without_allocation(_py);
-                        }
                         MoltObject::none().bits()
                     } else {
                         MoltObject::from_ptr(ptr).bits()
@@ -435,9 +426,6 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                     ],
                 );
                 if tuple_ptr.is_null() {
-                    if !exception_pending(_py) {
-                        crate::record_memory_error_without_allocation(_py);
-                    }
                     dec_ref_bits(_py, canon_bits);
                     dec_ref_bits(_py, sockaddr_bits);
                     break;

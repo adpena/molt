@@ -1778,7 +1778,6 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                     if trace_string_from_bytes() {
                         eprintln!("[molt string_from_bytes] alloc empty failed");
                     }
-                    crate::record_memory_error_without_allocation(_py);
                     return 2;
                 }
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
@@ -1815,7 +1814,6 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] alloc_string failed");
                 }
-                crate::record_memory_error_without_allocation(_py);
                 return 2;
             }
             let bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -1881,7 +1879,6 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 }
                 let obj_ptr = alloc_bytes(_py, &[]);
                 if obj_ptr.is_null() {
-                    crate::record_memory_error_without_allocation(_py);
                     return 2;
                 }
                 if trace {
@@ -1909,7 +1906,6 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             let slice = std::slice::from_raw_parts(ptr, len);
             let obj_ptr = alloc_bytes(_py, slice);
             if obj_ptr.is_null() {
-                crate::record_memory_error_without_allocation(_py);
                 return 2;
             }
             let bits = MoltObject::from_ptr(obj_ptr).bits();

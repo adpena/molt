@@ -470,12 +470,12 @@ pub(crate) unsafe fn tracked_vec_reserve_or_raise<T>(
     _py: &crate::PyToken<'_>,
     ptr: *mut Vec<T>,
     required_len: usize,
-    message: &str,
+    _message: &str,
 ) -> bool {
     if unsafe { tracked_vec_reserve_for_len(ptr, required_len) } {
         true
     } else {
-        let _ = crate::raise_exception::<u64>(_py, "MemoryError", message);
+        crate::record_memory_error_without_allocation(_py);
         false
     }
 }

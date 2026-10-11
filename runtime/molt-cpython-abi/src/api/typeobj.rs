@@ -4014,9 +4014,14 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
 }
 
 /// A declaring numeric repr reads storage, never a subtype's repr override.
-/// Exact managed values keep the existing no-copy path. Managed subclass views
-/// have complete immutable C scalar storage, just like genuine native values.
-unsafe fn numeric_repr(op: *mut PyObject, declaring: *mut PyTypeObject) -> *mut PyObject {
+/// Exact managed values keep the existing no-copy path. Managed subclasses
+/// borrow their sealed intrinsic field; only physical numeric carriers use the
+/// C layout reader. The caller's admitted receiver owns the field throughout.
+unsafe fn numeric_repr(
+    op: *mut PyObject,
+    declaring: *mut PyTypeObject,
+    kind: crate::abi_types::MoltTypeTag,
+) -> *mut PyObject {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     match crate::bridge::observe_pyobject(op) {
         Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
@@ -4032,6 +4037,22 @@ unsafe fn numeric_repr(op: *mut PyObject, declaring: *mut PyTypeObject) -> *mut 
             if actual == declaring {
                 return unsafe { native_stringify(value.bits(), true) };
             }
+            match unsafe {
+                (crate::hooks::hooks_or_stubs().scalar_payload_borrowed)(value.bits(), kind)
+            }
+            .decode()
+            {
+                crate::hooks::DecodedHandleResult::Ok(payload) => {
+                    return unsafe { native_stringify(payload, true) };
+                }
+                crate::hooks::DecodedHandleResult::Missing => {}
+                crate::hooks::DecodedHandleResult::Error => {
+                    unsafe {
+                        crate::bridge::ensure_result_error(c"managed scalar payload unavailable")
+                    };
+                    return ptr::null_mut();
+                }
+            }
         }
         Some(crate::bridge::ResolvedPyObject::Foreign) => {}
         None => return ptr::null_mut(),
@@ -4043,15 +4064,33 @@ unsafe fn numeric_repr(op: *mut PyObject, declaring: *mut PyTypeObject) -> *mut 
 }
 
 pub(crate) unsafe extern "C" fn molt_long_repr(op: *mut PyObject) -> *mut PyObject {
-    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyLong_Type) }
+    unsafe {
+        numeric_repr(
+            op,
+            &raw mut crate::abi_types::PyLong_Type,
+            crate::abi_types::MoltTypeTag::Int,
+        )
+    }
 }
 
 pub(crate) unsafe extern "C" fn molt_float_repr(op: *mut PyObject) -> *mut PyObject {
-    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyFloat_Type) }
+    unsafe {
+        numeric_repr(
+            op,
+            &raw mut crate::abi_types::PyFloat_Type,
+            crate::abi_types::MoltTypeTag::Float,
+        )
+    }
 }
 
 pub(crate) unsafe extern "C" fn molt_complex_repr(op: *mut PyObject) -> *mut PyObject {
-    unsafe { numeric_repr(op, &raw mut crate::abi_types::PyComplex_Type) }
+    unsafe {
+        numeric_repr(
+            op,
+            &raw mut crate::abi_types::PyComplex_Type,
+            crate::abi_types::MoltTypeTag::Complex,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]

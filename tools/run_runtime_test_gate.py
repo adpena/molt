@@ -37,6 +37,7 @@ from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
 ISOLATED = (
+    "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
     "builtins::exceptions::tests::tls_exception_destructor_excludes_concurrent_shutdown",

@@ -440,7 +440,7 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
         if n_raw <= 0 {
             let ptr = alloc_list(_py, &[]);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         }
@@ -530,7 +530,8 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     dec_ref_bits(_py, src_bits);
                     let out_ptr = alloc_list(_py, &sorted_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 } else {
@@ -552,7 +553,8 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     }
                     let out_ptr = alloc_list(_py, &vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 }
@@ -760,7 +762,8 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     }
                     let out_ptr = alloc_list(_py, &out_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 } else {
@@ -844,7 +847,8 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     }
                     let out_ptr = alloc_list(_py, &heap_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 }
@@ -875,7 +879,7 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
         if n_raw <= 0 {
             let ptr = alloc_list(_py, &[]);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         }
@@ -954,7 +958,8 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     dec_ref_bits(_py, src_bits);
                     let out_ptr = alloc_list(_py, &sorted_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 } else {
@@ -976,7 +981,8 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     }
                     let out_ptr = alloc_list(_py, &vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 }
@@ -1141,7 +1147,8 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     }
                     let out_ptr = alloc_list(_py, &out_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 } else {
@@ -1224,7 +1231,8 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     }
                     let out_ptr = alloc_list(_py, &heap_vals);
                     if out_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     MoltObject::from_ptr(out_ptr).bits()
                 }
@@ -1255,7 +1263,7 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
             // Empty iterables argument → return empty list.
             let ptr = alloc_list(_py, &[]);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         };
@@ -1284,7 +1292,7 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
             if k == 0 {
                 let ptr = alloc_list(_py, &[]);
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
@@ -1521,7 +1529,7 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
                 dec_ref_bits(_py, v);
             }
             if out_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             MoltObject::from_ptr(out_ptr).bits()
         }

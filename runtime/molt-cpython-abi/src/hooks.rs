@@ -625,17 +625,34 @@ pub struct RuntimeHooks {
     pub warning_emit:
         unsafe extern "C" fn(message: u64, category: u64, stacklevel: i64) -> std::os::raw::c_int,
     // ── Allocation ────────────────────────────────────────────────────────────
-    /// Allocate a UTF-8 string object. Returns handle bits, 0 on failure.
+    /// Allocate a string from an admitted non-NULL UTF-8/WTF-8 byte span.
+    /// Returns owned handle bits, or 0 with the producer-selected error.
+    /// Consumers forward failure; missing support selects SystemError.
     pub alloc_str: Option<unsafe extern "C" fn(data: *const u8, len: usize) -> u64>,
-    /// Allocate a bytes object. Returns handle bits, 0 on failure.
+    /// Allocate bytes from a non-NULL span (including a zero-length span).
+    /// Returns owned handle bits, or 0 with the producer-selected error.
+    /// Consumers forward failure; missing support selects SystemError.
     pub alloc_bytes: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
     /// Allocate the canonical managed bytearray backing. Null data requests
     /// zero-initialized storage of len bytes, including an out-of-length NUL.
+    /// Returns owned handle bits, or 0 with the producer-selected error.
+    /// Successful allocation admits an incoming error; it is not a Python call.
     pub alloc_bytearray: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
     /// Allocate an exact heap identity for an immediate int/float. This is a
     /// fresh C-origin boundary, not conversion: no user protocol is invoked.
     /// Returns an owned heap handle or Error; existing heap identities bypass it.
     pub numeric_identity_new: Option<unsafe extern "C" fn(bits: u64) -> OwnedHandleResult>,
+    /// Borrow the immutable intrinsic field of a managed Int/Float
+    /// subclass. Complex subclasses retain native storage and report Missing.
+    /// The original admitted receiver must remain alive through use.
+    /// Missing means no sealed scalar row; Error rejects an unsupported kind
+    /// or an invalid payload. Successful reads allocate nothing.
+    /// This observes storage without conversion, callbacks, allocation or an
+    /// identity attachment. Exact scalar carriers have no subclass field.
+    pub scalar_payload_borrowed: unsafe extern "C" fn(
+        bits: u64,
+        kind: crate::abi_types::MoltTypeTag,
+    ) -> BorrowedHandleResult,
     /// Extract the immutable payload of an exact heap float without conversion,
     /// allocation or callbacks. Returns 0 on success, -1 on a wrong kind.
     pub float_payload: unsafe extern "C" fn(bits: u64, out: *mut f64) -> std::os::raw::c_int,
@@ -1449,7 +1466,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // domains are ABI even when the pointer-sized table layout is unchanged.
 // Version 61 adds the sole Context owner and cold static-shell admission.
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 64;
+// Version 65 exposes sealed managed scalar fields as borrowed payloads.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 65;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -1851,9 +1869,21 @@ impl RuntimeHooks {
 // ─── No-op stubs for pre-init or test use ────────────────────────────────────
 
 unsafe extern "C" fn stub_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+            c"runtime text allocation is unavailable".as_ptr(),
+        );
+    }
     0
 }
 unsafe extern "C" fn stub_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+            c"runtime text allocation is unavailable".as_ptr(),
+        );
+    }
     0
 }
 unsafe extern "C" fn stub_numeric_identity_new(_bits: u64) -> OwnedHandleResult {
@@ -1865,6 +1895,13 @@ unsafe extern "C" fn stub_warning_emit(
     _stacklevel: i64,
 ) -> std::os::raw::c_int {
     -1
+}
+
+unsafe extern "C" fn stub_scalar_payload_borrowed(
+    _bits: u64,
+    _kind: crate::abi_types::MoltTypeTag,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 
 unsafe extern "C" fn stub_float_payload(_bits: u64, _out: *mut f64) -> std::os::raw::c_int {
@@ -2693,6 +2730,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_bytes: stub_alloc_bytes,
     alloc_bytearray: stub_alloc_bytes,
     numeric_identity_new: None,
+    scalar_payload_borrowed: stub_scalar_payload_borrowed,
     float_payload: stub_float_payload,
     int_from_i64: stub_int_from_i64,
     int_from_u64: stub_int_from_u64,

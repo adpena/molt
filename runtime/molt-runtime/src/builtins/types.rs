@@ -163,13 +163,6 @@ fn alloc_bootstrap_runtime_function(
     }
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
     if ptr.is_null() {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(
-                py,
-                "MemoryError",
-                "types bootstrap callable allocation failed",
-            );
-        }
         return 0;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -231,18 +224,12 @@ pub(crate) fn init_cached_runtime_class_configured(
     init_atomic_bits(_py, slot, || {
         let name_ptr = alloc_string(_py, name.as_bytes());
         if name_ptr.is_null() {
-            if !exception_pending(_py) {
-                let _ = raise_exception::<u64>(_py, "MemoryError", "class name allocation failed");
-            }
             return 0;
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let class_ptr = alloc_class_obj(_py, name_bits);
         dec_ref_bits(_py, name_bits);
         if class_ptr.is_null() {
-            if !exception_pending(_py) {
-                let _ = raise_exception::<u64>(_py, "MemoryError", "class allocation failed");
-            }
             return 0;
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
@@ -418,10 +405,6 @@ fn set_class_method(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, fn_bits: u
     }
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
-        if !exception_pending(_py) {
-            let _ =
-                raise_exception::<u64>(_py, "MemoryError", "class method name allocation failed");
-        }
         return false;
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
@@ -540,18 +523,11 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     trace_stage("start");
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
-        if !exception_pending(_py) {
-            let _ = raise_exception::<u64>(_py, "MemoryError", "types module allocation failed");
-        }
         return 0;
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let release_failed_payload = || {
         dec_ref_bits(_py, dict_bits);
-        if !exception_pending(_py) {
-            let _ =
-                raise_exception::<u64>(_py, "MemoryError", "types module initialization failed");
-        }
         0
     };
     let builtins = builtin_classes(_py);

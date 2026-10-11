@@ -303,7 +303,10 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
         let dict_bits = module_dict_bits(sys_ptr);
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-            _ => return Err(()),
+            _ => {
+                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                return Err(());
+            }
         };
         let argv_key_ptr = alloc_string(_py, b"argv");
         let exec_key_ptr = alloc_string(_py, b"executable");
@@ -403,7 +406,10 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
         let dict_bits = module_dict_bits(sys_ptr);
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-            _ => return Err(()),
+            _ => {
+                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                return Err(());
+            }
         };
 
         let mut keys: Vec<u64> = Vec::with_capacity(6);
@@ -541,7 +547,10 @@ pub(crate) unsafe fn sys_populate_version_metadata(
         let dict_bits = module_dict_bits(sys_ptr);
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-            _ => return Err(()),
+            _ => {
+                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                return Err(());
+            }
         };
 
         let platform = crate::molt_sys_platform();
@@ -576,7 +585,10 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
         let dict_bits = module_dict_bits(sys_ptr);
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-            _ => return Err(()),
+            _ => {
+                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                return Err(());
+            }
         };
 
         sys_set_owned_attr(_py, dict_ptr, "maxsize", crate::molt_sys_maxsize())?;
@@ -983,7 +995,7 @@ unsafe fn dict_set_str_key_bits(
     unsafe {
         let key_ptr = alloc_string(_py, key.as_bytes());
         if key_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let completed = dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
@@ -1182,7 +1194,7 @@ fn copyreg_slots_truthy(_py: &PyToken<'_>, obj_bits: u64) -> Result<bool, u64> {
 fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     let module_ptr = alloc_string(_py, b"copyreg");
     if module_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let module_bits = MoltObject::from_ptr(module_ptr).bits();
     let imported_bits = crate::molt_module_import(module_bits);
@@ -1195,7 +1207,7 @@ fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
         if !obj_from_bits(imported_bits).is_none() {
             dec_ref_bits(_py, imported_bits);
         }
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let value_bits = crate::molt_object_getattribute(imported_bits, name_bits);
@@ -1227,7 +1239,7 @@ pub extern "C" fn molt_copyreg_bootstrap() -> u64 {
             || obj_from_bits(cache_bits).is_none()
             || obj_from_bits(constructor_bits).is_none()
         {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let state_ptr = alloc_tuple(
             _py,
@@ -1240,7 +1252,7 @@ pub extern "C" fn molt_copyreg_bootstrap() -> u64 {
             ],
         );
         if state_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(state_ptr).bits()
     })
@@ -1293,7 +1305,7 @@ pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
         let builder_bits = molt_callargs_new(0, 0);
         if builder_bits == 0 {
             dec_ref_bits(_py, new_bits);
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
         if exception_pending(_py) {
@@ -1321,7 +1333,7 @@ pub extern "C" fn molt_copyreg_newobj_ex(cls_bits: u64, args_bits: u64, kwargs_b
         let builder_bits = molt_callargs_new(0, 0);
         if builder_bits == 0 {
             dec_ref_bits(_py, new_bits);
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
         if exception_pending(_py) {
@@ -1361,7 +1373,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
             let builder_bits = molt_callargs_new(0, 0);
             if builder_bits == 0 {
                 dec_ref_bits(_py, new_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
             if exception_pending(_py) {
@@ -1382,7 +1394,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
             let builder_bits = molt_callargs_new(0, 0);
             if builder_bits == 0 {
                 dec_ref_bits(_py, new_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let _ = unsafe { molt_callargs_push_pos(builder_bits, cls_bits) };
             if exception_pending(_py) {
@@ -1550,7 +1562,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
             if !obj_from_bits(state_bits).is_none() {
                 dec_ref_bits(_py, state_bits);
             }
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
         if !obj_from_bits(state_bits).is_none() {
@@ -1652,7 +1664,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
         dec_ref_bits(_py, args_bits);
 
         if out_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(out_ptr).bits()
     })
@@ -2231,10 +2243,7 @@ pub(crate) fn module_cache_publish(
             if let Some(sys_ptr) = sys_obj.as_ptr() {
                 unsafe {
                     if sys_populate_argv_executable(_py, sys_ptr).is_err() {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
                         && exception_pending(_py)
@@ -2247,16 +2256,10 @@ pub(crate) fn module_cache_publish(
                         dec_ref_bits(_py, exc_bits);
                     }
                     if sys_populate_stdio(_py, sys_ptr).is_err() {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     if sys_populate_bootstrap_metadata(_py, sys_ptr).is_err() {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
                         && exception_pending(_py)
@@ -2277,14 +2280,17 @@ pub(crate) fn module_cache_publish(
                 unsafe {
                     let exe_ptr = alloc_string(_py, b"executable");
                     if exe_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     let exe_name = ExceptionValue::adopt(_py, MoltObject::from_ptr(exe_ptr).bits());
                     let argv_ptr = alloc_string(_py, b"argv");
                     if argv_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
-                    let argv_name = ExceptionValue::adopt(_py, MoltObject::from_ptr(argv_ptr).bits());
+                    let argv_name =
+                        ExceptionValue::adopt(_py, MoltObject::from_ptr(argv_ptr).bits());
                     let exe_val = match module_attr_lookup(_py, sys_ptr, exe_name.bits()) {
                         Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
                         Err(()) => return MoltObject::none().bits(),
@@ -2569,7 +2575,6 @@ unsafe fn import_from_sys_modules_lookup(
         ));
         let key_ptr = alloc_string(py, &name);
         if key_ptr.is_null() {
-            raise_exception::<()>(py, "MemoryError", "out of memory");
             return Err(());
         }
         let key = ExceptionValue::adopt(py, MoltObject::from_ptr(key_ptr).bits());

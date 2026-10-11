@@ -1,15 +1,14 @@
 use molt_obj_model::MoltObject;
-use num_traits::{Signed, ToPrimitive};
+use num_traits::ToPrimitive;
 
 use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
-use crate::builtins::numbers::index_bigint_from_obj;
 use crate::{
     call_callable0, dec_ref_bits, exception_pending, exception_stack_pop, exception_stack_push,
     molt_concat, molt_contains, molt_delitem_method, molt_getitem_method, molt_inplace_add,
     molt_inplace_bit_and, molt_inplace_bit_or, molt_inplace_bit_xor, molt_inplace_concat,
     molt_inplace_div, molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul,
     molt_inplace_mod, molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub,
-    molt_len, molt_setitem_method, obj_from_bits, raise_exception, type_name,
+    molt_len, molt_setitem_method, obj_from_bits, raise_exception,
 };
 
 #[unsafe(no_mangle)]
@@ -61,23 +60,42 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
     })
 }
 
+// PyLong_AsSsize_t semantics after actual integer admission. The caller owns
+// the value across this extraction and selects its later negative-value policy.
+fn length_hint_integer_value(py: &crate::PyToken<'_>, bits: u64) -> Result<Option<isize>, ()> {
+    let value = if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
+        isize::try_from(value).ok()
+    } else {
+        match crate::builtins::numbers::integer_storage_bigint(py, bits)? {
+            Some(value) => value.to_isize(),
+            None => return Ok(None),
+        }
+    };
+    value.map(Some).ok_or_else(|| {
+        raise_exception::<()>(py, "OverflowError", "Python int too large to convert to C ssize_t");
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let error = format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(_py, obj_from_bits(default_bits))
-        );
-        let Some(default) = index_bigint_from_obj(_py, default_bits, &error) else {
+        let default = crate::builtins::numbers::index_from_object(_py, default_bits);
+        let default_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), default)
+        };
+        if exception_pending(_py) {
             return MoltObject::none().bits();
+        }
+        let default = match length_hint_integer_value(_py, default_owner.bits()) {
+            Ok(Some(value)) => value,
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {
+                return raise_exception::<_>(_py, "SystemError", "validated index has no integer storage");
+            }
         };
-        let Some(default) = default.to_isize() else {
-            return raise_exception::<_>(
-                _py,
-                "OverflowError",
-                "Python int too large to convert to C ssize_t",
-            );
-        };
+        // The default's converted owner retires before any target lookup, and
+        // remains live if ssize extraction above selects an overflow error.
+        drop(default_owner);
         exception_stack_push();
         let length = molt_len(obj_bits);
         if !exception_pending(_py) {
@@ -106,11 +124,17 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         let Some(method) = method else {
             return crate::int_bits_from_i64(_py, default as i64);
         };
+        let method = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), method)
+        };
         exception_stack_push();
-        let result = unsafe { call_callable0(_py, method) };
-        dec_ref_bits(_py, method);
+        let result = unsafe { call_callable0(_py, method.bits()) };
+        let result = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), result)
+        };
+        drop(method);
         if exception_pending(_py) {
-            dec_ref_bits(_py, result);
+            drop(result);
             let error = molt_exception_last_pending();
             let type_error = exception_matches_builtin_name(_py, error, "TypeError");
             if type_error {
@@ -125,31 +149,28 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
             };
         }
         exception_stack_pop(_py);
-        if crate::is_not_implemented_bits(_py, result) {
-            dec_ref_bits(_py, result);
+        if crate::is_not_implemented_bits(_py, result.bits()) {
+            drop(result);
             return crate::int_bits_from_i64(_py, default as i64);
         }
-        let value = crate::builtins::numbers::index_bigint_integral_bits(result);
-        let Some(value) = value else {
-            let name = type_name(_py, obj_from_bits(result)).into_owned();
-            dec_ref_bits(_py, result);
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                &format!("__length_hint__ must be an integer, not {name}"),
-            );
+        // Hints require an actual integer, including native integer storage;
+        // unlike __len__, an index-only object must never run __index__ here.
+        let value = match length_hint_integer_value(_py, result.bits()) {
+            Ok(Some(value)) => value,
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {
+                let name = crate::object::ops::protocol_type_name(_py, result.bits(), 100);
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("__length_hint__ must be an integer, not {name}"),
+                );
+            }
         };
-        dec_ref_bits(_py, result);
-        if value.is_negative() {
+        drop(result);
+        if value < 0 {
             return raise_exception::<_>(_py, "ValueError", "__length_hint__() should return >= 0");
         }
-        let Some(value) = value.to_isize() else {
-            return raise_exception::<_>(
-                _py,
-                "OverflowError",
-                "cannot fit 'int' into an index-sized integer",
-            );
-        };
         crate::int_bits_from_i64(_py, value as i64)
     })
 }

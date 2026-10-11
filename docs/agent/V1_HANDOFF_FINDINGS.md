@@ -59,6 +59,8 @@ failures must be traced to their shared cause as well. Reconcile uncovered
 instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
+## Active integration
+
 Integration decision (2026-10-10 UTC): current main is the canonical base and
 one parent integrator owns reconciliation, qualification and landing. The
 qualified ABI/supervisor unit landed at `9d943eddd`, reconciled with `50d52e471` and preserving its
@@ -67,22 +69,36 @@ retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
 The runtime ownership candidate remains unqualified. The optimized
-Linux/aarch64 image at `960eef889` compiles and passes all nine isolated
-lifecycle cases. Its parallel partition fails five assertions and then faults;
-retained-image execution reproduces each assertion independently. The reviewed
-successor separates actual allocation and set-operation failure from an incoming
-error through every table, public operation and ABI consumer. It also connects
-physical numeric storage to the canonical repr and format authorities, including
-explicit base methods and the runtime public format entry. These source repairs
-await execution and measurement. The native fault is traced to development
-fixtures: cyclic heap class namespaces retain descriptor instances after their
-scoped static type storage is freed. The factory's complete consumer family now
-clears its owned heap type before releasing the backing declarations, with
-independent descriptor retirement witnesses; this test-only repair adds no work
-to emitted programs. Managed truth and length callbacks still need their
-version-specific result-validation and retirement ordering reconciled with the
-existing native slot authority. Full combined runtime,
-standalone ABI, WASM and affected performance qualification remain required.
+Linux/aarch64 image at `e329841b7` compiles, passes all nine isolated lifecycle
+cases and completes all 1,817 parallel cases without the earlier native fault.
+The parallel partition reports 1,331 passes and 486 failures. Retained-image
+execution reproduces nine early failures independently; later teardown and
+bootstrap failures are not independent qualification evidence. The previous
+fault at `960eef889` came from development fixtures retaining cyclic heap class
+namespaces beyond their scoped static type storage. The factory now clears its
+owned heap types before releasing those declarations, with descriptor retirement
+witnesses; this test-only repair adds no work to emitted programs.
+
+The combined source correction follows explicit allocation and operation results,
+borrows managed scalar fields through their canonical layout authority, and
+normalizes descriptor suppression before owner retirement. Truth, length and
+hint consumers share the existing index and owner authorities while retaining
+CPython's version-specific validation and retirement order. Direct callback
+fixtures distinguish their raw completion contract from strict generic callable
+validation and own unexpected results before assertions. Review also exposed
+that true allocation failure can retain an earlier exception. Its canonical
+selection, constructor propagation, and callback-safe cache publication family
+remain under repair. Ordinary dynamic identifier interning still retains strings
+until runtime teardown; V1-20 continues to own that separate lifetime-policy
+and memory-cost obligation.
+Combined runtime, standalone ABI, native/WASM public consumers and affected
+performance qualification remain required. Source review and parsing alone do
+not establish any of those claims.
+
+## Retained integration evidence
+
+The following records preserve earlier inputs, results and unresolved scope.
+The active integration section above owns the latest runtime status.
 
 The earlier optimized
 Linux/aarch64 image passes 33 of 36 selected cases, including managed/native
@@ -1401,6 +1417,8 @@ WASM target execution and performance qualification remain required. The earlier
 current cost collection must remain evidence-only until a valid comparison is
 available. The existing L7 and list cost probes remain the measurement owners.
 
+## Engineering and acceptance rules
+
 Every change must distinguish development/compiler work from execution in the
 shipped end-user binary. Source custody, proof instrumentation and release
 evidence belong on the development side. Additional runtime work must implement
@@ -1414,6 +1432,8 @@ CPython source at the declared reference version is the semantic source of
 truth. Source-grounded implementation and version-matched independent execution
 must agree before a Python semantic finding can close; a fixture or local test
 result alone cannot redefine the contract.
+
+## Open release requirements
 
 | ID | Open release requirement | Existing authority and acceptance boundary |
 |----|--------------------------|--------------------------------------------|

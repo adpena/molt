@@ -53,9 +53,6 @@ pub(crate) fn alloc_module_spec(
     let spec_bits = unsafe { alloc_instance_for_class(py, class_ptr) };
     if exception_pending(py) || obj_from_bits(spec_bits).as_ptr().is_none() {
         dec_ref_bits(py, spec_bits);
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(py, "MemoryError", "ModuleSpec allocation failed");
-        }
         return None;
     }
     if !initialize_module_spec(
@@ -80,9 +77,6 @@ fn configure_module_spec_class(
 ) -> bool {
     let module_ptr = alloc_string(py, b"_frozen_importlib");
     if module_ptr.is_null() {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(py, "MemoryError", "class module allocation failed");
-        }
         return false;
     }
     let module_bits = MoltObject::from_ptr(module_ptr).bits();
@@ -122,9 +116,6 @@ fn configure_module_spec_class(
     let none = MoltObject::none().bits();
     let property_ptr = alloc_property_obj(py, parent_bits, none, none);
     if property_ptr.is_null() {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(py, "MemoryError", "property allocation failed");
-        }
         return false;
     }
     let property_bits = MoltObject::from_ptr(property_ptr).bits();
@@ -189,17 +180,9 @@ fn exact_str_ptr(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
     })
 }
 
-fn spec_attr_name(py: &PyToken<'_>, name: &[u8]) -> Option<u64> {
-    let bits = attr_name_bits_from_bytes(py, name);
-    if bits.is_none() && !exception_pending(py) {
-        let _ = raise_exception::<u64>(py, "MemoryError", "attribute name allocation failed");
-    }
-    bits
-}
-
 /// `self.<name> = value` through the full attribute protocol.
 fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: &[u8], value_bits: u64) -> bool {
-    let Some(name_bits) = spec_attr_name(py, name) else {
+    let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
         return false;
     };
     let _ = crate::molt_set_attr_name(spec_bits, name_bits, value_bits);
@@ -209,7 +192,7 @@ fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: &[u8], value_bits: u64)
 
 /// Owned `obj.<name>` through the full attribute protocol.
 fn get_spec_attr(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Option<u64> {
-    let name_bits = spec_attr_name(py, name)?;
+    let name_bits = attr_name_bits_from_bytes(py, name)?;
     let value_bits = crate::molt_get_attr_name(obj_bits, name_bits);
     dec_ref_bits(py, name_bits);
     if exception_pending(py) {
@@ -262,9 +245,6 @@ fn initialize_module_spec(
     let locations_bits = if is_package {
         let list_ptr = alloc_list(py, &[]);
         if list_ptr.is_null() {
-            if !exception_pending(py) {
-                let _ = raise_exception::<u64>(py, "MemoryError", "list allocation failed");
-            }
             return false;
         }
         MoltObject::from_ptr(list_ptr).bits()
@@ -289,9 +269,6 @@ fn module_parent_of_name(py: &PyToken<'_>, name_bits: u64) -> u64 {
             .map_or(&bytes[..0], |index| &bytes[..index]);
         let head_ptr = alloc_string(py, head);
         if head_ptr.is_null() {
-            if !exception_pending(py) {
-                let _ = raise_exception::<u64>(py, "MemoryError", "string allocation failed");
-            }
             return MoltObject::none().bits();
         }
         return MoltObject::from_ptr(head_ptr).bits();
@@ -302,9 +279,6 @@ fn module_parent_of_name(py: &PyToken<'_>, name_bits: u64) -> u64 {
     let dot_ptr = alloc_string(py, b".");
     if dot_ptr.is_null() {
         dec_ref_bits(py, rpartition_bits);
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(py, "MemoryError", "string allocation failed");
-        }
         return MoltObject::none().bits();
     }
     let dot_bits = MoltObject::from_ptr(dot_ptr).bits();
@@ -415,9 +389,6 @@ pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
         out.push(b')');
         let out_ptr = alloc_string(py, &out);
         if out_ptr.is_null() {
-            if !exception_pending(py) {
-                let _ = raise_exception::<u64>(py, "MemoryError", "string allocation failed");
-            }
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(out_ptr).bits()
@@ -436,9 +407,6 @@ fn append_spec_formatted_value(
         let empty_ptr = alloc_string(py, b"");
         if empty_ptr.is_null() {
             dec_ref_bits(py, value_bits);
-            if !exception_pending(py) {
-                let _ = raise_exception::<u64>(py, "MemoryError", "format spec allocation failed");
-            }
             return false;
         }
         let empty = MoltObject::from_ptr(empty_ptr).bits();

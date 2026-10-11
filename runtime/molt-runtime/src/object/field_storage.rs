@@ -76,9 +76,6 @@ pub(crate) unsafe fn initialize_fields(
     unsafe {
         let missing = missing_bits(py);
         if obj_from_bits(missing).as_ptr().is_none() {
-            if !exception_pending(py) {
-                raise_exception::<()>(py, "MemoryError", "empty field singleton allocation failed");
-            }
             return Err(());
         }
         let extent = payload_bytes.saturating_sub(size_of::<u64>());
@@ -394,9 +391,6 @@ unsafe fn materialize_with_pairs(
         debug::fields(py, "materialize_inline", object, 0, &fields);
         let dict = alloc_dict_with_pairs(py, &pairs);
         if dict.is_null() {
-            if !exception_pending(py) {
-                raise_exception::<()>(py, "MemoryError", "instance dictionary allocation failed");
-            }
             return None;
         }
         let bits = MoltObject::from_ptr(dict).bits();
@@ -465,9 +459,6 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
             Some(value),
         );
         dec_ref_bits(py, dictionary);
-        if result.is_err() && !exception_pending(py) {
-            raise_exception::<()>(py, "MemoryError", "instance dictionary insertion failed");
-        }
         result.map(Some)
     }
 }
@@ -538,7 +529,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
         let Some(detached) =
             super::backing::tracked_vec_box_with_capacity::<(*mut u64, u64)>(count)
         else {
-            raise_exception::<()>(py, "MemoryError", "instance field reset allocation failed");
+            crate::record_memory_error_without_allocation(py);
             return;
         };
         let mut detached = super::backing::tracked_vec_box_from_raw(detached);
@@ -619,7 +610,7 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
             return None;
         }
         let Some(names) = super::backing::tracked_vec_box_with_capacity::<u64>(count) else {
-            raise_exception::<()>(py, "MemoryError", "instance slot names allocation failed");
+            crate::record_memory_error_without_allocation(py);
             return None;
         };
         let mut names = super::backing::tracked_vec_box_from_raw(names);
@@ -662,11 +653,7 @@ pub(crate) unsafe fn dataclass_snapshot<'a, 'py>(
         }
         let count = (*desc).field_names.len();
         let Some(values) = super::backing::tracked_vec_box_with_capacity::<u64>(count) else {
-            raise_exception::<()>(
-                py,
-                "MemoryError",
-                "dataclass field snapshot allocation failed",
-            );
+            crate::record_memory_error_without_allocation(py);
             return None;
         };
         let flags = &(*desc).field_flags;

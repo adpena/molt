@@ -385,9 +385,6 @@ unsafe extern "C" fn hook_alloc_bytearray(data: *const u8, len: usize) -> u64 {
             })
         };
         if ptr.is_null() {
-            if !crate::exception_pending(&py) {
-                crate::builtins::exceptions::record_memory_error_without_allocation(&py);
-            }
             0
         } else {
             MoltObject::from_ptr(ptr).bits()
@@ -405,8 +402,58 @@ unsafe extern "C" fn hook_numeric_identity_new(bits: u64) -> OwnedHandleResult {
         } else {
             return OwnedHandleResult::error();
         };
-        owned_result_from_pending(result)
+        if MoltObject::from_bits(result).is_ptr() {
+            OwnedHandleResult::ok(result)
+        } else {
+            OwnedHandleResult::error()
+        }
     })
+}
+
+unsafe extern "C" fn hook_scalar_payload_borrowed(
+    bits: u64,
+    kind: MoltTypeTag,
+) -> BorrowedHandleResult {
+    use crate::object::class_layout::{ScalarValueKind, scalar_value_bits};
+    let kind = match kind {
+        MoltTypeTag::Int => ScalarValueKind::Int,
+        MoltTypeTag::Float => ScalarValueKind::Float,
+        // Complex subclasses retain native complex storage, with no intrinsic word.
+        MoltTypeTag::Complex => return BorrowedHandleResult::missing(),
+        _ => {
+            with_gil(|py| {
+                crate::raise_exception::<()>(&py, "SystemError", "invalid scalar payload kind");
+            });
+            return BorrowedHandleResult::error();
+        }
+    };
+    // The ABI observer admitted the receiver, which the caller holds for this
+    // callback-free read. The sealed layout row, not the semantic class name, owns the field.
+    let Some(payload) = scalar_value_bits(MoltObject::from_bits(bits), kind) else {
+        return BorrowedHandleResult::missing();
+    };
+    let value = MoltObject::from_bits(payload);
+    let valid = match kind {
+        ScalarValueKind::Int => {
+            value.as_int().is_some()
+                || value
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BIGINT })
+        }
+        ScalarValueKind::Float => {
+            value.as_float().is_some()
+                || value
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_FLOAT })
+        }
+    };
+    if !valid {
+        with_gil(|py| {
+            crate::raise_exception::<()>(&py, "SystemError", "invalid managed scalar payload");
+        });
+        return BorrowedHandleResult::error();
+    }
+    BorrowedHandleResult::ok(payload)
 }
 
 unsafe extern "C" fn hook_float_payload(bits: u64, out: *mut f64) -> c_int {
@@ -420,12 +467,24 @@ unsafe extern "C" fn hook_float_payload(bits: u64, out: *mut f64) -> c_int {
     0
 }
 
+// Integer constructors return boxed None on allocation failure internally.
+// The ABI hook contract uses raw zero: no valid integer has those value bits.
+// Translate the producer's sentinel once, without inspecting an incoming error.
+#[inline]
+fn integer_allocation_result(bits: u64) -> u64 {
+    if MoltObject::from_bits(bits).is_none() {
+        0
+    } else {
+        bits
+    }
+}
+
 unsafe extern "C" fn hook_int_from_i64(value: i64) -> u64 {
-    with_gil(|_py| int_bits_from_i64(&_py, value))
+    with_gil(|_py| integer_allocation_result(int_bits_from_i64(&_py, value)))
 }
 
 unsafe extern "C" fn hook_int_from_u64(value: u64) -> u64 {
-    with_gil(|_py| int_bits_from_i128(&_py, value as i128))
+    with_gil(|_py| integer_allocation_result(int_bits_from_i128(&_py, value as i128)))
 }
 
 unsafe extern "C" fn hook_int_from_bytes(
@@ -449,7 +508,7 @@ unsafe extern "C" fn hook_int_from_bytes(
         unsafe { std::slice::from_raw_parts(data, len) }
     };
     let value = bigint_from_bytes(bytes, little_endian != 0, signed != 0);
-    with_gil(|_py| int_bits_from_bigint(&_py, value))
+    with_gil(|_py| integer_allocation_result(int_bits_from_bigint(&_py, value)))
 }
 
 unsafe extern "C" fn hook_int_from_digits(
@@ -480,14 +539,16 @@ unsafe extern "C" fn hook_int_from_digits(
     let Some(value) = BigInt::from_radix_be(sign, digits, base) else {
         return 0;
     };
-    with_gil(|_py| int_bits_from_bigint(&_py, value))
+    with_gil(|_py| integer_allocation_result(int_bits_from_bigint(&_py, value)))
 }
 
 unsafe extern "C" fn hook_int_from_f64_trunc(value: f64) -> u64 {
     if !value.is_finite() {
         return 0;
     }
-    with_gil(|_py| int_bits_from_bigint(&_py, bigint_from_f64_trunc(value)))
+    with_gil(|_py| {
+        integer_allocation_result(int_bits_from_bigint(&_py, bigint_from_f64_trunc(value)))
+    })
 }
 
 unsafe extern "C" fn hook_int_sign(bits: u64) -> c_int {
@@ -1526,8 +1587,8 @@ unsafe extern "C" fn hook_gc_collect() -> isize {
             | crate::object::gc::GcCollectStatus::ReentrantNoop => {
                 isize::try_from(outcome.collected).unwrap_or_else(|_| std::process::abort())
             }
-            crate::object::gc::GcCollectStatus::ResourceError(message) => {
-                let _ = crate::raise_exception::<i64>(&_py, "MemoryError", message);
+            crate::object::gc::GcCollectStatus::ResourceError(_message) => {
+                crate::record_memory_error_without_allocation(&_py);
                 -1
             }
             crate::object::gc::GcCollectStatus::CallbackError(message) => {
@@ -1772,13 +1833,17 @@ unsafe extern "C" fn hook_tuple_uses_length_hint() -> bool {
 
 unsafe extern "C" fn hook_object_length(obj_bits: u64) -> isize {
     with_gil(|py| {
-        let result = crate::molt_len(obj_bits);
+        let result = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_len(obj_bits),
+            )
+        };
         let length = if crate::exception_pending(&py) {
             None
         } else {
             crate::object::ops_sys::coerce_length_result(&py, result)
         };
-        dec_ref_bits(&py, result);
         length.unwrap_or(-1)
     })
 }
@@ -2053,7 +2118,11 @@ unsafe extern "C" fn hook_complex_parts(bits: u64, real: *mut f64, imag: *mut f6
 
 unsafe extern "C" fn hook_complex_from_doubles(real: f64, imag: f64) -> OwnedHandleResult {
     let bits = with_gil(|_py| crate::builtins::numbers::complex_bits(&_py, real, imag));
-    owned_result_from_pending(bits)
+    if MoltObject::from_bits(bits).is_ptr() {
+        OwnedHandleResult::ok(bits)
+    } else {
+        OwnedHandleResult::error()
+    }
 }
 
 unsafe extern "C" fn hook_inc_ref(bits: u64) {
@@ -4554,13 +4623,6 @@ unsafe extern "C" fn hook_register_c_function(
             crate::builtins::functions::runtime_fn_addr(CEXT_TRAMPOLINE_SYMBOL, raw_trampoline);
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
         if func_ptr.is_null() {
-            if !crate::exception_pending(&_py) {
-                crate::raise_exception::<u64>(
-                    &_py,
-                    "MemoryError",
-                    "extension callable allocation failed",
-                );
-            }
             return 0;
         }
         unsafe {
@@ -4656,13 +4718,6 @@ unsafe extern "C" fn hook_register_c_function(
             dec_ref_bits(&_py, name_bits);
             if closure_ptr.is_null() {
                 dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
-                if !crate::exception_pending(&_py) {
-                    crate::raise_exception::<u64>(
-                        &_py,
-                        "MemoryError",
-                        "extension closure allocation failed",
-                    );
-                }
                 return 0;
             }
             let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
@@ -4676,13 +4731,9 @@ unsafe extern "C" fn hook_register_c_function(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if registry.try_reserve(1).is_err() {
                 drop(registry);
+                crate::record_memory_error_without_allocation(&_py);
                 dec_ref_bits(&_py, closure_bits);
                 dec_ref_bits(&_py, MoltObject::from_ptr(func_ptr).bits());
-                crate::raise_exception::<u64>(
-                    &_py,
-                    "MemoryError",
-                    "extension callable registry allocation failed",
-                );
                 return 0;
             }
             let Some(closure) = u64::try_from(registry.len())
@@ -5199,6 +5250,7 @@ pub fn register_cpython_hooks() -> bool {
                 alloc_bytes: hook_alloc_bytes,
                 alloc_bytearray: hook_alloc_bytearray,
                 numeric_identity_new: Some(hook_numeric_identity_new),
+                scalar_payload_borrowed: hook_scalar_payload_borrowed,
                 float_payload: hook_float_payload,
                 int_from_i64: hook_int_from_i64,
                 int_from_u64: hook_int_from_u64,
@@ -10853,7 +10905,7 @@ mod tests {
             message.contains("returned NULL without setting an exception"),
             "{message}"
         );
-        assert!(message.contains("0x80"), "{message}");
+        assert!(message.contains("C extension function"), "{message}");
         unsafe { hook_dec_ref(method_bits) };
     }
 

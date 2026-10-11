@@ -16,7 +16,7 @@ static NEW_CALLS: AtomicUsize = AtomicUsize::new(0);
 static COMPLEX_CALLS: AtomicUsize = AtomicUsize::new(0);
 static WORD_CALLS: AtomicUsize = AtomicUsize::new(0);
 static BYTE_CALLS: AtomicUsize = AtomicUsize::new(0);
-static ERROR_AFTER_BYTES: AtomicBool = AtomicBool::new(false);
+static REJECT_BYTES: AtomicBool = AtomicBool::new(false);
 static REENTER_SOURCE: AtomicUsize = AtomicUsize::new(0);
 static REENTER_WINNER: AtomicU64 = AtomicU64::new(0);
 static REJECT_AFTER_REENTRY: AtomicBool = AtomicBool::new(false);
@@ -31,8 +31,12 @@ unsafe extern "C" fn unexpected_u64(_: u64) -> u64 {
 unsafe extern "C" fn from_bytes(data: *const u8, len: usize, little: i32, signed: i32) -> u64 {
     BYTE_CALLS.fetch_add(1, Ordering::SeqCst);
     let bits = unsafe { support::fake_runtime::int_from_bytes(data, len, little, signed) };
-    if ERROR_AFTER_BYTES.load(Ordering::SeqCst) {
-        unsafe { errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast()) };
+    if REJECT_BYTES.load(Ordering::SeqCst) {
+        unsafe {
+            support::fake_runtime::dec_ref(bits);
+            errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast());
+        }
+        return 0;
     }
     bits
 }
@@ -95,22 +99,33 @@ fn numeric_identity_admission_preserves_origins_and_failed_sources() {
         let _abi_test = support::enter_runtime_class_abi_test(hooks);
         let initial_live = support::fake_runtime::live_numeric_count();
 
-        let pending_source = numbers::PyLong_FromLong(1000);
-        let calls = NEW_CALLS.load(Ordering::SeqCst);
-        errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast());
-        let original_error = errors::PyErr_Occurred();
-        assert!(!original_error.is_null());
-        assert_eq!(bridge::molt_capi_pyobj_to_handle(pending_source), 0);
-        assert_eq!(
-            NEW_CALLS.load(Ordering::SeqCst),
-            calls,
-            "incoming C error refuses before identity allocation"
-        );
-        assert_eq!(errors::PyErr_Occurred(), original_error);
-        assert_eq!((*pending_source).ob_refcnt, 1);
-        assert_eq!(numbers::PyLong_AsLong(pending_source), 1000);
-        refcount::Py_DECREF(pending_source);
-        errors::PyErr_Clear();
+        for kind in 0..4 {
+            let pending_source = refcount::OwnedPyObject::from_owned(match kind {
+                0 => numbers::PyLong_FromLong(1000),
+                1 => numbers::PyLong_FromUnsignedLongLong(u64::MAX),
+                2 => numbers::PyFloat_FromDouble(0.0),
+                _ => numbers::PyComplex_FromDoubles(1.25, -2.5),
+            });
+            assert!(!pending_source.as_ptr().is_null());
+            errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast());
+            let original_error =
+                refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!original_error.as_ptr().is_null());
+            refcount::Py_INCREF(original_error.as_ptr());
+            errors::PyErr_SetRaisedException(original_error.as_ptr());
+            let adopted = bridge::molt_capi_pyobj_to_handle(pending_source.as_ptr());
+            assert_ne!(adopted, 0, "prior error cannot reject successful adoption");
+            assert!(MoltObject::from_bits(adopted).is_ptr());
+            assert_eq!(
+                GLOBAL_BRIDGE.handle_to_borrowed_pyobj(adopted),
+                pending_source.as_ptr()
+            );
+            assert_eq!((*pending_source.as_ptr()).ob_refcnt, 1);
+            let observed = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(observed.as_ptr(), original_error.as_ptr());
+            drop(pending_source);
+            assert_eq!(support::fake_runtime::live_numeric_count(), initial_live);
+        }
 
         REJECT_NEW.store(true, Ordering::SeqCst);
         let calls = NEW_CALLS.load(Ordering::SeqCst);
@@ -242,14 +257,14 @@ fn numeric_identity_admission_preserves_origins_and_failed_sources() {
         let errored_source = numbers::PyLong_FromUnsignedLongLong(u64::MAX);
         let before_live = support::fake_runtime::live_numeric_count();
         let before_bytes = BYTE_CALLS.load(Ordering::SeqCst);
-        ERROR_AFTER_BYTES.store(true, Ordering::SeqCst);
+        REJECT_BYTES.store(true, Ordering::SeqCst);
         assert_eq!(bridge::molt_capi_pyobj_to_handle(errored_source), 0);
-        ERROR_AFTER_BYTES.store(false, Ordering::SeqCst);
+        REJECT_BYTES.store(false, Ordering::SeqCst);
         assert_eq!(BYTE_CALLS.load(Ordering::SeqCst), before_bytes + 1);
         assert_eq!(
             support::fake_runtime::live_numeric_count(),
             before_live,
-            "owned raw decode result retires when its producer also raises"
+            "failed raw decode producer retires its result before returning zero"
         );
         assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_ValueError).cast());
         assert_eq!((*errored_source).ob_refcnt, 1);

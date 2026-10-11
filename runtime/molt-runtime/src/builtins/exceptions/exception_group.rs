@@ -26,7 +26,7 @@ fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T 
 fn alloc_owned_str<'a, 'py>(py: &'a PyToken<'py>, text: &[u8]) -> Option<Owned<'a, 'py>> {
     let ptr = alloc_string(py, text);
     if ptr.is_null() {
-        return fail(py, "MemoryError", "string allocation failed");
+        return None;
     }
     Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
 }
@@ -34,7 +34,7 @@ fn alloc_owned_str<'a, 'py>(py: &'a PyToken<'py>, text: &[u8]) -> Option<Owned<'
 fn alloc_owned_tuple<'a, 'py>(py: &'a PyToken<'py>, items: &[u64]) -> Option<Owned<'a, 'py>> {
     let ptr = alloc_tuple(py, items);
     if ptr.is_null() {
-        return fail(py, "MemoryError", "tuple allocation failed");
+        return None;
     }
     Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
 }
@@ -42,7 +42,7 @@ fn alloc_owned_tuple<'a, 'py>(py: &'a PyToken<'py>, items: &[u64]) -> Option<Own
 fn alloc_owned_list<'a, 'py>(py: &'a PyToken<'py>) -> Option<Owned<'a, 'py>> {
     let ptr = alloc_list(py, &[]);
     if ptr.is_null() {
-        return fail(py, "MemoryError", "list allocation failed");
+        return None;
     }
     Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
 }
@@ -54,7 +54,7 @@ fn list_append(py: &PyToken<'_>, list: &Owned<'_, '_>, item: u64) -> Option<()> 
     if unsafe { crate::object::list_mutation::append(py, ptr, item) } {
         Some(())
     } else {
-        fail(py, "MemoryError", "list allocation failed")
+        None
     }
 }
 
@@ -292,7 +292,7 @@ fn exception_group_admit<'a, 'py>(
     // PySequence_Tuple: an exact tuple keeps its identity, an exact list is
     // copied, and every subtype iterates under the target's hint policy.
     let Some(exceptions) = (unsafe { tuple_from_iter_bits(py, exceptions) }) else {
-        return fail(py, "MemoryError", "tuple allocation failed");
+        return None;
     };
     let exceptions = Owned::adopt(py, exceptions);
     let Some(tuple) = obj_from_bits(exceptions.bits()).as_ptr() else {
@@ -378,7 +378,7 @@ fn exception_group_allocate(
         MoltObject::none().bits(),
     );
     if ptr.is_null() {
-        return fail(py, "MemoryError", "exception group allocation failed");
+        return None;
     }
     let group = Owned::adopt(py, MoltObject::from_ptr(ptr).bits());
     if let Err(message) = exception_typed_field_replace_internal(
@@ -675,7 +675,7 @@ unsafe fn exception_group_subset<'a, 'py>(
         return Some(None);
     }
     let Some(name) = attr_name_bits_from_bytes(py, b"derive") else {
-        return fail(py, "MemoryError", "attribute name allocation failed");
+        return None;
     };
     let name = Owned::adopt(py, name);
     let derive = crate::molt_get_attr_name(orig, name.bits());
@@ -741,7 +741,7 @@ unsafe fn exception_group_copy_metadata(
     }
     let name = intern_static_name(py, &runtime_state(py).interned.notes_name, b"__notes__");
     if name == 0 {
-        return fail(py, "MemoryError", "attribute name allocation failed");
+        return None;
     }
     let notes = match unsafe {
         attr_lookup_ptr_allow_missing(py, obj_from_bits(original_bits).as_ptr().unwrap(), name)
@@ -756,7 +756,7 @@ unsafe fn exception_group_copy_metadata(
         return (!exception_pending(py)).then_some(());
     }
     let Some(copy) = (unsafe { crate::object::ops::list_from_iter_bits(py, notes.bits()) }) else {
-        return fail(py, "MemoryError", "list allocation failed");
+        return None;
     };
     let copy = Owned::adopt(py, copy);
     drop(notes);
@@ -784,7 +784,7 @@ fn exception_group_pair(
         ],
     );
     if pair.is_null() {
-        return fail(py, "MemoryError", "tuple allocation failed");
+        return MoltObject::none().bits();
     }
     MoltObject::from_ptr(pair).bits()
 }

@@ -532,7 +532,6 @@ pub(crate) fn sys_tuple_from_owned(_py: &PyToken<'_>, values: &[u64]) -> u64 {
         if !ptr.is_null() {
             return MoltObject::from_ptr(ptr).bits();
         }
-        crate::record_memory_error_without_allocation(_py);
     }
     for &bits in values {
         dec_ref_bits(_py, bits);
@@ -1049,31 +1048,57 @@ fn trace_len_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1"))
 }
 
-/// Interpret the borrowed result of Python's __len__ protocol once for all
-/// consumers. __index__ conversion and the signed pointer-width bound match
-/// PyNumber_AsSsize_t; negativity retains the length protocol's ValueError.
-pub(crate) fn coerce_length_result(py: &PyToken<'_>, bits: u64) -> Option<isize> {
-    let length = if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
+/// Consume Python's __len__ result at its index-conversion boundary. The
+/// original result retires after __index__; the converted owner stays live
+/// through overflow, but retires before the length-specific negative error.
+pub(crate) fn coerce_length_result(
+    py: &PyToken<'_>,
+    result: molt_runtime_core::OwnedRuntimeValue<'_>,
+) -> Option<isize> {
+    if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(result.bits()) {
         if value < 0 {
+            drop(result);
             return raise_exception(py, "ValueError", "__len__() should return >= 0");
         }
-        isize::try_from(value).ok()
-    } else {
-        let message = format!(
-            "'{}' object cannot be interpreted as an integer",
-            class_name_for_error(type_of_bits(py, bits))
-        );
-        let value = crate::builtins::numbers::index_bigint_from_obj(py, bits, &message)?;
-        if value.is_negative() {
-            return raise_exception(py, "ValueError", "__len__() should return >= 0");
+        // Ordinary small integers require neither a second retain nor BigInt
+        // materialization. The owner remains live if pointer-width conversion fails.
+        return isize::try_from(value).ok().or_else(|| {
+            raise_exception(
+                py,
+                "OverflowError",
+                &format!(
+                    "cannot fit '{}' into an index-sized integer",
+                    crate::object::ops::protocol_type_name(py, result.bits(), 200)
+                ),
+            )
+        });
+    }
+    let index = crate::builtins::numbers::index_from_object(py, result.bits());
+    let index =
+        unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), index) };
+    drop(result);
+    if exception_pending(py) {
+        return None;
+    }
+    let value = match crate::builtins::numbers::integer_storage_bigint(py, index.bits()) {
+        Ok(Some(value)) => value,
+        Err(()) => return None,
+        Ok(None) => {
+            return raise_exception(py, "SystemError", "validated index has no integer storage");
         }
-        value.to_isize()
     };
-    length.or_else(|| {
+    if value.is_negative() {
+        drop(index);
+        return raise_exception(py, "ValueError", "__len__() should return >= 0");
+    }
+    value.to_isize().or_else(|| {
         raise_exception(
             py,
             "OverflowError",
-            "cannot fit 'int' into an index-sized integer",
+            &format!(
+                "cannot fit '{}' into an index-sized integer",
+                crate::object::ops::protocol_type_name(py, index.bits(), 200)
+            ),
         )
     })
 }
@@ -1186,17 +1211,23 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                             Err(()) => return MoltObject::none().bits(),
                         };
                     if let Some(call_bits) = call_bits {
+                        let method = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            _py.core_token(),
+                            call_bits,
+                        );
                         exception_stack_push();
                         let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
+                        let result = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            _py.core_token(),
+                            res_bits,
+                        );
+                        drop(method);
                         if exception_pending(_py) {
                             exception_stack_pop(_py);
-                            dec_ref_bits(_py, res_bits);
                             return MoltObject::none().bits();
                         }
                         exception_stack_pop(_py);
-                        let value = coerce_length_result(_py, res_bits);
-                        dec_ref_bits(_py, res_bits);
+                        let value = coerce_length_result(_py, result);
                         return value.map_or_else(
                             || MoltObject::none().bits(),
                             |value| int_bits_from_i64(_py, value as i64),
@@ -1435,8 +1466,11 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
         let collected = match outcome.status {
             crate::object::gc::GcCollectStatus::Completed
             | crate::object::gc::GcCollectStatus::ReentrantNoop => outcome.collected as i64,
-            crate::object::gc::GcCollectStatus::ResourceError(message) => {
-                return raise_exception::<_>(_py, "MemoryError", message);
+            crate::object::gc::GcCollectStatus::ResourceError(_message) => {
+                return {
+                    crate::record_memory_error_without_allocation(_py);
+                    crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                };
             }
             crate::object::gc::GcCollectStatus::CallbackError(message) => {
                 return gc_callback_failure(_py, message);
@@ -1674,8 +1708,9 @@ fn gc_introspection_failure(
     error: crate::object::gc::GcIntrospectionError,
 ) -> u64 {
     match error {
-        crate::object::gc::GcIntrospectionError::Resource(message) => {
-            raise_exception::<_>(py, "MemoryError", message)
+        crate::object::gc::GcIntrospectionError::Resource(_message) => {
+            crate::record_memory_error_without_allocation(py);
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         }
         crate::object::gc::GcIntrospectionError::Callback(message) => {
             gc_callback_failure(py, message)
@@ -2299,9 +2334,7 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
                 eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
             }
             *runtime_state(_py).argv.lock().unwrap() = args;
-            if crate::builtins::modules::refresh_sys_argv_executable(_py).is_err() {
-                let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
-            }
+            let _ = crate::builtins::modules::refresh_sys_argv_executable(_py);
         })
     }
 }
@@ -2336,9 +2369,7 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
             }
         }
         *runtime_state(_py).argv.lock().unwrap() = args;
-        if unsafe { crate::builtins::modules::refresh_sys_argv_executable(_py) }.is_err() {
-            let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
-        }
+        let _ = unsafe { crate::builtins::modules::refresh_sys_argv_executable(_py) };
     })
 }
 

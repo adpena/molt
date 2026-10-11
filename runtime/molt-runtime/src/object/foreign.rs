@@ -45,9 +45,6 @@ pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
         ObjectAuxPreselection::Default,
     );
     if ptr.is_null() {
-        if !crate::exception_pending(_py) {
-            crate::raise_exception::<()>(_py, "MemoryError", "foreign wrapper allocation failed");
-        }
         return 0;
     }
     unsafe {

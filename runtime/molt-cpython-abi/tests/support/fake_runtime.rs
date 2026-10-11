@@ -130,6 +130,18 @@ pub unsafe extern "C" fn numeric_identity_new(bits: u64) -> OwnedHandleResult {
         OwnedHandleResult::error()
     }
 }
+pub unsafe extern "C" fn scalar_payload_borrowed(
+    _bits: u64,
+    kind: MoltTypeTag,
+) -> BorrowedHandleResult {
+    // This fixture owns exact carriers only, never managed intrinsic fields.
+    match kind {
+        MoltTypeTag::Int | MoltTypeTag::Float | MoltTypeTag::Complex => {
+            BorrowedHandleResult::missing()
+        }
+        _ => BorrowedHandleResult::error(),
+    }
+}
 pub unsafe extern "C" fn float_payload(bits: u64, out: *mut f64) -> i32 {
     if out.is_null() {
         return -1;
@@ -1001,6 +1013,7 @@ pub fn wire_numeric(hooks: &mut RuntimeHooks) {
     hooks.try_mark_abi_view = try_mark_abi_view;
     hooks.object_hash = numeric_hash;
     hooks.numeric_identity_new = Some(numeric_identity_new);
+    hooks.scalar_payload_borrowed = scalar_payload_borrowed;
     hooks.float_payload = float_payload;
     hooks.complex_parts = super::fake_complex::parts;
     hooks.complex_from_doubles = super::fake_complex::from_doubles;
