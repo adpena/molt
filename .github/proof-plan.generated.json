@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ef6050593e4345621b9835b604ac2d5f69d0d537966997f125e73f86d7a28a10",
+  "authority_sha256": "592dd16536890c570584b88b7634b28b53af2a04573102266004ac993d2c5b3b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1534,6 +1534,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_windows_process_api.py",
+        "tests/test_python_runtime_identity.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
@@ -1600,6 +1601,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_windows_process_api.py",
+        "tests/test_python_runtime_identity.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
@@ -1666,6 +1668,7 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_windows_process_api.py",
+        "tests/test_python_runtime_identity.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
         "tests/cli/test_source_extension_set_registry.py",
