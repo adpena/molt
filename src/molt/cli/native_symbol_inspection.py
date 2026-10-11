@@ -997,18 +997,27 @@ def _read_archive_symbol_facts(
     if bitcode:
         names = frozenset(item.member.name for item in members)
 
-        def parse(result: subprocess.CompletedProcess[str]) -> list[str]:
-            return _bind_nm_archive_tables(
+        def parse(
+            result: subprocess.CompletedProcess[str],
+        ) -> dict[int, _NativeGlobalSymbolFacts]:
+            # Bind and parse inside the ladder: a malformed bitcode table
+            # fails this candidate, never the whole read with a bare error.
+            bound = _bind_nm_archive_tables(
                 _validated_nm_output(result, archive_member_names=names),
                 path=path,
                 members=members,
             )
+            return {
+                ordinal: _facts_from_nm_output(
+                    bound[ordinal], macho_decoration=policy.macho_decoration
+                )
+                for ordinal in bitcode
+            }
 
-        bound = _run_llvm_nm_ladder(path, bitcode_reader(), parse=parse)
-        for ordinal in bitcode:
-            tables[ordinal] = _facts_from_nm_output(
-                bound[ordinal], macho_decoration=policy.macho_decoration
-            )
+        for ordinal, facts in _run_llvm_nm_ladder(
+            path, bitcode_reader(), parse=parse
+        ).items():
+            tables[ordinal] = facts
     bound_members: list[_NativeArchiveMemberSymbolFacts] = []
     for identity, facts in zip(members, tables):
         assert facts is not None
