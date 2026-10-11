@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/ssl.rs ===
 //! SSL/TLS intrinsics for the Molt `ssl` stdlib module.
 //!
@@ -14,7 +13,7 @@ use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::collections::HashMap;
 #[cfg(molt_has_net_io)]
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 #[cfg(molt_has_net_io)]
 use std::net::TcpStream;
 #[cfg(all(molt_has_net_io, unix))]
@@ -122,7 +121,6 @@ struct SslSocketState {
     peer_cert_der: Option<Vec<u8>>,
     cipher_name: Option<String>,
     protocol_version: Option<String>,
-    server_hostname: Option<String>,
 }
 
 // ── Process-wide handle storage ──────────────────────────────────────────
@@ -668,7 +666,6 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 peer_cert_der: None,
                 cipher_name: None,
                 protocol_version: None,
-                server_hostname,
             }
         } else {
             // Client-side TLS
@@ -774,7 +771,6 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 peer_cert_der: None,
                 cipher_name: None,
                 protocol_version: None,
-                server_hostname: Some(hostname),
             }
         };
 
