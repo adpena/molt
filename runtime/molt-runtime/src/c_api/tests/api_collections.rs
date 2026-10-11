@@ -177,7 +177,7 @@ unsafe extern "C" fn c_api_aggregate_key_equal(
     use molt_cpython_abi::api::{errors, refcount};
     unsafe {
         if op != molt_cpython_abi::api::object::Py_EQ {
-            let result = &raw mut molt_cpython_abi::abi_types::Py_NotImplemented;
+            let result = &raw mut molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
             refcount::Py_INCREF(result);
             return result;
         }
@@ -196,8 +196,7 @@ unsafe extern "C" fn c_api_aggregate_key_equal(
             } else {
                 &raw mut molt_cpython_abi::abi_types::Py_True
             };
-            refcount::Py_INCREF(result);
-            result
+            molt_cpython_abi::api::object::Py_NewRef(result.cast())
         }
     }
 }
@@ -1655,11 +1654,18 @@ fn c_api_set_protocol() {
         }
         assert_eq!(PySet_Contains(set, k1), 0);
 
-        // Pop
-        let popped = PySet_Pop(set);
-        assert_ne!(popped, 0);
-        assert_eq!(PySet_Size(set), 0);
-        dec_ref_bits(_py, popped);
+        // Pop through the public C ABI, retaining actual pointer ownership.
+        unsafe {
+            use molt_cpython_abi::api::{numbers, refcount::OwnedPyObject, sequences};
+            let view = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(set),
+            );
+            assert!(!view.as_ptr().is_null());
+            let popped = OwnedPyObject::from_owned(sequences::PySet_Pop(view.as_ptr()));
+            assert!(!popped.as_ptr().is_null());
+            assert_eq!(numbers::PyLong_AsLong(popped.as_ptr()), 20);
+            assert_eq!(PySet_Size(set), 0);
+        }
 
         // Clear
         let add_res3 = molt_set_add(set, k1);
