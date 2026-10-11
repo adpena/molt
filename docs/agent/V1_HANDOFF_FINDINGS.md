@@ -112,12 +112,17 @@ projections and the graph are current;
 486 browser/ABI-generation and affected typed-command consumer tests pass with
 four platform skips. Reviewed differential case selection reuses the existing
 named lanes, binds the expanded file closure to exact hashes, and preserves
-their compiler permissions. Its full queue consumer qualification is pending
-on Linux: macOS native build admission requires more free disk space than is
-available. Linux qualification also exposed a missing pinned Node PATH entry
-and capacity exhaustion while creating fixtures; neither failed run qualifies
-the tooling migration. Verified inactive executable/archive copies reclaim
-724 MB. Another 5.32 GB of old Cargo targets remains protected: 14 lack valid
+their compiler permissions. The complete Linux queue consumer module and real
+Cargo timeout control pass 680 cases, with two platform skips, closed descendants
+and reclaimed scratch. The three full queue lanes now declare Node through the
+existing toolchain authority; CI derives setup from the selected command closure.
+All 375 owning plan, workflow and setup checks pass. Earlier missing-PATH and
+capacity failures remain retained. Actual public CLI execution exposes a second
+process owner that retires the detached queue runner. Recovery through the queue
+owner then exposes differential target selection escaping its admitted Cargo
+generation. Neither failure qualifies the public runtime consumers; complete CLI
+ownership and output routing must be repaired before landing. Verified inactive
+executable/archive copies reclaim 724 MB. Another 5.32 GB of old Cargo targets remains protected: 14 lack valid
 terminal evidence and one has seal drift. These are development-side controls
 and outstanding custody work, with no emitted-binary cost.
 

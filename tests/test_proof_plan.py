@@ -2377,6 +2377,55 @@ def test_windows_process_binding_selects_and_executes_portability_proof(
     )
 
 
+@pytest.mark.parametrize("tier", ["pr", "main"])
+def test_queue_node_prerequisite_follows_actual_selected_consumers(tier: str) -> None:
+    rows = {command.id: command for command in PLAN.commands}
+    for host in ("linux", "macos", "windows"):
+        full = rows[f"portability.queue.{host}"]
+        narrow = rows[f"portability.cargo-link.{host}"]
+        assert "tests/tools/test_proof_queue.py" in full.argv
+        assert "node" in PLAN.required_toolchains(full)
+        assert "tests/tools/test_proof_queue.py" not in narrow.argv
+        assert "node" not in PLAN.required_toolchains(narrow)
+    outputs = proof_plan.family_outputs(
+        PLAN, PLAN.select(["tools/proof_queue.py"]), tier=tier
+    )
+    matrix = json.loads(outputs["platform_portability_matrix"])["include"]
+    for entry in matrix:
+        assert ("node" in entry["toolchains"]) == (
+            tier == "main" and entry["backend"] == "proof-queue"
+        )
+        assert len(entry["toolchains"]) == len(set(entry["toolchains"]))
+
+
+def test_matrix_toolchains_include_cross_tier_command_and_tool_dependencies() -> None:
+    rows = {command.id: command for command in PLAN.commands}
+    prerequisite = replace(
+        rows["portability.queue.linux"],
+        data={
+            **rows["portability.queue.linux"].data,
+            "toolchains": ["cargo", "node"],
+        },
+    )
+    selected = replace(
+        rows["portability.cargo-link.linux"],
+        data={
+            **rows["portability.cargo-link.linux"].data,
+            "dependencies": [prerequisite.id],
+            "toolchains": ["uv", "python", "node"],
+        },
+    )
+    # The selected command precedes its main-only prerequisite in the manifest.
+    # Expected order comes from execution, then Cargo's rustc/git prerequisites.
+    plan = replace(PLAN, commands=(selected, prerequisite))
+    selection = plan.select(["tools/proof_queue.py"])
+    first = proof_plan.family_outputs(plan, selection, tier="pr")
+    assert first == proof_plan.family_outputs(plan, selection, tier="pr")
+    (entry,) = json.loads(first["platform_portability_matrix"])["include"]
+    assert entry["command_ids"] == [selected.id]
+    assert entry["toolchains"] == ["cargo", "rustc", "git", "node", "uv", "python"]
+
+
 def test_portability_streams_node_outcomes_before_possible_timeout() -> None:
     commands = [
         command

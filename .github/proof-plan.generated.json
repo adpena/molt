@@ -345,7 +345,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "99abe7e2da17a1092364dbccdf8c7d037b9063542ef8dea31aa71a22edbb883a",
+  "authority_sha256": "44593ff7d040d091db1d62d3aefe5b2b9e3717f5b9d7ec9bc5d83b21cbe4916b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1579,7 +1579,8 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "node"
       ]
     },
     {
@@ -1646,7 +1647,8 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "node"
       ]
     },
     {
@@ -1713,7 +1715,8 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "node"
       ]
     },
     {

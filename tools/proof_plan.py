@@ -2121,6 +2121,15 @@ def family_outputs(
                     )
                 },
                 "command_ids": command_ids,
+                "toolchains": list(
+                    plan.toolchain_closure(
+                        name
+                        for command in _topological_commands(
+                            plan, family=family_name, matrix_cell=cell.id, tier=tier
+                        )
+                        for name in command.toolchains
+                    )
+                ),
                 "selected_by": list(selection.reasons.get(family_name, ())),
             }
         )

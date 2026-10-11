@@ -142,6 +142,7 @@ jobs:
         uses: ./.github/actions/setup-project
         with:
           rust-toolchain: pinned
+          node-version: ${{ contains(matrix.toolchains, 'node') && 'pinned' || '' }}
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
