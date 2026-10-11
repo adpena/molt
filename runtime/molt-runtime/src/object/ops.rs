@@ -560,7 +560,7 @@ pub(crate) fn alloc_heap_float(_py: &PyToken<'_>, value: f64) -> u64 {
     let total = header_size + std::mem::size_of::<f64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FLOAT);
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "");
+        return MoltObject::none().bits();
     }
     unsafe {
         *(ptr as *mut f64) = value;
@@ -1579,39 +1579,27 @@ pub unsafe extern "C" fn molt_unpack_sequence(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Ok(expected) = usize::try_from(expected_count) else {
-            return raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                "sequence unpack target count exceeds the active address space",
-            );
+            crate::record_memory_error_without_allocation(_py);
+            return MoltObject::none().bits();
         };
         let output_ptr = if expected == 0 {
             std::ptr::null_mut()
         } else {
             let Some(output_ptr) = crate::provenance::abi::mut_ptr::<u64>(output_ptr_bits) else {
-                return raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "sequence unpack result address exceeds the active address space",
-                );
+                crate::record_memory_error_without_allocation(_py);
+                return MoltObject::none().bits();
             };
             output_ptr
         };
         if expected != 0 && output_ptr.is_null() {
-            return raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                "sequence unpack result allocation failed",
-            );
+            crate::record_memory_error_without_allocation(_py);
+            return MoltObject::none().bits();
         }
         let Some(out_slice) =
             (unsafe { crate::provenance::abi::slice_mut(output_ptr, expected_count) })
         else {
-            return raise_exception::<u64>(
-                _py,
-                "MemoryError",
-                "sequence unpack result range is invalid for the active target",
-            );
+            crate::record_memory_error_without_allocation(_py);
+            return MoltObject::none().bits();
         };
         let no_value = MoltObject::none().bits();
         out_slice.fill(no_value);
@@ -1841,42 +1829,90 @@ pub(crate) fn tuple_from_isize_slice(_py: &PyToken<'_>, values: &[isize]) -> u64
     }
 }
 
+/// CPython protocol diagnostics use raw type-name byte precision. Resolve the
+/// name only on the error path, without publishing a managed C type projection.
+pub(crate) fn protocol_type_name(py: &PyToken<'_>, bits: u64, precision: usize) -> String {
+    if let Some(ptr) = obj_from_bits(bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_FOREIGN })
+    {
+        let native = std::ptr::with_exposed_provenance_mut(unsafe {
+            crate::object::foreign::foreign_ptr_from_obj(ptr)
+        });
+        return unsafe {
+            molt_cpython_abi::api::typeobj::object_type_name_with_precision(native, precision)
+        };
+    }
+    let name = crate::object::ops_format::format_class_name_bytes(type_of_bits(py, bits));
+    String::from_utf8_lossy(&name[..name.len().min(precision)]).into_owned()
+}
+
 fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
     unsafe {
         {
             let call_bits =
                 crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__bool__")?;
             if let Some(call_bits) = call_bits {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, res_bits);
+                let mut method = Some(molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    _py.core_token(),
+                    call_bits,
+                ));
+                let minor = runtime_target_minor(_py);
+                if minor >= 14 && obj_from_bits(call_bits).is_none() {
+                    drop(method);
+                    let name = protocol_type_name(_py, obj.bits(), 200);
+                    let _ = raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!("'{name}' cannot be interpreted as a boolean"),
+                    );
                     return Err(());
                 }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(b) = res_obj.as_bool() {
-                    dec_ref_bits(_py, res_bits);
-                    return Ok(b);
+                let res_bits = call_callable0(_py, call_bits);
+                let result = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    _py.core_token(),
+                    res_bits,
+                );
+                // 3.14 closes the no-args callable before validating its result.
+                // Earlier slot_nb_bool retains it until after result retirement.
+                if minor >= 14 {
+                    drop(method.take());
                 }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                dec_ref_bits(_py, res_bits);
-                let msg = format!("__bool__ should return bool, returned {res_type}");
-                let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-                return Err(());
+                let outcome = if exception_pending(_py) {
+                    Err(())
+                } else if let Some(value) = obj_from_bits(res_bits).as_bool() {
+                    Ok(value)
+                } else {
+                    let res_type = protocol_type_name(_py, res_bits, usize::MAX);
+                    let msg = format!("__bool__ should return bool, returned {res_type}");
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    Err(())
+                };
+                // A native result observes the selected validation error. On
+                // 3.12/3.13 the callable observes it after that result retires.
+                drop(result);
+                drop(method);
+                return outcome;
             }
         }
         {
             let call_bits =
                 crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__len__")?;
             if let Some(call_bits) = call_bits {
+                let method = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    _py.core_token(),
+                    call_bits,
+                );
                 let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
+                let result = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    _py.core_token(),
+                    res_bits,
+                );
+                drop(method);
                 if exception_pending(_py) {
-                    dec_ref_bits(_py, res_bits);
                     return Err(());
                 }
-                let length = crate::object::ops_sys::coerce_length_result(_py, res_bits);
-                dec_ref_bits(_py, res_bits);
+                let length = crate::object::ops_sys::coerce_length_result(_py, result);
                 return length.map(|length| length != 0).ok_or(());
             }
         }
@@ -2220,17 +2256,26 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     let none = MoltObject::none().bits();
     let Ok(nb) = usize::try_from(nbases) else {
         return crate::with_gil_entry_nopanic!(_py, {
-            raise_exception::<u64>(_py, "MemoryError", "class base count is too large")
+            {
+                crate::record_memory_error_without_allocation(_py);
+                MoltObject::none().bits()
+            }
         });
     };
     let Ok(na) = usize::try_from(nattrs) else {
         return crate::with_gil_entry_nopanic!(_py, {
-            raise_exception::<u64>(_py, "MemoryError", "class attribute count is too large")
+            {
+                crate::record_memory_error_without_allocation(_py);
+                MoltObject::none().bits()
+            }
         });
     };
     let Some(attr_slots) = na.checked_mul(2) else {
         return crate::with_gil_entry_nopanic!(_py, {
-            raise_exception::<u64>(_py, "MemoryError", "class attribute storage is too large")
+            {
+                crate::record_memory_error_without_allocation(_py);
+                MoltObject::none().bits()
+            }
         });
     };
     let bases_ptr = if nb == 0 {
@@ -2238,11 +2283,10 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     } else {
         let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(bases_ptr_bits) else {
             return crate::with_gil_entry_nopanic!(_py, {
-                raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "class base address exceeds the active address space",
-                )
+                {
+                    crate::record_memory_error_without_allocation(_py);
+                    MoltObject::none().bits()
+                }
             });
         };
         if ptr.is_null() {
@@ -2257,11 +2301,10 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     } else {
         let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(attrs_ptr_bits) else {
             return crate::with_gil_entry_nopanic!(_py, {
-                raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "class attribute address exceeds the active address space",
-                )
+                {
+                    crate::record_memory_error_without_allocation(_py);
+                    MoltObject::none().bits()
+                }
             });
         };
         if ptr.is_null() {
@@ -2409,11 +2452,10 @@ pub unsafe extern "C" fn molt_guarded_class_def(
 pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(n) = crate::provenance::abi::address(n_parts) else {
-            return raise_exception::<_>(
-                _py,
-                "MemoryError",
-                "f-string part count exceeds the active address space",
-            );
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         };
         if n == 0 {
             let ptr = alloc_string(_py, &[]);
@@ -2427,7 +2469,10 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
             return raise_exception::<_>(_py, "RuntimeError", "f-string parts pointer is null");
         }
         let Some(pair_slots) = n.checked_mul(2) else {
-            return raise_exception::<_>(_py, "MemoryError", "f-string part storage overflow");
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         };
         let pair_slots_bits =
             u64::try_from(pair_slots).expect("usize is no wider than Molt's u64 runtime ABI word");
@@ -2440,11 +2485,10 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
         // Collect string parts — resolve values via str() as needed.
         let mut parts: Vec<(u64, bool)> = Vec::new(); // (string_bits, owned)
         if parts.try_reserve_exact(n).is_err() {
-            return raise_exception::<_>(
-                _py,
-                "MemoryError",
-                "f-string part storage allocation failed",
-            );
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         }
         let mut total_len: usize = 0;
 
@@ -2475,6 +2519,7 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
                 unsafe {
                     if object_type_id(ptr) == TYPE_ID_STRING {
                         let Some(next_len) = total_len.checked_add(string_len(ptr)) else {
+                            crate::record_memory_error_without_allocation(_py);
                             for &(bits, owned) in &parts {
                                 if owned {
                                     dec_ref_bits(_py, bits);
@@ -2483,11 +2528,7 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
                             if string_bits.1 {
                                 dec_ref_bits(_py, string_bits.0);
                             }
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "f-string result length overflow",
-                            );
+                            return MoltObject::none().bits();
                         };
                         total_len = next_len;
                     }

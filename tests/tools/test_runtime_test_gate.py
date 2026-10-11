@@ -50,7 +50,7 @@ def test_complete_parallel_and_fresh_process_ledger_passes(tmp_path):
         **{name: None for name in gate.ISOLATED},
         support.EXIT: 2,
     }
-    assert len(children) == 10
+    assert len(children) == 11
     assert "--test-threads=4" in selections["parallel"][0]
     for name in gate.ISOLATED:
         assert selections[name][0] == [
@@ -493,6 +493,7 @@ def test_child_failure_summary_bounds_long_failure_lists():
 
 
 FRESH_OWNERS = (
+    "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
 )

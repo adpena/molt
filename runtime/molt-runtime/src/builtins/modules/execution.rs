@@ -150,7 +150,7 @@ unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u6
         let attr_ptr = alloc_string(_py, attr);
         if attr_ptr.is_null() {
             dec_ref_bits(_py, sys_bits);
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
         let value_bits = crate::builtins::attributes::attr_lookup_ptr(_py, sys_ptr, attr_bits);
@@ -208,7 +208,7 @@ unsafe fn begin_argv0_swap(_py: &PyToken<'_>, argv0: &str) -> Result<Option<Argv
         let value_ptr = alloc_string(_py, argv0.as_bytes());
         if value_ptr.is_null() {
             dec_ref_bits(_py, argv_bits);
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let value_bits = MoltObject::from_ptr(value_ptr).bits();
         let Some(previous) = crate::object::seq_access::pin_item(_py, argv_ptr, 0) else {
@@ -279,7 +279,7 @@ unsafe fn begin_sys_path_swap(_py: &PyToken<'_>, path: &str) -> Result<Option<Sy
         let path_ptr = alloc_string(_py, path.as_bytes());
         if path_ptr.is_null() {
             dec_ref_bits(_py, path_list_bits);
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let path_bits = MoltObject::from_ptr(path_ptr).bits();
         let inserted = crate::object::list_mutation::insert(_py, path_list_ptr, 0, path_bits);
@@ -326,7 +326,7 @@ unsafe fn restore_sys_path_swap(_py: &PyToken<'_>, swap: Option<SysPathSwap>) {
 fn module_cache_del_by_name(_py: &PyToken<'_>, name: &str) -> Result<(), u64> {
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let result = molt_module_cache_del(name_bits);
@@ -347,7 +347,7 @@ fn module_cache_del_by_name(_py: &PyToken<'_>, name: &str) -> Result<(), u64> {
 fn module_cache_set_by_name(_py: &PyToken<'_>, name: &str, module_bits: u64) -> Result<(), u64> {
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let result = molt_module_cache_set(name_bits, module_bits);
@@ -427,7 +427,7 @@ unsafe fn set_module_dict_name(
     unsafe {
         let key_ptr = alloc_string(_py, name);
         if key_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let completed = dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
@@ -449,7 +449,7 @@ unsafe fn set_module_dict_text(
     unsafe {
         let value_ptr = alloc_string(_py, value.as_bytes());
         if value_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let value_bits = MoltObject::from_ptr(value_ptr).bits();
         let result = set_module_dict_name(_py, dict_ptr, name, value_bits);
@@ -482,7 +482,7 @@ fn begin_sys_modules_swap(
     let key_ptr = alloc_string(_py, run_name.as_bytes());
     if key_ptr.is_null() {
         dec_ref_bits(_py, modules_bits);
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let previous_bits = unsafe { dict_get_in_place(_py, modules_ptr, key_bits) };
@@ -715,7 +715,7 @@ pub(super) fn module_metadata_override_bits(
         MetadataOverride::Text(Some(text)) => {
             let ptr = alloc_string(_py, text.as_bytes());
             if ptr.is_null() {
-                return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
             Ok(Some((MoltObject::from_ptr(ptr).bits(), true)))
         }
@@ -793,7 +793,7 @@ pub(super) unsafe fn after_module_metadata_set(
                 if !value_ptr.is_null() {
                     dec_ref_bits(_py, MoltObject::from_ptr(value_ptr).bits());
                 }
-                return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
@@ -814,7 +814,7 @@ pub(super) unsafe fn after_module_metadata_set(
         ] {
             let name_ptr = alloc_string(_py, spec_name);
             if name_ptr.is_null() {
-                return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let value_bits =
@@ -1049,7 +1049,7 @@ pub(crate) fn execute_compiled_module(
 
     let name_ptr = alloc_string(_py, execution_name.as_bytes());
     let result = if name_ptr.is_null() {
-        raise_exception::<_>(_py, "MemoryError", "out of memory")
+        crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
     } else {
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let bits = molt_module_import_inner(name_bits);

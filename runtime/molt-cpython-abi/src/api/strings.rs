@@ -9,15 +9,6 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
-/// Fail-closed helper for str/bytes constructors whose runtime allocation
-/// returned 0 (out of memory). CPython's `PyUnicode_*`/`PyBytes_*` constructors
-/// return NULL with `MemoryError` set on allocation failure (Objects/unicodeobject.c,
-/// Objects/bytesobject.c). The previous code fabricated a `MoltObject::none()`
-/// handle, which reads to the C caller as a non-NULL success and masks the OOM.
-unsafe fn str_alloc_failed() -> *mut PyObject {
-    unsafe { crate::api::errors::PyErr_NoMemory() }
-}
-
 enum UnicodeCodecErrorObject<'a> {
     Bytes(&'a [u8]),
     Text(PythonStringBytes<'a>),
@@ -167,7 +158,10 @@ pub(crate) unsafe fn unicode_from_python_text(text: PythonStringBytes<'_>) -> *m
     let h = hooks_or_stubs();
     let bits = unsafe { h.alloc_str(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
-        return unsafe { str_alloc_failed() };
+        unsafe {
+            crate::bridge::ensure_result_error(c"runtime string/bytes allocator returned no value")
+        };
+        return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
@@ -1432,8 +1426,11 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_bytes)(data.as_ptr(), data.len()) };
     if bits == 0 {
-        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
-        return unsafe { str_alloc_failed() };
+        // The producer selects failure; do not replace it while forwarding NULL.
+        unsafe {
+            crate::bridge::ensure_result_error(c"runtime string/bytes allocator returned no value")
+        };
+        return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
@@ -1447,8 +1444,11 @@ pub unsafe extern "C" fn PyBytes_FromString(s: *const c_char) -> *mut PyObject {
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_bytes)(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
-        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
-        return unsafe { str_alloc_failed() };
+        // The producer selects failure; do not replace it while forwarding NULL.
+        unsafe {
+            crate::bridge::ensure_result_error(c"runtime string/bytes allocator returned no value")
+        };
+        return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
@@ -2067,13 +2067,12 @@ pub unsafe extern "C" fn PyByteArray_FromStringAndSize(
     }
     let bits = unsafe { (hooks_or_stubs().alloc_bytearray)(s.cast(), len as usize) };
     if bits == 0 {
-        if !crate::api::errors::transfer_runtime_pending_to_current() {
-            unsafe { crate::api::errors::PyErr_NoMemory() };
-        }
+        unsafe {
+            crate::bridge::ensure_result_error(c"runtime bytearray allocator returned no value")
+        };
         return ptr::null_mut();
     }
-    let result = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
-    unsafe { crate::api::errors::check_native_result(result, "PyByteArray_FromStringAndSize") }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 /// The caller supplies a stable stack address: Py_buffer fields may point to

@@ -320,7 +320,8 @@ fn module_ptr_key(module_ptr: *mut u8) -> usize {
 fn alloc_zeroed_state(_py: &PyToken<'_>, size: usize) -> Result<Box<[u8]>, i32> {
     let mut data: Vec<u8> = Vec::new();
     if data.try_reserve_exact(size).is_err() {
-        return Err(raise_i32(_py, "MemoryError", "out of memory"));
+        crate::record_memory_error_without_allocation(_py);
+        return Err(-1);
     }
     data.resize(size, 0);
     Ok(data.into_boxed_slice())

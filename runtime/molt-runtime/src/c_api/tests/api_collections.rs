@@ -253,9 +253,6 @@ fn c_api_hash_aggregate_completion_distinguishes_prior_error_from_operation_fail
             assert!(!source.as_ptr().is_null());
             let mutable_key = OwnedPyObject::from_owned(sequences::PyList_New(0));
             assert!(!mutable_key.as_ptr().is_null());
-            let zero =
-                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0));
-            assert!(!zero.as_ptr().is_null());
             errors::PyErr_SetNone((&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast());
             let original = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             assert!(!original.as_ptr().is_null());
@@ -272,6 +269,24 @@ fn c_api_hash_aggregate_completion_distinguishes_prior_error_from_operation_fail
                 }
             };
             for runtime_prior in [false, true] {
+                // Fresh C origins force the real first-adoption boundary in
+                // both raised-error channels. The returned set element must
+                // keep that exact C identity, including float positive zero.
+                let numerics = [
+                    OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyFloat_FromDouble(
+                        0.0,
+                    )),
+                    OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyLong_FromLong(
+                        1000,
+                    )),
+                    OwnedPyObject::from_owned(
+                        molt_cpython_abi::api::numbers::PyLong_FromUnsignedLongLong(u64::MAX),
+                    ),
+                    OwnedPyObject::from_owned(
+                        molt_cpython_abi::api::numbers::PyComplex_FromDoubles(1.25, -2.5),
+                    ),
+                ];
+                assert!(numerics.iter().all(|value| !value.as_ptr().is_null()));
                 refcount::Py_INCREF(original.as_ptr());
                 errors::PyErr_SetRaisedException(original.as_ptr());
                 if runtime_prior {
@@ -355,14 +370,12 @@ fn c_api_hash_aggregate_completion_distinguishes_prior_error_from_operation_fail
                     "None is a successful owned pop result"
                 );
                 selected(original.as_ptr(), runtime_prior);
-                assert_eq!(sequences::PySet_Add(target.as_ptr(), zero.as_ptr()), 0);
-                let popped = OwnedPyObject::from_owned(sequences::PySet_Pop(target.as_ptr()));
-                assert!(!popped.as_ptr().is_null(), "zero is a successful pop value");
-                assert_eq!(
-                    molt_cpython_abi::api::numbers::PyFloat_AsDouble(popped.as_ptr()),
-                    0.0
-                );
-                selected(original.as_ptr(), runtime_prior);
+                for numeric in &numerics {
+                    assert_eq!(sequences::PySet_Add(target.as_ptr(), numeric.as_ptr()), 0);
+                    let popped = OwnedPyObject::from_owned(sequences::PySet_Pop(target.as_ptr()));
+                    assert_eq!(popped.as_ptr(), numeric.as_ptr());
+                    selected(original.as_ptr(), runtime_prior);
+                }
                 assert_eq!(sequences::PySet_Add(target.as_ptr(), key.as_ptr()), 0);
                 assert_eq!(sequences::PySet_Clear(target.as_ptr()), 0);
                 assert_eq!(sequences::PySet_Size(target.as_ptr()), 0);

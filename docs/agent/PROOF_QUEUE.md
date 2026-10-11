@@ -264,6 +264,15 @@ automatically retried. The original immutable lifecycle projection remains
 `terminal-sealed-retained`; `retired-sealed` is a later observed owner/pointer
 lifecycle, not a rewrite of the proof result.
 
+For diagnostic replay, execute a hash-verified retained copy in a directory owned
+by the diagnostic run. Record its relationship to the original build receipt and
+retain any required runtime companions. Do not execute the original image from a
+sealed generation: runtime test helpers place their artifacts beside
+`current_exe`, so a replay can add files even when the executable bytes stay
+unchanged. A runner's `--receipt-dir` redirects its streams, not those test-owned
+artifacts. Preserve an altered generation and diagnose its manifest difference;
+do not reseal it or weaken the retirement comparison to permit cleanup.
+
 ### Cargo output placement
 
 Differential guest placement is distinct from proof receipt custody. An

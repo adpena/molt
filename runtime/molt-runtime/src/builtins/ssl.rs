@@ -150,7 +150,7 @@ fn return_none() -> u64 {
 fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -158,7 +158,7 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
 fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -1078,13 +1078,13 @@ pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits
                     let key_ptr = alloc_string(_py, b"subject");
                     let val_ptr = alloc_string(_py, subj_str.as_bytes());
                     if key_ptr.is_null() || val_ptr.is_null() {
-                        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     let key_bits = MoltObject::from_ptr(key_ptr).bits();
                     let val_bits = MoltObject::from_ptr(val_ptr).bits();
                     let dict_ptr = alloc_dict_with_pairs(_py, &[key_bits, val_bits]);
                     if dict_ptr.is_null() {
-                        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     MoltObject::from_ptr(dict_ptr).bits()
                 }
@@ -1131,7 +1131,7 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
                 let ver_ptr = alloc_string(_py, ver_str.as_bytes());
                 let bits_ptr = alloc_string(_py, b"256");
                 if name_ptr.is_null() || ver_ptr.is_null() || bits_ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    return MoltObject::none().bits();
                 }
                 let tuple_ptr = alloc_tuple(
                     _py,
@@ -1142,7 +1142,7 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
                     ],
                 );
                 if tuple_ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(tuple_ptr).bits()
             }

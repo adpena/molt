@@ -113,7 +113,7 @@ pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
         }
         let ptr = alloc_list(_py, &single_bits);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -254,7 +254,7 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
         let lower = name.to_lowercase();
         let ptr = alloc_string(_py, lower.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -287,7 +287,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         // Create the type/class object
         let cls_ptr = alloc_class_obj(_py, name_bits);
         if cls_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate enum class");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let cls_bits = MoltObject::from_ptr(cls_ptr).bits();
 
@@ -359,7 +359,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         let members_dict_ptr = alloc_dict_with_pairs(_py, &dict_pairs);
         if members_dict_ptr.is_null() {
             dec_ref_bits(_py, cls_bits);
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate __members__ dict");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let members_dict_bits = MoltObject::from_ptr(members_dict_ptr).bits();
 

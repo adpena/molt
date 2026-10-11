@@ -10,9 +10,6 @@ use crate::builtins::functions::native_callable::NativeCallableKind;
 fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: &[u8]) -> bool {
     let ptr = alloc_string(py, module);
     if ptr.is_null() {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(py, "MemoryError", "loader module allocation failed");
-        }
         return false;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -151,13 +148,6 @@ pub extern "C" fn molt_importlib_compiled_loader_types() -> u64 {
         }
         let tuple = alloc_tuple(py, &[base, builtin, frozen]);
         if tuple.is_null() {
-            if !exception_pending(py) {
-                return raise_exception::<_>(
-                    py,
-                    "MemoryError",
-                    "loader types tuple allocation failed",
-                );
-            }
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple).bits()
@@ -181,13 +171,6 @@ pub extern "C" fn molt_importlib_compiled_loader_create_module(
 
 fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
     let Some(attr) = attr_name_bits_from_bytes(py, name) else {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(
-                py,
-                "MemoryError",
-                "loader attribute name allocation failed",
-            );
-        }
         return None;
     };
     let bits = molt_getattr_builtin(target, attr, MoltObject::none().bits());
@@ -204,13 +187,6 @@ fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
 
 fn required_attr(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
     let Some(attr) = attr_name_bits_from_bytes(py, name) else {
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(
-                py,
-                "MemoryError",
-                "loader attribute name allocation failed",
-            );
-        }
         return None;
     };
     let bits = crate::molt_get_attr_name(target, attr);

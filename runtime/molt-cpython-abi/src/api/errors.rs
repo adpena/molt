@@ -249,10 +249,12 @@ impl Drop for ExceptionNormalizationGuard {
     }
 }
 
-// A normalized indicator has one semantic value owner. Retire the auxiliary
-// class/traceback pins first so its finalizer sees only the selected next state.
-// Caller-owned legacy triples retain their independent OwnedCError drop order.
-fn retire_normalized_error(error: Option<OwnedCError>) {
+/// Retire a detached normalized indicator after its replacement is published.
+/// Auxiliary class/traceback pins retire before the semantic value, so its
+/// finalizer sees the selected next state. Runtime emergency selection reuses
+/// this order without constructing a C exception. Caller-owned legacy triples
+/// retain their independent OwnedCError drop order.
+pub fn retire_normalized_error(error: Option<OwnedCError>) {
     if let Some(mut error) = error {
         let value = std::mem::replace(&mut error.value, ptr::null_mut());
         drop(error);
@@ -2467,7 +2469,7 @@ pub(crate) unsafe fn check_native_result(result: *mut PyObject, operation: &str)
         crate::capi_trace::record_silent_failure(operation, None);
         unsafe {
             replace_current_with_system_error(&format!(
-                "{operation} returned NULL without an exception"
+                "{operation} returned NULL without setting an exception"
             ))
         };
     }
@@ -3245,9 +3247,10 @@ fn allocate_exception_message(text: &str) -> *mut PyObject {
         return ptr::null_mut();
     }
     if bits == 0 {
-        // Allocation failed with no selected callback error. Reporting this
-        // must not allocate another diagnostic through the failing producer.
-        unsafe { PyErr_SetNone((&raw mut crate::abi_types::PyExc_MemoryError).cast()) };
+        // An installed producer must select its failure. A clean refusal is a
+        // contract violation, and reporting it must not call that producer
+        // again to allocate a diagnostic.
+        unsafe { install_normalization_failure() };
         return ptr::null_mut();
     }
     let value = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };

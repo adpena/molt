@@ -264,7 +264,7 @@ fn call_callable_positional(
     }
     let builder_bits = molt_callargs_new(args.len() as u64, 0);
     if builder_bits == 0 {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     for &arg in args {
         let _ = unsafe { molt_callargs_push_pos(builder_bits, arg) };
@@ -367,7 +367,7 @@ fn importlib_find_spec_via_meta_path(
         Some(bits) => bits,
         None => {
             dec_ref_bits(_py, fullname_bits);
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
     };
     let result = (|| {
@@ -587,9 +587,8 @@ fn importlib_find_spec_via_path_hooks(
                     }
                     finder_owned = true;
                     if let Some(cache_ptr) = path_importer_cache_ptr {
-                        let stored = unsafe {
-                            dict_set_in_place(_py, cache_ptr, entry_bits, finder_bits)
-                        };
+                        let stored =
+                            unsafe { dict_set_in_place(_py, cache_ptr, entry_bits, finder_bits) };
                         if !stored {
                             if finder_owned && !obj_from_bits(finder_bits).is_none() {
                                 dec_ref_bits(_py, finder_bits);
@@ -722,7 +721,7 @@ fn importlib_find_spec_direct_payload_bits(
             for bits in owned {
                 dec_ref_bits(_py, bits);
             }
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         pairs.push(key_bits);
@@ -735,7 +734,7 @@ fn importlib_find_spec_direct_payload_bits(
         dec_ref_bits(_py, bits);
     }
     if dict_ptr.is_null() {
-        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
     } else {
         Ok(MoltObject::from_ptr(dict_ptr).bits())
     }
@@ -808,7 +807,7 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
                 dec_ref_bits(_py, bits);
             }
         }
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let entries = [
@@ -1323,7 +1322,7 @@ fn alloc_string_triplets_list_bits(
 fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
     let ptr = alloc_string(_py, value.as_bytes());
     if ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     Ok(MoltObject::from_ptr(ptr).bits())
 }
@@ -2350,7 +2349,7 @@ fn importlib_find_spec_object_bits(
             if !obj_from_bits(loader_bits).is_none() {
                 dec_ref_bits(_py, loader_bits);
             }
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         };
         let out = importlib_set_attr(
             _py,
@@ -2579,7 +2578,7 @@ fn importlib_spec_set_loader_origin(
 fn importlib_single_item_list_bits(_py: &PyToken<'_>, value_bits: u64) -> Result<u64, u64> {
     let list_ptr = alloc_list(_py, &[value_bits]);
     if list_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     Ok(MoltObject::from_ptr(list_ptr).bits())
 }

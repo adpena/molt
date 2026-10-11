@@ -837,7 +837,7 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
         let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         };
@@ -847,7 +847,7 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
             clear_exception(_py);
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         }
@@ -855,7 +855,7 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
         let Some(fields_values) = decode_value_list(fields_obj) else {
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         };
@@ -892,7 +892,7 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
             dec_ref_bits(_py, *bits);
         }
         if list_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -927,7 +927,7 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
         let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         };
@@ -937,7 +937,7 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
             clear_exception(_py);
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         }
@@ -945,7 +945,7 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
         let Some(fields_values) = decode_value_list(fields_obj) else {
             let list_ptr = crate::alloc_list(_py, &[]);
             if list_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(list_ptr).bits();
         };
@@ -994,7 +994,7 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
             dec_ref_bits(_py, *bits);
         }
         if list_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(list_ptr).bits()
     })

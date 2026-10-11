@@ -50,7 +50,7 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
             crate::dec_ref_bits(_py, *bits);
         }
         if list_ptr.is_null() {
-            return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -129,12 +129,12 @@ fn encoding_detection_tuple(_py: &crate::PyToken<'_>, encoding: &str, bom_found:
     let enc_ptr = crate::alloc_string(_py, encoding.as_bytes());
     let bom_bits = MoltObject::from_bool(bom_found).bits();
     if enc_ptr.is_null() {
-        return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
     let tuple_ptr = crate::alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
-        return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }

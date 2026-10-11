@@ -21,7 +21,7 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
         };
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -73,7 +73,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
         };
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -101,7 +101,7 @@ pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> 
         let payload = uuid_v3_bytes(&namespace, &name);
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -129,7 +129,7 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
         let payload = uuid_v5_bytes(&namespace, &name);
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -229,7 +229,7 @@ pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
             let tuple_ptr =
                 alloc_tuple(_py, &[MoltObject::none().bits(), MoltObject::none().bits()]);
             if tuple_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
@@ -248,7 +248,7 @@ pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
         dec_ref_bits(_py, locale_bits);
         dec_ref_bits(_py, encoding_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })

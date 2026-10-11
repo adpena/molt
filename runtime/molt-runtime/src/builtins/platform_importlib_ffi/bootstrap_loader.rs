@@ -269,7 +269,7 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
 
         let source_ptr = alloc_string(_py, &payload.source);
         if source_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let source_bits = MoltObject::from_ptr(source_ptr).bits();
         let origin_bits = match alloc_str_bits(_py, &payload.origin) {
@@ -1097,7 +1097,7 @@ pub(super) fn importlib_alloc_string_tuple_bits(
         }
     }
     if tuple_ptr.is_null() {
-        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
     } else {
         Ok(MoltObject::from_ptr(tuple_ptr).bits())
     }
@@ -1163,7 +1163,7 @@ pub(super) fn importlib_finder_signature_tuple_bits(
         }
     }
     if tuple_ptr.is_null() {
-        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
     } else {
         Ok(MoltObject::from_ptr(tuple_ptr).bits())
     }
@@ -1177,7 +1177,7 @@ pub(super) fn importlib_path_importer_cache_signature_tuple_bits(
     if obj_from_bits(path_importer_cache_bits).is_none() {
         let empty_ptr = alloc_tuple(_py, &[]);
         if empty_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         return Ok(MoltObject::from_ptr(empty_ptr).bits());
     }
@@ -1251,7 +1251,7 @@ pub(super) fn importlib_path_importer_cache_signature_tuple_bits(
                     dec_ref_bits(_py, owned);
                 }
             }
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         pair_tuple_bits.push(MoltObject::from_ptr(item_ptr).bits());
     }
@@ -1262,7 +1262,7 @@ pub(super) fn importlib_path_importer_cache_signature_tuple_bits(
         }
     }
     if out_ptr.is_null() {
-        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+        Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel())
     } else {
         Ok(MoltObject::from_ptr(out_ptr).bits())
     }
@@ -1382,7 +1382,7 @@ pub extern "C" fn molt_importlib_zip_read_entry(
         };
         let out_ptr = alloc_bytes(_py, &bytes);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -1407,7 +1407,7 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
         };
         let out_ptr = alloc_bytes(_py, &bytes);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }
@@ -1470,7 +1470,7 @@ pub extern "C" fn molt_importlib_source_hash(source_bits: u64) -> u64 {
         let digest = hasher.finalize();
         let out_ptr = alloc_bytes(_py, &digest[..8]);
         if out_ptr.is_null() {
-            raise_exception::<_>(_py, "MemoryError", "out of memory")
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
         } else {
             MoltObject::from_ptr(out_ptr).bits()
         }

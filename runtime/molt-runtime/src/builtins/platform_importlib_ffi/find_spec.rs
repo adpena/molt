@@ -410,7 +410,7 @@ pub(super) fn importlib_find_spec_orchestrated_impl(
             dec_ref_bits(_py, path_importer_cache_sig_bits);
         }
         if cache_key_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let cache_key_bits = MoltObject::from_ptr(cache_key_ptr).bits();
         let cached_bits = unsafe { dict_get_in_place(_py, spec_cache_ptr, cache_key_bits) };
@@ -513,7 +513,7 @@ pub(super) fn importlib_runtime_path_hooks_and_cache_bits(
         } else {
             let empty_hooks_ptr = alloc_tuple(_py, &[]);
             if empty_hooks_ptr.is_null() {
-                return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+                return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
             path_hooks_bits = MoltObject::from_ptr(empty_hooks_ptr).bits();
             owns_path_hooks = true;
@@ -530,7 +530,7 @@ pub(super) fn importlib_runtime_path_hooks_and_cache_bits(
     if !owns_path_hooks {
         let empty_hooks_ptr = alloc_tuple(_py, &[]);
         if empty_hooks_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         path_hooks_bits = MoltObject::from_ptr(empty_hooks_ptr).bits();
         owns_path_hooks = true;

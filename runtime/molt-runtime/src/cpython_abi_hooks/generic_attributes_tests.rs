@@ -887,15 +887,42 @@ fn managed_generic_attributes_use_logical_class_and_bypass_override_family() {
 fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
+        use molt_runtime_core::OwnedRuntimeValue;
+        struct ResetFailure;
+        impl Drop for ResetFailure {
+            fn drop(&mut self) {
+                FAILURE.with(|failure| failure.set(0));
+            }
+        }
         FAILURE.with(|failure| failure.set(0));
-        let class = attribute_class(&py, crate::builtin_classes(&py).list, false);
-        let bits = crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]);
-        let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
-        let data = strings::PyUnicode_FromString(c"managed".as_ptr());
-        let shadow = strings::PyUnicode_FromString(c"shadow".as_ptr());
-        let absent = strings::PyUnicode_FromString(c"absent".as_ptr());
-        let dictionary = mapping::PyDict_New();
-        let value = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_int(44).bits());
+        let class_owner = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            attribute_class(&py, crate::builtin_classes(&py).list, false),
+        );
+        let class = class_owner.bits();
+        let instance = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]),
+        );
+        let bits = instance.bits();
+        let view_owner =
+            refcount::OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits));
+        let view = view_owner.as_ptr();
+        let data_owner =
+            refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"managed".as_ptr()));
+        let data = data_owner.as_ptr();
+        let shadow_owner =
+            refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"shadow".as_ptr()));
+        let shadow = shadow_owner.as_ptr();
+        let absent_owner =
+            refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"absent".as_ptr()));
+        let absent = absent_owner.as_ptr();
+        let dictionary_owner = refcount::OwnedPyObject::from_owned(mapping::PyDict_New());
+        let dictionary = dictionary_owner.as_ptr();
+        let value_owner = refcount::OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_int(44).bits()),
+        );
+        let value = value_owner.as_ptr();
         assert_eq!(object::PyObject_GenericSetAttr(view, shadow, value), 0);
         assert_eq!(mapping::PyDict_SetItem(dictionary, data, value), 0);
         assert_eq!(mapping::PyDict_SetItem(dictionary, shadow, value), 0);
@@ -922,25 +949,83 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
             take_bits(object::PyObject_GenericGetAttr(view, shadow)),
             MoltObject::from_int(44).bits()
         );
-        assert!(object::_PyObject_GenericGetAttrWithDict(view, absent, dictionary, 1).is_null());
+        let absent_result = refcount::OwnedPyObject::from_owned(
+            object::_PyObject_GenericGetAttrWithDict(view, absent, dictionary, 1),
+        );
+        assert!(absent_result.as_ptr().is_null());
         assert!(errors::PyErr_Occurred().is_null());
 
+        extern "C" fn nondata_get(_descriptor: u64, receiver: u64, _owner: u64) -> u64 {
+            descriptor_get(receiver)
+        }
+        let descriptor_name = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::attr_name_bits_from_bytes(&py, b"OptionalDescriptor").unwrap(),
+        );
+        let descriptor_class = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::molt_class_new(descriptor_name.bits()),
+        );
+        method(
+            &py,
+            descriptor_class.bits(),
+            b"__get__",
+            nondata_get as *const (),
+            3,
+        );
+        crate::object::class_finish_definition(
+            &py,
+            MoltObject::from_bits(descriptor_class.bits())
+                .as_ptr()
+                .unwrap(),
+        )
+        .unwrap();
+        let descriptor = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::call::bind::call_bind_borrowed(
+                &py,
+                descriptor_class.bits(),
+                None,
+                &[],
+                &[],
+                &[],
+            ),
+        );
+        member(&py, class, b"nondata", descriptor.bits());
+        let nondata =
+            refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"nondata".as_ptr()));
+
         for kind in ["RuntimeError", "AttributeError"] {
-            let failure = pending_error(&py, kind);
+            let failure_owner =
+                OwnedRuntimeValue::from_owned_bits(py.core_token(), pending_error(&py, kind));
+            let failure = failure_owner.bits();
             FAILURE.with(|slot| slot.set(failure));
-            for suppress in [0, 1] {
-                assert!(
-                    object::_PyObject_GenericGetAttrWithDict(view, data, dictionary, suppress)
-                        .is_null()
-                );
-                if suppress == 1 && kind == "AttributeError" {
-                    assert!(errors::PyErr_Occurred().is_null());
-                } else {
-                    assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
+            let _reset = ResetFailure;
+            for lookup_dictionary in [ptr::null_mut(), dictionary] {
+                for name in [data, nondata.as_ptr()] {
+                    for suppress in [0, 1] {
+                        let result = refcount::OwnedPyObject::from_owned(
+                            object::_PyObject_GenericGetAttrWithDict(
+                                view,
+                                name,
+                                lookup_dictionary,
+                                suppress,
+                            ),
+                        );
+                        assert!(result.as_ptr().is_null());
+                        if suppress == 1 && kind == "AttributeError" {
+                            assert!(errors::PyErr_Occurred().is_null());
+                        } else {
+                            assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
+                        }
+                        assert!(!crate::exception_pending(&py));
+                    }
                 }
-                assert!(!crate::exception_pending(&py));
             }
-            assert!(object::PyObject_GenericGetAttr(view, data).is_null());
+            let result = refcount::OwnedPyObject::from_owned(
+                object::PyObject_GenericGetAttr(view, data),
+            );
+            assert!(result.as_ptr().is_null());
             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
             assert_eq!(object::PyObject_GenericSetAttr(view, data, value), -1);
             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
@@ -950,13 +1035,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
             );
             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
             FAILURE.with(|slot| slot.set(0));
-            dec_ref_bits(&py, failure);
         }
-        for value in [value, dictionary, absent, shadow, data, view] {
-            refcount::Py_DECREF(value);
-        }
-        dec_ref_bits(&py, bits);
-        dec_ref_bits(&py, class);
         assert!(!crate::exception_pending(&py));
     });
 }

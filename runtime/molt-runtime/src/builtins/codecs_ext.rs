@@ -289,11 +289,7 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
                         let _ = is_final; // stateless encodings: no pending
                         let ptr = alloc_bytes(_py, &bytes);
                         if ptr.is_null() {
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "failed to allocate bytes",
-                            );
+                            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                         }
                         MoltObject::from_ptr(ptr).bits()
                     }
@@ -458,7 +454,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
                 });
                 let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -478,7 +474,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
                 let text_bytes = prefix_result.map(|(b, _)| b).unwrap_or_default();
                 let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -653,7 +649,7 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
             if !exception_pending(_py) {
                 let ptr = alloc_string(_py, b"");
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
@@ -662,7 +658,7 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
         let Some(raw_ptr) = raw_obj.as_ptr() else {
             let ptr = alloc_string(_py, b"");
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         };
@@ -691,7 +687,7 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
                 });
                 let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -725,7 +721,7 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
             if !exception_pending(_py) {
                 let ptr = alloc_string(_py, b"");
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
@@ -734,7 +730,7 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
         let Some(raw_ptr) = raw_obj.as_ptr() else {
             let ptr = alloc_string(_py, b"");
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         };
@@ -748,7 +744,7 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
             Ok((text_bytes, _)) => {
                 let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -814,7 +810,7 @@ pub extern "C" fn molt_codecs_bom_utf8() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_bytes(_py, &[0xEF, 0xBB, 0xBF]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -826,7 +822,7 @@ pub extern "C" fn molt_codecs_bom_utf16_le() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -838,7 +834,7 @@ pub extern "C" fn molt_codecs_bom_utf16_be() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_bytes(_py, &[0xFE, 0xFF]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -850,7 +846,7 @@ pub extern "C" fn molt_codecs_bom_utf32_le() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE, 0x00, 0x00]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -862,7 +858,7 @@ pub extern "C" fn molt_codecs_bom_utf32_be() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_bytes(_py, &[0x00, 0x00, 0xFE, 0xFF]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate bytes");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -893,7 +889,7 @@ pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
         }
         let dict_ptr = crate::alloc_dict_with_pairs(_py, &flat_pairs);
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -907,14 +903,14 @@ pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
 fn charmap_decode_tuple(_py: &PyToken<'_>, decoded: &[u8], consumed: usize) -> u64 {
     let str_ptr = alloc_string(_py, decoded);
     if str_ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     let str_bits = MoltObject::from_ptr(str_ptr).bits();
     let len_bits = MoltObject::from_int(consumed as i64).bits();
     let elems = [str_bits, len_bits];
     let tuple_ptr = crate::alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -1113,14 +1109,14 @@ pub extern "C" fn molt_codecs_charmap_decode(
 fn charmap_encode_tuple(_py: &PyToken<'_>, encoded: &[u8], consumed: usize) -> u64 {
     let bytes_ptr = alloc_bytes(_py, encoded);
     if bytes_ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
     let len_bits = MoltObject::from_int(consumed as i64).bits();
     let elems = [bytes_bits, len_bits];
     let tuple_ptr = crate::alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -1335,7 +1331,7 @@ pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
         }
         let dict_ptr = crate::alloc_dict_with_pairs(_py, &flat_pairs);
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -1363,7 +1359,7 @@ pub extern "C" fn molt_codecs_normalize_encoding(name_bits: u64) -> u64 {
         let canonical = crate::object::ops::encoding_kind_name(kind);
         let ptr = alloc_string(_py, canonical.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })

@@ -451,15 +451,14 @@ pub(crate) enum ObserveError {
 impl ObserveError {
     /// Report on behalf of an observer that is not itself recording a raise.
     pub(crate) fn raise(self, py: &PyToken<'_>) {
-        if exception_pending(py) {
-            return;
-        }
         match self {
-            Self::Layout(message) => raise_exception::<u64>(py, "SystemError", message),
-            Self::Allocation => {
-                raise_exception::<u64>(py, "MemoryError", "cannot allocate frame bindings")
+            Self::Layout(message) => {
+                if !exception_pending(py) {
+                    raise_exception::<u64>(py, "SystemError", message);
+                }
             }
-        };
+            Self::Allocation => crate::record_memory_error_without_allocation(py),
+        }
     }
 }
 
@@ -1186,9 +1185,6 @@ fn alloc_locals_dict(py: &PyToken<'_>, items: &FrameBindingItems<'_, '_>) -> Res
     }
     let dict = alloc_dict_with_pairs(py, &pairs);
     if dict.is_null() {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, "MemoryError", "cannot allocate frame locals");
-        }
         return Err(());
     }
     Ok(MoltObject::from_ptr(dict).bits())
@@ -1259,7 +1255,7 @@ unsafe fn history_reserve(py: &PyToken<'_>, ptr: *mut u8) -> Result<*mut Vec<u64
             let layout = std::alloc::Layout::new::<Vec<u64>>();
             let history = std::alloc::alloc(layout).cast::<Vec<u64>>();
             if history.is_null() {
-                raise_exception::<u64>(py, "MemoryError", "cannot keep an overwritten frame local");
+                crate::record_memory_error_without_allocation(py);
                 return Err(());
             }
             history.write(Vec::new());
@@ -1268,7 +1264,7 @@ unsafe fn history_reserve(py: &PyToken<'_>, ptr: *mut u8) -> Result<*mut Vec<u64
         let history = *slot as usize as *mut Vec<u64>;
         // Amortized growth: one reservation per write, never a copy per write.
         if (*history).try_reserve(1).is_err() {
-            raise_exception::<u64>(py, "MemoryError", "cannot keep an overwritten frame local");
+            crate::record_memory_error_without_allocation(py);
             return Err(());
         }
         Ok(history)
@@ -1377,9 +1373,6 @@ pub(crate) fn frame_bindings_extra_locals(
     }
     let dict = alloc_dict_with_pairs(py, &[]);
     if dict.is_null() {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, "MemoryError", "cannot allocate frame locals");
-        }
         return Err(());
     }
     // Allocation can run a finalizer that created the same dict.

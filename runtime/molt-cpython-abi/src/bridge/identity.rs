@@ -406,11 +406,9 @@ impl ObjectBridge {
             unsafe { ensure_result_error(c"numeric source changed before adoption") };
             return Err(());
         }
-        // Semantic admission cannot consume or replace either incoming raised
-        // channel. Refuse before decoding/allocating a new runtime identity.
-        if crate::api::errors::raised_error_pending() {
-            return Err(());
-        }
+        // Admission follows each producer's explicit completion. An incoming
+        // raised exception is not an allocation failure and stays visible to
+        // the real operation; no error channel is detached to admit the value.
         if !crate::hooks::numeric_identity_available() {
             unsafe { ensure_result_error(c"registered runtime has no numeric identity owner") };
             return Err(());
@@ -439,12 +437,6 @@ impl ObjectBridge {
             staged = Some(unsafe { RuntimeValue::from_owned(heap) });
             heap
         };
-        // Raw integer decode has a separate pending-error channel. A producer
-        // may allocate before a reentrant error is raised; staged custody must
-        // retire that result instead of publishing it with an error pending.
-        if crate::api::errors::raised_error_pending() {
-            return Err(());
-        }
         let expected = match record.kind {
             NumericCarrierKind::Long { .. } => MoltTypeTag::Int,
             NumericCarrierKind::Float => MoltTypeTag::Float,

@@ -239,12 +239,17 @@ unsafe fn payload_word(ptr: *mut u8, payload_size: usize, offset: usize) -> Opti
     (end <= payload_size).then(|| unsafe { *(ptr.add(offset) as *const u64) })
 }
 
-pub(super) struct LocalsProjectionError(&'static str, &'static str);
+pub(super) enum LocalsProjectionError {
+    Raised,
+    Layout(&'static str),
+}
 
 impl LocalsProjectionError {
     pub(super) fn raise(self, py: &PyToken<'_>) {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, self.0, self.1);
+        if let Self::Layout(message) = self {
+            if !exception_pending(py) {
+                raise_exception::<u64>(py, "SystemError", message);
+            }
         }
     }
 }
@@ -253,16 +258,13 @@ fn layout_violation<T>(
     _py: &PyToken<'_>,
     message: &'static str,
 ) -> Result<T, LocalsProjectionError> {
-    Err(LocalsProjectionError("SystemError", message))
+    Err(LocalsProjectionError::Layout(message))
 }
 
 fn try_owned_dict(py: &PyToken<'_>, pairs: &[u64]) -> Result<u64, LocalsProjectionError> {
     let ptr = alloc_dict_with_pairs(py, pairs);
     if ptr.is_null() {
-        return Err(LocalsProjectionError(
-            "MemoryError",
-            "cannot allocate frame locals",
-        ));
+        return Err(LocalsProjectionError::Raised);
     }
     Ok(MoltObject::from_ptr(ptr).bits())
 }
@@ -270,9 +272,6 @@ fn try_owned_dict(py: &PyToken<'_>, pairs: &[u64]) -> Result<u64, LocalsProjecti
 fn owned_dict(py: &PyToken<'_>, pairs: &[u64]) -> Option<u64> {
     let ptr = alloc_dict_with_pairs(py, pairs);
     if ptr.is_null() {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, "MemoryError", "cannot allocate frame locals");
-        }
         return None;
     }
     Some(MoltObject::from_ptr(ptr).bits())
@@ -689,7 +688,7 @@ pub(crate) unsafe fn activation_detach_frame_bindings(
 }
 
 fn frame_write_violation<T>(py: &PyToken<'_>, message: &'static str) -> Result<T, ()> {
-    LocalsProjectionError("SystemError", message).raise(py);
+    LocalsProjectionError::Layout(message).raise(py);
     Err(())
 }
 

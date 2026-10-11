@@ -426,7 +426,7 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
         let ptr = alloc_object(_py, total, TYPE_ID_LIST_BUILDER);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+            return MoltObject::none().bits();
         }
         unsafe {
             let capacity_obj = MoltObject::from_bits(capacity_bits);
@@ -435,8 +435,9 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
                 if val > 0 { val as usize } else { 0 }
             } else if capacity_obj.is_float() {
                 let Some(capacity) = usize_from_bits(capacity_bits) else {
+                    record_memory_error_without_allocation(_py);
                     dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return raise_exception::<_>(_py, "MemoryError", "list capacity is too large");
+                    return MoltObject::none().bits();
                 };
                 capacity
             } else {
@@ -451,8 +452,9 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
             let Some(vec_ptr) =
                 crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
             else {
+                record_memory_error_without_allocation(_py);
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                return MoltObject::none().bits();
             };
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         }
@@ -591,9 +593,6 @@ unsafe fn finish_sequence_builder(
         let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
         let result = allocate(py, vec.as_slice(), vec.capacity());
         if result.is_null() {
-            if !exception_pending(py) {
-                crate::record_memory_error_without_allocation(py);
-            }
             for &elem in vec.iter() {
                 dec_ref_bits(py, elem);
             }
@@ -654,9 +653,6 @@ unsafe fn sequence_from_values(
         FixedSequenceKind::Tuple => alloc_tuple(py, values),
     };
     if ptr.is_null() {
-        if !exception_pending(py) {
-            crate::record_memory_error_without_allocation(py);
-        }
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
@@ -700,6 +696,7 @@ pub(crate) fn alloc_list_with_capacity(
     }
     unsafe {
         let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
@@ -761,6 +758,7 @@ pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject
     unsafe {
         let Some(vec_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(len)
         else {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
@@ -796,6 +794,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
     }
     unsafe {
         let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
@@ -845,7 +844,7 @@ unsafe fn alloc_list_int_with_storage(
         unsafe {
             drop_list_int_storage(storage_ptr);
         }
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(MoltObject::none().bits());
     }
     unsafe {
         *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
@@ -866,7 +865,7 @@ unsafe fn alloc_list_bool_with_storage(
         unsafe {
             drop_list_bool_storage(storage_ptr);
         }
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(MoltObject::none().bits());
     }
     unsafe {
         *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
@@ -886,11 +885,8 @@ pub(crate) fn alloc_list_bool_from_raw_slice(
     elems: &[u8],
 ) -> Result<*mut u8, u64> {
     let Some(storage_ptr) = crate::object::layout::ListBoolStorage::from_slice(elems) else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(_py);
+        return Err(MoltObject::none().bits());
     };
     unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
 }
@@ -906,19 +902,13 @@ pub(crate) fn alloc_list_int_from_fill(
     }
     if let Some(value) = crate::object::layout::InlineListInt::from_bits(fill) {
         let Some(storage) = crate::object::layout::ListIntStorage::filled(len, value) else {
-            return Err(raise_exception::<u64>(
-                py,
-                "MemoryError",
-                "list allocation failed",
-            ));
+            record_memory_error_without_allocation(py);
+            return Err(MoltObject::none().bits());
         };
         return unsafe { alloc_list_int_with_storage(py, storage) };
     }
     let ptr = alloc_list_filled(py, len, obj_from_bits(fill));
     if ptr.is_null() {
-        if !exception_pending(py) {
-            crate::record_memory_error_without_allocation(py);
-        }
         Err(MoltObject::none().bits())
     } else {
         Ok(ptr)
@@ -946,11 +936,8 @@ pub(crate) fn alloc_list_bool_filled(
     value: u8,
 ) -> Result<*mut u8, u64> {
     let Some(storage_ptr) = crate::object::layout::ListBoolStorage::filled(len, value) else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(_py);
+        return Err(MoltObject::none().bits());
     };
     unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
 }
@@ -961,11 +948,8 @@ pub(crate) fn alloc_list_int_from_repeated_raw_slice(
     times: usize,
 ) -> Result<*mut u8, u64> {
     let Some(len) = elems.len().checked_mul(times) else {
-        return Err(raise_exception::<u64>(
-            py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(py);
+        return Err(MoltObject::none().bits());
     };
     if len == 0 {
         return alloc_list_int_from_raw_slice(py, &[]);
@@ -982,11 +966,8 @@ pub(crate) fn alloc_list_int_from_repeated_raw_slice(
     let count = match i64::try_from(times) {
         Ok(count) => count,
         Err(_) => {
-            return Err(raise_exception::<u64>(
-                py,
-                "MemoryError",
-                "list allocation failed",
-            ));
+            record_memory_error_without_allocation(py);
+            return Err(MoltObject::none().bits());
         }
     };
     let repeated = crate::object::ops_arith::repeat_sequence(py, source, count);
@@ -1003,11 +984,8 @@ pub(crate) fn alloc_list_bool_from_repeated_raw_slice(
 ) -> Result<*mut u8, u64> {
     let Some(storage_ptr) = crate::object::layout::ListBoolStorage::repeated_slice(elems, times)
     else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(_py);
+        return Err(MoltObject::none().bits());
     };
     unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
 }
@@ -1026,11 +1004,8 @@ where
         return Err(none);
     }
     let Some(storage_ptr) = ListIntStorage::with_capacity(len) else {
-        return Err(raise_exception::<u64>(
-            py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(py);
+        return Err(none);
     };
     // Build the inline prefix without Python owners. The first heap-sized
     // value moves that prefix through canonical promotion exactly once.
@@ -1038,12 +1013,9 @@ where
         let value = raw_at(index);
         if let Some(value) = InlineListInt::from_raw(value) {
             if unsafe { !(*storage_ptr).push(value) } {
+                record_memory_error_without_allocation(py);
                 unsafe { drop_list_int_storage(storage_ptr) };
-                return Err(raise_exception::<u64>(
-                    py,
-                    "MemoryError",
-                    "list allocation failed",
-                ));
+                return Err(none);
             }
             continue;
         }
@@ -1085,22 +1057,16 @@ where
     F: FnMut(usize) -> u8,
 {
     let Some(storage_ptr) = crate::object::layout::ListBoolStorage::with_capacity(len) else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "MemoryError",
-            "list allocation failed",
-        ));
+        record_memory_error_without_allocation(_py);
+        return Err(MoltObject::none().bits());
     };
     unsafe {
         let storage = &mut *storage_ptr;
         for idx in 0..len {
             if !storage.push(raw_at(idx)) {
+                record_memory_error_without_allocation(_py);
                 drop_list_bool_storage(storage_ptr);
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "MemoryError",
-                    "list allocation failed",
-                ));
+                return Err(MoltObject::none().bits());
             }
         }
         alloc_list_bool_with_storage(_py, storage_ptr)
@@ -1194,10 +1160,14 @@ pub(crate) fn alloc_tuple_uninitialized(_py: &PyToken<'_>, len: usize) -> *mut u
     if len == 0 {
         return alloc_tuple(_py, &[]);
     }
-    let missing = missing_bits(_py);
     let Some(total) = crate::object::layout::TupleStorage::object_size(len) else {
+        record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
+    let missing = missing_bits(_py);
+    if obj_from_bits(missing).as_ptr().is_none() {
+        return std::ptr::null_mut();
+    }
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1229,10 +1199,10 @@ pub(crate) fn alloc_tuple_owned(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
 
 /// Runtime-owned authority for stable-address canonical heap objects.
 ///
-/// Hits are lock-free. A miss is serialized through `singleton_init`, so a
-/// fully initialized and immortal object is release-published exactly once and
-/// no losing allocation can leak. The intern pool keeps its lock through
-/// allocation and insertion for the same reason. Runtime teardown drains every
+/// Fixed singleton hits are lock-free. Construct candidates before taking the
+/// publication locks: allocation failure can retire a prior error and reenter
+/// this cache. Recheck under the lock and make only the winner immortal; a
+/// losing candidate retires after unlocking. Runtime teardown drains every
 /// pointer from this owner before the state itself is dropped.
 pub(crate) struct CanonicalObjectCache {
     singleton_init: std::sync::Mutex<()>,
@@ -1285,21 +1255,58 @@ fn canonical_singleton(
     if !cached.is_null() {
         return cached;
     }
-    let _init = runtime_state(py)
-        .canonical_objects
-        .singleton_init
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
-    if !cached.is_null() {
-        return cached;
-    }
     let ptr = allocate();
-    if !ptr.is_null() {
-        unsafe { prepare_canonical_object(ptr, interned) };
-        slot.store(ptr, std::sync::atomic::Ordering::Release);
+    if ptr.is_null() {
+        return ptr;
     }
-    ptr
+    let mut candidate = PtrDropGuard::new(ptr);
+    let published = {
+        let _init = runtime_state(py)
+            .canonical_objects
+            .singleton_init
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cached = slot.load(std::sync::atomic::Ordering::Acquire);
+        if cached.is_null() {
+            unsafe { prepare_canonical_object(ptr, interned) };
+            slot.store(ptr, std::sync::atomic::Ordering::Release);
+            candidate.release();
+            ptr
+        } else {
+            cached
+        }
+    };
+    published
+}
+
+#[cfg(test)]
+pub(crate) fn canonical_cache_locks_available_for_test(py: &PyToken<'_>) -> bool {
+    let cache = &runtime_state(py).canonical_objects;
+    cache.singleton_init.try_lock().is_ok() && cache.interned_strings.try_lock().is_ok()
+}
+
+#[cfg(test)]
+pub(crate) fn canonical_singleton_allocation_probe(py: &PyToken<'_>) -> bool {
+    let slot = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+    let ptr = canonical_singleton(py, &slot, false, || {
+        alloc_object(py, std::mem::size_of::<MoltHeader>(), TYPE_ID_OBJECT)
+    });
+    if !ptr.is_null() {
+        // This local slot owns its winner, just as the runtime cache does.
+        // Reuse its terminal ownership release before the local slot disappears.
+        super::release_shutdown_owned_bits(py, MoltObject::from_ptr(ptr).bits());
+    }
+    !ptr.is_null()
+}
+
+#[cfg(test)]
+pub(crate) fn uncached_ascii_character_for_test(py: &PyToken<'_>) -> Option<u8> {
+    runtime_state(py)
+        .canonical_objects
+        .ascii_chars
+        .iter()
+        .position(|slot| slot.load(std::sync::atomic::Ordering::Acquire).is_null())
+        .map(|index| index as u8)
 }
 
 #[derive(Clone, Copy)]
@@ -2067,7 +2074,8 @@ fn canonical_inline_bytes(
 }
 
 /// Try to return an interned single-ASCII-character string.
-/// Returns the raw object pointer if the input is exactly one ASCII byte, else `None`.
+/// Returns Some for every one-byte ASCII input, including NULL on allocation
+/// failure. Only ineligible input returns None; callers must not retry a failure.
 #[inline]
 fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
     if bytes.len() != 1 {
@@ -2079,7 +2087,7 @@ fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
     }
     let slot = &runtime_state(_py).canonical_objects.ascii_chars[byte as usize];
     let raw = canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::String, true);
-    if raw.is_null() { None } else { Some(raw) }
+    Some(raw)
 }
 
 pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
@@ -2091,27 +2099,44 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
         return ptr;
     }
     let cache = &runtime_state(_py).canonical_objects;
-    let mut pool = cache
-        .interned_strings
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(&raw) = pool.get(bytes) {
+    let existing = {
+        let pool = cache
+            .interned_strings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pool.get(bytes).copied()
+    };
+    if let Some(raw) = existing {
         return raw as *mut u8;
     }
     let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), InlineBytesKind::String);
     if ptr.is_null() {
         return ptr;
     }
+    let mut candidate = PtrDropGuard::new(ptr);
     unsafe {
         std::ptr::copy_nonoverlapping(
             bytes.as_ptr(),
             super::layout::InlineBytesStorage::data(ptr),
             bytes.len(),
         );
-        prepare_canonical_object(ptr, true);
     }
-    pool.insert(bytes.to_vec().into_boxed_slice(), ptr as usize);
-    ptr
+    let key = bytes.to_vec().into_boxed_slice();
+    let published = {
+        let mut pool = cache
+            .interned_strings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(&raw) = pool.get(bytes) {
+            raw as *mut u8
+        } else {
+            pool.insert(key, ptr as usize);
+            unsafe { prepare_canonical_object(ptr, true) };
+            candidate.release();
+            ptr
+        }
+    };
+    published
 }
 
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
@@ -2295,8 +2320,8 @@ pub(crate) unsafe fn alloc_native_bytearray(py: &PyToken<'_>, class: u64) -> *mu
         return ptr;
     }
     let Some(backing) = super::buffer_exports::bytearray_backing_from_slice(&[], 0) else {
-        dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
         record_memory_error_without_allocation(py);
+        dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
         return std::ptr::null_mut();
     };
     unsafe {
@@ -2345,6 +2370,7 @@ pub(crate) fn alloc_bytearray_with_capacity(
     }
     unsafe {
         let Some(vec_ptr) = super::buffer_exports::bytearray_backing_from_slice(bytes, cap) else {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
@@ -2363,6 +2389,7 @@ pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8
     }
     unsafe {
         let Some(vec_ptr) = super::buffer_exports::bytearray_backing_zeroed(len) else {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
@@ -2433,8 +2460,6 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
         let storage = &mut self.storage;
         let invalid =
             || memoryview_construction_failure(py, "BufferError", "invalid memoryview storage");
-        let no_memory =
-            || memoryview_construction_failure(py, "MemoryError", "cannot allocate memoryview");
         let data = unsafe {
             if !storage.data.is_null() {
                 storage.data
@@ -2465,23 +2490,25 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
         let ptr = alloc_object(py, total, TYPE_ID_MEMORYVIEW);
         if ptr.is_null() {
-            return no_memory();
+            return ptr;
         }
         unsafe {
             let Some(shape_ptr) = crate::object::backing::tracked_vec_box_from_slice(
                 storage.shape.as_slice(),
                 storage.shape.len(),
             ) else {
+                record_memory_error_without_allocation(py);
                 dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-                return no_memory();
+                return std::ptr::null_mut();
             };
             let Some(strides_ptr) = crate::object::backing::tracked_vec_box_from_slice(
                 storage.strides.as_slice(),
                 storage.strides.len(),
             ) else {
+                record_memory_error_without_allocation(py);
                 drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
                 dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-                return no_memory();
+                return std::ptr::null_mut();
             };
             let mv_ptr = memoryview_ptr(ptr);
             (*mv_ptr).owner_bits = 0;

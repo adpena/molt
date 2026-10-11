@@ -546,7 +546,7 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
             ];
             let ptr = alloc_tuple(_py, &elems);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -593,7 +593,7 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
             ];
             let ptr = alloc_tuple(_py, &elems);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -659,7 +659,7 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
             ];
             let ptr = alloc_tuple(_py, &elems);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             return MoltObject::from_ptr(ptr).bits();
         }
@@ -681,7 +681,8 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
                     ];
                     let ptr = alloc_tuple(_py, &elems);
                     if ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     return MoltObject::from_ptr(ptr).bits();
                 }
@@ -697,7 +698,7 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
         ];
         let ptr = alloc_tuple(_py, &elems);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -736,7 +737,7 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
         ];
         let ptr = alloc_tuple(_py, &elems);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })

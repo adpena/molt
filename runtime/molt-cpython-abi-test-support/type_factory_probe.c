@@ -627,6 +627,7 @@ static int observation_compare_mode, observation_check_calls, observation_check_
 static int observation_conversion_mode, observation_length_calls;
 static int observation_buffer_acquires, observation_buffer_releases;
 static int observation_buffer_mode, observation_release_error;
+static PyObject *observation_release_seen;
 typedef PyObject *(*BufferConstructorProbe)(PyObject *, int);
 static PyObject *observation_dir_result;
 static int observation_sequence_names;
@@ -776,7 +777,24 @@ static int observation_buffer(PyObject *self, Py_buffer *view, int flags) {
 static void observation_releasebuffer(PyObject *self, Py_buffer *view) {
     (void)self; (void)view;
     ++observation_buffer_releases;
-    if (observation_release_error) PyErr_SetString(PyExc_TypeError, "release must not replace conversion error");
+    if (observation_release_error) {
+        /* PyBuffer_Release does not shield this callback. A lawful observer
+         * must see the selected conversion error and restore its exact owner. */
+        PyObject *incoming = PyErr_GetRaisedException();
+        Py_CLEAR(observation_release_seen);
+        observation_release_seen = Py_XNewRef(incoming);
+        PyErr_SetString(PyExc_TypeError, "temporary release callback error");
+        PyErr_SetRaisedException(incoming);
+    }
+}
+
+static int observation_release_preserved_conversion_error(void) {
+    PyObject *selected = PyErr_GetRaisedException();
+    int same = selected != NULL && selected == observation_release_seen
+        && PyErr_GivenExceptionMatches(selected, PyExc_BufferError);
+    Py_XDECREF(selected);
+    Py_CLEAR(observation_release_seen);
+    return same;
 }
 
 static PyObject *observation_buffer_index(PyObject *self) {
@@ -944,10 +962,18 @@ static int check_buffer_authority(PyObject *exporter, BufferConstructorProbe con
     Py_CLEAR(result);
     observation_buffer_mode = 3;
     observation_release_error = 1;
-    BUFFER_REQUIRE(constructor(exporter, 0) == NULL && PyErr_ExceptionMatches(PyExc_BufferError), 412);
-    PyErr_Clear();
-    BUFFER_REQUIRE(PyObject_Bytes(exporter) == NULL && PyErr_ExceptionMatches(PyExc_BufferError), 413);
-    PyErr_Clear();
+    before = observation_buffer_acquires;
+    result = constructor(exporter, 0);
+    BUFFER_REQUIRE(result == NULL && observation_release_preserved_conversion_error()
+        && observation_buffer_acquires == before + 1
+        && observation_buffer_releases == observation_buffer_acquires
+        && Py_REFCNT(exporter) == refs, 412);
+    before = observation_buffer_acquires;
+    result = PyObject_Bytes(exporter);
+    BUFFER_REQUIRE(result == NULL && observation_release_preserved_conversion_error()
+        && observation_buffer_acquires == before + 1
+        && observation_buffer_releases == observation_buffer_acquires
+        && Py_REFCNT(exporter) == refs, 413);
     observation_release_error = observation_buffer_mode = 0;
 
     /* Runtime-created views return through the same Check/GET_BUFFER projection.
@@ -1007,6 +1033,7 @@ done:
     {
         PyObject *error = PyErr_GetRaisedException();
         observation_release_error = observation_buffer_mode = 0;
+        Py_CLEAR(observation_release_seen);
         Py_XDECREF(result);
         for (int i = 0; i < 65; ++i) Py_XDECREF(views[i]);
         PyErr_SetRaisedException(error);

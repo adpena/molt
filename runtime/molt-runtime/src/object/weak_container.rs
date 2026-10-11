@@ -956,7 +956,8 @@ fn prepare_insert(_py: &PyToken<'_>, state: &WeakContainerState) -> Result<Prepa
     };
     let buckets = if let Some(capacity) = allocate_buckets {
         let mut buckets = reserved_vec(capacity).ok_or_else(|| {
-            raise_exception::<u64>(_py, "MemoryError", "weak table allocation failed")
+            crate::record_memory_error_without_allocation(_py);
+            MoltObject::none().bits()
         })?;
         buckets.resize(capacity, 0);
         Some(buckets)
@@ -966,14 +967,16 @@ fn prepare_insert(_py: &PyToken<'_>, state: &WeakContainerState) -> Result<Prepa
     let entries = entry_target
         .map(|capacity| {
             reserved_vec(capacity).ok_or_else(|| {
-                raise_exception::<u64>(_py, "MemoryError", "weak entry allocation failed")
+                crate::record_memory_error_without_allocation(_py);
+                MoltObject::none().bits()
             })
         })
         .transpose()?;
     let free_slots = free_target
         .map(|capacity| {
             reserved_vec(capacity).ok_or_else(|| {
-                raise_exception::<u64>(_py, "MemoryError", "weak slot allocation failed")
+                crate::record_memory_error_without_allocation(_py);
+                MoltObject::none().bits()
             })
         })
         .transpose()?;
@@ -1153,13 +1156,6 @@ pub extern "C" fn molt_weakcontainer_new(kind_bits: u64) -> u64 {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<WeakContainerState>();
         let ptr = alloc_object(_py, total, TYPE_ID_WEAK_CONTAINER_STATE);
         if ptr.is_null() {
-            if !exception_pending(_py) {
-                return raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "weak container allocation failed",
-                );
-            }
             return MoltObject::none().bits();
         }
         unsafe {
@@ -1603,9 +1599,6 @@ pub extern "C" fn molt_weakcontainer_iter(state_bits: u64, projection_bits: u64)
             + 2 * std::mem::size_of::<u64>();
         let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
         if iter_ptr.is_null() {
-            if !exception_pending(_py) {
-                return raise_exception::<_>(_py, "MemoryError", "weak iterator allocation failed");
-            }
             return MoltObject::none().bits();
         }
         inc_ref_bits(_py, state_bits);
@@ -1830,11 +1823,10 @@ pub extern "C" fn molt_weakcontainer_refs(state_bits: u64) -> u64 {
             let capacity = state.read().live_len;
             let mut refs = Vec::new();
             if refs.try_reserve_exact(capacity).is_err() {
-                return raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "weak container reference snapshot allocation failed",
-                );
+                return {
+                    crate::record_memory_error_without_allocation(_py);
+                    crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                };
             }
             let table = state.read();
             if table.live_len > capacity {

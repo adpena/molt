@@ -512,6 +512,29 @@ unsafe extern "C" fn erroneous_type_allocate(
     }
 }
 
+static ALLOCATOR_FAILURE: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+static NULL_ALLOCATOR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn failing_type_allocate(
+    _type_: *mut PyTypeObject,
+    _count: Py_ssize_t,
+) -> *mut PyObject {
+    NULL_ALLOCATOR_CALLS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        errors::PyErr_SetRaisedException(refcount::Py_NewRef(
+            ALLOCATOR_FAILURE.load(Ordering::SeqCst),
+        ));
+    }
+    ptr::null_mut()
+}
+
+struct AllocatorFailureBorrow;
+impl Drop for AllocatorFailureBorrow {
+    fn drop(&mut self) {
+        ALLOCATOR_FAILURE.store(ptr::null_mut(), Ordering::SeqCst);
+    }
+}
+
 #[test]
 fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
@@ -645,19 +668,46 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
 
         metaclass.tp_alloc = Some(erroneous_type_allocate);
         let frees = TYPE_FREES.load(Ordering::SeqCst);
-        let failed = typeobj::PyType_FromMetaclass(
+        let failed = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
             &raw mut *metaclass,
             ptr::null_mut(),
             &raw mut base_spec,
             ptr::null_mut(),
-        );
-        assert!(failed.is_null());
-        assert_ne!(
-            errors::PyErr_ExceptionMatches((&raw mut PyExc_SystemError).cast()),
-            0
-        );
+        ));
+        assert!(failed.as_ptr().is_null());
+        // This malformed allocator returned a value AND selected a fresh error.
+        // CPython 3.12's cold MRO lookup asserts a clean error indicator; its
+        // release build selects AttributeError cold but SystemError when warm.
+        // This robustness control requires failure, an error and exact retirement,
+        // not a portable diagnostic for the malformed callback.
+        let malformed_error =
+            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!malformed_error.as_ptr().is_null());
         assert_eq!(TYPE_FREES.load(Ordering::SeqCst), frees + 1);
-        errors::PyErr_Clear();
+
+        // A legitimate allocator failure has an explicit NULL completion and
+        // must preserve the exact supplied exception without allocating/freeing
+        // a speculative type instance.
+        let selected = refcount::OwnedPyObject::from_owned(object::PyObject_CallNoArgs(
+            (&raw mut PyExc_ValueError).cast(),
+        ));
+        assert!(!selected.as_ptr().is_null());
+        ALLOCATOR_FAILURE.store(selected.as_ptr(), Ordering::SeqCst);
+        let _borrow = AllocatorFailureBorrow;
+        NULL_ALLOCATOR_CALLS.store(0, Ordering::SeqCst);
+        metaclass.tp_alloc = Some(failing_type_allocate);
+        let frees = TYPE_FREES.load(Ordering::SeqCst);
+        let failed = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
+            &raw mut *metaclass,
+            ptr::null_mut(),
+            &raw mut base_spec,
+            ptr::null_mut(),
+        ));
+        assert!(failed.as_ptr().is_null());
+        let actual = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(actual.as_ptr(), selected.as_ptr());
+        assert_eq!(NULL_ALLOCATOR_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(TYPE_FREES.load(Ordering::SeqCst), frees);
         assert_eq!(typeobj::molt_type_clear(base.as_ptr()), 0);
         assert!(!crate::exception_pending(&py));
     });
@@ -1387,15 +1437,9 @@ fn rejected_custom_type_allocation_revokes_custody_before_raw_free() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|_py| unsafe {
         type Allocate = unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject;
-        for (allocate, expected) in [
-            (
-                type_allocate_with_insufficient_extent as Allocate,
-                &raw mut PyExc_TypeError,
-            ),
-            (
-                type_allocate_with_insufficient_extent_and_error as Allocate,
-                &raw mut PyExc_SystemError,
-            ),
+        for allocate in [
+            type_allocate_with_insufficient_extent as Allocate,
+            type_allocate_with_insufficient_extent_and_error as Allocate,
         ] {
             RAW_TYPE_RELEASE_STATE.store(0, Ordering::SeqCst);
             let mut metaclass =
@@ -1412,35 +1456,26 @@ fn rejected_custom_type_allocation_revokes_custody_before_raw_free() {
                 flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
                 slots: ptr::null_mut(),
             };
-            let class = typeobj::PyType_FromMetaclass(
+            let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
                 &raw mut *metaclass,
                 ptr::null_mut(),
                 &raw mut spec,
                 ptr::null_mut(),
-            );
-            assert!(class.is_null());
+            ));
+            assert!(class.as_ptr().is_null());
             assert_eq!(
                 RAW_TYPE_RELEASE_STATE.load(Ordering::SeqCst),
                 1,
                 "raw free must see both allocation permissions revoked"
             );
-            assert_eq!(errors::PyErr_ExceptionMatches(expected.cast()), 1);
-            if expected == (&raw mut PyExc_SystemError) {
-                let raised =
-                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
-                let cause = refcount::OwnedPyObject::from_owned(errors::PyException_GetCause(
-                    raised.as_ptr(),
-                ));
-                assert!(!cause.as_ptr().is_null());
-                assert_eq!(
-                    errors::PyErr_GivenExceptionMatches(
-                        cause.as_ptr(),
-                        (&raw mut PyExc_LookupError).cast()
-                    ),
-                    1
-                );
-            }
-            errors::PyErr_Clear();
+            // The actual extent check selects TypeError in both cases; a raw
+            // tp_alloc result is not subject to generic callable validation.
+            assert_eq!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                1
+            );
+            let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!raised.as_ptr().is_null());
             assert_eq!(metaclass.ob_base.ob_base.ob_refcnt, meta_refs);
         }
     });

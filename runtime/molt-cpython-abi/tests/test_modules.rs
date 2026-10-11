@@ -605,6 +605,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_str: Some(support::fake_runtime::alloc_str),
     alloc_bytes: fake_alloc_bytes,
     numeric_identity_new: Some(support::fake_runtime::numeric_identity_new),
+    scalar_payload_borrowed: support::fake_runtime::scalar_payload_borrowed,
     float_payload: support::fake_runtime::float_payload,
     int_from_i64: fake_int_from_i64,
     int_from_u64: fake_int_from_u64,

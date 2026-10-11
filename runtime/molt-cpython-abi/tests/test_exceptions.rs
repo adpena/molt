@@ -17,6 +17,11 @@ thread_local! { static UNADMITTED_TEXT_ALLOCATIONS: std::cell::Cell<usize> = con
 fn init() -> support::AbiTestThreadStateTransaction {
     unsafe extern "C" fn text_without_class_authority(_: *const u8, _: usize) -> u64 {
         UNADMITTED_TEXT_ALLOCATIONS.with(|calls| calls.set(calls.get() + 1));
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetNone(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+            );
+        }
         0
     }
     unsafe extern "C" fn pending() -> std::ffi::c_int {
@@ -635,7 +640,7 @@ fn bad_internal_call_is_system_error() {
 }
 
 #[test]
-fn set_from_errno_reports_memoryerror_without_string_allocator() {
+fn set_from_errno_reports_refusal_without_string_allocator() {
     let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe {
@@ -647,7 +652,7 @@ fn set_from_errno_reports_memoryerror_without_string_allocator() {
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast::<PyObject>(),
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast::<PyObject>(),
             )
         },
         1
@@ -1168,12 +1173,12 @@ mod native_retirement {
                     if ingress == "setobject" {
                         // This binary deliberately has no text-class authority.
                         // All three note text attempts fail, so CPython's final
-                        // type-only note allocation leaves MemoryError visible
+                        // type-only note allocation leaves the provider's refusal visible
                         // while the input retires. The original constructor
                         // failure is restored only after that retirement.
                         assert_eq!(
                             (*input_error.as_ptr()).ob_type,
-                            &raw mut molt_cpython_abi::abi_types::PyExc_MemoryError
+                            &raw mut molt_cpython_abi::abi_types::PyExc_SystemError
                         );
                         assert_ne!(input_error.as_ptr(), selected.as_ptr());
                     } else {
@@ -1355,5 +1360,48 @@ mod native_retirement {
             drop(actual);
             assert_eq!(traceback.ob_refcnt, 1);
         }
+    }
+}
+
+#[test]
+fn installed_diagnostic_allocator_zero_without_error_is_a_contract_failure() {
+    use molt_cpython_abi::api::{errors, refcount};
+    thread_local! { static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+    unsafe extern "C" fn refuses_without_error(_: *const u8, _: usize) -> u64 {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
+        0
+    }
+    let mut hooks = support::stub_runtime_hooks();
+    hooks.alloc_str = Some(refuses_without_error);
+    let _abi_test = support::enter_runtime_class_abi_test(hooks);
+    unsafe {
+        errors::PyErr_Clear();
+        CALLS.with(|calls| calls.set(0));
+        errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"diagnostic".as_ptr());
+        assert_eq!(
+            errors::PyErr_Occurred(),
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+        );
+        assert_eq!(CALLS.with(std::cell::Cell::get), 1);
+        let mut selected_type = ptr::null_mut();
+        let mut selected_value = ptr::null_mut();
+        let mut selected_traceback = ptr::null_mut();
+        errors::PyErr_Fetch(
+            &mut selected_type,
+            &mut selected_value,
+            &mut selected_traceback,
+        );
+        let _type_owner = refcount::OwnedPyObject::from_owned(selected_type);
+        let _value_owner = refcount::OwnedPyObject::from_owned(selected_value);
+        let _traceback_owner = refcount::OwnedPyObject::from_owned(selected_traceback);
+        assert_eq!(
+            selected_type,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+        );
+        assert!(
+            selected_value.is_null(),
+            "malformed-producer refusal must not retry allocation"
+        );
+        assert!(selected_traceback.is_null());
     }
 }

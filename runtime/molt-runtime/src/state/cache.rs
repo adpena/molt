@@ -337,9 +337,6 @@ pub(crate) fn intern_static_name(_py: &PyToken<'_>, slot: &AtomicU64, name: &'st
     init_atomic_bits(_py, slot, || {
         let ptr = alloc_string(_py, name);
         if ptr.is_null() {
-            if !crate::exception_pending(_py) {
-                crate::raise_exception::<u64>(_py, "MemoryError", "static name allocation failed");
-            }
             0
         } else {
             MoltObject::from_ptr(ptr).bits()

@@ -100,7 +100,7 @@ impl CompatibilityError<'_> {
         };
         let ptr = crate::builtins::exceptions::alloc_exception(py, "NotImplementedError", &message);
         if ptr.is_null() {
-            return raise_exception(py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     }

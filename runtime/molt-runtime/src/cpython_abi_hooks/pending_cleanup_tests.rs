@@ -751,8 +751,13 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
         let original = exception_bits(py, "ValueError");
         let original_view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original) };
         assert!(!original_view.is_null());
-        unsafe { set_c_error(original_view) };
+        // This restoration test deliberately holds both domains. A real new
+        // allocation failure replaces either prior, so construct the two saved
+        // states independently and combine them through the restore authority.
         crate::record_memory_error_without_allocation(py);
+        let mut emergency = Some(take_raised(py));
+        unsafe { set_c_error(original_view) };
+        resolve_raised(py, &mut emergency);
         let denied = DenyRuntimeAllocations::enter();
         errors::with_preserved_error(|| {
             assert!(errors::take_current_error().is_none());
@@ -937,13 +942,14 @@ fn pending_callback_completion_preserves_emergency_and_publishes_other_operands(
             drop(denied);
             unsafe { refcount::Py_DECREF(published) };
         }
-        // The same classification applies to native status callbacks.
+        // Direct status slots forward their status; they do not apply the
+        // generic-call result/error consistency check exercised above.
         for succeed in [false, true] {
             call.succeed = succeed;
             let denied = DenyRuntimeAllocations::enter();
             assert_eq!(
                 unsafe { object::PyObject_SetAttr(&raw mut call.object, name, value) },
-                -1
+                if succeed { 0 } else { -1 }
             );
             unsafe {
                 assert_c_emergency_is_observable_and_not_consumed(py);
@@ -1288,6 +1294,36 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
             }
         }
 
+        fn release_acquisition<P: refcount::ReferenceRetirement>(
+            acquired: Result<memory::BufferLease<P>, molt_cpython_abi::ErrorIndicatorSet>,
+            receiver: *mut PyObject,
+            status: c_int,
+        ) {
+            match acquired {
+                Err(_) => assert_eq!(status, -1, "only a negative callback status rejects"),
+                Ok(lease) => {
+                    assert_eq!(status, 0);
+                    assert_eq!(lease.owner(), receiver);
+                    let observed = RETIREMENT_OBSERVATION.with(std::cell::Cell::get);
+                    assert_eq!(observed.drops, 0, "the live export still owns the receiver");
+                    assert_eq!(
+                        observed.releases, 0,
+                        "acquisition must not release an export"
+                    );
+                    unsafe {
+                        assert_eq!((*receiver).ob_refcnt, 1, "the export is the last owner");
+                        assert_eq!((*lease.descriptor()).len, 1);
+                        assert_eq!(*(*lease.descriptor()).buf.cast::<u8>(), 42);
+                    }
+                    drop(lease);
+                }
+            }
+        }
+
+        // This passes the raw callback directly to the lease authority. The
+        // zero-plus-error row proves explicit status forwarding, not valid
+        // callback behavior under CPython's debug-only GetBuffer assertion.
+        // Public clean acquisition and release-under-error are covered above.
         for runtime in [false, true] {
             for status in [-1, 0] {
                 RETIREMENT_OBSERVATION.with(|cell| cell.set(RetirementObservation::default()));
@@ -1300,50 +1336,39 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
                     byte: 42,
                 }))
                 .cast::<PyObject>();
-                let rejected = if runtime {
-                    unsafe {
+                if runtime {
+                    let acquired = unsafe {
                         crate::object::foreign::RuntimeBufferLease::acquire(
                             receiver,
                             0,
                             retirement_probe_failed_getbuffer,
                         )
-                    }
-                    .is_err()
+                    };
+                    release_acquisition(acquired, receiver, status);
                 } else {
-                    unsafe {
+                    let acquired = unsafe {
                         memory::MemoryViewLease::acquire(
                             receiver,
                             0,
                             retirement_probe_failed_getbuffer,
                         )
-                    }
-                    .is_err()
-                };
+                    };
+                    release_acquisition(acquired, receiver, status);
+                }
                 RETIREMENT_GET_RESULT.with(|cell| cell.set(None));
-                assert!(rejected);
                 let observed = RETIREMENT_OBSERVATION.with(std::cell::Cell::get);
-                assert_eq!(observed.drops, 1, "failed receiver pin is the last edge");
+                assert_eq!(observed.drops, 1, "receiver retires after its last owner");
                 assert_eq!(observed.releases, usize::from(status >= 0));
                 assert_eq!(crate::exception_pending(py), runtime);
                 let raised = unsafe {
                     refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException())
                 };
-                assert!(!raised.as_ptr().is_null());
+                assert_eq!(raised.as_ptr(), failure_view);
                 assert_eq!(observed.error, raised.as_ptr().addr());
-                if status < 0 {
-                    assert_eq!(raised.as_ptr(), failure_view);
-                    assert_eq!(observed.traceback, traceback.as_ptr().addr());
-                } else {
-                    assert_ne!(
-                        raised.as_ptr(),
-                        failure_view,
-                        "success with error is a protocol failure"
-                    );
-                    assert_eq!(
-                        unsafe { object::Py_TYPE(raised.as_ptr()) },
-                        &raw mut abi_types::PyExc_SystemError
-                    );
+                assert_eq!(observed.traceback, traceback.as_ptr().addr());
+                if status >= 0 {
                     assert_eq!(observed.release_error, observed.error);
+                    assert_eq!(observed.release_traceback, observed.traceback);
                 }
                 assert!(unsafe { errors::PyErr_Occurred().is_null() });
             }
@@ -1442,5 +1467,631 @@ fn cold_type_publication_preserves_prior_on_success_and_selects_real_failure() {
                 assert!(!crate::exception_pending(py));
             }
         }
+    });
+}
+
+thread_local! {
+    static OOM_PRIOR_RETIREMENT: std::cell::Cell<(usize, usize)> = const {
+        std::cell::Cell::new((0, 0))
+    };
+    static OOM_PRIOR_ROUNDTRIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OOM_SELECTED_INSTANCE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OOM_REENTRY_NAME: std::cell::Cell<*const std::ffi::c_char> = const {
+        std::cell::Cell::new(ptr::null())
+    };
+    static OOM_REENTRY_OBSERVATION: std::cell::Cell<(bool, bool, bool, usize)> = const {
+        std::cell::Cell::new((false, false, false, 0))
+    };
+}
+
+unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
+    // Emergency MemoryError has no allocatable instance under this denial.
+    // Observing its public class leaves it selected and is valid in tp_dealloc.
+    let selected = unsafe { errors::PyErr_Occurred() }.addr();
+    let reentry_name = OOM_REENTRY_NAME.with(std::cell::Cell::get);
+    let locks_available = reentry_name.is_null()
+        || crate::with_gil_entry_nopanic!(py, {
+            crate::object::builders::canonical_cache_locks_available_for_test(py)
+        });
+    // Materializing an emergency may itself touch these caches, so even the
+    // lawful Get/Set roundtrip waits until after the nonblocking observation.
+    if locks_available && OOM_PRIOR_ROUNDTRIP.with(std::cell::Cell::get) {
+        let error = unsafe { errors::PyErr_GetRaisedException() };
+        OOM_SELECTED_INSTANCE.with(|cell| cell.set(error.addr()));
+        if !error.is_null() {
+            unsafe { errors::PyErr_SetRaisedException(error) };
+        }
+    }
+    if !reentry_name.is_null() {
+        // The observation is nonblocking: old code holding either cache lock
+        // fails the outer assertion instead of hanging this destructor.
+        crate::with_gil_entry_nopanic!(py, {
+            let available = locks_available;
+            let (text, singleton) = if available {
+                let text = unsafe {
+                    refcount::OwnedPyObject::from_owned(
+                        molt_cpython_abi::api::strings::PyUnicode_FromString(reentry_name),
+                    )
+                };
+                let text_ok = !text.as_ptr().is_null();
+                drop(text);
+                let singleton = crate::object::builders::canonical_singleton_allocation_probe(py);
+                (text_ok, singleton)
+            } else {
+                (false, false)
+            };
+            OOM_REENTRY_OBSERVATION.with(|cell| {
+                cell.set((
+                    available,
+                    text,
+                    singleton,
+                    unsafe { errors::PyErr_Occurred() }.addr(),
+                ));
+            });
+        });
+    }
+    OOM_PRIOR_RETIREMENT.with(|cell| cell.set((cell.get().0 + 1, selected)));
+    unsafe { molt_cpython_abi::api::memory::PyObject_Free(object.cast()) };
+}
+
+struct RestoreOomObserver;
+
+impl Drop for RestoreOomObserver {
+    fn drop(&mut self) {
+        OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+        OOM_REENTRY_NAME.with(|cell| cell.set(ptr::null()));
+        // All declarations outlive this guard, including failed assertions.
+        unsafe { errors::PyErr_Clear() };
+    }
+}
+
+unsafe fn install_oom_prior(kind: *mut PyTypeObject, runtime: bool) -> *mut PyObject {
+    use molt_cpython_abi::api::{sequences, typeobj};
+    unsafe {
+        assert_eq!(
+            typeobj::PyType_Ready(&raw mut molt_cpython_abi::abi_types::PyTuple_Type),
+            0
+        );
+        assert_eq!(
+            typeobj::PyType_Ready(&raw mut molt_cpython_abi::abi_types::PyExc_ValueError),
+            0
+        );
+        let payload = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(kind, 0));
+        assert!(!payload.as_ptr().is_null());
+        // Keep the C-prior path entirely physical: a managed tuple's final
+        // FOREIGN element retirement would itself complete error transport and
+        // hide a missing completion at the displaced native indicator boundary.
+        let args = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+            &raw mut molt_cpython_abi::abi_types::PyTuple_Type,
+            1,
+        ));
+        assert!(!args.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .managed_handle_for_pyobj(args.as_ptr())
+                .is_none()
+        );
+        assert_eq!(
+            sequences::PyTuple_SetItem(args.as_ptr(), 0, payload.into_ptr()),
+            0
+        );
+        let prior = refcount::OwnedPyObject::from_owned(errors::molt_native_exception_new(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            args.as_ptr(),
+            ptr::null_mut(),
+        ));
+        assert!(!prior.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .managed_handle_for_pyobj(prior.as_ptr())
+                .is_none()
+        );
+        drop(args);
+        let address = prior.as_ptr();
+        errors::PyErr_SetRaisedException(prior.into_ptr());
+        if runtime {
+            assert!(transfer_pending_cpython_exception());
+        }
+        assert_eq!(
+            errors::PyErr_Occurred(),
+            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+        );
+        OOM_PRIOR_RETIREMENT.with(|cell| cell.set((0, 0)));
+        address
+    }
+}
+
+fn assert_oom_prior_retired(prior: usize) {
+    let expected = if prior == 0 {
+        (0, 0)
+    } else {
+        (
+            1,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).addr(),
+        )
+    };
+    assert_eq!(OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get), expected);
+}
+
+#[test]
+fn numeric_allocation_failure_uses_the_declared_result_and_keeps_origins_unpublished() {
+    use super::native_test_fixture::NativeType;
+    use molt_cpython_abi::api::numbers;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"AllocationPriorPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let _reset = RestoreOomObserver;
+            // Clean, C-prior and runtime-prior observations share real sources.
+            // The prior exception is the only remaining payload owner at OOM.
+            for prior in 0..3 {
+                for kind in 0..4 {
+                    let source = refcount::OwnedPyObject::from_owned(match kind {
+                        0 => numbers::PyLong_FromLong(1000),
+                        1 => numbers::PyLong_FromUnsignedLongLong(u64::MAX),
+                        2 => numbers::PyFloat_FromDouble(0.0),
+                        _ => numbers::PyComplex_FromDoubles(1.25, -2.5),
+                    });
+                    assert!(!source.as_ptr().is_null());
+                    assert!(
+                        GLOBAL_BRIDGE
+                            .managed_handle_for_pyobj(source.as_ptr())
+                            .is_none()
+                    );
+                    OOM_PRIOR_RETIREMENT.with(|cell| cell.set((0, 0)));
+                    if prior != 0 {
+                        install_oom_prior(&raw mut *payload_type, prior == 2);
+                    }
+                    let denied = DenyRuntimeAllocations::enter();
+                    let acquired =
+                        GLOBAL_BRIDGE
+                            .molt_value_for_pyobj(source.as_ptr())
+                            .map(|bits| {
+                                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                    py.core_token(),
+                                    bits,
+                                )
+                            });
+                    assert!(acquired.is_none(), "prior={prior}, source={kind}");
+                    assert!(
+                        GLOBAL_BRIDGE
+                            .managed_handle_for_pyobj(source.as_ptr())
+                            .is_none()
+                    );
+                    assert_eq!((*source.as_ptr()).ob_refcnt, 1);
+                    assert_c_emergency_is_observable_and_not_consumed(py);
+                    assert_oom_prior_retired(prior);
+                    errors::PyErr_Clear();
+                    drop(denied);
+                    match kind {
+                        0 => assert_eq!(numbers::PyLong_AsLong(source.as_ptr()), 1000),
+                        1 => assert_eq!(
+                            numbers::PyLong_AsUnsignedLongLong(source.as_ptr()),
+                            u64::MAX
+                        ),
+                        2 => assert_eq!(numbers::PyFloat_AsDouble(source.as_ptr()), 0.0),
+                        _ => {
+                            assert_eq!(numbers::PyComplex_RealAsDouble(source.as_ptr()), 1.25);
+                            assert_eq!(numbers::PyComplex_ImagAsDouble(source.as_ptr()), -2.5);
+                        }
+                    }
+                    assert!(errors::PyErr_Occurred().is_null());
+                }
+                for kind in 0..9 {
+                    OOM_PRIOR_RETIREMENT.with(|cell| cell.set((0, 0)));
+                    let prior_address = if prior == 0 {
+                        ptr::null_mut()
+                    } else {
+                        install_oom_prior(&raw mut *payload_type, prior == 2)
+                    };
+                    let denied = DenyRuntimeAllocations::enter();
+                    if kind == 0 {
+                        // Inline zero succeeds even with either prior selected.
+                        assert_eq!(hook_int_from_i64(0), MoltObject::from_int(0).bits());
+                        let selected =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert_eq!(selected.as_ptr(), prior_address);
+                        assert_eq!(OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get), (0, 0));
+                        drop(selected);
+                    } else if kind <= 5 {
+                        let bytes = [0xffu8; 17];
+                        let digits = [1u8; 129];
+                        let result = match kind {
+                            1 => hook_int_from_i64(i64::MAX),
+                            2 => hook_int_from_u64(u64::MAX),
+                            3 => hook_int_from_bytes(bytes.as_ptr(), bytes.len(), 1, 0),
+                            4 => hook_int_from_digits(digits.as_ptr(), digits.len(), 2, 0),
+                            _ => hook_int_from_f64_trunc(1e100),
+                        };
+                        let _unexpected = (result != 0).then(|| {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                py.core_token(),
+                                result,
+                            )
+                        });
+                        assert_eq!(result, 0, "integer producer {kind}, prior={prior}");
+                        assert_c_emergency_is_observable_and_not_consumed(py);
+                        assert_oom_prior_retired(prior);
+                    } else {
+                        let result = match kind {
+                            6 => hook_numeric_identity_new(MoltObject::from_int(7).bits()),
+                            7 => hook_numeric_identity_new(MoltObject::from_float(0.0).bits()),
+                            _ => hook_complex_from_doubles(1.25, -2.5),
+                        };
+                        let decoded = result.decode();
+                        let _unexpected = match &decoded {
+                            DecodedHandleResult::Ok(bits) => {
+                                Some(molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                    py.core_token(),
+                                    *bits,
+                                ))
+                            }
+                            _ => None,
+                        };
+                        assert!(matches!(decoded, DecodedHandleResult::Error));
+                        assert_c_emergency_is_observable_and_not_consumed(py);
+                        assert_oom_prior_retired(prior);
+                    }
+                    errors::PyErr_Clear();
+                    drop(denied);
+                    assert!(!crate::exception_pending(py));
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn allocation_failure_completes_displaced_c_owner_error_transport() {
+    use super::native_test_fixture::NativeType;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"AllocationTransportPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let _reset = RestoreOomObserver;
+            for runtime in [false, true] {
+                for tuple in [false, true] {
+                    install_oom_prior(&raw mut *payload_type, runtime);
+                    OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
+                    // Real extent failure, with memory available for the lawful
+                    // old-owner Get/Set of the selected MemoryError.
+                    let result = if tuple {
+                        let result =
+                            crate::object::builders::alloc_tuple_uninitialized(py, usize::MAX);
+                        if result.is_null() {
+                            0
+                        } else {
+                            MoltObject::from_ptr(result).bits()
+                        }
+                    } else {
+                        hook_alloc_bytearray(ptr::null(), usize::MAX)
+                    };
+                    let _unexpected = (result != 0).then(|| {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            result,
+                        )
+                    });
+                    assert_eq!(result, 0);
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+                    assert_oom_prior_retired(1);
+                    assert!(
+                        crate::exception_pending(py),
+                        "native retirement must complete its error transport"
+                    );
+                    assert!(errors::take_current_error().is_none());
+                    assert_eq!(
+                        errors::PyErr_Occurred(),
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+                    );
+                    let selected =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!selected.as_ptr().is_null());
+                    assert_eq!(
+                        selected.as_ptr().addr(),
+                        OOM_SELECTED_INSTANCE.with(std::cell::Cell::get)
+                    );
+                    drop(selected);
+                    assert!(!crate::exception_pending(py));
+                }
+            }
+        }
+    });
+}
+
+/// Deny one real resource reservation, then allow the displaced owner's legal
+/// callback to allocate. The normal allocator, not this tracker, selects OOM.
+struct DenyRuntimeAllocation {
+    attempts: std::rc::Rc<std::cell::Cell<usize>>,
+    denied_attempt: usize,
+}
+
+impl crate::resource::ResourceTracker for DenyRuntimeAllocation {
+    fn on_allocate(&mut self, _size: usize) -> Result<(), crate::resource::ResourceError> {
+        let attempts = self.attempts.get() + 1;
+        self.attempts.set(attempts);
+        if attempts == self.denied_attempt {
+            Err(crate::resource::ResourceError::Allocation {
+                count: attempts,
+                limit: attempts - 1,
+            })
+        } else {
+            Ok(())
+        }
+    }
+    fn on_free(&mut self, _size: usize) {}
+    fn on_grow(&mut self, _size: usize) -> Result<(), crate::resource::ResourceError> {
+        Ok(())
+    }
+    fn on_shrink(&mut self, _size: usize) {}
+    fn check_time(&mut self) -> Result<(), crate::resource::ResourceError> {
+        Ok(())
+    }
+    fn check_recursion_depth(
+        &mut self,
+        _depth: usize,
+    ) -> Result<(), crate::resource::ResourceError> {
+        Ok(())
+    }
+    fn check_operation_size(
+        &mut self,
+        _operation: &crate::resource::OperationEstimate,
+    ) -> Result<(), crate::resource::ResourceError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn string_allocation_status_preserves_success_and_propagates_failure() {
+    use super::native_test_fixture::NativeType;
+    use molt_cpython_abi::api::strings;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"StringAllocationPriorPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let _reset = RestoreOomObserver;
+            for runtime in [false, true] {
+                for constructor in 0..4 {
+                    for failed in [false, true] {
+                        let prior = install_oom_prior(&raw mut *payload_type, runtime);
+                        OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(failed));
+                        OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                        let _restore_tracker = failed.then(|| {
+                            set_tracker(Box::new(DenyRuntimeAllocation {
+                                attempts: std::rc::Rc::new(std::cell::Cell::new(0)),
+                                denied_attempt: 1,
+                            }));
+                            DenyRuntimeAllocations
+                        });
+                        let text = c"allocation failure payload";
+                        let result = refcount::OwnedPyObject::from_owned(match constructor {
+                            0 => strings::PyUnicode_FromString(text.as_ptr()),
+                            1 => strings::PyBytes_FromString(text.as_ptr()),
+                            2 => strings::PyBytes_FromStringAndSize(
+                                text.as_ptr(),
+                                text.to_bytes().len() as isize,
+                            ),
+                            _ => strings::PyByteArray_FromStringAndSize(
+                                text.as_ptr(),
+                                text.to_bytes().len() as isize,
+                            ),
+                        });
+                        OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+                        assert_eq!(result.as_ptr().is_null(), failed);
+                        if failed {
+                            assert_oom_prior_retired(1);
+                        } else {
+                            assert_eq!(OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get), (0, 0));
+                        }
+                        let selected =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!selected.as_ptr().is_null());
+                        let expected = if failed {
+                            OOM_SELECTED_INSTANCE.with(std::cell::Cell::get)
+                        } else {
+                            prior.addr()
+                        };
+                        assert_eq!(selected.as_ptr().addr(), expected);
+                        drop(selected);
+                        assert!(!crate::exception_pending(py));
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn container_backing_failure_selects_memory_error_before_partial_cleanup() {
+    use super::native_test_fixture::NativeType;
+    use crate::object::builders;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let mut payload_type = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"BackingAllocationPriorPayload",
+            );
+            payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+            assert_eq!(payload_type.ready(), 0);
+            let _reset = RestoreOomObserver;
+            let bytearray_class = crate::builtin_classes(py).bytearray;
+            for runtime in [false, true] {
+                for constructor in 0..6 {
+                    install_oom_prior(&raw mut *payload_type, runtime);
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
+                    OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                    set_tracker(Box::new(DenyRuntimeAllocation {
+                        attempts: std::rc::Rc::new(std::cell::Cell::new(0)),
+                        denied_attempt: 2,
+                    }));
+                    let _restore_tracker = DenyRuntimeAllocations;
+                    let elements = [MoltObject::from_int(7).bits()];
+                    let result = match constructor {
+                        0 => builders::alloc_list_with_capacity(py, &elements, 8),
+                        1 => builders::alloc_list_filled(py, 8, MoltObject::from_int(7)),
+                        2 => builders::alloc_list_with_capacity_owned(py, &elements, 8),
+                        3 => builders::alloc_bytearray_with_capacity(py, b"abc", 8),
+                        4 => builders::alloc_bytearray_with_len(py, 8),
+                        _ => builders::alloc_native_bytearray(py, bytearray_class),
+                    };
+                    let _unexpected = (!result.is_null()).then(|| {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            MoltObject::from_ptr(result).bits(),
+                        )
+                    });
+                    OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+                    assert!(
+                        result.is_null(),
+                        "backing failure constructor {constructor}"
+                    );
+                    assert_oom_prior_retired(1);
+                    let selected =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!selected.as_ptr().is_null());
+                    assert_eq!(
+                        selected.as_ptr().addr(),
+                        OOM_SELECTED_INSTANCE.with(std::cell::Cell::get)
+                    );
+                    drop(selected);
+                    assert!(!crate::exception_pending(py));
+                }
+            }
+        }
+    });
+}
+
+#[test]
+#[ignore = "owns a fresh runtime lifecycle; run in the isolated runtime gate"]
+fn canonical_cache_allocation_failure_reentry_and_ascii_no_retry() {
+    use super::native_test_fixture::NativeType;
+    use crate::object::builders;
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        assert!(register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let mut payload_type = NativeType::subtype(
+                    &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                    c"CanonicalAllocationPriorPayload",
+                );
+                payload_type.tp_dealloc = Some(oom_prior_payload_drop);
+                assert_eq!(payload_type.ready(), 0);
+                let _reset = RestoreOomObserver;
+                for runtime in [false, true] {
+                    for fixed_slot in [false, true] {
+                        let outer_name = std::ffi::CString::new(format!(
+                            "molt_oom_outer_identifier_{runtime}_{fixed_slot}"
+                        ))
+                        .unwrap();
+                        let inner_name = std::ffi::CString::new(format!(
+                            "molt_oom_retirement_identifier_{runtime}_{fixed_slot}"
+                        ))
+                        .unwrap();
+                        let _iteration_observer = RestoreOomObserver;
+                        install_oom_prior(&raw mut *payload_type, runtime);
+                        OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
+                        OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
+                        OOM_REENTRY_NAME.with(|cell| cell.set(inner_name.as_ptr()));
+                        OOM_REENTRY_OBSERVATION.with(|cell| cell.set((false, false, false, 0)));
+                        let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+                        set_tracker(Box::new(DenyRuntimeAllocation {
+                            attempts: attempts.clone(),
+                            denied_attempt: 1,
+                        }));
+                        let _restore_tracker = DenyRuntimeAllocations;
+                        if fixed_slot {
+                            assert!(!builders::canonical_singleton_allocation_probe(py));
+                        } else {
+                            let value = refcount::OwnedPyObject::from_owned(
+                                molt_cpython_abi::api::strings::PyUnicode_FromString(
+                                    outer_name.as_ptr(),
+                                ),
+                            );
+                            assert!(value.as_ptr().is_null());
+                        }
+                        OOM_REENTRY_NAME.with(|cell| cell.set(ptr::null()));
+                        OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
+                        assert_oom_prior_retired(1);
+                        assert_eq!(
+                            OOM_REENTRY_OBSERVATION.with(std::cell::Cell::get),
+                            (
+                                true,
+                                true,
+                                true,
+                                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).addr()
+                            ),
+                            "both canonical cache locks must be released across error-owner retirement",
+                        );
+                        assert!(attempts.get() > 1, "reentry must reach the real allocator");
+                        let selected =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!selected.as_ptr().is_null());
+                        assert_eq!(
+                            selected.as_ptr().addr(),
+                            OOM_SELECTED_INSTANCE.with(std::cell::Cell::get)
+                        );
+                        drop(selected);
+                        assert!(!crate::exception_pending(py));
+                    }
+                }
+
+                // The lifecycle fixture guarantees this is a genuinely cold
+                // canonical slot, independent of earlier test execution.
+                let byte = builders::uncached_ascii_character_for_test(py)
+                    .expect("fresh runtime must expose a cold ASCII slot for this regression");
+                for interned in [false, true] {
+                    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+                    set_tracker(Box::new(DenyRuntimeAllocation {
+                        attempts: attempts.clone(),
+                        denied_attempt: 1,
+                    }));
+                    let _restore_tracker = DenyRuntimeAllocations;
+                    let value = if interned {
+                        builders::alloc_interned_string(py, &[byte])
+                    } else {
+                        builders::alloc_string(py, &[byte])
+                    };
+                    let _unexpected = (!value.is_null()).then(|| {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            MoltObject::from_ptr(value).bits(),
+                        )
+                    });
+                    assert!(
+                        value.is_null(),
+                        "eligible ASCII failure must not fall through"
+                    );
+                    assert_eq!(
+                        attempts.get(),
+                        1,
+                        "each consumer must try allocation only once"
+                    );
+                    assert_eq!(builders::uncached_ascii_character_for_test(py), Some(byte));
+                    assert_emergency_pending(py);
+                    errors::PyErr_Clear();
+                }
+            }
+        });
     });
 }

@@ -1541,7 +1541,7 @@ fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
     let tuple_fields = fields.map(|value| int_bits_from_i128(_py, value));
     let tuple_ptr = alloc_tuple(_py, &tuple_fields);
     if tuple_ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -2193,7 +2193,7 @@ pub extern "C" fn molt_os_fsencode(path_bits: u64) -> u64 {
             dec_ref_bits(_py, fspath_bits);
             let bytes_ptr = alloc_bytes(_py, encoded.as_slice());
             if bytes_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             MoltObject::from_ptr(bytes_ptr).bits()
         }
@@ -2205,7 +2205,7 @@ pub extern "C" fn molt_sys_getfilesystemencodeerrors() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_string(_py, filesystem_encode_errors().as_bytes());
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -2746,7 +2746,10 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
         }
         let mut buf = Vec::new();
         if buf.try_reserve_exact(len).is_err() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return {
+                crate::record_memory_error_without_allocation(_py);
+                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+            };
         }
         buf.resize(len, 0);
         if let Err(err) = fill_os_random(&mut buf) {
@@ -2755,7 +2758,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
         }
         let ptr = alloc_bytes(_py, &buf);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })

@@ -33,7 +33,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
         );
         let ptr = alloc_string(_py, width.as_bytes());
         if ptr.is_null() {
-            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+            MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
@@ -49,7 +49,7 @@ pub extern "C" fn __molt_text_unidata_version() -> u64 {
         .expect("unsupported target Python Unicode version");
         let ptr = alloc_string(_py, version.as_bytes());
         if ptr.is_null() {
-            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+            MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
         }

@@ -123,9 +123,6 @@ pub(crate) unsafe fn frame_locals_proxy_detach(ptr: *mut u8, mut detach: impl Fn
 fn empty_dict(py: &PyToken<'_>) -> u64 {
     let ptr = alloc_dict_with_pairs(py, &[]);
     if ptr.is_null() {
-        if !exception_pending(py) {
-            raise_exception::<u64>(py, "MemoryError", "cannot allocate frame locals");
-        }
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()

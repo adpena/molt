@@ -644,9 +644,6 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
             obj_from_bits(fill_value),
         );
         if ptr.is_null() {
-            if !exception_pending(_py) {
-                crate::record_memory_error_without_allocation(_py);
-            }
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()

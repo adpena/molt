@@ -80,7 +80,7 @@ pub(crate) unsafe fn promote_list_int_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
         let Some(vec_ptr) =
             crate::object::backing::tracked_vec_box_with_capacity::<u64>(int_slice.len())
         else {
-            let _ = raise_exception::<u64>(_py, "MemoryError", "list allocation failed");
+            crate::record_memory_error_without_allocation(_py);
             return;
         };
         let boxed_vec = &mut *vec_ptr;
@@ -117,7 +117,7 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
         let Some(vec_ptr) =
             crate::object::backing::tracked_vec_box_with_capacity::<u64>(bool_slice.len())
         else {
-            let _ = raise_exception::<u64>(_py, "MemoryError", "list allocation failed");
+            crate::record_memory_error_without_allocation(_py);
             return;
         };
         let boxed_vec = &mut *vec_ptr;
@@ -179,11 +179,10 @@ pub(crate) fn molt_list_append_with_projection(
                         // not a heap reference).
                         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
                         if !storage.push(int_val) {
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "list allocation failed",
-                            );
+                            return {
+                                crate::record_memory_error_without_allocation(_py);
+                                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                            };
                         }
                         return true;
                     }
@@ -196,11 +195,10 @@ pub(crate) fn molt_list_append_with_projection(
                         // inline NaN-boxed values, not heap references).
                         let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
                         if !storage.push(bool_val as u8) {
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "list allocation failed",
-                            );
+                            return {
+                                crate::record_memory_error_without_allocation(_py);
+                                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                            };
                         }
                         return true;
                     }
@@ -615,7 +613,10 @@ fn sort_storage(
             if items.try_reserve_exact(len).is_err()
                 || ordered_values.try_reserve_exact(len).is_err()
             {
-                return raise_exception::<_>(_py, "MemoryError", "list sort allocation failed");
+                return {
+                    crate::record_memory_error_without_allocation(_py);
+                    crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+                };
             }
             let Some(sort_txn) = crate::object::list_mutation::ListSortTxn::begin(_py, list_ptr)
             else {
@@ -674,7 +675,7 @@ fn sort_storage(
             if matches!(sorted, Err(timsort::TimsortError::Memory)) {
                 // CPython selects merge-allocation failure before retiring
                 // keys or callback-added values.
-                let _ = raise_exception::<u64>(_py, "MemoryError", "list sort allocation failed");
+                crate::record_memory_error_without_allocation(_py);
             }
             if use_key {
                 // In their sorted order, before the result is reversed back.
@@ -744,7 +745,7 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
             };
             let ptr = alloc_list(_py, &combined);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             MoltObject::from_ptr(ptr).bits()
         }

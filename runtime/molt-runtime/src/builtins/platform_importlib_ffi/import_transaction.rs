@@ -39,7 +39,7 @@ pub(super) fn importlib_find_in_path_payload(
             Some(bits) => bits,
             None => {
                 dec_ref_bits(_py, origin_bits);
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
         },
         None => MoltObject::none().bits(),
@@ -599,7 +599,7 @@ pub extern "C" fn molt_importlib_export_attrs(
             dec_ref_bits(_py, module_bits);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })

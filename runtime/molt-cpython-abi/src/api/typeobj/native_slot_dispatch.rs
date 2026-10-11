@@ -428,6 +428,15 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
             crate::api::refcount::Py_DECREF(method.into_ptr());
             return -1;
         }
+        if minor >= 14 && !using_len && method.as_ptr() == &raw mut Py_None {
+            drop(method);
+            let name = super::object_type_name_with_precision(receiver, 200);
+            errors::set_python_error_bytes(
+                (&raw mut PyExc_TypeError).cast(),
+                format!("'{name}' cannot be interpreted as a boolean").as_bytes(),
+            );
+            return -1;
+        }
         let method = method.into_ptr();
         let result = object::PyObject_CallNoArgs(method);
         // 3.12/3.13 slot_nb_bool retains the callable through value validation.
@@ -442,9 +451,10 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
                 if using_len || crate::bridge::semantic_type(result) == &raw mut PyBool_Type {
                     object::PyObject_IsTrue(result)
                 } else {
-                    errors::PyErr_SetString(
+                    let name = super::object_type_name_with_precision(result, usize::MAX);
+                    errors::set_python_error_bytes(
                         (&raw mut PyExc_TypeError).cast(),
-                        c"__bool__ should return bool".as_ptr(),
+                        format!("__bool__ should return bool, returned {name}").as_bytes(),
                     );
                     -1
                 };

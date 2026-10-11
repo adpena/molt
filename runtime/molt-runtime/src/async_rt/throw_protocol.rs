@@ -354,13 +354,6 @@ pub(crate) unsafe fn raise_body_exception(
     let converted = alloc_exception(py, "RuntimeError", message);
     if converted.is_null() {
         dec_ref_bits(py, exception);
-        if !exception_pending(py) {
-            return raise_exception::<_>(
-                py,
-                "MemoryError",
-                "exception conversion allocation failed",
-            );
-        }
         return MoltObject::none().bits();
     }
     let converted = MoltObject::from_ptr(converted).bits();

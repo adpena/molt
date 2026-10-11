@@ -55,7 +55,7 @@ pub extern "C" fn molt_tempfile_gettempdirb() -> u64 {
         let s = dir.to_string_lossy();
         let ptr = alloc_bytes(_py, s.as_bytes());
         if ptr.is_null() {
-            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+            MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
@@ -158,7 +158,7 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_
                 let elems = [MoltObject::from_int(fd).bits(), str_bits(_py, &path)];
                 let ptr = alloc_tuple(_py, &elems);
                 if ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
@@ -257,7 +257,7 @@ pub extern "C" fn molt_tempfile_named(
                 ];
                 let ptr = alloc_tuple(_py, &elems);
                 if ptr.is_null() {
-                    return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }

@@ -4512,6 +4512,7 @@ fn failed_cold_publication_retires_consumed_roots_after_selecting_the_failure() 
 mod decimal_output_limits {
     use super::*;
     use crate::builtins::exceptions::ExceptionValue;
+    use molt_cpython_abi::hooks::DecodedHandleResult;
     use num_bigint::{BigInt, BigUint, Sign};
     use num_traits::{ToPrimitive, Zero};
 
@@ -4911,6 +4912,14 @@ mod decimal_output_limits {
     }
 
     static MANAGED_SCALAR_REPRS: AtomicUsize = AtomicUsize::new(0);
+    static MANAGED_SCALAR_CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn managed_scalar_conversion_override(_value: u64) -> u64 {
+        MANAGED_SCALAR_CONVERSIONS.fetch_add(1, Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<u64>(py, "AssertionError", "repr called a conversion override")
+        })
+    }
 
     extern "C" fn managed_scalar_repr_override(_value: u64) -> u64 {
         MANAGED_SCALAR_REPRS.fetch_add(1, Ordering::SeqCst);
@@ -4932,22 +4941,28 @@ mod decimal_output_limits {
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
             let classes = crate::builtin_classes(py);
-            for (base, declaring, arguments, expected) in [
+            for (base, declaring, kind, field_kind, arguments, expected) in [
                 (
                     classes.int,
                     &raw mut PyLong_Type,
+                    MoltTypeTag::Int,
+                    Some(crate::object::class_layout::ScalarValueKind::Int),
                     vec![crate::MoltObject::from_int(7).bits()],
                     b"7".as_slice(),
                 ),
                 (
                     classes.float,
                     &raw mut PyFloat_Type,
+                    MoltTypeTag::Float,
+                    Some(crate::object::class_layout::ScalarValueKind::Float),
                     vec![crate::MoltObject::from_float(1.25).bits()],
                     b"1.25".as_slice(),
                 ),
                 (
                     classes.complex,
                     &raw mut PyComplex_Type,
+                    MoltTypeTag::Complex,
+                    None,
                     vec![
                         crate::MoltObject::from_float(1.25).bits(),
                         crate::MoltObject::from_float(-2.5).bits(),
@@ -4958,30 +4973,96 @@ mod decimal_output_limits {
                 let (_class, instance) = percent_managed_protocol(
                     py,
                     base,
-                    &[(b"__repr__", managed_scalar_repr_override)],
+                    &[
+                        (b"__repr__", managed_scalar_repr_override),
+                        (b"__int__", managed_scalar_conversion_override),
+                        (b"__float__", managed_scalar_conversion_override),
+                        (b"__complex__", managed_scalar_conversion_override),
+                    ],
                     &arguments,
                 );
+                let instance_bits = instance.bits();
                 let view = OwnedPyObject::from_owned(
-                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance.bits()),
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance_bits),
                 );
                 assert!(!view.as_ptr().is_null());
+                // The original runtime owner may be released: the admitted C
+                // reference must retain the instance and its borrowed payload.
+                drop(instance);
                 MANAGED_SCALAR_REPRS.store(0, Ordering::SeqCst);
-                assert_eq!(
-                    take_raw(typeobj::PyObject_Repr(view.as_ptr())),
-                    b"managed-repr"
+                MANAGED_SCALAR_CONVERSIONS.store(0, Ordering::SeqCst);
+                let receiver_refs = (*view.as_ptr()).ob_refcnt;
+                let public_result =
+                    OwnedPyObject::from_owned(typeobj::PyObject_Repr(view.as_ptr()));
+                assert!(
+                    !public_result.as_ptr().is_null(),
+                    "{kind:?}: public repr failed"
                 );
+                assert_eq!(borrowed_raw(public_result.as_ptr()), b"managed-repr");
                 assert_eq!(MANAGED_SCALAR_REPRS.load(Ordering::SeqCst), 1);
                 let repr = (*declaring).tp_repr.expect("declaring numeric repr slot");
-                assert_eq!(take_raw(repr(view.as_ptr())), expected);
+                let base_result = OwnedPyObject::from_owned(repr(view.as_ptr()));
+                assert!(
+                    !base_result.as_ptr().is_null(),
+                    "{kind:?}: declaring base repr failed"
+                );
+                assert_eq!(borrowed_raw(base_result.as_ptr()), expected);
                 assert_eq!(MANAGED_SCALAR_REPRS.load(Ordering::SeqCst), 1);
+                assert_eq!(MANAGED_SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
+                assert_eq!((*view.as_ptr()).ob_refcnt, receiver_refs);
                 assert_eq!(
                     GLOBAL_BRIDGE
                         .molt_handle_for_pyobj(view.as_ptr())
                         .unwrap()
                         .bits(),
-                    instance.bits()
+                    instance_bits
                 );
                 assert!(errors::PyErr_Occurred().is_null());
+
+                // Complex subclasses retain native scalar storage. Int/Float
+                // subclasses use a sealed field even though their C view is generic.
+                let Some(field_kind) = field_kind else {
+                    assert!(matches!(
+                        super::super::hook_scalar_payload_borrowed(instance_bits, kind).decode(),
+                        DecodedHandleResult::Missing
+                    ));
+                    continue;
+                };
+                let wrong_kind = if matches!(kind, MoltTypeTag::Int) {
+                    MoltTypeTag::Float
+                } else {
+                    MoltTypeTag::Int
+                };
+                assert!(matches!(
+                    super::super::hook_scalar_payload_borrowed(instance_bits, wrong_kind).decode(),
+                    DecodedHandleResult::Missing
+                ));
+                // The typed row alone must not let malformed payloads render
+                // None or dispatch arbitrary representation/conversion methods.
+                let class_ptr = crate::obj_from_bits(_class.bits()).as_ptr().unwrap();
+                let offset =
+                    crate::object::class_layout::scalar_value_offset(py, class_ptr, field_kind)
+                        .unwrap();
+                crate::object::accessors::object_field_set_ptr_raw(
+                    py,
+                    crate::obj_from_bits(instance_bits).as_ptr().unwrap(),
+                    offset,
+                    crate::MoltObject::none().bits(),
+                )
+                .unwrap();
+                let malformed = OwnedPyObject::from_owned(repr(view.as_ptr()));
+                assert!(
+                    malformed.as_ptr().is_null(),
+                    "{kind:?}: malformed scalar storage admitted"
+                );
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_SystemError).cast()),
+                    1
+                );
+                let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!selected.as_ptr().is_null());
+                assert_eq!(MANAGED_SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
+                assert_eq!(MANAGED_SCALAR_REPRS.load(Ordering::SeqCst), 1);
             }
         });
     }

@@ -127,7 +127,7 @@ fn runpy_optional_attr(
 fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, u64> {
     let util_name_ptr = alloc_string(_py, b"importlib.util");
     if util_name_ptr.is_null() {
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let util_name_bits = MoltObject::from_ptr(util_name_ptr).bits();
     let util_bits = molt_module_import_inner(util_name_bits);
@@ -158,7 +158,7 @@ fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, 
     let name_ptr = alloc_string(_py, module_name.as_bytes());
     if name_ptr.is_null() {
         dec_ref_bits(_py, find_spec_bits);
-        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let spec_bits = unsafe { call_callable1(_py, find_spec_bits, name_bits) };
@@ -343,7 +343,7 @@ unsafe fn runpy_namespace_from_module(_py: &PyToken<'_>, module_bits: u64) -> Re
         let source_dict_ptr = module_dict_ptr(_py, module_bits)?;
         let out_ptr = alloc_dict_with_pairs(_py, &[]);
         if out_ptr.is_null() {
-            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         copy_dict_entries(_py, source_dict_ptr, out_ptr);
         if exception_pending(_py) {

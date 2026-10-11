@@ -115,7 +115,15 @@ All sizes below are **payload only** (after the 24-byte `MoltHeader`). The total
 
 - **O1.10 — Small dict optimization.** Dicts with 0-4 entries could use a flat `[(key, value); N]` array instead of the hash table. Linear scan of 4 entries is faster than hash table lookup due to cache effects.
 
-- **O1.11 — String deduplication for short strings.** Strings <= 16 bytes could be interned automatically. The existing `sys.intern()` path (`runtime/molt-runtime/src/builtins/sys_ext.rs`, line 34) uses a global `Mutex<HashMap<String, u64>>`. This should be extended to automatic interning for attribute names and short literals.
+- **O1.11 — String interning lifetime and retention.** `CanonicalObjectCache`
+  in `runtime/molt-runtime/src/object/builders.rs` owns canonical strings;
+  `sys.intern()` delegates to it. `alloc_string` already interns eligible dynamic
+  ASCII identifiers, retaining them until runtime teardown and storing a separate
+  lookup key. Expanding automatic interning is not an accepted optimization.
+  [V1-20](../../../agent/V1_HANDOFF_FINDINGS.md) owns the unresolved lifetime and
+  memory-cost policy: qualify bounded retention, identity-sensitive consumers,
+  lookup cost and concurrency together before changing it. Fixed singleton
+  publication and dynamic retention have different acceptance obligations.
 
 ---
 
@@ -293,9 +301,13 @@ For a simple function call `f(x)`, the argument `x` gets: inc_ref (push to calla
 
   **Constraint:** Limits total heap to 4 GB. Acceptable for the vast majority of programs. Provide a fallback to 64-bit pointers via a feature flag.
 
-- **O4.3 — String interning with FxHash.** The current interning in `sys_ext.rs` uses `std::collections::HashMap` (SipHash). Replace with `FxHashMap` (or `ahash`) for faster hashing of short strings. Attribute name strings (`__init__`, `__str__`, `self`, etc.) are looked up on every method call — fast interning is critical.
-
-  The `intern_static_name` function in `runtime/molt-runtime/src/state/cache.rs` (line 801) already provides per-name `AtomicU64` slots for commonly used attribute names. Extend this pattern to all attribute names resolved at compile time.
+- **O4.3 — Measure canonical string lookup costs.** The interning table belongs
+  to `CanonicalObjectCache` in `object/builders.rs`; `sys_ext.rs` has no separate
+  table. Reuse that authority and the existing `intern_static_name` slots in
+  `state/cache.rs`. Evaluate lookup, collision resistance, duplicate key storage,
+  contention and lifetime under O1.11 before selecting a hasher or extending
+  cached names. A proposed local lookup win is not evidence for unbounded
+  retention or a second registry.
 
 - **O4.4 — Small string optimization (SSO).** Strings <= 22 bytes (the payload size if we use an 8-byte hot header + 2-byte length) could store data inline in the object allocation, eliminating the pointer indirection. Currently strings already store data inline (`[len: usize][data: [u8; len]]` per `alloc_string` in `builders.rs` line 945), which is good. The optimization here is to reduce the header overhead to make more string data fit in a single cache line.
 
@@ -445,7 +457,7 @@ All optimizations must be validated against the differential test suite and benc
 | `runtime/molt-obj-model/src/lib.rs` | NaN-boxing scheme, `MoltObject`, pointer registry |
 | `runtime/molt-runtime/src/object/mod.rs` | `MoltHeader`, `alloc_object`, `inc_ref_ptr`, `dec_ref_ptr`, object pool, deallocation |
 | `runtime/molt-runtime/src/object/layout.rs` | Per-type field accessors (function, class, iter, etc.) |
-| `runtime/molt-runtime/src/object/builders.rs` | Allocation helpers for all types (list, tuple, dict, string, etc.) |
+| `runtime/molt-runtime/src/object/builders.rs` | Allocation helpers and canonical singleton/string cache |
 | `runtime/molt-runtime/src/object/type_ids.rs` | Type ID constants (48 types, range 100-247) |
 | `runtime/molt-runtime/src/object/utf8_cache.rs` | UTF-8 index/count caching for string operations |
 | `runtime/molt-runtime/src/object/weakref.rs` | Weak reference registry and callback system |
@@ -453,5 +465,5 @@ All optimizations must be validated against the differential test suite and benc
 | `runtime/molt-runtime/src/constants.rs` | `MAX_SMALL_LIST`, inline int range, WASM table base, perf counters |
 | `runtime/molt-runtime/src/provenance/` | Pointer registry (provenance tracking, debug-only in release) |
 | `runtime/molt-runtime/src/state/cache.rs` | `intern_static_name`, attribute name caching |
-| `runtime/molt-runtime/src/builtins/sys_ext.rs` | `sys.intern()` string interning table |
+| `runtime/molt-runtime/src/builtins/sys_ext.rs` | `sys.intern()` entrypoint into the canonical string cache |
 | `docs/spec/areas/runtime/0009_GC_DESIGN.md` | Aspirational GC design (hybrid RC + generational tracing) |

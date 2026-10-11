@@ -139,7 +139,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
                 let new_ptr =
                     crate::object::seq_access::with_borrowed(ptr, |src| alloc_list(_py, src));
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(new_ptr).bits()
             }
@@ -164,7 +164,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
                 };
                 let new_ptr = alloc_dict_with_pairs(_py, &order);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(new_ptr).bits()
             }
@@ -178,7 +178,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
                 };
                 let new_ptr = alloc_set_with_entries(_py, &order);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(new_ptr).bits()
             }
@@ -194,7 +194,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
                 let src = bytearray_vec_ref(ptr);
                 let new_ptr = alloc_bytearray(_py, src);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(new_ptr).bits()
             }
@@ -248,7 +248,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             // Allocate empty list first, register in memo to break cycles.
             let new_ptr = alloc_list(_py, &[]);
             if new_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
             memo_put(_py, memo_handle, obj_id, new_bits);
@@ -306,7 +306,8 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     }
                     let new_ptr = alloc_tuple(_py, &copied_elems);
                     if new_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
                     }
                     let new_bits = MoltObject::from_ptr(new_ptr).bits();
                     memo_put(_py, memo_handle, obj_id, new_bits);
@@ -329,7 +330,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             // Allocate empty dict first for cycle breaking.
             let new_ptr = alloc_dict_with_pairs(_py, &[]);
             if new_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
             memo_put(_py, memo_handle, obj_id, new_bits);
@@ -374,7 +375,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 }
                 let new_ptr = alloc_set_with_entries(_py, &copied_elems);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
                 memo_put(_py, memo_handle, obj_id, new_bits);
@@ -412,7 +413,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 }
                 let new_ptr = alloc_set_like_with_entries(_py, &copied_elems, TYPE_ID_FROZENSET);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
                 memo_put(_py, memo_handle, obj_id, new_bits);
@@ -425,7 +426,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 let src = bytearray_vec_ref(ptr);
                 let new_ptr = alloc_bytearray(_py, src);
                 if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
                 memo_put(_py, memo_handle, obj_id, new_bits);

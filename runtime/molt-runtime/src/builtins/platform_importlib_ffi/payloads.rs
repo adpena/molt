@@ -42,7 +42,7 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
                 for bits in owned {
                     dec_ref_bits(_py, bits);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
             pairs.push(key_bits);
@@ -55,7 +55,7 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -200,7 +200,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
                 for bits in owned {
                     dec_ref_bits(_py, bits);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
             pairs.push(key_bits);
@@ -213,7 +213,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -440,7 +440,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
                 for bits in owned {
                     dec_ref_bits(_py, bits);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
             pairs.push(key_bits);
@@ -453,7 +453,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -524,7 +524,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) ->
             for bits in owned {
                 dec_ref_bits(_py, bits);
             }
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let magic_number_bits = MoltObject::from_ptr(magic_number_ptr).bits();
         owned.push(magic_number_bits);
@@ -749,7 +749,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) ->
                 for bits in owned {
                     dec_ref_bits(_py, bits);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
             pairs.push(key_bits);
@@ -761,7 +761,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) ->
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })

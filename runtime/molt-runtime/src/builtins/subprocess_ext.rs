@@ -349,7 +349,7 @@ pub extern "C" fn molt_subprocess_run(
         dec_ref_bits(_py, stderr_bits);
 
         if tup.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(tup).bits()
     })

@@ -16,7 +16,7 @@ pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
         let encoded = punycode_encode_impl(&text);
         let ptr = alloc_bytes(_py, &encoded);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "punycode_encode: OOM");
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -56,7 +56,7 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
             Ok(decoded) => {
                 let s_ptr = alloc_string(_py, decoded.as_bytes());
                 if s_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "punycode_decode: OOM");
+                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
                 MoltObject::from_ptr(s_ptr).bits()
             }

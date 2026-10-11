@@ -2411,7 +2411,7 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
         handle.set_join_handle(join);
         let handle_bits = native_handle_new(_py, handle);
         if handle_bits == 0 {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         handle_bits
     })
@@ -2469,7 +2469,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
         handle.set_join_handle(join);
         let handle_bits = native_handle_new(_py, handle);
         if handle_bits == 0 {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return MoltObject::none().bits();
         }
         handle_bits
     })

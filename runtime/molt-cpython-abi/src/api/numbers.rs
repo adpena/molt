@@ -638,7 +638,7 @@ pub(crate) unsafe fn numeric_native_value(op: *mut PyObject) -> Option<RuntimeVa
 }
 
 /// Read the admitted physical scalar prefix into an exact builtin value. This
-/// is also the representation of a managed scalar C view: allocate_numeric_view
+/// is also the representation of an exact managed scalar C view: allocate_numeric_view
 /// initializes its complete immutable long/float/complex payload. Callers must
 /// observe the source first; the original object's identity and subtype remain
 /// untouched. No conversion or rendering override is invoked.

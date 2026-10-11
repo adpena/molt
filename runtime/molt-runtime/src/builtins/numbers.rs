@@ -616,7 +616,6 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     let total = mem::size_of::<MoltHeader>() + bigint_size;
     let ptr = alloc_object(_py, total, TYPE_ID_BIGINT);
     if ptr.is_null() {
-        crate::record_memory_error_without_allocation(_py);
         return MoltObject::none().bits();
     }
     unsafe {
@@ -1224,14 +1223,20 @@ pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
         return Some(bits);
     }
     if let Some(native) = native_numeric_object(bits) {
-        let admitted = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0;
-        if native_numeric_failed(py, "index integer admission") {
-            return None;
-        }
-        if admitted {
+        // These native predicates read physical slot metadata. An admitted
+        // prior error is not a failed inquiry, and no Python lookup is needed.
+        if unsafe { molt_cpython_abi::api::numbers::PyLong_Check(native) } != 0 {
             crate::inc_ref_bits(py, bits);
             return Some(bits);
         }
+        if unsafe { molt_cpython_abi::api::abstract_number::PyIndex_Check(native) } == 0 {
+            return None;
+        }
+        let result = crate::object::foreign::retire_native_reference(|| unsafe {
+            let index = molt_cpython_abi::api::abstract_number::number_index(native);
+            molt_cpython_abi::bridge::owned_native_result_to_runtime(index)
+        });
+        return native_numeric_result(py, result, "native index conversion");
     }
     integer_from_special(py, bits, b"__index__")
 }
