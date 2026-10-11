@@ -44,6 +44,9 @@ class CallVisitorMixin(
         split_result = self._try_emit_split_call(node)
         if split_result is not CALL_NOT_HANDLED:
             return split_result
+        guarded = self._try_emit_builtin_guarded_call(node)
+        if guarded is not CALL_NOT_HANDLED:
+            return guarded
         if self._expression_has_invalidated_binding(node.func) or (
             self._call_has_bound_builtin_name(node.func)
             and self._specializable_builtin_name(node) is None

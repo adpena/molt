@@ -113,6 +113,7 @@ from molt.frontend.lowering.generator_state import GeneratorStateMixin
 from molt.frontend.lowering.import_lowering import ImportLoweringMixin
 from molt.frontend.lowering.local_bindings import LocalBindingMixin
 from molt.frontend.lowering.loop_lowering import LoopLoweringMixin
+from molt.frontend.lowering.builtin_guards import BuiltinGuardMixin
 from molt.frontend.lowering.midend_optimization import MidendOptimizationMixin
 from molt.frontend.lowering.module_globals import ModuleGlobalsMixin
 from molt.frontend.lowering.module_lifecycle import ModuleLifecycleMixin
@@ -230,6 +231,7 @@ class SimpleTIRGenerator(
     ClassResolutionMixin,
     TypeAnnotationMixin,
     LoopLoweringMixin,
+    BuiltinGuardMixin,
     AnalysisCollectStaticMixin,
     AnalysisPatternMixin,
     AsyncGenVisitorMixin,

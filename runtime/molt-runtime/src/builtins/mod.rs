@@ -6,6 +6,7 @@ pub(crate) mod ast;
 pub(crate) mod atexit;
 pub(crate) mod attr;
 pub(crate) mod attributes;
+pub(crate) mod binding_guards;
 pub(crate) mod callable;
 pub(crate) mod classes;
 pub(crate) mod codecs;

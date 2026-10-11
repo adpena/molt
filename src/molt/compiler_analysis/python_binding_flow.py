@@ -68,6 +68,9 @@ from molt.compiler_analysis.python_value_identity import (
     exact_identity,
     possible_identity,
 )
+from molt.compiler_analysis.builtin_binding_guards_generated import (
+    BUILTIN_BINDING_GUARD_BITS,
+)
 from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
     builtin_method_call_shape,
@@ -2333,6 +2336,9 @@ class _Analyzer:
         self.source_namespace_exposure: dict[
             PythonSourceKey, frozenset[PythonSourceKey]
         ] = {}
+        # Builtin-name reads in an activation scope; the guard bit is projected
+        # once the module's final bindings are known (HF-79).
+        self._builtin_guard_reads: dict[PythonNodeKey, str] = {}
         self.statements: dict[PythonNodeKey, PythonStatementFact] = {}
         self.iterations: dict[PythonNodeKey, PythonIterationFact] = {}
         self.assignment_effects: dict[PythonNodeKey, EffectMask] = {}
@@ -3051,6 +3057,13 @@ class _Analyzer:
                 name_lookup = "lexical"
             else:
                 name_lookup = "global"
+                if (
+                    isinstance(node.ctx, ast.Load)
+                    and not scope.activation_namespace_stable
+                    and scope.kind in {"function", "lambda", "comprehension"}
+                    and node.id in BUILTIN_BINDING_GUARD_BITS
+                ):
+                    self._builtin_guard_reads[key] = node.id
         previous = self.expressions.get(key)
         self.expressions[key] = PythonExpressionFact(
             key,
@@ -6720,6 +6733,23 @@ class _Analyzer:
             )
         return self.states.set_bindings(state_id, updates)
 
+    def _project_builtin_guard_bits(self) -> Iterator[PythonExpressionFact]:
+        """Attach a guard bit to each builtin read the module never binds.
+
+        A function's read of `len` is a live lookup. When no module statement,
+        `global` declaration or literal reflective write binds `len`, the
+        compiler may specialize the read behind a runtime binding guard; the
+        guard, not this projection, proves the binding at run time. A name the
+        module binds would fail its guard on every call, so it gets none.
+        """
+        assert self.module_scope is not None
+        for key, fact in self.expressions.items():
+            name = self._builtin_guard_reads.get(key)
+            if name is None or self._module_slot(name) is not None:
+                yield fact
+            else:
+                yield replace(fact, builtin_guard_bit=BUILTIN_BINDING_GUARD_BITS[name])
+
     def analyze(self, tree: ast.Module) -> _BindingAnalysis:
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
@@ -6857,7 +6887,7 @@ class _Analyzer:
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
             expressions=tuple(
-                sorted(self.expressions.values(), key=lambda fact: fact.node)
+                sorted(self._project_builtin_guard_bits(), key=lambda fact: fact.node)
             ),
             statements=tuple(
                 sorted(self.statements.values(), key=lambda fact: fact.node)

@@ -532,6 +532,7 @@ pub(crate) use crate::builtins::attr::{
     setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
+pub use crate::builtins::binding_guards::molt_guard_builtin_bindings;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized,

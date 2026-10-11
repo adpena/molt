@@ -1,0 +1,70 @@
+# Builtin names that a function can call through a guarded specialization.
+#
+# Inside a function, a read of a global or builtin name is a live lookup: any
+# code can rebind `mod.len` or `builtins.len` before or while the function
+# runs. The compiler still specializes a call such as `len(xs)` when the module
+# source never binds the name. It emits one runtime guard at the point where
+# Python loads the name: the guard holds when the active globals never bound
+# the name and the builtins namespace still holds the binding that the runtime
+# published. The dynamic lookup and call is the fallback when the guard fails.
+# CPython 3.12 guards LOAD_GLOBAL_BUILTIN the same way.
+#
+# A name belongs here only when its fast arm can lower differently from the
+# dynamic call. `pow` and `round` always keep the actual callable for their
+# argument contract, and the reflection gateways (`getattr`, `hasattr`,
+# `setattr`) carry their own capability accounting, so they are not listed.
+#
+# Each name owns one bit of the guard mask, in table order. Module namespaces
+# record, per bit, whether the name was ever bound in them; the builtins
+# namespace records whether the name was rebound or deleted after the runtime
+# published it. Bits are sticky. Compiled code passes the mask as an inline
+# int, so the table holds at most 46 names.
+#
+# Generated projections (`tools/gen_builtin_binding_guards.py`):
+#   src/molt/compiler_analysis/builtin_binding_guards_generated.py
+#   runtime/molt-runtime/src/builtins/binding_guards_generated.rs
+
+schema_version = 1
+names = [
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "dict",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "hash",
+    "id",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "next",
+    "object",
+    "ord",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "set",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+    "zip",
+]

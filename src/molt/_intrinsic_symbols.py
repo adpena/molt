@@ -1202,6 +1202,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_cell_le": "molt_cell_le",
     "molt_cell_gt": "molt_cell_gt",
     "molt_cell_ge": "molt_cell_ge",
+    "molt_guard_builtin_bindings": "molt_guard_builtin_bindings",
     "molt_types_cell_contents_get": "molt_types_cell_contents_get",
     "molt_types_cell_contents_set": "molt_types_cell_contents_set",
     "molt_types_cell_contents_delete": "molt_types_cell_contents_delete",

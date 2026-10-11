@@ -8422,6 +8422,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
+        name: "molt_guard_builtin_bindings",
+        symbol: "molt_guard_builtin_bindings",
+        arity: 1,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
         name: "molt_types_cell_contents_get",
         symbol: "molt_types_cell_contents_get",
         arity: 2,

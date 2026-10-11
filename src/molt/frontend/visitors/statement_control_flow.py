@@ -200,6 +200,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_For(self, node: ast.For) -> None:
+        if self._try_emit_builtin_guarded_range_loop(node):
+            return None
         return self._visit_for(node)
 
     @_with_module_provenance_loop_flow
