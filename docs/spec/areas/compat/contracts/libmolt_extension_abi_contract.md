@@ -439,6 +439,11 @@ projections; physical layout determines only how the shared field schema is
 stored. Typed-field batches convert and retain all inputs before publication,
 then release replaced owners after the complete new state is visible. Replacing
 a raised slot with the same exception still releases the old slot's reference.
+A new runtime raise detaches both prior indicators before preparing metadata,
+then publishes the selected outcome before retiring their owners. Its implicit
+context comes from handled state, not from the displaced pending exception.
+Already-normalized restoration uses the owned-transfer authority directly;
+restoring two independent channels does not create a new raise site.
 Public raised-error transfer gives the C indicator precedence
 when both channels are populated. Explicit shielded cleanup instead detaches and
 restores both exact channels independently, including allocation-free emergency

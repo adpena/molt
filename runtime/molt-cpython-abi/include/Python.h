@@ -746,6 +746,7 @@ PyAPI_DATA(PyTypeObject) PyType_Type;
 PyAPI_DATA(PyTypeObject) PyBaseObject_Type;
 PyAPI_DATA(PyTypeObject) PyNone_Type;
 PyAPI_DATA(PyTypeObject) PyNotImplemented_Type;
+PyAPI_DATA(PyTypeObject) PyEllipsis_Type;
 PyAPI_DATA(PyTypeObject) PyCapsule_Type;
 PyAPI_DATA(PyTypeObject) PyTraceBack_Type;
 

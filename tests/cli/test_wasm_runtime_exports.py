@@ -237,6 +237,7 @@ def test_runtime_build_receives_raw_cpython_abi_requested_export_names() -> None
         "PyType_Ready",
         "PyArg_ParseTuple",
         "Py_EllipsisObject",
+        "PyEllipsis_Type",
         "Py_GenericAliasType",
         "Py_OptimizeFlag",
         "Py_Version",
@@ -247,6 +248,7 @@ def test_runtime_build_receives_raw_cpython_abi_requested_export_names() -> None
 
     assert wasm_cpython_abi_requested_export_names(required) == (
         "PyArg_ParseTuple",
+        "PyEllipsis_Type",
         "PyType_Ready",
         "Py_EllipsisObject",
         "Py_GenericAliasType",
@@ -254,6 +256,7 @@ def test_runtime_build_receives_raw_cpython_abi_requested_export_names() -> None
         "Py_Version",
     )
     assert wasm_cpython_abi_requested_data_export_names(required) == (
+        "PyEllipsis_Type",
         "Py_EllipsisObject",
         "Py_GenericAliasType",
         "Py_OptimizeFlag",

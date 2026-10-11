@@ -979,12 +979,7 @@ mod tests {
                 };
                 assert!(obj_from_bits(result).is_none());
                 assert!(exception_pending(py));
-                // Emergency MemoryError is a non-allocating pending marker,
-                // not a heap exception object exposed by last_pending.
-                let error = molt_exception_last_pending();
-                assert!(obj_from_bits(error).is_none());
-                let _ = molt_exception_clear();
-                dec_ref_bits(py, error);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
             }
         });
     }
@@ -1036,39 +1031,37 @@ mod tests {
     }
 
     #[test]
-    fn class_instance_capacity_failure_replaces_prior_error_with_memory_error() {
+    fn class_instance_extent_underflow_replaces_prior_error_with_memory_error() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class_ptr = obj_from_bits(builtin_classes(py).object)
                 .as_ptr()
                 .expect("builtin object class");
             let class_owners = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
-            for total_size in [0, usize::MAX] {
-                raise_exception::<()>(py, "ValueError", "original allocation caller error");
-                let original = crate::builtins::exceptions::ExceptionValue::adopt(
-                    py,
-                    molt_exception_last_pending(),
-                );
-                assert!(obj_from_bits(original.bits()).as_ptr().is_some());
-                let result = unsafe {
-                    super::alloc_published_instance_for_class_with_total_size(
-                        py, class_ptr, total_size,
-                    )
-                };
-                assert!(obj_from_bits(result).is_none());
-                assert_eq!(
-                    unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                    class_owners
-                );
-                // Both invalid allocation extents select the canonical,
-                // allocation-free MemoryError, replacing the incoming error.
-                assert_eq!(
-                    unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
-                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
-                );
-                assert!(exception_pending(py));
-                let _ = molt_exception_clear();
-            }
+            raise_exception::<()>(py, "ValueError", "original allocation caller error");
+            let original = crate::builtins::exceptions::ExceptionValue::adopt(
+                py,
+                molt_exception_last_pending(),
+            );
+            assert!(obj_from_bits(original.bits()).as_ptr().is_some());
+            let result = unsafe {
+                super::alloc_published_instance_for_class_with_total_size(py, class_ptr, 0)
+            };
+            assert!(obj_from_bits(result).is_none());
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
+                class_owners
+            );
+            // Header underflow is diagnosed before class-layout admission,
+            // so this actually selects MemoryError over the incoming error.
+            // A prior error can stop layout admission before an oversized
+            // allocation is attempted; that is not an allocation failure.
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+            );
+            assert!(exception_pending(py));
+            let _ = molt_exception_clear();
         });
     }
 

@@ -2157,6 +2157,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");
+        set_name!(PyEllipsis_Type, b"ellipsis\0");
         set_name!(PyType_Type, b"type\0");
         set_name!(PyBaseObject_Type, b"object\0");
         set_name!(PyFrozenSet_Type, b"frozenset\0");
@@ -2183,6 +2184,10 @@ pub(crate) unsafe fn initialize_static_type_storage() {
             };
         }
         let object: *mut PyTypeObject = &raw mut PyBaseObject_Type;
+        shell!(PyNotImplemented_Type, Py_TPFLAGS_DEFAULT, object);
+        shell!(PyEllipsis_Type, Py_TPFLAGS_DEFAULT, object);
+        PyNotImplemented_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyEllipsis_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         shell!(
             PyRange_Type,
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_SEQUENCE,
@@ -2399,7 +2404,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         // initialiser (they are value-carrying `PyLongObject`s now), so no runtime
         // ob_type patch is needed here.
         Py_NotImplementedSentinel.ob_type = &raw mut PyNotImplemented_Type;
-        Py_EllipsisObject.ob_type = &raw mut PyBaseObject_Type;
+        Py_EllipsisObject.ob_type = &raw mut PyEllipsis_Type;
         PyDateTime_TimeZone_UTC_Object.ob_type = &raw mut PyDateTime_TZInfoType;
     }
 }
@@ -2445,6 +2450,7 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyModule_Type as *mut PyObject,
         &raw mut PyNone_Type as *mut PyObject,
         &raw mut PyNotImplemented_Type as *mut PyObject,
+        &raw mut PyEllipsis_Type as *mut PyObject,
         &raw mut PySet_Type as *mut PyObject,
         &raw mut PyStaticMethod_Type as *mut PyObject,
         &raw mut PySlice_Type as *mut PyObject,
@@ -3156,6 +3162,11 @@ pub static mut PyNone_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyNotImplemented_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+/// Type of the unique Ellipsis value (public stable-ABI data symbol).
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyEllipsis_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// Type type object.
 #[allow(non_upper_case_globals)]

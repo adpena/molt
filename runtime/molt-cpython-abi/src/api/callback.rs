@@ -158,8 +158,8 @@ impl<const N: usize> CallbackOperands<N> {
 
     fn synchronize(&self) -> bool {
         let mut synchronized = true;
-        // Keep the first error in its original channel. Error existence is not
-        // projection success: an emergency runtime error has no C instance.
+        // Keep the first error in its original channel and observe its presence
+        // independently of C-view projection.
         // Later observations run with both exact channels preserved on their
         // own stacks, so one failure never skips publication of other operands.
         for &operand in self

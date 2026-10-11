@@ -19,9 +19,9 @@
     "private": 63,
     "private-representation": 1,
     "public-version-specific": 174,
-    "stable-abi": 466,
+    "stable-abi": 467,
     "stable-values-version-specific-layout": 1,
-    "total": 762,
+    "total": 763,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -981,6 +981,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyDict_Values",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyEllipsis_Type",
       "verified_at": "3.12"
     },
     {

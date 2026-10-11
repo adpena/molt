@@ -13,6 +13,28 @@ fn concurrent_and_repeated_bootstrap_preserves_live_builtin_shells() {
                 for _ in 0..256 {
                     unsafe {
                         molt_cpython_abi_init();
+                        assert_eq!(
+                            (*(&raw const Py_EllipsisObject)).ob_type,
+                            &raw mut PyEllipsis_Type
+                        );
+                        assert_eq!(
+                            (*(&raw const Py_NotImplementedSentinel)).ob_type,
+                            &raw mut PyNotImplemented_Type
+                        );
+                        for (kind, name) in [
+                            (&raw const PyEllipsis_Type, c"ellipsis"),
+                            (&raw const PyNotImplemented_Type, c"NotImplementedType"),
+                        ] {
+                            assert_eq!(std::ffi::CStr::from_ptr((*kind).tp_name), name);
+                            assert_eq!((*kind).ob_base.ob_base.ob_type, &raw mut PyType_Type);
+                            assert_eq!((*kind).tp_base, &raw mut PyBaseObject_Type);
+                            assert_eq!(
+                                (*kind).tp_basicsize as usize,
+                                std::mem::size_of::<PyObject>()
+                            );
+                            assert_ne!((*kind).tp_flags & Py_TPFLAGS_READY, 0);
+                            assert_eq!((*kind).tp_flags & Py_TPFLAGS_HEAPTYPE, 0);
+                        }
                         let tuple = &raw const PyTuple_Type;
                         assert_ne!((*tuple).tp_flags & Py_TPFLAGS_HAVE_GC, 0);
                         assert_ne!((*tuple).tp_flags & Py_TPFLAGS_READY, 0);

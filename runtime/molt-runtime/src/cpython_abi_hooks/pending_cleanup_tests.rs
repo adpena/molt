@@ -1657,7 +1657,7 @@ fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
             let _reset = RestoreOomObserver;
-            for runtime_prior in [false, true] {
+            for prior in 0..3 {
                 // Exercise direct recording, a cold explicit raise, and the
                 // existing-trace transport branch through their real callers.
                 for publication in 0..3 {
@@ -1677,7 +1677,12 @@ fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
                     }
                     OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
                     OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
-                    install_oom_prior(&raw mut *payload_type, runtime_prior);
+                    if prior == 2 {
+                        OOM_PRIOR_RETIREMENT.with(|cell| cell.set((0, 0)));
+                        crate::record_memory_error_without_allocation(py);
+                    } else {
+                        install_oom_prior(&raw mut *payload_type, prior == 1);
+                    }
                     if publication == 0 {
                         crate::record_exception(
                             py,
@@ -1688,10 +1693,20 @@ fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
                     }
                     assert_eq!(
                         OOM_PRIOR_RETIREMENT.with(std::cell::Cell::get),
-                        (1, (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).addr()),
+                        if prior == 2 {
+                            (0, 0)
+                        } else {
+                            (1, (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).addr())
+                        },
                         "the sole prior payload retires under the new error"
                     );
-                    assert_eq!(OOM_SELECTED_INSTANCE.with(std::cell::Cell::get), view.addr());
+                    if prior != 2 {
+                        assert_eq!(OOM_SELECTED_INSTANCE.with(std::cell::Cell::get), view.addr());
+                    }
+                    assert_eq!(
+                        errors::PyErr_Occurred(),
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast()
+                    );
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(selected.bits()));
                     assert!(errors::take_current_error().is_none(), "native reentry completed");
                     assert_eq!(

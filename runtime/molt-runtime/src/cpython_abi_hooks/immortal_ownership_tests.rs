@@ -228,3 +228,111 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
         assert!(!crate::exception_pending(&py));
     });
 }
+
+#[test]
+fn canonical_special_singletons_share_native_value_and_type_identity() {
+    use crate::builtins::exceptions::ExceptionValue;
+    use molt_cpython_abi::abi_types::{
+        Py_EllipsisObject, Py_NotImplementedSentinel, PyEllipsis_Type, PyExc_ValueError,
+        PyNotImplemented_Type,
+    };
+    use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+    use molt_cpython_abi::hooks::DecodedHandleResult;
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    with_gil(|py| unsafe {
+        let py = &py;
+        errors::PyErr_SetString(
+            (&raw mut PyExc_ValueError).cast(),
+            c"unchanged across canonical singleton crossings".as_ptr(),
+        );
+        let prior = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!prior.as_ptr().is_null());
+        let builtins = crate::builtin_classes(py);
+        for (bits, pointer, class, kind, type_id) in [
+            (
+                crate::not_implemented_bits(py),
+                &raw mut Py_NotImplementedSentinel,
+                builtins.not_implemented_type,
+                &raw mut PyNotImplemented_Type,
+                crate::TYPE_ID_NOT_IMPLEMENTED,
+            ),
+            (
+                crate::ellipsis_bits(py),
+                &raw mut Py_EllipsisObject,
+                builtins.ellipsis_type,
+                &raw mut PyEllipsis_Type,
+                crate::TYPE_ID_ELLIPSIS,
+            ),
+        ] {
+            assert_eq!((*pointer).ob_type, kind, "physical singleton type");
+            let runtime = crate::obj_from_bits(bits).as_ptr().unwrap();
+            assert_eq!(object_type_id(runtime), type_id);
+            let native_refs = (*pointer).ob_refcnt;
+            let runtime_refs = hook_ref_count(bits);
+            for channel in 0..3 {
+                if channel != 0 {
+                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                    if channel == 2 {
+                        super::propagate_native_failure(py, "singleton test prior");
+                        assert!(crate::exception_pending(py));
+                    }
+                }
+                // Native callback-result ingress owns one reference. It must
+                // select the canonical value, never allocate a FOREIGN wrapper.
+                let result = molt_cpython_abi::bridge::owned_native_result_to_runtime(
+                    object::Py_NewRef(pointer),
+                );
+                let DecodedHandleResult::Ok(received) = result.decode() else {
+                    panic!("singleton ingress must succeed with an admitted prior error");
+                };
+                let received = ExceptionValue::adopt(py, received);
+                assert_eq!(received.bits(), bits);
+                assert_eq!(
+                    object_type_id(crate::obj_from_bits(received.bits()).as_ptr().unwrap()),
+                    type_id
+                );
+                let exported = OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.owned_handle_to_pyobj(received.into_bits()),
+                );
+                assert_eq!(exported.as_ptr(), pointer);
+                let borrowed =
+                    OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits));
+                assert_eq!(borrowed.as_ptr(), pointer);
+                assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), pointer);
+
+                let native_class = OwnedPyObject::from_owned(typeobj::PyObject_Type(pointer));
+                assert_eq!(native_class.as_ptr(), kind.cast());
+                assert_eq!(typeobj::_Py_TYPE(pointer), kind);
+                let received_class = ExceptionValue::adopt(
+                    py,
+                    GLOBAL_BRIDGE
+                        .molt_value_for_pyobj(kind.cast())
+                        .expect("native singleton type has its runtime class"),
+                );
+                assert_eq!(received_class.bits(), class);
+                assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class), kind.cast());
+                drop(received_class);
+                drop(native_class);
+                drop(borrowed);
+                drop(exported);
+
+                if channel == 0 {
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert!(!crate::exception_pending(py));
+                } else {
+                    let selected = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(selected.as_ptr(), prior.as_ptr());
+                }
+                assert_eq!((*pointer).ob_refcnt, native_refs);
+                assert_eq!(hook_ref_count(bits), runtime_refs);
+            }
+            // The existing class constructor must return this same value through
+            // ordinary public C call completion; no singleton-specific call path.
+            let constructed = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(kind.cast()));
+            assert_eq!(constructed.as_ptr(), pointer);
+            assert!(errors::PyErr_Occurred().is_null());
+            assert!(!crate::exception_pending(py));
+        }
+    });
+}
