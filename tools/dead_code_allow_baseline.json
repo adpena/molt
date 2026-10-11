@@ -1,5 +1,5 @@
 {
-  "baseline_total": 132,
+  "baseline_total": 129,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -337,24 +337,9 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime/src/call/bind/arguments.rs::allow_dead_code::fn:callargs_positional_snapshot",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only by molt-gpu-runtime and unit tests; cfg-gate it to those users (HF-87)"
-    },
-    {
       "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:generated",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_snapshot",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
-    },
-    {
-      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_bytes",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
     },
     {
       "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_fn_ptr",
