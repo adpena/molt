@@ -2145,6 +2145,61 @@ mod tests {
                 });
                 assert!(pool_registry(py).lock().unwrap().is_empty());
                 assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+                let callable = native_callable(py, retained_argument as *const ());
+                let callable_base = owner_count(callable);
+                let active = measure("one_job_pool_create_submit_and_waiting_shutdown", || {
+                    let handle = black_box(molt_concurrent_threadpool_new(one));
+                    let future =
+                        black_box(molt_concurrent_threadpool_submit(handle, callable, one));
+                    assert!(!exception_pending(py));
+                    black_box(molt_concurrent_threadpool_shutdown(handle, yes, no));
+                    let result = black_box(molt_concurrent_future_result(
+                        future,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    ));
+                    assert_eq!(result, one);
+                    assert!(!exception_pending(py));
+                    dec_ref_bits(py, result);
+                    molt_concurrent_future_drop(future);
+                });
+                // Warm one actual worker once; this case measures the common
+                // submission/result path, excluding startup and waiting shutdown.
+                let steady_pool = molt_concurrent_threadpool_new(one);
+                let warm_future = molt_concurrent_threadpool_submit(steady_pool, callable, one);
+                let warm_result = molt_concurrent_future_result(
+                    warm_future,
+                    MoltObject::none().bits(),
+                    builtin_classes(py).exception,
+                    builtin_classes(py).exception,
+                );
+                assert_eq!(warm_result, one);
+                dec_ref_bits(py, warm_result);
+                molt_concurrent_future_drop(warm_future);
+                let steady = measure("one_worker_steady_submit_result_and_future_drop", || {
+                    let future = black_box(molt_concurrent_threadpool_submit(
+                        steady_pool,
+                        callable,
+                        one,
+                    ));
+                    let result = black_box(molt_concurrent_future_result(
+                        future,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    ));
+                    assert_eq!(result, one);
+                    assert!(!exception_pending(py));
+                    dec_ref_bits(py, result);
+                    molt_concurrent_future_drop(future);
+                });
+                molt_concurrent_threadpool_shutdown(steady_pool, yes, no);
+                assert!(!exception_pending(py));
+                assert_eq!(owner_count(callable), callable_base);
+                dec_ref_bits(py, callable);
+                assert!(pool_registry(py).lock().unwrap().is_empty());
+                assert!(future_registry(py).lock().unwrap().is_empty());
                 println!(
                     "LIFECYCLE_COST_PROBE={}",
                     serde_json::json!({
@@ -2154,11 +2209,11 @@ mod tests {
                         "host": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
                         "affinity_mask": normalized_affinity_mask(affinity),
                         "timing_scope": "loop inclusive, including semantic checks; one fresh runtime outside all samples",
-                        "worker_cost_scope": "combined public creation, origin admission, native startup and waiting shutdown; one worker, no submitted jobs",
+                        "worker_cost_scope": "capacity-one empty case has no submitted jobs; active case includes one job, native startup and waiting shutdown; steady case reuses one worker with startup/shutdown outside timing",
                         "layout_bytes": {"pool_owner": std::mem::size_of::<ThreadPoolState>(), "concurrent_state": std::mem::size_of::<ConcurrentRuntimeState>()},
                         "allocation_metrics": false,
                         "performance_claim": false,
-                        "cases": [empty, pool],
+                        "cases": [empty, pool, active, steady],
                     })
                 );
             });
