@@ -8,11 +8,11 @@ use molt_obj_model::MoltObject;
 use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 
 use super::ops::{
-    bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, dict_like_bits_from_ptr,
-    format_with_spec, parse_codec_arg, parse_format_spec, simd_has_any_ascii_lower,
-    simd_has_any_ascii_upper, simd_is_all_ascii_alnum, simd_is_all_ascii_alpha,
-    simd_is_all_ascii_digit, simd_is_all_ascii_printable, simd_is_all_ascii_text_whitespace,
-    slice_bounds_from_args, slice_match, unicode_classification_table,
+    bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, format_with_spec,
+    parse_codec_arg, parse_format_spec, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
+    simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
+    simd_is_all_ascii_printable, simd_is_all_ascii_text_whitespace, slice_bounds_from_args,
+    slice_match, unicode_classification_table,
 };
 
 #[path = "ops_string_predicates.rs"]

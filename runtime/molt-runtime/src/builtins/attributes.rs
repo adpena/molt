@@ -541,7 +541,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             match name.as_str() {
                 "obj" => {
                     if memoryview_released(obj_ptr) {
-                        let _ = raise_released_memoryview(_py);
+                        raise_released_memoryview::<()>(_py);
                         return Err(());
                     }
                     if let Some(lease) = (*crate::memoryview_ptr(obj_ptr)).native_lease.as_ref() {
@@ -1796,14 +1796,14 @@ mod tests {
 
     #[test]
     #[cfg(feature = "molt_gpu_primitives")]
-    fn gpu_attribute_bridge_errors_return_boxed_none() {
+    fn gpu_attribute_bridge_errors_return_failure_status() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let name_bits = string_bits(_py, b"attribute");
             let receiver = alloc_string(_py, b"receiver");
             assert!(!receiver.is_null());
             for invalid_receiver in [true, false] {
-                let result: u64 = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
+                let result = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
                     if invalid_receiver {
                         std::ptr::null_mut()
                     } else {
@@ -1818,7 +1818,7 @@ mod tests {
                     if invalid_receiver { 9 } else { 1 },
                     MoltObject::none().bits(),
                 );
-                assert_eq!(result, MoltObject::none().bits());
+                assert_eq!(result, -1);
                 assert!(crate::exception_pending(_py));
                 let exception = crate::exception_last_bits_noinc(_py).unwrap();
                 assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -1921,6 +1921,7 @@ mod tests {
 
         let name_str = std::str::from_utf8(name).unwrap();
         let resolved = super::resolve_scalar_attr(_py, receiver_bits, name_str)
+            .expect("numeric scalar lookup succeeds")
             .expect("numeric scalar resolver should find attribute");
         assert_callable_attr(_py, resolved);
 

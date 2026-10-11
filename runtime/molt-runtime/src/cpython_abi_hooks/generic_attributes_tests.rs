@@ -1722,7 +1722,11 @@ unsafe extern "C" fn remove_getattribute_and_fail(
     let [class, failure, _] = LOOKUP_RETIREMENT.with(Cell::get);
     LOOKUP_PHASE.with(|phase| phase.set(1));
     unsafe {
-        if object::PyObject_DelAttrString(class as *mut PyObject, c"__getattribute__".as_ptr()) < 0
+        if object::PyObject_SetAttrString(
+            class as *mut PyObject,
+            c"__getattribute__".as_ptr(),
+            ptr::null_mut(),
+        ) < 0
         {
             return std::ptr::null_mut();
         }

@@ -4511,7 +4511,7 @@ mod decimal_output_limits {
             let allowed = BigInt::from(10u8).pow(639);
             let rejected = &allowed * BigInt::from(10u8);
             for native_class in [None, Some(&raw mut PyLong_Type), Some(&raw mut *subtype)] {
-                for sign in [1, -1] {
+                for sign in [1i32, -1i32] {
                     let value = &rejected * sign;
                     let integer = match native_class {
                         Some(class) => raw_integer(class, &value),
@@ -4619,11 +4619,11 @@ mod decimal_output_limits {
             let py = &py;
             let _restore = LimitRestore(crate::builtins::sys_ext::current_int_max_str_digits(py));
             let mut methods: PyNumberMethods = std::mem::zeroed();
-            methods.nb_int = Some(decimal_from_callback);
+            methods.nb_int = decimal_from_callback as *const () as *mut _;
             let mut source =
                 NativeType::subtype(&raw mut PyBaseObject_Type, c"DecimalPolicyCallback");
             source.tp_basicsize = std::mem::size_of::<PyObject>() as isize;
-            source.tp_as_number = &raw mut methods;
+            source.tp_as_number = (&raw mut methods).cast();
             assert_eq!(source.ready(), 0);
             let value =
                 OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *source, 0));

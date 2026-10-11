@@ -1134,8 +1134,9 @@ mod numeric_protocol_tests {
             );
             // Storage probes are allowed with an existing indicator. Hit/miss
             // comes from the producer, never from that unrelated old error.
-            let prior =
-                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            let prior = NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(
+                (&raw mut PyExc_LookupError).cast(),
+            ));
             assert!(!prior.as_ptr().is_null());
             let prior_bits = ExceptionValue::adopt(
                 py,
@@ -1265,7 +1266,7 @@ mod numeric_protocol_tests {
                 assert!(crate::obj_from_bits(result.bits()).is_none());
                 let error = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!error.as_ptr().is_null());
-                assert_eq!(object::Py_TYPE(error.as_ptr()), PyExc_OverflowError.cast());
+                assert_eq!(object::Py_TYPE(error.as_ptr()), &raw mut PyExc_OverflowError);
                 assert!(!crate::exception_pending(py));
             }
             INDEX_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
@@ -1321,8 +1322,9 @@ mod numeric_protocol_tests {
                 py,
                 GLOBAL_BRIDGE.molt_value_for_pyobj(plain.as_ptr()).unwrap(),
             );
-            let prior =
-                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            let prior = NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(
+                (&raw mut PyExc_LookupError).cast(),
+            ));
             assert!(!prior.as_ptr().is_null());
             let prior_bits = ExceptionValue::adopt(
                 py,
@@ -1374,7 +1376,7 @@ mod numeric_protocol_tests {
                 let failure = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!failure.as_ptr().is_null());
                 assert_ne!(failure.as_ptr(), prior.as_ptr());
-                assert_eq!(object::Py_TYPE(failure.as_ptr()), PyExc_TypeError.cast());
+                assert_eq!(object::Py_TYPE(failure.as_ptr()), &raw mut PyExc_TypeError);
                 assert!(!crate::exception_pending(py));
                 assert!(!errors::raised_error_pending());
             }
@@ -1424,8 +1426,9 @@ mod numeric_protocol_tests {
                 py,
                 GLOBAL_BRIDGE.molt_value_for_pyobj(input.as_ptr()).unwrap(),
             );
-            let prior =
-                NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(PyExc_LookupError));
+            let prior = NativeObjectOwner::from_owned(object::PyObject_CallNoArgs(
+                (&raw mut PyExc_LookupError).cast(),
+            ));
             assert!(!prior.as_ptr().is_null());
             let prior_bits = ExceptionValue::adopt(
                 py,

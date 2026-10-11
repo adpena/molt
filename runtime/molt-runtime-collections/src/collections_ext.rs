@@ -1792,10 +1792,10 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
             return MoltObject::none().bits();
         }
         let Some(dict_bits) = (unsafe {
-            (match dict_like_bits_from_ptr(_py, self_ptr) {
+            match dict_like_bits_from_ptr(_py, self_ptr) {
                 Ok(storage) => storage,
                 Err(()) => return MoltObject::none().bits(),
-            })
+            }
         }) else {
             return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
         };

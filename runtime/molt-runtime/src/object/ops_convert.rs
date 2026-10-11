@@ -895,10 +895,10 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         let mut real_bits = val_bits;
         let mut real_owner = None;
         if let Some(method) = unsafe {
-            (match crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") {
+            match crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
-            })
+            }
         } {
             let result = unsafe { call_callable0(py, method) };
             dec_ref_bits(py, method);

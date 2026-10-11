@@ -24,7 +24,7 @@ use crate::{
     class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dataclass_desc_ptr,
     dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_last_bits_noinc,
     exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
-    is_truthy, maybe_ptr_from_bits, module_dict_bits, molt_awaitable_await, molt_bound_method_new,
+    maybe_ptr_from_bits, module_dict_bits, molt_awaitable_await, molt_bound_method_new,
     molt_function_get_code, molt_function_get_globals, obj_from_bits, object_class_bits,
     object_type_id, profile_hit_unchecked, raise_exception, runtime_state, string_bytes,
     string_len, string_obj_to_owned, type_name, type_of_bits,

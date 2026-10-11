@@ -112,7 +112,7 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
                 let result = found.map(|found| {
                     let bits = found.unwrap_or_else(|| crate::missing_bits(_py));
                     inc_ref_bits(_py, bits);
-                    Ok(bits)
+                    bits
                 });
                 dec_ref_bits(_py, name);
                 dec_ref_bits(_py, dictionary);

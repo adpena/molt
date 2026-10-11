@@ -87,14 +87,14 @@ pub(crate) fn index_impl(
                     };
                 }
                 if !builtin_only && !crate::object::iterable::builtin_receiver(_py, obj_ptr) {
-                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                    if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
                         b"__getitem__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return Err(()),
-                    }) {
+                    } {
                         let result = call_callable1(_py, method, key_bits);
                         let failed = exception_pending(_py);
                         dec_ref_bits(_py, method);
@@ -829,10 +829,10 @@ pub(crate) fn index_impl(
                         }
                     };
                 }
-                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                     Ok(storage) => storage,
                     Err(()) => return Err(()),
-                }) {
+                } {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return Err(());
                     };
@@ -847,14 +847,14 @@ pub(crate) fn index_impl(
                         return Ok(val);
                     }
                     if !object_is_exact_builtin_dict(_py, ptr) {
-                        if let Some(call_bits) = (match crate::builtins::attr::lookup_special_method(
+                        if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                             _py,
                             obj_bits,
                             b"__missing__",
                         ) {
                             Ok(value) => value,
                             Err(()) => return Err(()),
-                        }) {
+                        } {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
                             let failed = exception_pending(_py);
@@ -1091,14 +1091,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                    if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
                         b"__setitem__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let result = call_callable2(_py, method, key_bits, val_bits);
                         dec_ref_bits(_py, method);
                         dec_ref_bits(_py, result);
@@ -1645,10 +1645,10 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     }
                     return obj_bits;
                 }
-                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
-                }) {
+                } {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
@@ -1687,14 +1687,14 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                    if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
                         b"__delitem__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let result = call_callable1(_py, method, key_bits);
                         dec_ref_bits(_py, method);
                         dec_ref_bits(_py, result);
@@ -1883,10 +1883,10 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     }
                     return raise_exception::<_>(_py, "TypeError", "cannot delete memory");
                 }
-                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
-                }) {
+                } {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
@@ -2088,14 +2088,14 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
                 {
-                    if let Some(method) = (match crate::builtins::attr::lookup_special_method(
+                    if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         container_bits,
                         b"__contains__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    }) {
+                    } {
                         let result = call_callable1(_py, method, item_bits);
                         dec_ref_bits(_py, method);
                         if exception_pending(_py) {
@@ -2112,10 +2112,10 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     }
                 }
                 let type_id = object_type_id(ptr);
-                if let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
-                }) {
+                } {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
@@ -2200,14 +2200,14 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     }
                     _ => {}
                 }
-                if let Some(call_bits) = (match crate::builtins::attr::lookup_special_method(
+                if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                     _py,
                     container_bits,
                     b"__contains__",
                 ) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
-                }) {
+                } {
                     let result = call_callable1(_py, call_bits, item_bits);
                     dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {

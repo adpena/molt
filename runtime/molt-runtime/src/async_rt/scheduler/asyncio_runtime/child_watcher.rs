@@ -1,8 +1,8 @@
 use crate::PyToken;
 use crate::{
     MoltObject, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_tuple, bits_from_ptr,
-    dec_ref_bits, dict_clear_in_place, dict_del_in_place, dict_get_in_place, dict_set_in_place,
-    inc_ref_bits, obj_from_bits, object_type_id, raise_exception, to_i64,
+    dec_ref_bits, dict_clear_in_place, dict_del_in_place, dict_set_in_place, inc_ref_bits,
+    obj_from_bits, object_type_id, raise_exception, to_i64,
 };
 
 fn asyncio_child_watcher_dict_ptr(_py: &PyToken<'_>, callbacks_bits: u64) -> Result<*mut u8, u64> {

@@ -986,9 +986,13 @@ unsafe fn dict_set_str_key_bits(
             return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+        let completed = dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
         dec_ref_bits(_py, key_bits);
-        Ok(())
+        if completed {
+            Ok(())
+        } else {
+            Err(MoltObject::none().bits())
+        }
     }
 }
 
@@ -1670,11 +1674,8 @@ fn copyreg_entry_compare(
     use crate::object::ops_compare::{
         CompareBoolOutcome, CompareValueOutcome, comparison_value_to_bool,
     };
-    let value = unsafe { dict_get_in_place(py, dictionary, key) }
+    let value = unsafe { dict_get_in_place(py, dictionary, key) }?
         .unwrap_or_else(|| MoltObject::none().bits());
-    if exception_pending(py) {
-        return Err(());
-    }
     inc_ref_bits(py, value);
     let compared = if unequal {
         crate::molt_ne(value, expected)
@@ -1819,10 +1820,12 @@ pub extern "C" fn molt_copyreg_add_extension(
                 );
             }
             unsafe {
-                dict_set_in_place(_py, extension_ptr, key_bits, code_key_bits);
-                if !exception_pending(_py) {
-                    dict_set_in_place(_py, inverted_ptr, code_key_bits, key_bits);
+                if !dict_set_in_place(_py, extension_ptr, key_bits, code_key_bits) {
+                    return MoltObject::none().bits();
                 }
+                // This is the last operation; its failure remains selected for
+                // the intrinsic's boxed-None return boundary.
+                let _ = dict_set_in_place(_py, inverted_ptr, code_key_bits, key_bits);
             }
             MoltObject::none().bits()
         })();
@@ -2276,32 +2279,34 @@ pub(crate) fn module_cache_publish(
             if let Some(sys_ptr) = sys_obj.as_ptr() {
                 unsafe {
                     let exe_ptr = alloc_string(_py, b"executable");
-                    let argv_ptr = alloc_string(_py, b"argv");
-                    if exe_ptr.is_null() || argv_ptr.is_null() {
+                    if exe_ptr.is_null() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
                     }
-                    let exe_bits = MoltObject::from_ptr(exe_ptr).bits();
-                    let argv_bits = MoltObject::from_ptr(argv_ptr).bits();
-                    let exe_val = module_attr_lookup(_py, sys_ptr, exe_bits);
-                    let argv_val = module_attr_lookup(_py, sys_ptr, argv_bits);
-                    dec_ref_bits(_py, exe_bits);
-                    dec_ref_bits(_py, argv_bits);
+                    let exe_name = ExceptionValue::adopt(_py, MoltObject::from_ptr(exe_ptr).bits());
+                    let argv_ptr = alloc_string(_py, b"argv");
+                    if argv_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    let argv_name = ExceptionValue::adopt(_py, MoltObject::from_ptr(argv_ptr).bits());
+                    let exe_val = match module_attr_lookup(_py, sys_ptr, exe_name.bits()) {
+                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                        Err(()) => return MoltObject::none().bits(),
+                    };
+                    let argv_val = match module_attr_lookup(_py, sys_ptr, argv_name.bits()) {
+                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                        Err(()) => return MoltObject::none().bits(),
+                    };
+                    drop(exe_name);
+                    drop(argv_name);
                     let exe_desc = exe_val
-                        .map(|bits| {
-                            let obj = obj_from_bits(bits);
-                            let desc = string_obj_to_owned(obj)
-                                .unwrap_or_else(|| type_name(_py, obj).to_string());
-                            dec_ref_bits(_py, bits);
-                            desc
+                        .map(|value| {
+                            let obj = obj_from_bits(value.bits());
+                            string_obj_to_owned(obj)
+                                .unwrap_or_else(|| type_name(_py, obj).to_string())
                         })
                         .unwrap_or_else(|| "<missing>".to_string());
                     let argv_desc = argv_val
-                        .map(|bits| {
-                            let obj = obj_from_bits(bits);
-                            let desc = type_name(_py, obj).to_string();
-                            dec_ref_bits(_py, bits);
-                            desc
-                        })
+                        .map(|value| type_name(_py, obj_from_bits(value.bits())).to_string())
                         .unwrap_or_else(|| "<missing>".to_string());
                     eprintln!("sys module set: executable={exe_desc} argv_type={argv_desc}");
                 }
@@ -3826,8 +3831,9 @@ mod tests {
                 let name_key_ptr = alloc_string(_py, b"__name__");
                 assert!(!name_key_ptr.is_null());
                 let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
-                let found_name_bits =
-                    module_attr_lookup(_py, module_ptr, name_key_bits).expect("module __name__");
+                let found_name_bits = module_attr_lookup(_py, module_ptr, name_key_bits)
+                    .expect("module name lookup succeeds")
+                    .expect("module __name__ exists");
                 let found_name = string_obj_to_owned(obj_from_bits(found_name_bits));
                 assert_eq!(found_name.as_deref(), Some("synthetic_runtime_module"));
                 dec_ref_bits(_py, found_name_bits);

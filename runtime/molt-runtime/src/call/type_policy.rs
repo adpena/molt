@@ -1,8 +1,7 @@
 use crate::{
     PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
-    class_attr_lookup_raw_mro, exception_pending, function_fn_ptr, function_trampoline_ptr,
-    intern_static_name, molt_object_init, molt_object_new_bound, obj_from_bits, object_type_id,
-    runtime_state,
+    class_attr_lookup_raw_mro, function_fn_ptr, function_trampoline_ptr, intern_static_name,
+    molt_object_init, molt_object_new_bound, obj_from_bits, object_type_id, runtime_state,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

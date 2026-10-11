@@ -620,7 +620,7 @@ fn both_list_sorts_select_failure_before_retiring_sole_callback_added_values() {
 unsafe fn call_method(
     receiver: *mut PyObject,
     name: &std::ffi::CStr,
-    args: &[*mut PyObject],
+    args: &mut [*mut PyObject],
 ) -> NativeObjectOwner {
     unsafe {
         let method =
@@ -628,7 +628,7 @@ unsafe fn call_method(
         assert!(!method.as_ptr().is_null(), "missing {name:?}");
         NativeObjectOwner::from_owned(object::PyObject_Vectorcall(
             method.as_ptr(),
-            args.as_ptr(),
+            args.as_mut_ptr(),
             args.len(),
             std::ptr::null_mut(),
         ))
@@ -658,66 +658,66 @@ fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
             let zero = NativeObjectOwner::from_owned(numbers::PyLong_FromLong(0));
             let two = NativeObjectOwner::from_owned(numbers::PyLong_FromLong(2));
             assert!(
-                !call_method(list.as_ptr(), c"append", &[seven.as_ptr()])
+                !call_method(list.as_ptr(), c"append", &mut [seven.as_ptr()])
                     .as_ptr()
                     .is_null()
             );
             assert!(
-                !call_method(list.as_ptr(), c"insert", &[zero.as_ptr(), seven.as_ptr()])
+                !call_method(list.as_ptr(), c"insert", &mut [zero.as_ptr(), seven.as_ptr()])
                     .as_ptr()
                     .is_null()
             );
             assert_values(list.as_ptr(), &[7, 3, 1, 2, 7]);
-            let count = call_method(list.as_ptr(), c"count", &[seven.as_ptr()]);
+            let count = call_method(list.as_ptr(), c"count", &mut [seven.as_ptr()]);
             assert_eq!(numbers::PyLong_AsLong(count.as_ptr()), 2);
-            let index = call_method(list.as_ptr(), c"index", &[seven.as_ptr()]);
+            let index = call_method(list.as_ptr(), c"index", &mut [seven.as_ptr()]);
             assert_eq!(numbers::PyLong_AsLong(index.as_ptr()), 0);
-            let popped = call_method(list.as_ptr(), c"pop", &[]);
+            let popped = call_method(list.as_ptr(), c"pop", &mut []);
             assert_eq!(popped.as_ptr(), seven.as_ptr());
             assert!(
-                !call_method(list.as_ptr(), c"remove", &[seven.as_ptr()])
+                !call_method(list.as_ptr(), c"remove", &mut [seven.as_ptr()])
                     .as_ptr()
                     .is_null()
             );
             let native_tail = ListRoute::Native.list(&[9, 8]);
             assert!(
-                !call_method(list.as_ptr(), c"extend", &[native_tail.as_ptr()])
+                !call_method(list.as_ptr(), c"extend", &mut [native_tail.as_ptr()])
                     .as_ptr()
                     .is_null()
             );
             assert_values(list.as_ptr(), &[3, 1, 2, 9, 8]);
-            let copy = call_method(list.as_ptr(), c"copy", &[]);
+            let copy = call_method(list.as_ptr(), c"copy", &mut []);
             assert!(!copy.as_ptr().is_null());
             assert_values(copy.as_ptr(), &[3, 1, 2, 9, 8]);
             assert!(
-                !call_method(list.as_ptr(), c"reverse", &[])
+                !call_method(list.as_ptr(), c"reverse", &mut [])
                     .as_ptr()
                     .is_null()
             );
             assert_values(list.as_ptr(), &[8, 9, 2, 1, 3]);
-            assert!(!call_method(list.as_ptr(), c"sort", &[]).as_ptr().is_null());
+            assert!(!call_method(list.as_ptr(), c"sort", &mut []).as_ptr().is_null());
             assert_values(list.as_ptr(), &[1, 2, 3, 8, 9]);
-            let repr = call_method(list.as_ptr(), c"__repr__", &[]);
+            let repr = call_method(list.as_ptr(), c"__repr__", &mut []);
             assert_text(repr.as_ptr(), "[1, 2, 3, 8, 9]");
-            let concat = call_method(list.as_ptr(), c"__add__", &[native_tail.as_ptr()]);
+            let concat = call_method(list.as_ptr(), c"__add__", &mut [native_tail.as_ptr()]);
             assert_values(concat.as_ptr(), &[1, 2, 3, 8, 9, 9, 8]);
-            let repeat = call_method(native_tail.as_ptr(), c"__mul__", &[two.as_ptr()]);
+            let repeat = call_method(native_tail.as_ptr(), c"__mul__", &mut [two.as_ptr()]);
             assert_values(repeat.as_ptr(), &[9, 8, 9, 8]);
             assert_eq!(
                 typeobj::PyObject_RichCompareBool(native_tail.as_ptr(), native_tail.as_ptr(), 2),
                 1
             );
             let native_equal = ListRoute::Native.list(&[1, 2, 3, 8, 9]);
-            let equal = call_method(list.as_ptr(), c"__eq__", &[native_equal.as_ptr()]);
+            let equal = call_method(list.as_ptr(), c"__eq__", &mut [native_equal.as_ptr()]);
             assert_eq!(object::PyObject_IsTrue(equal.as_ptr()), 1);
-            let iter = call_method(list.as_ptr(), c"__iter__", &[]);
+            let iter = call_method(list.as_ptr(), c"__iter__", &mut []);
             for expected in [1, 2, 3, 8, 9] {
                 let item = NativeObjectOwner::from_owned(object::PyIter_Next(iter.as_ptr()));
                 assert_eq!(numbers::PyLong_AsLong(item.as_ptr()), expected);
             }
             assert!(object::PyIter_Next(iter.as_ptr()).is_null());
             assert!(errors::PyErr_Occurred().is_null());
-            let reverse = call_method(list.as_ptr(), c"__reversed__", &[]);
+            let reverse = call_method(list.as_ptr(), c"__reversed__", &mut []);
             assert_eq!(
                 sequences::PyList_SetSlice(list.as_ptr(), 1, 5, std::ptr::null_mut()),
                 0
@@ -728,12 +728,12 @@ fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
             );
             assert!(errors::PyErr_Occurred().is_null());
             assert!(
-                !call_method(list.as_ptr(), c"__init__", &[native_tail.as_ptr()])
+                !call_method(list.as_ptr(), c"__init__", &mut [native_tail.as_ptr()])
                     .as_ptr()
                     .is_null()
             );
             assert_values(list.as_ptr(), &[9, 8]);
-            assert!(!call_method(list.as_ptr(), c"clear", &[]).as_ptr().is_null());
+            assert!(!call_method(list.as_ptr(), c"clear", &mut []).as_ptr().is_null());
             assert_values(list.as_ptr(), &[]);
             if matches!(route, ListRoute::Native) {
                 assert!(
@@ -818,7 +818,7 @@ fn native_keyed_sort_uses_physical_keys_and_stable_reverse_order() {
                 let _observation = KeyObservation;
                 KEY_TARGET.set(list.as_ptr());
                 KEY_CALLS.with(|calls| calls.borrow_mut().clear());
-                let args = [
+                let mut args = [
                     key.as_ptr(),
                     if reverse {
                         (&raw mut molt_cpython_abi::abi_types::_Py_TrueStruct).cast()
@@ -828,7 +828,7 @@ fn native_keyed_sort_uses_physical_keys_and_stable_reverse_order() {
                 ];
                 let result = NativeObjectOwner::from_owned(object::PyObject_Vectorcall(
                     method.as_ptr(),
-                    args.as_ptr(),
+                    args.as_mut_ptr(),
                     0,
                     names.as_ptr(),
                 ));
@@ -889,7 +889,7 @@ fn list_pop_distinguishes_none_from_omission_and_converts_before_reading_length(
             let rejected = call_method(
                 list.as_ptr(),
                 c"pop",
-                &[&raw mut molt_cpython_abi::abi_types::Py_None],
+                &mut [&raw mut molt_cpython_abi::abi_types::Py_None],
             );
             assert!(rejected.as_ptr().is_null());
             assert_ne!(
@@ -903,22 +903,22 @@ fn list_pop_distinguishes_none_from_omission_and_converts_before_reading_length(
                 "'NoneType' object cannot be interpreted as an integer",
             );
             assert_values(list.as_ptr(), &[7]);
-            let default = call_method(list.as_ptr(), c"pop", &[]);
+            let default = call_method(list.as_ptr(), c"pop", &mut []);
             assert_eq!(numbers::PyLong_AsLong(default.as_ptr()), 7);
             let index = NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(&mut *class, 0));
             assert!(!index.as_ptr().is_null());
             (*index.as_ptr().cast::<AppendingIndex>()).destination = list.as_ptr();
-            let converted = call_method(list.as_ptr(), c"pop", &[index.as_ptr()]);
+            let converted = call_method(list.as_ptr(), c"pop", &mut [index.as_ptr()]);
             assert_eq!(numbers::PyLong_AsLong(converted.as_ptr()), 44, "{route:?}");
             assert_values(list.as_ptr(), &[]);
             let too_large = NativeObjectOwner::from_owned(numbers::PyLong_FromUnsignedLongLong(
                 isize::MAX as u64 + 1,
             ));
-            for (name, arguments) in [
+            for (name, mut arguments) in [
                 (c"pop", vec![too_large.as_ptr()]),
                 (c"insert", vec![too_large.as_ptr(), default.as_ptr()]),
             ] {
-                let rejected = call_method(list.as_ptr(), name, &arguments);
+                let rejected = call_method(list.as_ptr(), name, &mut arguments);
                 assert!(rejected.as_ptr().is_null());
                 assert_ne!(
                     errors::PyErr_ExceptionMatches((&raw mut PyExc_OverflowError).cast()),
@@ -948,21 +948,21 @@ fn list_iterator_hints_identity_and_target_retirement_follow_live_storage() {
                     } else {
                         c"__iter__"
                     },
-                    &[],
+                    &mut [],
                 );
                 assert!(!iter.as_ptr().is_null());
                 let class = object::Py_TYPE(iter.as_ptr());
-                let hint = call_method(iter.as_ptr(), c"__length_hint__", &[]);
+                let hint = call_method(iter.as_ptr(), c"__length_hint__", &mut []);
                 assert_eq!(numbers::PyLong_AsLong(hint.as_ptr()), 3);
                 let first = NativeObjectOwner::from_owned(object::PyIter_Next(iter.as_ptr()));
                 assert_eq!(
                     numbers::PyLong_AsLong(first.as_ptr()),
                     if reverse { 3 } else { 1 }
                 );
-                let hint = call_method(iter.as_ptr(), c"__length_hint__", &[]);
+                let hint = call_method(iter.as_ptr(), c"__length_hint__", &mut []);
                 assert_eq!(numbers::PyLong_AsLong(hint.as_ptr()), 2);
                 assert_eq!(sequences::PyList_Clear(list.as_ptr()), 0);
-                let hint = call_method(iter.as_ptr(), c"__length_hint__", &[]);
+                let hint = call_method(iter.as_ptr(), c"__length_hint__", &mut []);
                 assert_eq!(numbers::PyLong_AsLong(hint.as_ptr()), 0);
                 assert!(object::PyIter_Next(iter.as_ptr()).is_null());
                 assert!(errors::PyErr_Occurred().is_null());
@@ -971,7 +971,7 @@ fn list_iterator_hints_identity_and_target_retirement_follow_live_storage() {
                     class,
                     "public iterator identity survives target retirement"
                 );
-                let hint = call_method(iter.as_ptr(), c"__length_hint__", &[]);
+                let hint = call_method(iter.as_ptr(), c"__length_hint__", &mut []);
                 assert_eq!(numbers::PyLong_AsLong(hint.as_ptr()), 0);
                 if matches!(route, ListRoute::Native) {
                     assert_eq!(
@@ -1049,18 +1049,18 @@ fn explicit_list_base_descriptors_bypass_native_subclass_mapping_overrides() {
         assert_values(list.as_ptr(), &[7]);
 
         let base = (&raw mut PyList_Type).cast();
-        let item = call_method(base, c"__getitem__", &[list.as_ptr(), zero.as_ptr()]);
+        let item = call_method(base, c"__getitem__", &mut [list.as_ptr(), zero.as_ptr()]);
         assert_eq!(item.as_ptr(), seven.as_ptr());
-        let len = call_method(base, c"__len__", &[list.as_ptr()]);
+        let len = call_method(base, c"__len__", &mut [list.as_ptr()]);
         assert_eq!(numbers::PyLong_AsLong(len.as_ptr()), 1);
         let set = call_method(
             base,
             c"__setitem__",
-            &[list.as_ptr(), zero.as_ptr(), eight.as_ptr()],
+            &mut [list.as_ptr(), zero.as_ptr(), eight.as_ptr()],
         );
         assert!(!set.as_ptr().is_null());
         assert_values(list.as_ptr(), &[8]);
-        let deleted = call_method(base, c"__delitem__", &[list.as_ptr(), zero.as_ptr()]);
+        let deleted = call_method(base, c"__delitem__", &mut [list.as_ptr(), zero.as_ptr()]);
         assert!(!deleted.as_ptr().is_null());
         assert_values(list.as_ptr(), &[]);
         assert_eq!(

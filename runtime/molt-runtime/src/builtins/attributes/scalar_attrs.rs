@@ -429,7 +429,9 @@ mod numeric_member_tests {
             let nan =
                 crate::object::ops::alloc_heap_float(py, f64::from_bits(0x7ff8_0000_0000_0042));
             for receiver in [MoltObject::from_int(3).bits(), wide, nan] {
-                let result = resolve_scalar_attr(py, receiver, "real").unwrap();
+                let result = resolve_scalar_attr(py, receiver, "real")
+                    .expect("numeric member lookup succeeds")
+                    .expect("numeric real member exists");
                 assert_eq!(result, receiver, "exact numeric real retains identity");
                 dec_ref_bits(py, result);
             }
@@ -439,14 +441,17 @@ mod numeric_member_tests {
                 wide,
             ] {
                 for (attr, expected) in [("imag", 0), ("denominator", 1)] {
-                    let result = resolve_scalar_attr(py, receiver, attr).unwrap();
+                    let result = resolve_scalar_attr(py, receiver, attr)
+                        .expect("numeric member lookup succeeds")
+                        .expect("numeric member exists");
                     assert_eq!(obj_from_bits(result).as_int(), Some(expected));
                     assert_eq!(type_of_bits(py, result), builtins.int);
                     dec_ref_bits(py, result);
                 }
             }
-            let bool_real =
-                resolve_scalar_attr(py, MoltObject::from_bool(true).bits(), "real").unwrap();
+            let bool_real = resolve_scalar_attr(py, MoltObject::from_bool(true).bits(), "real")
+                .expect("boolean member lookup succeeds")
+                .expect("boolean real member exists");
             assert_eq!(obj_from_bits(bool_real).as_int(), Some(1));
             dec_ref_bits(py, bool_real);
             for (base, conversion, value) in [
