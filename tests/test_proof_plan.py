@@ -3002,6 +3002,16 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         assert "evidence output is missing" in missing_record["evidence_error"]
     finally:
         proof_plan._clear_evidence_outputs(producer)
+        # Declared evidence is checkout-relative by design; leave the checkout
+        # as the session found it (HF-135). rmdir refuses a non-empty parent,
+        # so a parallel test's evidence stays.
+        for directory in (output.parent, *output.parent.parents):
+            if directory == proof_plan.ROOT:
+                break
+            try:
+                directory.rmdir()
+            except OSError:
+                break
 
 
 def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(
