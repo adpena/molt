@@ -664,7 +664,7 @@ fn legacy_cache_set(_py: &PyToken<'_>, name: &str, bits: u64) {
 }
 
 // Used by the typed deletion transition after a public cache miss.
-#[allow(dead_code)]
+#[cfg(test)]
 fn legacy_cache_del(_py: &PyToken<'_>, name: &str) {
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
@@ -807,7 +807,6 @@ fn module_table_view_replace_deferred(_py: &PyToken<'_>, id: u32, bits: u64) -> 
 
 /// `del sys.modules[name]` over a registry name → `Tombstone`.
 /// Called by normal ensure after observing the public cache; also tested directly.
-#[allow(dead_code)]
 pub(crate) fn module_table_view_tombstone(_py: &PyToken<'_>, id: u32) {
     let Some(table) = module_table(_py) else {
         return;
