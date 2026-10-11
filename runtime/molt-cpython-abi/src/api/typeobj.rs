@@ -1499,7 +1499,9 @@ type TypeVisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
 /// ``type_is_gc`` prevents the collector from invoking this slot for static
 /// types. Heap types own references through the common type header plus
 /// ``PyHeapTypeObject.ht_module``; visiting this exact family is what makes
-/// class/dict/MRO/module cycles observable to the collector.
+/// class/dict/MRO/module cycles observable to the collector. As in CPython,
+/// ``ht_name``, ``ht_qualname`` and ``ht_slots`` (strings and a tuple of
+/// strings) cannot take part in a cycle and are not visited.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_type_traverse(
     op: *mut PyObject,
@@ -1527,9 +1529,6 @@ pub unsafe extern "C" fn molt_type_traverse(
             (*type_).tp_mro,
             (*type_).tp_bases,
             (*type_).tp_base.cast::<PyObject>(),
-            (*heap).ht_name,
-            (*heap).ht_qualname,
-            (*heap).ht_slots,
             (*heap).ht_module,
         ]
     };
