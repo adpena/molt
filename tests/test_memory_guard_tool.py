@@ -7894,7 +7894,7 @@ def test_resolve_relative_executable_resolves_against_parent_cwd(
         [f"relbin/{rel_interp_name}", "-c", "print('x')"]
     )
 
-    assert resolved[0] == str(rel_interp.resolve())
+    assert resolved[0] == str(rel_interp.absolute())
     assert resolved[1:] == ["-c", "print('x')"]
 
 
@@ -7933,6 +7933,63 @@ def test_run_guarded_execs_relative_interpreter_with_other_cwd(
 
     assert result.returncode == 0
     assert result.stdout == "relrun\n"
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ["relative", "canonical-relative", "canonical-absolute", "canonical-path"],
+)
+def test_guarded_interpreter_preserves_virtual_environment(
+    selection, monkeypatch, tmp_path
+):
+    import venv
+    from tools import harness_memory_guard
+
+    environment = tmp_path / "selected-environment"
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(environment)
+    if os.name == "nt":
+        executable = environment / "Scripts" / "python.exe"
+        packages = environment / "Lib" / "site-packages"
+    else:
+        executable = environment / "bin" / "python3"
+        packages = (
+            environment
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+        )
+    packages.mkdir(parents=True, exist_ok=True)
+    (packages / "selected_environment_witness.py").write_text(
+        "VALUE = 'selected environment'\n"
+    )
+    child_cwd = tmp_path / "child"
+    child_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+    command = str(executable.relative_to(tmp_path))
+    if selection == "canonical-absolute":
+        command = str(executable)
+    elif selection == "canonical-path":
+        monkeypatch.setenv(
+            "PATH", str(executable.parent) + os.pathsep + os.environ.get("PATH", "")
+        )
+        command = executable.name
+    if selection.startswith("canonical-"):
+        command = harness_memory_guard.canonical_interpreter(command)
+    result = memory_guard.run_guarded(
+        [
+            command,
+            "-c",
+            "import json,sys,selected_environment_witness as witness;print(json.dumps([sys.prefix,witness.VALUE]))",
+        ],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=str(child_cwd),
+        child_rlimit_kb=1_000_000,
+    )
+    assert result.returncode == 0, result.stderr
+    prefix, witness = json.loads(result.stdout)
+    assert Path(prefix).resolve() == environment.resolve()
+    assert witness == "selected environment"
 
 
 def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
