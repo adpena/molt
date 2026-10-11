@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
 import os
-from pathlib import Path
 import shutil
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
+from molt import file_locks, file_publication
 from molt import temporary_artifacts as scratch
-from molt import file_locks
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
 from tests.process_guard_common import install_module_view
 
@@ -1285,7 +1285,15 @@ def test_success_path_custody_bookkeeping_issues_no_fsync(tmp_path, monkeypatch)
     """
     fsyncs = []
     real_fsync = os.fsync
-    monkeypatch.setattr(os, "fsync", lambda fd: fsyncs.append(fd) or real_fsync(fd))
+    # Only file publication issues fsync on these paths; count it there
+    # without faking os.fsync for the whole process.
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        file_publication,
+        fsync=lambda fd: fsyncs.append(fd) or real_fsync(fd),
+    )
     lease, env = _lease(tmp_path)
     allocation = len(fsyncs)
     receipt = lease.target / ".molt-scratch-target.json"
