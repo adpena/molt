@@ -1648,13 +1648,6 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
     })
 }
 
-/// `PySet_Pop(set)` — remove and return an arbitrary element, or 0 on error.
-pub extern "C" fn PySet_Pop(set: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        crate::object::ops_set::set_pop(py, set).unwrap_or(0)
-    })
-}
-
 /// `PySet_Clear(set)` — remove all elements. Returns 0 on success, -1 on error.
 pub extern "C" fn PySet_Clear(set: u64) -> i32 {
     crate::with_gil_entry_nopanic!(py, {
