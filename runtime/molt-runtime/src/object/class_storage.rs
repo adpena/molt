@@ -741,7 +741,12 @@ impl RuntimeClassRetirement {
         })
     }
 
-    pub(crate) fn detach_identities(&self, py: &PyToken<'_>) {
+    /// `owns_process_cabi`: the retiring runtime owns the process-static C-API
+    /// state. Native GC allocations and retained C thread states live in
+    /// process-wide registries. An isolate is refused C extensions; a census
+    /// of those registries would read the primary runtime's live owners as the
+    /// isolate's survivors, so an isolate checks only its own thread's record.
+    pub(crate) fn detach_identities(&self, py: &PyToken<'_>, owns_process_cabi: bool) {
         assert!(
             self.contents_empty(),
             "class contents survived final callback drain"
@@ -832,15 +837,23 @@ impl RuntimeClassRetirement {
         }
         // Managed views and all incoming projection aliases were retired in
         // the callback-capable fixed point, before reaching this sealed tail.
-        assert!(
-            !crate::object::gc::gc_has_live_native_nodes(),
-            "native owners survived the last callback drain before class retirement"
-        );
-        assert_eq!(
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-            0,
-            "C thread-state owners survived the last callback drain before class retirement"
-        );
+        if owns_process_cabi {
+            assert!(
+                !crate::object::gc::gc_has_live_native_nodes(),
+                "native owners survived the last callback drain before class retirement"
+            );
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                0,
+                "C thread-state owners survived the last callback drain before class retirement"
+            );
+        } else {
+            // An isolate owns only its own thread's C state record.
+            assert!(
+                !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state(),
+                "isolate C thread-state owner survived the last callback drain"
+            );
+        }
         for class in &self.classes {
             assert!(
                 !molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_managed_type_view(class.bits),
