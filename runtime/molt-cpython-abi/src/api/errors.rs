@@ -395,6 +395,31 @@ fn take_raised_error() -> Option<OwnedCError> {
     error
 }
 
+/// A caller's raised error, set aside for one C API call whose own internal
+/// calls must not read it as their failure. CPython's `PyType_Ready` returns 0
+/// for a ready type even while an exception is set.
+pub(crate) struct DetachedCallerError(Option<OwnedCError>);
+
+impl DetachedCallerError {
+    pub(crate) fn detach() -> Self {
+        Self(take_raised_error())
+    }
+
+    /// Success restores the caller's error exactly. Failure keeps the call's
+    /// own error, as a C API that raises replaces the indicator.
+    pub(crate) fn finish(self, succeeded: bool) {
+        let Some(error) = self.0 else {
+            return;
+        };
+        if succeeded {
+            clear_all_pending_errors();
+            restore_current_error_exact(error);
+        } else {
+            with_preserved_error(|| drop(error));
+        }
+    }
+}
+
 /// Explicitly suppress both error channels for APIs such as PyDict_GetItem
 /// whose CPython contract masks lookup/hash failures.
 pub(crate) fn clear_all_pending_errors() {

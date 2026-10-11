@@ -203,6 +203,7 @@ unsafe extern "C" fn payload_str(_value: *mut PyObject) -> *mut PyObject {
     unsafe { strings::PyUnicode_FromString(c"before".as_ptr()) }
 }
 
+#[track_caller]
 unsafe fn text(value: *mut PyObject) -> String {
     let value = unsafe { OwnedPyObject::from_owned(value) };
     let error = errors::take_current_error();
@@ -219,8 +220,17 @@ unsafe fn text(value: *mut PyObject) -> String {
     .unwrap()
 }
 
+#[track_caller]
 unsafe fn exception(ty: *mut PyTypeObject, values: &[*mut PyObject]) -> OwnedPyObject {
-    assert_eq!(unsafe { typeobj::PyType_Ready(ty) }, 0);
+    assert_eq!(
+        unsafe { typeobj::PyType_Ready(ty) },
+        0,
+        "{:?} could not be readied: {:?}",
+        unsafe { std::ffi::CStr::from_ptr((*ty).tp_name) },
+        errors::take_current_error().map(|error| unsafe {
+            std::ffi::CStr::from_ptr((*(*error.value).ob_type).tp_name)
+        }),
+    );
     let args = unsafe { OwnedPyObject::from_owned(sequences::PyTuple_New(values.len() as isize)) };
     assert!(!args.as_ptr().is_null());
     for (index, &value) in values.iter().enumerate() {
@@ -992,6 +1002,25 @@ fn raised_exception_transfer_preserves_identity_through_finalizers() {
     });
 }
 
+/// CPython's `PyType_Ready` returns 0 for a ready type whatever the error
+/// indicator holds, and leaves the caller's exception in place.
+#[test]
+fn type_ready_on_a_ready_type_keeps_the_callers_exception() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|_py| unsafe {
+        let lookup_error = &raw mut PyExc_LookupError;
+        assert_eq!(typeobj::PyType_Ready(lookup_error), 0);
+        let pending = exception(&raw mut PyExc_ValueError, &[]);
+        errors::PyErr_SetRaisedException(object::Py_NewRef(pending.as_ptr()));
+        assert_eq!(typeobj::PyType_Ready(lookup_error), 0);
+        let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(raised.as_ptr(), pending.as_ptr());
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
 #[test]
 fn python_text_transport_preserves_codepoints_and_callback_order() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -1086,6 +1115,7 @@ unsafe fn raw_fixture(bytes: &[u8]) -> *mut PyObject {
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
+#[track_caller]
 unsafe fn borrowed_raw(value: *mut PyObject) -> Vec<u8> {
     assert!(!value.is_null(), "Python-text result failed");
     let bits = GLOBAL_BRIDGE
@@ -1097,6 +1127,7 @@ unsafe fn borrowed_raw(value: *mut PyObject) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(data, length).to_vec() }
 }
 
+#[track_caller]
 unsafe fn take_raw(value: *mut PyObject) -> Vec<u8> {
     let value = unsafe { OwnedPyObject::from_owned(value) };
     let error = errors::take_current_error();

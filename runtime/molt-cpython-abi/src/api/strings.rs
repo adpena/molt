@@ -2190,6 +2190,11 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
             &msg,
         );
     };
+    // Physical long storage first: a C-origin int carrier can resolve to a
+    // heap int identity, which the inline-value checks below do not see.
+    if let Some(value) = crate::api::numbers::physical_long_i128(arg) {
+        return value.ok();
+    }
     // Native int / bool via the bridge handle (exact, no width truncation).
     let bits = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(arg);
     if let Some(bits) = bits {

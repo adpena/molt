@@ -612,7 +612,14 @@ pub unsafe extern "C" fn molt_cpython_abi_type_canonicalize(
 /// need basic tp_base resolution.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
-    unsafe { ready_type(&GLOBAL_BRIDGE, tp) }
+    // Readiness does not depend on the caller's error indicator: CPython
+    // returns 0 for a ready type even while an exception is set. Namespace
+    // exposure calls back into the runtime, which would read a pending
+    // caller error as its own failure, so the error waits outside.
+    let caller_error = crate::api::errors::DetachedCallerError::detach();
+    let status = unsafe { ready_type(&GLOBAL_BRIDGE, tp) };
+    caller_error.finish(status == 0);
+    status
 }
 
 /// The bridge that owns a projection also owns its readiness exposure. Native
