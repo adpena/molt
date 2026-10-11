@@ -177,6 +177,7 @@ from molt.process_spawn import (  # noqa: E402
     inherit_stdio_kwargs,
 )
 from molt import temporary_artifacts as _temporary_artifacts  # noqa: E402
+from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
 from molt.metric_ratios import RatioDirection, signed_ratio_value  # noqa: E402
 from tools import win_job as _win_job  # noqa: E402
 
@@ -622,7 +623,9 @@ def _resolve_relative_executable(
     if candidate.is_absolute():
         return list(command)
     base = Path.cwd() if parent_cwd is None else Path(parent_cwd)
-    resolved = (base / candidate).resolve(strict=False)
+    # The selected entrypoint is semantic: resolving a venv Python symlink
+    # selects the base environment, and resolving a driver alias changes its role.
+    resolved = lexical_executable_path(base / candidate)
     if not resolved.exists():
         return list(command)
     return [str(resolved), *command[1:]]

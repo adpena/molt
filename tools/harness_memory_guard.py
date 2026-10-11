@@ -56,6 +56,7 @@ from molt.dx import (  # noqa: E402
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
+from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
 
@@ -74,7 +75,8 @@ def canonical_interpreter(executable: str) -> str:
     `sys.executable` under `uv run` is an absolute `.venv/bin/python3` symlink
     chain; a relative form (e.g. resolved against a relative repo root by a
     caller) breaks under the memory guard's `cwd`-relative spawn. Resolve to an
-    absolute path so the guarded subprocess can exec it regardless of cwd.
+    absolute path so the guarded subprocess can exec it regardless of cwd,
+    preserving the selected symlink entrypoint and its virtual environment.
     Fail closed with a clear error rather than emit a relative path the guard
     will mis-resolve.
 
@@ -91,7 +93,7 @@ def canonical_interpreter(executable: str) -> str:
                 f"CPython baseline interpreter not found on PATH: {executable!r}"
             )
         path = Path(resolved)
-    abs_path = path.resolve(strict=False)
+    abs_path = lexical_executable_path(path)
     if not abs_path.exists():
         raise FileNotFoundError(f"CPython baseline interpreter missing: {abs_path}")
     return str(abs_path)
