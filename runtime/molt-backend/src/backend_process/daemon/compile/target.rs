@@ -64,6 +64,9 @@ pub(crate) fn compile_daemon_job_output(
         {
             let mut ir = ir;
             let target_triple = job.target_triple.as_deref();
+            let cache_archive_path =
+                crate::backend_process::native_artifact::shared_stdlib_cache_entry_path_from_env()
+                    .map_err(|err| err.to_string())?;
             let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
             let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
             let entry_module =
@@ -76,6 +79,7 @@ pub(crate) fn compile_daemon_job_output(
                     native_output_kind: job.native_output_kind,
                     target_triple,
                     stdlib_archive_path,
+                    cache_archive_path: cache_archive_path.as_deref(),
                     expected_cache_key: expected_stdlib_cache_key.as_deref(),
                     expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
                     have_entry_module,

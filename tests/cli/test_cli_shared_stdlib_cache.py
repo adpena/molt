@@ -201,7 +201,7 @@ def test_stdlib_staging_preserves_primary_error_and_cleanup_evidence(
 
     @contextmanager
     def publication_lock(path: Path):
-        assert path == source
+        assert path in (source, staged)
         yield
 
     def copy(source_path: Path, destination: Path, *, identity) -> None:
@@ -222,11 +222,11 @@ def test_stdlib_staging_preserves_primary_error_and_cleanup_evidence(
     monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", copy)
     monkeypatch.setattr(Path, "unlink", remove)
     with pytest.raises(OSError, match="primary archive copy failure") as caught:
-        BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
             source,
             stdlib_object_cache_key="expected",
             stdlib_object_manifest="manifest",
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / source.name,
         )
     assert caught.value is primary
     assert primary.__cause__ is cause
@@ -1970,7 +1970,8 @@ from pathlib import Path
 import sys
 import molt.cli as cli
 
-lock_path = cli._shared_stdlib_publish_lock_path(Path(sys.argv[1]))
+from molt.default_paths import shared_stdlib_publish_lock_path
+lock_path = shared_stdlib_publish_lock_path(Path(sys.argv[1]))
 lock_path.parent.mkdir(parents=True, exist_ok=True)
 fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
 try:
@@ -2114,7 +2115,11 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
     @contextmanager
     def publication_lock(path):
         nonlocal locked
-        assert path == source
+        if path != source:
+            assert path == artifacts / "shared-stdlib-link" / source.name
+            assert locked
+            yield
+            return
         locked = True
         try:
             yield
@@ -2140,11 +2145,11 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
     monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
     monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_matches_key", validate)
     monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", copy)
-    staged = BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+    staged = BACKEND_CACHE._hydrate_shared_stdlib_archive(
         source,
         stdlib_object_cache_key="expected",
         stdlib_object_manifest="manifest",
-        artifacts_root=artifacts,
+        output_path=artifacts / "shared-stdlib-link" / source.name,
     )
     assert validations == 1
     assert staged.parent == artifacts / "shared-stdlib-link"
@@ -2158,17 +2163,17 @@ def test_stdlib_snapshot_rejects_source_alias_without_invalidation(
     source = tmp_path / "shared-stdlib-link" / "stdlib.a"
     source.parent.mkdir()
     source.write_bytes(b"source must survive")
-    with pytest.raises(OSError, match="snapshot aliases its source"):
-        BACKEND_CACHE._stage_shared_stdlib_object_for_link(
+    with pytest.raises(OSError, match="distinct from its source"):
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
             source,
             stdlib_object_cache_key="expected",
             stdlib_object_manifest="manifest",
-            artifacts_root=tmp_path,
+            output_path=tmp_path / "shared-stdlib-link" / source.name,
         )
     assert source.read_bytes() == b"source must survive"
 
 
-def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sidecar(
+def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
     tmp_path: Path,
 ) -> None:
     stdlib_object = tmp_path / "cache" / "stdlib_shared_test.a"
@@ -2176,24 +2181,28 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     stdlib_object.write_bytes(_stdlib_archive_fixture())
     artifacts_root = tmp_path / "artifacts"
 
-    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
-        cli._stage_shared_stdlib_object_for_link(
+    assert (
+        cli._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
         )
+        is None
+    )
 
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
-    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
-        cli._stage_shared_stdlib_object_for_link(
+    assert (
+        cli._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
         )
+        is None
+    )
 
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "abc123\n", encoding="utf-8"
@@ -2201,43 +2210,49 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "7\n", encoding="utf-8"
     )
-    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
-        cli._stage_shared_stdlib_object_for_link(
+    assert (
+        cli._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
         )
+        is None
+    )
 
     cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("abc123") + "\n", encoding="utf-8"
     )
-    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
-        cli._stage_shared_stdlib_object_for_link(
+    assert (
+        cli._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
         )
+        is None
+    )
 
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
-    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
-        cli._stage_shared_stdlib_object_for_link(
+    assert (
+        cli._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
-            artifacts_root=artifacts_root,
+            output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
         )
+        is None
+    )
 
     _write_object_digest_sidecar(stdlib_object)
 
-    staged = cli._stage_shared_stdlib_object_for_link(
+    staged = cli._hydrate_shared_stdlib_archive(
         stdlib_object,
         stdlib_object_cache_key="abc123",
         stdlib_object_manifest=_manifest("abc123"),
-        artifacts_root=artifacts_root,
+        output_path=artifacts_root / "shared-stdlib-link" / stdlib_object.name,
     )
 
     assert staged.exists()
@@ -2992,3 +3007,219 @@ def test_backend_features_for_target_single_source_of_truth(
     assert cli._backend_features_for_build_target(
         target="wasm", is_wasm=True, codegen_backend="cranelift"
     ) == ("wasm-backend",)
+
+
+@pytest.mark.parametrize("failure", ["evicted", "reader"])
+def test_optional_native_candidate_loss_is_a_miss_but_reader_failure_is_not(
+    tmp_path, monkeypatch, failure
+):
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    candidate = tmp_path / "candidate.a"
+    candidate.write_bytes(
+        static_archive_bytes(
+            native_relocatable_object(
+                target_triple=contract.target_triple, symbols=("molt_main",)
+            )
+        )
+    )
+    output = tmp_path / "output.a"
+    original = BACKEND_CACHE._native_object_has_unresolved_module_chunks
+
+    def lose_candidate(path, *args, **kwargs):
+        if failure == "reader":
+            raise native_symbol_inspection.NativeSymbolInspectionError(
+                path, ["reader unavailable"]
+            )
+        candidate.unlink()
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_native_object_has_unresolved_module_chunks", lose_candidate
+    )
+
+    def admit():
+        return BACKEND_CACHE._try_cached_backend_candidates(
+            project_root=tmp_path,
+            cache_candidates=[("module", candidate)],
+            output_artifact=output,
+            artifact_contract=contract,
+            cache_key="module",
+            function_cache_key=None,
+            cache_path=candidate,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            warnings=[],
+        )
+
+    if failure == "reader":
+        with pytest.raises(
+            native_symbol_inspection.NativeSymbolInspectionError,
+            match="reader unavailable",
+        ):
+            admit()
+        assert candidate.exists()
+    else:
+        assert admit() == (False, None)
+        assert not candidate.exists()
+    assert not output.exists()
+
+
+def test_hydrated_required_stdlib_survives_optional_cache_eviction(tmp_path):
+    from molt import cache_eviction
+    from molt.default_paths import shared_stdlib_cache_entry
+
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    cache = tmp_path / "cache"
+    entry, _lock = shared_stdlib_cache_entry(cache, "a" * 64)
+    source = entry / "stdlib.a"
+    source.parent.mkdir(parents=True)
+    _write_stdlib_archive_fixture(
+        source, "a" * 64, target_triple=contract.target_triple
+    )
+    output = tmp_path / "build" / "owned.a"
+    admitted = BACKEND_CACHE._hydrate_shared_stdlib_archive(
+        source,
+        output_path=output,
+        stdlib_object_cache_key="a" * 64,
+        stdlib_object_manifest=_manifest("a" * 64),
+        target_triple=contract.target_triple,
+    )
+    assert admitted == output
+    before = {
+        path: path.read_bytes()
+        for path in _shared_stdlib_cleanup_paths(output)
+        if path.exists()
+    }
+    summary = cache_eviction._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
+    assert summary["entries_removed"] == 1
+    assert not entry.exists()
+    BACKEND_CACHE._validate_shared_stdlib_output_for_link(
+        output,
+        stdlib_object_cache_key="a" * 64,
+        stdlib_object_manifest=_manifest("a" * 64),
+        target_triple=contract.target_triple,
+    )
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("key", ["aa" + "0" * 62, "bb" + "0" * 62])
+@pytest.mark.parametrize("leaf", ["stdlib.a", "nested/owned.a"])
+def test_hydration_refuses_required_output_in_evictable_entry_before_lock(
+    tmp_path, monkeypatch, key, leaf
+):
+    source = tmp_path / "cache" / "shared-stdlib" / ("aa" + "1" * 62) / "stdlib.a"
+    output = source.parent.parent / key / leaf
+
+    def no_lock(*args, **kwargs):
+        pytest.fail("invalid output must fail before acquiring either stripe")
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", no_lock)
+    with pytest.raises(OSError, match="outside cache entries"):
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
+            source,
+            output_path=output,
+            stdlib_object_cache_key=None,
+            stdlib_object_manifest=None,
+        )
+    assert not output.exists()
+
+
+def test_hydration_refuses_parent_alias_to_cache_before_lock(tmp_path, monkeypatch):
+    entry = tmp_path / "cache" / "shared-stdlib" / ("a" * 64)
+    entry.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(entry, target_is_directory=True)
+
+    def no_lock(*args, **kwargs):
+        pytest.fail("physical cache alias must fail before locks")
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", no_lock)
+    for output in (alias / "owned.a", entry / "unused" / ".." / "owned.a"):
+        with pytest.raises(OSError, match="outside cache entries"):
+            BACKEND_CACHE._hydrate_shared_stdlib_archive(
+                entry / "stdlib.a",
+                output_path=output,
+                stdlib_object_cache_key=None,
+                stdlib_object_manifest=None,
+            )
+
+
+@pytest.mark.parametrize("failed_lock", ["source", "destination"])
+def test_hydration_lock_admission_failure_preserves_existing_owned_output(
+    tmp_path, monkeypatch, failed_lock
+):
+    source = tmp_path / "source.a"
+    output = tmp_path / "owned.a"
+    output.write_bytes(b"existing required generation")
+
+    @contextmanager
+    def lock(path):
+        if path == (source if failed_lock == "source" else output):
+            raise OSError("lock admission failed")
+        yield
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", lock)
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_remove_shared_stdlib_cache_artifacts",
+        lambda path: pytest.fail("lock admission does not own invalidation"),
+    )
+    with pytest.raises(OSError, match="lock admission failed"):
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
+            source,
+            output_path=output,
+            stdlib_object_cache_key=None,
+            stdlib_object_manifest=None,
+        )
+    assert output.read_bytes() == b"existing required generation"
+
+
+def test_hydration_copy_failure_cleans_only_while_destination_lock_is_owned(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.a"
+    output = tmp_path / "owned.a"
+    source.write_bytes(b"source")
+    output.write_bytes(b"old")
+    active = set()
+
+    @contextmanager
+    def lock(path):
+        active.add(path)
+        try:
+            yield
+        finally:
+            active.remove(path)
+            if path == output:
+                output.write_bytes(b"next successful generation")
+
+    monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", lock)
+    identity = native_symbol_inspection._native_symbol_artifact_identity(source)
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_generation_token",
+        lambda *a, **k: ("generation", (identity,)),
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_shared_stdlib_cache_matches_key", lambda *a, **k: True
+    )
+
+    def fail_copy(*a, **k):
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(BACKEND_CACHE, "_copy_verified_backend_artifact", fail_copy)
+    original = BACKEND_CACHE._remove_shared_stdlib_cache_artifacts
+
+    def cleanup(path):
+        assert output in active
+        original(path)
+
+    monkeypatch.setattr(BACKEND_CACHE, "_remove_shared_stdlib_cache_artifacts", cleanup)
+    with pytest.raises(OSError, match="copy failed"):
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
+            source,
+            output_path=output,
+            stdlib_object_cache_key=None,
+            stdlib_object_manifest=None,
+        )
+    assert output.read_bytes() == b"next successful generation"

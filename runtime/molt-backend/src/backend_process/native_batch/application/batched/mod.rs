@@ -4,7 +4,6 @@ mod run;
 
 use std::io;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use molt_backend::SimpleIR;
 
@@ -30,8 +29,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
         options.app_callable_manifest = Some(std::mem::take(&mut plan.app_callable_manifest));
     }
 
-    let tmp_dir = native_application_batch_temp_dir();
-    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_dir = super::super::create_native_batch_temp_dir()?;
     let compile_result = (|| -> io::Result<()> {
         let batch_specs = jobs::materialize_native_application_batch_jobs(
             &tmp_dir,
@@ -58,15 +56,4 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
         function_count,
         batch_count: total_batches,
     })
-}
-
-fn native_application_batch_temp_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "molt_batch_{}_{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ))
 }

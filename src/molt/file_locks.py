@@ -13,6 +13,8 @@ import threading
 import time
 from typing import BinaryIO
 
+from molt.default_paths import _default_molt_cache, shared_cache_lock_path
+
 
 @dataclass
 class _InProcessLockEntry:
@@ -454,3 +456,26 @@ def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
     except ValueError:
         return default_s
     return parsed if parsed > 0 else None
+
+
+@contextlib.contextmanager
+def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
+    if cache_root is None:
+        cache_root = _default_molt_cache()
+    lock_path = shared_cache_lock_path(cache_root, name)
+    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
+    lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
+    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=lock_timeout,
+        timeout_message=(
+            "Timed out waiting for shared cache lock "
+            f"{lock_path} after {timeout_label}. "
+            "Check for stale molt build/backend helper processes."
+        ),
+    )
+    try:
+        yield
+    finally:
+        _release_file_lock(handle)

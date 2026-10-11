@@ -777,13 +777,13 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     let stdlib = tmp_dir.join("empty-stdlib.a");
 
     compile_stdlib_cache_archive(
-        &stdlib,
         Vec::new(),
         None,
         None,
         "MOLT_BACKEND(test)",
         molt_backend::NativeBackendModuleContext::default(),
         None,
+        |objects| crate::backend_process::write_native_archive_objects(&stdlib, objects),
     )
     .expect("empty stdlib cache must emit an object");
 

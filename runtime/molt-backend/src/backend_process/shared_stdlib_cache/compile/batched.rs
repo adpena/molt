@@ -1,5 +1,5 @@
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use molt_backend::SimpleIR;
@@ -7,22 +7,21 @@ use molt_backend::SimpleIR;
 use super::super::super::io_limits::write_json_artifact;
 use super::super::super::native_batch::{
     NativeBatchObjectJob, append_referenced_external_declarations, batch_external_function_names,
-    finish_native_batch_temp_dir, release_native_backend_batch_memory_to_os,
-    run_native_batch_worker_with_failure_artifacts, write_native_archive_objects,
+    create_native_batch_temp_dir, finish_native_batch_temp_dir,
+    release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
 use super::super::publish::StdlibObjectCache;
 use super::plan::{StdlibBatchPlan, log_stdlib_batch, stdlib_batch_ops_budget};
 
 pub(super) fn compile_batched_stdlib_cache_archive(
-    stdlib_path: &Path,
     plan: StdlibBatchPlan,
     profile: Option<molt_backend::PgoProfileIR>,
     target_triple: Option<&str>,
     log_prefix: &str,
     cache: Option<&StdlibObjectCache>,
+    publish: impl FnOnce(&[PathBuf]) -> io::Result<()>,
 ) -> io::Result<()> {
-    let stdlib_tmp_dir = super::super::stdlib_cache_temp_publish_path(stdlib_path, "objects");
-    std::fs::create_dir_all(&stdlib_tmp_dir)?;
+    let stdlib_tmp_dir = create_native_batch_temp_dir()?;
     let compile_result = (|| -> io::Result<()> {
         let total = plan.batches.len();
         let mut specs = Vec::with_capacity(total);
@@ -105,17 +104,19 @@ pub(super) fn compile_batched_stdlib_cache_archive(
             paths.push(object);
         }
         let codegen_elapsed = codegen_started.elapsed();
-        let assembly_started = Instant::now();
-        write_native_archive_objects(stdlib_path, &paths)?;
+        let publication_started = Instant::now();
+        // Completed objects remain owned until final assembly/publication and
+        // its short cache lock finish. No archive-sized intermediate copy.
+        publish(&paths)?;
         eprintln!(
-            "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; admission {:?}, codegen {:?}, assembly {:?}",
+            "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; admission {:?}, codegen {:?}, publication {:?}",
             hits,
             total - hits,
             reused_bytes,
             emitted_bytes,
             admission_elapsed,
             codegen_elapsed,
-            assembly_started.elapsed(),
+            publication_started.elapsed(),
         );
         Ok(())
     })();

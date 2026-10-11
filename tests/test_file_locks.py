@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import errno
-from pathlib import Path
 import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -124,7 +124,7 @@ def test_file_lock_failures_propagate_and_release_process_reservation(
     calls = []
     error = OSError(errno.EACCES if phase == "open" else errno.EIO, "fixture failure")
 
-    def fail(_value):
+    def fail(_value, **_kwargs):
         calls.append(phase)
         raise error
 
@@ -311,8 +311,8 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
     original = build_locks._open_file_lock_handle
     result = []
 
-    def delayed_open(path):
-        stream = original(path)
+    def delayed_open(path, **kwargs):
+        stream = original(path, **kwargs)
         opened.set()
         assert proceed.wait(5)
         return stream
@@ -636,8 +636,8 @@ def test_descriptor_io_does_not_hold_global_mutex_and_fork_waits(
     if transition == "birth":
         original = build_locks._open_file_lock_handle
 
-        def delayed(candidate):
-            stream = original(candidate)
+        def delayed(candidate, **kwargs):
+            stream = original(candidate, **kwargs)
             if candidate == path:
                 entered.set()
                 assert proceed.wait(5)
@@ -795,3 +795,35 @@ print('RESET_COMPLETE_OR_CLOSED')
     )
     assert result.returncode == 0, result.stderr
     assert "RESET_COMPLETE_OR_CLOSED" in result.stdout
+
+
+def test_observing_absent_lock_creates_no_directory_or_registry_entry(tmp_path):
+    path = tmp_path / "absent-control" / "owner.lock"
+    baseline = dict(build_locks._IN_PROCESS_LOCK_REGISTRY)
+    assert build_locks._in_process_lock_key(path) not in baseline
+    with pytest.raises(FileNotFoundError):
+        build_locks._try_acquire_file_lock(path, create=False)
+    assert not path.parent.exists()
+    assert build_locks._IN_PROCESS_LOCK_REGISTRY == baseline
+
+
+def test_observing_existing_lock_preserves_bytes_inode_and_mtime(tmp_path):
+    path = tmp_path / "owner.lock"
+    path.write_bytes(b"existing ownership state")
+    baseline = dict(build_locks._IN_PROCESS_LOCK_REGISTRY)
+    assert build_locks._in_process_lock_key(path) not in baseline
+    before = path.stat()
+    handle = build_locks._try_acquire_file_lock(path, create=False)
+    assert handle is not None
+    try:
+        assert build_locks._try_acquire_file_lock(path, create=False) is None
+    finally:
+        build_locks._release_file_lock(handle)
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mtime_ns,
+    )
+    assert path.read_bytes() == b"existing ownership state"
+    assert build_locks._IN_PROCESS_LOCK_REGISTRY == baseline

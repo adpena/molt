@@ -3,25 +3,36 @@ use std::path::Path;
 
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::sidecars::{remove_shared_stdlib_cache_artifacts, write_shared_stdlib_cache_sidecars};
-use molt_artifact_publish::{
-    AtomicPublicationError, PublicationState, cleanup_temporary_after_error,
-    commit_existing_file_atomically,
-};
+use molt_artifact_publish::{AtomicPublicationError, PublicationState};
 
 pub(crate) fn publish_shared_stdlib_cache_archive(
     stdlib_path: &Path,
-    temp_archive_path: &Path,
+    publish_archive: impl FnOnce(&Path) -> io::Result<()>,
     stdlib_count: usize,
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
     partition_manifest: &str,
 ) -> io::Result<()> {
-    let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
+    with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         // A pre-transfer failure preserves the prior generation. A successful
         // replacement followed by a durability failure does not: invalidate its
         // now-mixed sidecars while still holding the publication lock.
-        if let Err(error) = commit_existing_file_atomically(temp_archive_path, stdlib_path) {
-            return Err(abort_archive_publication(stdlib_path, error));
+        if let Err(error) = publish_archive(stdlib_path) {
+            // The shared archive writer keeps the typed replacement state in
+            // its io::Error. Preserve it while invalidating only a committed
+            // mixed generation; ordinary pre-publication I/O leaves it intact.
+            if error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<AtomicPublicationError>())
+            {
+                let publication = error
+                    .into_inner()
+                    .expect("typed publication error")
+                    .downcast::<AtomicPublicationError>()
+                    .expect("checked publication type");
+                return Err(abort_archive_publication(stdlib_path, *publication));
+            }
+            return Err(error);
         }
         if let Err(err) = write_shared_stdlib_cache_sidecars(
             stdlib_path,
@@ -38,8 +49,7 @@ pub(crate) fn publish_shared_stdlib_cache_archive(
             ));
         }
         Ok(())
-    });
-    result.map_err(|error| cleanup_temporary_after_error(temp_archive_path, error))
+    })
 }
 
 fn abort_archive_publication(path: &Path, mut error: AtomicPublicationError) -> io::Error {
@@ -81,7 +91,11 @@ mod tests {
         assert!(
             publish_shared_stdlib_cache_archive(
                 &destination,
-                &missing,
+                |destination| molt_artifact_publish::commit_existing_file_atomically(
+                    &missing,
+                    destination
+                )
+                .map_err(Into::into),
                 2,
                 Some("new-key"),
                 Some("new-manifest"),
@@ -127,17 +141,22 @@ mod tests {
             "old-partition",
         )
         .expect("seed old sidecars");
-        let error = with_shared_stdlib_cache_publish_lock(&destination, || -> io::Result<()> {
-            std::fs::write(&destination, b"new")?;
-            Err(abort_archive_publication(
-                &destination,
-                AtomicPublicationError::new(
-                    &destination,
+        let error = publish_shared_stdlib_cache_archive(
+            &destination,
+            |destination| {
+                std::fs::write(destination, b"new")?;
+                Err(AtomicPublicationError::new(
+                    destination,
                     PublicationState::Replaced,
                     io::Error::other("injected post-replacement durability failure"),
-                ),
-            ))
-        })
+                )
+                .into())
+            },
+            1,
+            Some("new-key"),
+            Some("new-manifest"),
+            "new-partition",
+        )
         .expect_err("post-transfer abort");
         assert!(error.to_string().contains("destination replaced"));
         assert!(!destination.exists());
@@ -168,7 +187,10 @@ mod tests {
             .expect("block sidecar publication and cleanup");
         let error = publish_shared_stdlib_cache_archive(
             &destination,
-            &temporary,
+            |destination| {
+                molt_artifact_publish::commit_existing_file_atomically(&temporary, destination)
+                    .map_err(Into::into)
+            },
             1,
             Some("new-key"),
             Some("new-manifest"),

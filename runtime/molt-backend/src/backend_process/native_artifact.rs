@@ -5,7 +5,10 @@
     all(any(unix, test), feature = "wasm-backend")
 ))]
 pub(crate) fn shared_stdlib_archive_path_from_env() -> std::io::Result<Option<String>> {
-    decode_shared_stdlib_archive_path(std::env::var_os("MOLT_STDLIB_OBJ"))
+    let output = decode_shared_stdlib_archive_path(std::env::var_os("MOLT_STDLIB_OBJ"))?;
+    let cache = shared_stdlib_cache_entry_path_from_env()?;
+    validate_shared_stdlib_cache_output(output.as_deref(), cache.as_deref())?;
+    Ok(output)
 }
 
 #[cfg(any(test, feature = "native-backend", all(unix, feature = "wasm-backend")))]
@@ -70,6 +73,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optional_cache_requires_distinct_required_output_before_admission() {
+        for output in [None, Some("cache/stdlib.a")] {
+            assert_eq!(
+                validate_shared_stdlib_cache_output(output, Some("cache/stdlib.a"))
+                    .expect_err("cache cannot be required output")
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+        validate_shared_stdlib_cache_output(
+            Some("build/stdlib.a"),
+            Some(&format!("cache/shared-stdlib/{}/stdlib.a", "a".repeat(64))),
+        )
+        .unwrap();
+        validate_shared_stdlib_cache_output(Some("standalone.a"), None).unwrap();
+    }
+
+    #[test]
     fn native_transport_protocol_labels_roundtrip_without_aliasing() {
         for (kind, label) in [
             (NativeArtifactKind::Object, "object"),
@@ -130,4 +151,66 @@ mod tests {
         assert!(error.to_string().contains("MOLT_STDLIB_OBJ"));
         assert!(error.to_string().contains("Unicode"));
     }
+}
+
+/// Optional cache destination is independent of the required archive output.
+pub(crate) fn shared_stdlib_cache_entry_path_from_env() -> std::io::Result<Option<String>> {
+    match std::env::var("MOLT_STDLIB_CACHE_ENTRY") {
+        Ok(path) if path.is_empty() => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MOLT_STDLIB_CACHE_ENTRY must not be empty",
+        )),
+        Ok(path) => {
+            #[cfg(feature = "native-backend")]
+            let path =
+                super::shared_stdlib_cache::resolved_archive_path(std::path::Path::new(&path))?
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "resolved stdlib cache path requires Unicode",
+                        )
+                    })?;
+            Ok(Some(path))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MOLT_STDLIB_CACHE_ENTRY requires a Unicode path",
+        )),
+    }
+}
+
+/// Validate before daemon cache admission as well as direct typed preparation.
+pub(crate) fn validate_shared_stdlib_cache_output(
+    output: Option<&str>,
+    cache: Option<&str>,
+) -> std::io::Result<()> {
+    #[cfg(feature = "native-backend")]
+    if let Some(cache) = cache {
+        let cache = super::shared_stdlib_cache::resolved_archive_path(std::path::Path::new(cache))?;
+        if super::shared_stdlib_cache::canonical_stdlib_cache_root(&cache)?.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "shared stdlib cache entry must use the canonical shared-stdlib archive path",
+            ));
+        }
+    }
+    #[cfg(feature = "native-backend")]
+    if let Some(output) = output {
+        super::shared_stdlib_cache::validate_required_stdlib_output(
+            std::path::Path::new(output),
+            cache.map(std::path::Path::new),
+        )?;
+    }
+    if let Some(cache) = cache {
+        if output.is_none_or(|output| std::path::Path::new(output) == std::path::Path::new(cache)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "shared stdlib cache entry requires a distinct build-owned archive output",
+            ));
+        }
+    }
+    Ok(())
 }
