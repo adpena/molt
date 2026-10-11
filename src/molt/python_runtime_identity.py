@@ -37,7 +37,7 @@ from molt.python_native_dependency_custody import (
     _native_dependency_closure,
 )
 from molt.python_environment_location import python_startup_configuration_paths
-from molt.python_native_locations import _native_contract_valid
+from molt.python_native_locations import _loader_name, _native_contract_valid
 
 PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
@@ -73,6 +73,20 @@ _RUNTIME_IDENTITY_FIELDS = frozenset(
 )
 
 
+def _interpreter_machine() -> str:
+    """The running interpreter's machine name, read without host queries.
+
+    On Windows, CPython answers ``platform.machine()`` with a WMI query over
+    COM, which loads provider images into the process that COM later frees.
+    A startup selection must not depend on that traffic (HF-169). The
+    interpreter's build platform names its architecture and loads nothing;
+    on POSIX, ``platform.machine()`` reads ``os.uname()`` itself.
+    """
+    if os.name == "nt":
+        return sysconfig.get_platform().removeprefix("win-")
+    return os.uname().machine
+
+
 def _platform_identity() -> dict[str, object]:
     if sys.implementation.name != "cpython" or sys.version_info < (3, 12):
         raise PythonEnvironmentIdentityError(
@@ -87,7 +101,7 @@ def _platform_identity() -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             f"unsupported provisioned-Python operating system: {sys.platform}"
         )
-    raw_architecture = platform.machine().strip().casefold()
+    raw_architecture = _interpreter_machine().strip().casefold()
     architecture = {
         "amd64": "x86_64",
         "x86_64": "x86_64",
@@ -367,43 +381,93 @@ def _runtime_import_candidates(
     return directories, archives
 
 
-def startup_selection_difference(
-    before: Mapping[str, object], after: Mapping[str, object]
-) -> list[str]:
-    """Name what changed between two startup selections, bounded for messages.
+def _native_name_bindings(
+    census: Mapping[str, object], system: str
+) -> dict[str, tuple[str, ...]]:
+    """Loader name to the image paths one census binds it to."""
 
-    A native census change lists the images gained and lost, so a refused
-    selection says which loader event moved it.
+    bindings: dict[str, set[str]] = {}
+    paths = census.get("paths")
+    for path in paths if isinstance(paths, list) else ():
+        name = _loader_name(Path(str(path)).name, system)
+        bindings.setdefault(name, set()).add(str(path))
+    aliases = census.get("aliases")
+    for name, path in aliases.items() if isinstance(aliases, Mapping) else ():
+        bindings.setdefault(_loader_name(str(name), system), set()).add(str(path))
+    return {name: tuple(sorted(found)) for name, found in bindings.items()}
+
+
+def startup_selection_difference(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    *,
+    admit_new_images: bool,
+) -> list[str]:
+    """What makes ``after`` disagree with the admitted ``before``; empty if none.
+
+    Every startup selector must match exactly. The native census binds how
+    the loader resolved the images both censuses hold: the executable, the
+    paths behind each loader name, and each shared image's identity. An
+    image ``after`` no longer holds was freed, which keeps the admitted
+    closure sound. A later census of the same process admits new images: the
+    capture loads some on first use (``kernel.appcore.dll`` on hosted
+    Windows). A fresh minimal launch does less work than the admitted
+    process, so an image only it holds is a new startup provider (HF-169).
     """
 
-    def names(paths: object) -> set[str]:
-        return {str(path) for path in paths} if isinstance(paths, list) else set()
+    changes = [
+        key
+        for key in sorted(set(before) | set(after))
+        if key != "native" and before.get(key) != after.get(key)
+    ]
+    old, new = before.get("native"), after.get("native")
+    if not isinstance(old, Mapping) or not isinstance(new, Mapping):
+        return changes + (["native"] if old != new else [])
+    if old.get("executable") != new.get("executable"):
+        changes.append("native executable")
+    platform_payload = before.get("platform")
+    system = (
+        str(platform_payload.get("operating_system", ""))
+        if isinstance(platform_payload, Mapping)
+        else ""
+    )
+    old_names = _native_name_bindings(old, system)
+    new_names = _native_name_bindings(new, system)
+    moved = sorted(
+        name
+        for name in old_names.keys() & new_names.keys()
+        if old_names[name] != new_names[name]
+    )
+    changes += [
+        f"native image {name}: {', '.join(old_names[name])} -> "
+        f"{', '.join(new_names[name])}"
+        for name in moved[:4]
+    ]
+    if len(moved) > 4:
+        changes.append(f"{len(moved) - 4} more native images moved")
+    if not admit_new_images:
+        gained = sorted(new_names.keys() - old_names.keys())
+        changes += [
+            f"native image {name} gained: {', '.join(new_names[name])}"
+            for name in gained[:4]
+        ]
+        if len(gained) > 4:
+            changes.append(f"{len(gained) - 4} more native images gained")
 
-    def shown(items: set[str]) -> str:
-        listed = sorted(items)
-        return ", ".join(listed[:4]) + (
-            f" (+{len(listed) - 4} more)" if len(listed) > 4 else ""
-        )
+    def identities(census: Mapping[str, object]) -> dict[str, object]:
+        rows = census.get("macho_identities")
+        return {
+            str(row[0]): row[1]
+            for row in (rows if isinstance(rows, list) else ())
+            if isinstance(row, list) and len(row) == 2
+        }
 
-    changes: list[str] = []
-    for key in sorted(set(before) | set(after)):
-        old, new = before.get(key), after.get(key)
-        if old == new:
-            continue
-        if key == "native" and isinstance(old, Mapping) and isinstance(new, Mapping):
-            gained = names(new.get("paths")) - names(old.get("paths"))
-            lost = names(old.get("paths")) - names(new.get("paths"))
-            fields = sorted(
-                field
-                for field in set(old) | set(new)
-                if field != "paths" and old.get(field) != new.get(field)
-            )
-            parts = [f"gained {shown(gained)}"] if gained else []
-            parts += [f"lost {shown(lost)}"] if lost else []
-            parts += [f"changed {', '.join(fields)}"] if fields else []
-            changes.append("native images " + "; ".join(parts))
-        else:
-            changes.append(key)
+    old_ids, new_ids = identities(old), identities(new)
+    changes += [
+        f"native image identity {path}"
+        for path in sorted(old_ids.keys() & new_ids.keys())
+        if old_ids[path] != new_ids[path]
+    ]
     return changes
 
 
@@ -544,12 +608,12 @@ def _capture_runtime_with_context(
     )
 
     def verify_runtime_selection() -> None:
-        present = startup_membership()
-        current = current_python_runtime_selection()
-        if present != startup_files or current != selection:
-            changes = startup_selection_difference(selection, current)
-            if present != startup_files:
-                changes.insert(0, "startup configuration files")
+        changes = startup_selection_difference(
+            selection, current_python_runtime_selection(), admit_new_images=True
+        )
+        if startup_membership() != startup_files:
+            changes.insert(0, "startup configuration files")
+        if changes:
             raise PythonEnvironmentIdentityError(
                 "CPython runtime/import selection changed after capture: "
                 + "; ".join(changes)

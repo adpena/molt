@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import platform
+import sys
 from typing import Any
 from pathlib import Path
 
@@ -11,7 +13,10 @@ import pytest
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
-from tests.process_guard_common import run_custody_subject_process
+from tests.process_guard_common import (
+    install_module_view,
+    run_custody_subject_process,
+)
 
 
 @pytest.mark.parametrize(
@@ -251,31 +256,115 @@ def test_runtime_receipt_platform_version_architecture_matrix(
     }
 
 
-def test_startup_selection_difference_names_fields_and_native_images() -> None:
-    before = {
+def test_platform_identity_makes_no_host_machine_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows CPython answers these through WMI over COM (HF-169)."""
+
+    def host_query(*_args: object) -> object:
+        raise AssertionError("platform identity queried the host machine")
+
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        runtime,
+        machine=host_query,
+        processor=host_query,
+        uname=host_query,
+        win32_ver=host_query,
+    )
+
+    identity = runtime._platform_identity()
+
+    assert identity["architecture"] in {"x86_64", "arm64"}
+    assert identity["pointer_bits"] == 64
+
+
+def test_platform_identity_loads_no_native_image() -> None:
+    """The startup selection censuses loaded images, then a verification
+    fence censuses them again. An image the identity itself loads, such as a
+    WMI provider COM frees later, changes the second census (HF-169)."""
+
+    program = (
+        "import json, sys\n"
+        "from molt import python_runtime_identity as runtime\n"
+        "from molt.python_native_locations import _loaded_native_module_snapshot\n"
+        "system = {'win32': 'windows', 'darwin': 'macos', 'linux': 'linux'}"
+        "[sys.platform]\n"
+        "before = {str(path) for path in _loaded_native_module_snapshot(system).paths}\n"
+        "runtime._platform_identity()\n"
+        "after = {str(path) for path in _loaded_native_module_snapshot(system).paths}\n"
+        "print(json.dumps(sorted(after - before)))\n"
+    )
+    completed = run_custody_subject_process(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            f"import sys; sys.path[:0] = [{str(Path(runtime.__file__).parents[1])!r}]\n{program}",
+        ],
+        timeout=60.0,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == []
+
+
+def _selection(paths: list[str], **native: object) -> dict[str, object]:
+    return {
         "schema": "molt-python-startup-selection-v1",
-        "import_paths": [{"lexical": "/a"}],
-        "native": {
-            "executable": "/py",
-            "paths": ["/lib/a.dll", "/lib/wbemprox.dll"],
-            "contracts": [],
-        },
-    }
-    after = {
-        "schema": "molt-python-startup-selection-v1",
-        "import_paths": [{"lexical": "/a"}, {"lexical": "/b"}],
-        "native": {
-            "executable": "/py",
-            "paths": ["/lib/a.dll", "/lib/_hashlib.pyd"],
-            "contracts": ["c"],
-        },
+        "platform": {"operating_system": "windows"},
+        "import_paths": [{"lexical": "C:/py/Lib"}],
+        "native": {"executable": "C:/py/python.exe", "paths": paths, **native},
     }
 
-    assert runtime.startup_selection_difference(before, before) == []
-    assert runtime.startup_selection_difference(before, after) == [
+
+def test_startup_selections_agree_when_images_only_load_or_unload() -> None:
+    """HF-169: a census gains kernel.appcore.dll on first use and loses the
+    WMI providers COM frees; neither changes how the loader selected."""
+
+    before = _selection(["C:/py/python312.dll", "C:/Windows/System32/wbemprox.dll"])
+    after = _selection(
+        ["C:/py/python312.dll", "C:/Windows/System32/kernel.appcore.dll"],
+        aliases={"kernel.appcore.dll": "C:/Windows/System32/kernel.appcore.dll"},
+    )
+
+    assert (
+        runtime.startup_selection_difference(before, after, admit_new_images=True) == []
+    )
+
+
+def test_fresh_launch_selection_refuses_an_image_the_admitted_process_lacks() -> None:
+    admitted = _selection(["C:/py/python312.dll", "C:/Windows/System32/x.dll"])
+    fresh = _selection(["C:/py/python312.dll", "C:/py/injected.dll"])
+
+    assert runtime.startup_selection_difference(
+        admitted, fresh, admit_new_images=False
+    ) == ["native image injected.dll gained: C:/py/injected.dll"]
+    assert (
+        runtime.startup_selection_difference(admitted, fresh, admit_new_images=True)
+        == []
+    )
+
+
+def test_startup_selections_disagree_when_a_loaded_name_resolves_elsewhere() -> None:
+    before = _selection(["C:/py/python312.dll", "C:/py/VCRUNTIME140.dll"])
+    after = _selection(["C:/py/python312.dll", "C:/evil/vcruntime140.dll"])
+    after["import_paths"] = [{"lexical": "C:/other"}]
+    after["native"]["executable"] = "C:/py2/python.exe"  # type: ignore[index]
+
+    assert runtime.startup_selection_difference(
+        before, after, admit_new_images=True
+    ) == [
         "import_paths",
-        "native images gained /lib/_hashlib.pyd; lost /lib/wbemprox.dll; "
-        "changed contracts",
+        "native executable",
+        "native image vcruntime140.dll: C:/py/VCRUNTIME140.dll -> "
+        "C:/evil/vcruntime140.dll",
     ]
 
 
