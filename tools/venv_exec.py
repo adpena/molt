@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.process_spawn import forward_command  # noqa: E402
 
 
 class VenvExecError(RuntimeError):
@@ -123,13 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         venv = resolve_venv(explicit=args.venv)
         env = venv_env(venv=venv)
         resolved = resolve_command(command, venv=venv)
-        if os.name == "nt":
-            # Windows has no exec: os.exec* starts the program and exits this
-            # process with status 0 at once, so every wrapped gate would
-            # report success and leave its child running detached. Wait for
-            # the single child and return its exit status instead.
-            return subprocess.run(resolved, env=env, check=False).returncode
-        os.execvpe(resolved[0], resolved, env)
+        return forward_command(resolved, env=env)
     except VenvExecError as exc:
         parser.exit(127, f"venv_exec: {exc}\n")
     except FileNotFoundError as exc:

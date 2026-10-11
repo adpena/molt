@@ -120,8 +120,17 @@ All 375 owning plan, workflow and setup checks pass. Earlier missing-PATH and
 capacity failures remain retained. Actual public CLI execution exposes a second
 process owner that retires the detached queue runner. Recovery through the queue
 owner then exposes differential target selection escaping its admitted Cargo
-generation. Neither failure qualifies the public runtime consumers; complete CLI
-ownership and output routing must be repaired before landing. Verified inactive
+generation. The forwarding family now shares one process-transfer helper, and
+the existing Cargo output owner binds differential/WASM target aliases and native
+guest scratch together. The real CLI regression observes the old detached runner
+die after a successful coordinator exit; all 20 corrected CLI controls pass.
+Focused output controls pass, including rejection before independent-root or
+secondary-target mutation. Non-Cargo admission remains unchanged. These fixes
+still require Linux integration and compiled native/WASM consumer execution;
+neither earlier failed run qualifies those consumers. This landing remains
+bounded to the complete reviewed runtime family and its required consumer
+migration. Other release findings remain in this ledger for subsequent changes.
+Verified inactive
 executable/archive copies reclaim 724 MB. Another 5.32 GB of old Cargo targets remains protected: 14 lack valid
 terminal evidence and one has seal drift. These are development-side controls
 and outstanding custody work, with no emitted-binary cost.

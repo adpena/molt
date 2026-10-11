@@ -1057,7 +1057,8 @@ def test_native_c_cargo_context_rejects_unresolved_selection_before_probe(
         ("aarch64-unknown-linux-gnu", None, None),
         (None, "aarch64-unknown-linux-gnu", None),
         ("aarch64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", None),
-        ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "ambiguous"),
+        # Cargo CLI target overrides the inherited build target.
+        ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", None),
     ],
 )
 def test_native_c_context_uses_admitted_target_semantics(
@@ -1120,6 +1121,11 @@ def test_native_c_context_uses_admitted_target_semantics(
 
     if expected_error is None:
         admit()
+        expected_target = inherited if kind == "python" else explicit or inherited
+        assert (
+            command_identity._rust_target(envelope, env, cwd=tmp_path)
+            == expected_target
+        )
     else:
         with pytest.raises(ValueError, match=expected_error):
             admit()

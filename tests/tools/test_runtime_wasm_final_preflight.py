@@ -470,7 +470,7 @@ def test_canonical_host_path_rejects_filesystem_aliases(
         )
 
 
-def test_cli_refuses_source_only_validation_and_launches_by_exec(
+def test_cli_refuses_source_only_validation_and_forwards_build_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(SystemExit):
@@ -497,14 +497,14 @@ def test_cli_refuses_source_only_validation_and_launches_by_exec(
     )
     launched: list[list[str]] = []
 
-    def fake_exec(command: object, _env: object) -> None:
+    def fake_forward(command: object, *, env: object) -> int:
+        assert env is context.build_env
         launched.append(list(command))  # type: ignore[arg-type]
-        raise SystemExit(0)
+        return 17
 
-    monkeypatch.setattr(preflight, "_exec_build", fake_exec)
+    monkeypatch.setattr(preflight, "forward_command", fake_forward)
 
-    with pytest.raises(SystemExit, match="0"):
-        preflight.main(["--project-root", str(tmp_path), "--launch"])
+    assert preflight.main(["--project-root", str(tmp_path), "--launch"]) == 17
 
     assert receipts == [
         context.roots.custody / "logs/runtime_wasm_final_preflight" / "run-current.json"

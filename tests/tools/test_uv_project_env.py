@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from tests.process_guard_common import install_module_os_view, install_module_view
+import sys
 
-from molt import dx
+import pytest
+from tests.process_guard_common import (
+    install_module_os_view,
+    install_module_view,
+    run_guarded_test_process,
+)
+
+from molt import dx, process_spawn
 from tools import uv_project_env
 import subprocess
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_project_environment_path_uses_dx_root_and_versioned_session(
@@ -89,17 +99,48 @@ def test_parse_command_strips_separator() -> None:
     assert uv_project_env._parse_command(["--", "uv", "run"]) == ["uv", "run"]
 
 
-def test_run_command_waits_for_child_on_windows(monkeypatch) -> None:
+@pytest.mark.parametrize("cwd", [None, "forwarded working directory"])
+def test_forward_command_waits_for_child_on_windows(monkeypatch, cwd) -> None:
     calls = []
 
-    def fake_call(command, *, env):  # type: ignore[no-untyped-def]
-        calls.append((command, env))
-        return 7
+    def fake_run(command, *, cwd, env, check):  # type: ignore[no-untyped-def]
+        assert check is False
+        calls.append((command, cwd, env))
+        return subprocess.CompletedProcess(command, 7)
 
-    install_module_os_view(monkeypatch, uv_project_env, name="nt")
+    install_module_os_view(monkeypatch, process_spawn, name="nt")
     install_module_view(
-        monkeypatch, "subprocess", subprocess, uv_project_env, call=fake_call
+        monkeypatch, "subprocess", subprocess, process_spawn, run=fake_run
     )
 
-    assert uv_project_env.run_command(["uv", "--version"], env={"X": "1"}) == 7
-    assert calls == [(["uv", "--version"], {"X": "1"})]
+    assert (
+        uv_project_env.forward_command(["uv", "--version"], cwd=cwd, env={"X": "1"})
+        == 7
+    )
+    assert calls == [(["uv", "--version"], cwd, {"X": "1"})]
+
+
+@pytest.mark.parametrize("status", [0, 7])
+def test_uv_project_env_real_command_exit_status_propagates(
+    tmp_path: Path, status: int
+) -> None:
+    env = os.environ.copy()
+    env["MOLT_EXT_ROOT"] = str(tmp_path / "artifacts")
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "uv_project_env.py"),
+            "--python",
+            "3.12",
+            "--purpose",
+            "forwarding-test",
+            "--",
+            sys.executable,
+            "-c",
+            f"raise SystemExit({status})",
+        ],
+        cwd=ROOT,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == status, result.stderr

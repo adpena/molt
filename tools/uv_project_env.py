@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -15,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt.dx import development_artifact_env, uv_project_env_component  # noqa: E402
+from molt.process_spawn import forward_command  # noqa: E402
 
 
 def _session_id(*, python: str, purpose: str, env: Mapping[str, str]) -> str:
@@ -76,13 +76,6 @@ def _parse_command(command: Sequence[str]) -> list[str]:
     return parsed
 
 
-def run_command(command: Sequence[str], *, env: Mapping[str, str]) -> int:
-    if os.name == "nt":
-        return subprocess.call(list(command), env=dict(env))
-    os.execvpe(command[0], list(command), dict(env))
-    return 127
-
-
 def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         allow_abbrev=False,
@@ -121,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_env:
             return 0
         parser.error("command is required after --")
-    return run_command(command, env=env)
+    return forward_command(command, env=env)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
+import json
+import os
 from pathlib import Path
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 
@@ -56,12 +63,12 @@ def test_molt_queue_invokes_proof_queue_without_shell(
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         calls.append({"command": command, "cwd": cwd, "env": env})
-        return subprocess.CompletedProcess(command, 17)
+        return 17
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", fake_compiler_source_root)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
         argparse.Namespace(queue_args=["run", "--detach", "--queue-size", "2"])
@@ -96,12 +103,12 @@ def test_molt_queue_preserves_hostile_paths_and_args_without_shell(
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         calls.append({"command": command, "cwd": cwd, "env": env})
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: repo_root)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
         argparse.Namespace(
@@ -146,12 +153,12 @@ def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) ->
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         calls.append((command, cwd, env))
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
 
     rc = queue_cli.handle_queue_command(
@@ -185,8 +192,8 @@ def test_molt_queue_rejects_invalid_top_level_queue_size(
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
-        queue_cli.process_guard,
-        "run_completed_command",
+        queue_cli,
+        "forward_command",
         lambda *args, **kwargs: pytest.fail("invalid capacity must fail closed"),
     )
 
@@ -206,14 +213,14 @@ def test_molt_queue_queue_size_is_child_env_only(monkeypatch, tmp_path: Path) ->
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         calls.append(env)
         del cwd
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
     monkeypatch.setenv(queue_cli.PROOF_QUEUE_SIZE_ENV, "99")
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
 
     rc = queue_cli.handle_queue_command(
         argparse.Namespace(queue_size="3", queue_args=["run", "--detach"])
@@ -234,8 +241,8 @@ def test_molt_queue_rejects_duplicate_queue_size_authority(
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
-        queue_cli.process_guard,
-        "run_completed_command",
+        queue_cli,
+        "forward_command",
         lambda *args, **kwargs: pytest.fail("duplicate capacity must fail closed"),
     )
 
@@ -260,11 +267,9 @@ def test_molt_queue_strips_separator_and_preserves_argv(
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
-        queue_cli.process_guard,
-        "run_completed_command",
-        lambda command, *, cwd, env=None: (
-            calls.append(command) or subprocess.CompletedProcess(command, 0)
-        ),
+        queue_cli,
+        "forward_command",
+        lambda command, *, cwd, env=None: calls.append(command) or 0,
     )
 
     rc = queue_cli.handle_queue_command(
@@ -306,11 +311,9 @@ def test_molt_queue_defaults_to_quickstart(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
     monkeypatch.setattr(
-        queue_cli.process_guard,
-        "run_completed_command",
-        lambda command, *, cwd, env=None: (
-            calls.append(command) or subprocess.CompletedProcess(command, 0)
-        ),
+        queue_cli,
+        "forward_command",
+        lambda command, *, cwd, env=None: calls.append(command) or 0,
     )
 
     assert queue_cli.handle_queue_command(argparse.Namespace(queue_args=[])) == 0
@@ -330,15 +333,15 @@ def test_molt_queue_preserves_active_warm_project_env(
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         del cwd
         calls.append(env)
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
     monkeypatch.setenv("VIRTUAL_ENV", str(warm_venv))
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))
 
@@ -360,15 +363,15 @@ def test_molt_queue_uses_repo_local_warm_project_env_without_active_env(
 
     def fake_run(
         command: list[str], *, cwd: Path, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> int:
         del cwd
         calls.append(env)
-        return subprocess.CompletedProcess(command, 0)
+        return 0
 
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: tmp_path)
-    monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(queue_cli, "forward_command", fake_run)
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))
 
@@ -404,20 +407,208 @@ def test_molt_queue_uses_main_worktree_project_env_for_linked_worktree(
         text: bool = False,
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, timeout
-        if command == ["git", "rev-parse", "--git-common-dir"]:
-            assert cwd == worktree
-            return subprocess.CompletedProcess(command, 0, stdout=str(common_git))
-        calls.append(env)
-        return subprocess.CompletedProcess(command, 0)
+        del capture_output, text, timeout, env
+        assert command == ["git", "rev-parse", "--git-common-dir"]
+        assert cwd == worktree
+        return subprocess.CompletedProcess(command, 0, stdout=str(common_git))
 
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setattr(queue_cli, "compiler_source_root", lambda: worktree)
     monkeypatch.setattr(queue_cli.process_guard, "run_completed_command", fake_run)
+    monkeypatch.setattr(
+        queue_cli,
+        "forward_command",
+        lambda command, *, cwd, env: calls.append(env) or 0,
+    )
 
     rc = queue_cli.handle_queue_command(argparse.Namespace(queue_args=["status"]))
 
     assert rc == 0
     assert calls[0] is not None
     assert calls[0]["UV_PROJECT_ENVIRONMENT"] == str(main_venv.resolve())
+
+
+_QUEUE_FORWARDING_FIXTURE = r"""
+import argparse
+import json
+import os
+from pathlib import Path
+import socket
+import sys
+import time
+
+root = Path(__file__).resolve().parents[1]
+if "--run-id" in sys.argv:
+    port = int(sys.argv[sys.argv.index("--run-id") + 1])
+    with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
+        connection.sendall(f"{os.getpid()}\n".encode())
+        (root / "runner-connected").write_text(str(os.getpid()), encoding="utf-8")
+        token = connection.recv(1)
+        if token:
+            connection.sendall(token)
+    raise SystemExit(0)
+
+mode = sys.argv[1]
+if mode == "lifetime":
+    # Use the real queue's detached process boundary. This fixture controls
+    # only the runner body; it does not fabricate a successful proof receipt.
+    from tools.proof_queue_pkg import custody, state
+    state.ROOT = root
+    args = argparse.Namespace(logs_root=root / "logs", repo_root=root)
+    pid, log = custody._launch_detached_runner(
+        args, run_id=sys.argv[2], timeout=20,
+    )
+    deadline = time.monotonic() + 20
+    while not (root / "runner-connected").exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"detached runner did not connect; log={log.read_text()}")
+        time.sleep(0.01)
+    print(json.dumps({"pid": pid, "log": str(log)}), flush=True)
+    raise SystemExit(0)
+if mode == "signal":
+    with socket.create_connection(("127.0.0.1", int(sys.argv[2])), timeout=20) as connection:
+        connection.sendall(f"{os.getpid()}\n".encode())
+        connection.recv(1)
+    raise SystemExit(0)
+print(json.dumps({
+    "argv": sys.argv[3:], "cwd": str(Path.cwd()), "source": str(root),
+    "queue_size": os.environ.get("MOLT_PROOF_QUEUE_SIZE"),
+}), flush=True)
+raise SystemExit(int(sys.argv[2]))
+"""
+
+
+@pytest.fixture(scope="module")
+def real_queue_source(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Keep the CLI and its strict tool imports in one complete Python tree."""
+    root = tmp_path_factory.mktemp("queue-forwarding") / "queue source & symbols"
+    project = Path(__file__).resolve().parents[1]
+    # Queue custody imports proof-plan authority, which validates every loaded
+    # tools/molt module against this tree. Copy these two packages once rather
+    # than assembling a fragile list of transitive guard dependencies.
+    for relative in ("tools", "src/molt"):
+        shutil.copytree(
+            project / relative,
+            root / relative,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+    (root / "pyproject.toml").write_bytes((project / "pyproject.toml").read_bytes())
+    (root / "tools" / "proof_queue.py").write_text(
+        _QUEUE_FORWARDING_FIXTURE, encoding="utf-8"
+    )
+    return root
+
+
+@contextmanager
+def _real_queue_cli(source: Path, *args: str) -> Iterator[subprocess.Popen[str]]:
+    root = source
+    # Keep ambient environment values out of the fixture's failure repr.
+    env = os.environ.copy()
+    # No compilation occurs; compiler-cache discovery is outside this fixture.
+    env["MOLT_USE_SCCACHE"] = "0"
+    env["MOLT_SOURCE_ROOT"] = str(root)
+    env["MOLT_EXT_ROOT"] = str(root.parent / "artifacts")
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), str(root)])
+    # The test owns this bounded control-plane child and any socket runner until
+    # its rendezvous closes. A nested command guard would itself reap the runner
+    # at CLI exit, hiding the ownership contract being exercised here.
+    with subprocess.Popen(
+        [sys.executable, "-m", "molt.cli", "queue", "--queue-size", "3", "--", *args],
+        cwd=root.parent,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ) as process:
+        failure: BaseException | None = None
+        try:
+            yield process
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                if failure is not None:
+                    stdout, stderr = process.communicate(timeout=10)
+                    failure.add_note(
+                        f"public queue CLI rc={process.returncode}\n"
+                        f"stdout={stdout}\nstderr={stderr}"
+                    )
+            except BaseException as cleanup_error:
+                if failure is None:
+                    raise
+                failure.add_note(f"queue fixture cleanup failed: {cleanup_error!r}")
+
+
+@pytest.mark.parametrize("status", [0, 17])
+def test_molt_queue_real_cli_preserves_exit_argv_source_and_cwd(
+    real_queue_source: Path, status: int
+) -> None:
+    argument = "spaces & pipes | dollars $HOME %TEMP%"
+    with _real_queue_cli(real_queue_source, "exit", str(status), argument) as process:
+        stdout, stderr = process.communicate(timeout=30)
+        assert process.returncode == status, stderr
+    root = real_queue_source
+    assert json.loads(stdout) == {
+        "argv": [argument],
+        "cwd": str(root),
+        "source": str(root),
+        "queue_size": "3",
+    }
+
+
+def test_molt_queue_real_cli_leaves_detached_runner_with_queue_owner(
+    real_queue_source: Path,
+) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(30)
+        with _real_queue_cli(
+            real_queue_source, "lifetime", str(listener.getsockname()[1])
+        ) as process:
+            connection, _ = listener.accept()
+            with connection, connection.makefile("rb") as stream:
+                connection.settimeout(30)
+                worker_pid = int(stream.readline())
+                stdout, stderr = process.communicate(timeout=30)
+                assert process.returncode == 0, stderr
+                assert json.loads(stdout)["pid"] == worker_pid
+                # This message is first sent after the public CLI has exited.
+                # Echo then EOF proves the detached runner remained alive and
+                # completed its bounded operation under the queue's ownership.
+                connection.sendall(b"Q")
+                assert stream.read(1) == b"Q"
+                assert stream.read(1) == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exec and signal identity")
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_molt_queue_real_cli_preserves_process_and_signal_identity(
+    real_queue_source: Path, signum: int
+) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(30)
+        with _real_queue_cli(
+            real_queue_source, "signal", str(listener.getsockname()[1])
+        ) as process:
+            connection, _ = listener.accept()
+            with connection, connection.makefile("rb") as stream:
+                connection.settimeout(30)
+                assert int(stream.readline()) == process.pid
+                process.send_signal(signum)
+                process.communicate(timeout=30)
+                assert process.returncode == -signum
+                assert stream.read(1) == b""

@@ -1611,7 +1611,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_COMPAT_SCRATCH_ROOT",
       "owner": "tools/compat/backends.py",
-      "summary": "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <MOLT_EXT_ROOT or repo>/tmp/compat_backends.",
+      "summary": "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <MOLT_EXT_ROOT or repo>/tmp/compat_backends. Admitted Python Cargo proofs bind it to their canonical proof scratch root.",
       "values": []
     },
     {
@@ -2753,7 +2753,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DIFF_CARGO_TARGET_DIR",
       "owner": "tests/molt_diff.py",
-      "summary": "Shared Cargo target directory for differential builds; unset falls back to CARGO_TARGET_DIR and then a target derived from the artifact root, the dx run-context sets it to CARGO_TARGET_DIR, and molt setup warns when a source checkout leaves it unset.",
+      "summary": "Shared Cargo target directory for differential builds; unset falls back to CARGO_TARGET_DIR and then a target derived from the artifact root, the dx run-context sets it to CARGO_TARGET_DIR, and molt setup warns when a source checkout leaves it unset. Admitted Python Cargo proofs bind it to the leased Cargo generation.",
       "values": []
     },
     {
@@ -3266,7 +3266,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DIFF_TMPDIR",
       "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then MOLT_EXT_ROOT/tmp, then <repo>/tmp), tests/molt_diff.py uses it as the diff tmp root with default <MOLT_EXT_ROOT or repo>/tmp, and src/molt/dx.py installs the scratch root as its default.",
+      "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then MOLT_EXT_ROOT/tmp, then <repo>/tmp), tests/molt_diff.py uses it as the diff tmp root with default <MOLT_EXT_ROOT or repo>/tmp, and src/molt/dx.py installs the scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
       "values": []
     },
     {
@@ -7722,7 +7722,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_WASM_TEST_CARGO_TARGET_DIR",
       "owner": "tests/wasm_linked_runner.py",
-      "summary": "Cargo target directory for the linked wasm parity tests' molt-wasm-host lookup and wasm test builds; when unset the tests use <MOLT_EXT_ROOT>/target when external artifacts are allowed, else target/pytest_wasm/<lane> under the repository, tools/disk_guard.py never reclaims it, and the wasm CI workflow sets it to the session target directory.",
+      "summary": "Cargo target directory for the linked wasm parity tests' molt-wasm-host lookup and wasm test builds; when unset the tests use <MOLT_EXT_ROOT>/target when external artifacts are allowed, else target/pytest_wasm/<lane> under the repository, tools/disk_guard.py never reclaims it, and the wasm CI workflow sets it to the session target directory. Admitted Python Cargo proofs bind it to the leased Cargo generation for both host lookup and builds.",
       "values": []
     },
     {

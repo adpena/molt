@@ -44,6 +44,7 @@ from molt.dx import (  # noqa: E402
     development_artifact_env,
 )
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
+from molt.process_spawn import forward_command  # noqa: E402
 from molt.path_custody import (  # noqa: E402
     PathCustodyError,
     canonical_host_path,
@@ -802,10 +803,6 @@ def _build_command(
     return command
 
 
-def _exec_build(command: Sequence[str], env: Mapping[str, str]) -> None:
-    os.execvpe(command[0], list(command), dict(env))
-
-
 def _blocked_payload(error: Exception) -> dict[str, object]:
     return {
         "schema": SCHEMA,
@@ -873,8 +870,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         stdlib_profile=args.stdlib_profile,
         cargo_timeout=args.cargo_timeout,
     )
-    _exec_build(command, context.build_env)
-    raise AssertionError("os.execvpe returned")
+    return forward_command(command, env=context.build_env)
 
 
 if __name__ == "__main__":

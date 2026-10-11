@@ -2166,3 +2166,117 @@ def test_selected_ignored_differential_source_has_replay_capture_and_terminal_fe
             hash_workers=1,
             expected_files=expected,
         )
+
+
+@pytest.mark.parametrize("selected_cases", [False, True])
+def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
+    tmp_path: Path, selected_cases: bool
+) -> None:
+    inputs = _inputs(tmp_path)
+    lane = command_admission.proof_plan.ProofPlan.load().named_lane(
+        "runtime.public-consumers.native"
+    )
+    argv = (
+        command_admission.selected_differential_lane_command(
+            lane.id, cases=lane.differential_cases[:1]
+        )
+        if selected_cases
+        else list(lane.argv)
+    )
+    envelope = command_admission.envelope_for_command(argv)
+    outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
+    inputs["command"] = command_admission._python_bootstrap_command(envelope, argv)
+    inputs["outputs"] = outputs
+    scratch = (tmp_path / "proof-scratch").resolve()
+    scratch.mkdir()
+    receipts = str(tmp_path / "differential-receipts")
+    inputs["env"].update(
+        MOLT_PROOF_SCRATCH_ROOT=str(scratch),
+        MOLT_DIFF_ROOT=receipts,
+        MOLT_DIFF_CARGO_TARGET_DIR="old-diff-target",
+        MOLT_WASM_TEST_CARGO_TARGET_DIR="old-wasm-target",
+        MOLT_DIFF_TMPDIR="old-diff-scratch",
+        MOLT_COMPAT_SCRATCH_ROOT="old-compat-scratch",
+    )
+    lease = cache.acquire(**inputs)
+    try:
+        bound = lease.environment
+        assert bound["CARGO_TARGET_DIR"] == str(lease.target)
+        assert bound["MOLT_DIFF_CARGO_TARGET_DIR"] == str(lease.target)
+        assert bound["MOLT_WASM_TEST_CARGO_TARGET_DIR"] == str(lease.target)
+        assert bound["MOLT_DIFF_TMPDIR"] == str(scratch)
+        assert bound["MOLT_COMPAT_SCRATCH_ROOT"] == str(scratch)
+        assert bound["MOLT_DIFF_ROOT"] == receipts
+        assert outputs.identity()["bindings"]["MOLT_DIFF_TMPDIR"] == {
+            "role": "scratch-output"
+        }
+        assert outputs.identity()["bindings"]["MOLT_DIFF_CARGO_TARGET_DIR"] == {
+            "role": "build-output"
+        }
+        identity = custody_cas.read_ref(
+            lease.provenance["inputs"], expected_root=lease.cas_root
+        )["identity"]
+        identity_arguments = {
+            "source": identity["source"],
+            "toolchains": inputs["toolchains"],
+            "command": inputs["command"],
+            "outputs": outputs,
+        }
+        assert cache.input_identity(**identity_arguments, env=inputs["env"]) == identity
+        other_nonce = {
+            **inputs["env"],
+            "MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "other-proof-nonce"),
+            "MOLT_DIFF_CARGO_TARGET_DIR": "different-diff-target",
+            "MOLT_WASM_TEST_CARGO_TARGET_DIR": "different-wasm-target",
+            "MOLT_DIFF_TMPDIR": "different-diff-scratch",
+            "MOLT_COMPAT_SCRATCH_ROOT": "different-compat-scratch",
+        }
+        assert cache.input_identity(**identity_arguments, env=other_nonce) == identity
+        assert (
+            cache.input_identity(
+                **identity_arguments, env={**other_nonce, "RUSTFLAGS": "-Cdebuginfo=1"}
+            )
+            != identity
+        )
+        final, _contract = execution_environment._cargo_output_environment_contract(
+            bound,
+            {"passed_names": [], "override_names": []},
+            outputs=outputs,
+            target=lease.target,
+        )
+        # Independently reconstruct from original admission after Python transport
+        # rewriting, as the real terminal parent does.
+        reconstructed = cargo_output_environment.CargoOutputEnvironment.for_envelope(
+            envelope
+        )
+
+        def validate(env):
+            cache.validate_prelaunch(
+                lease.provenance,
+                cas_root=lease.cas_root,
+                command=inputs["command"],
+                outputs=reconstructed,
+                env=env,
+                toolchains=inputs["toolchains"],
+                source_root=str(inputs["source_root"]),
+                source_snapshot=inputs["source_snapshot"],
+                source_content=inputs["source_content"],
+            )
+
+        validate(final)
+        for name in (
+            "MOLT_DIFF_CARGO_TARGET_DIR",
+            "MOLT_WASM_TEST_CARGO_TARGET_DIR",
+            "MOLT_DIFF_TMPDIR",
+            "MOLT_COMPAT_SCRATCH_ROOT",
+        ):
+            for value in (None, "escaped"):
+                forged = dict(final)
+                if value is None:
+                    del forged[name]
+                else:
+                    forged[name] = value
+                with pytest.raises(ValueError, match="output environment differs"):
+                    validate(forged)
+    finally:
+        lease.close()

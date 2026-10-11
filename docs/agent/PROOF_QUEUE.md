@@ -218,6 +218,14 @@ The exact transformed execution argv still participates in input identity.
 The input identity represents `CARGO_TARGET_DIR`, and documentation commands'
 `TEMP`/`TMP`/`TMPDIR`, as typed build-output bindings; an explicit output-root
 selection also owns these temporary variables for other Cargo operations.
+For admitted Python Cargo drivers, the same policy also binds
+`MOLT_DIFF_CARGO_TARGET_DIR` and `MOLT_WASM_TEST_CARGO_TARGET_DIR` to the leased
+Cargo generation. `MOLT_DIFF_TMPDIR` and `MOLT_COMPAT_SCRATCH_ROOT` are typed
+scratch-output bindings to the existing `MOLT_PROOF_SCRATCH_ROOT`. Compiled
+native and cross-backend guest leaves therefore remain inside the admitted
+executable roots; `MOLT_DIFF_ROOT` and receipt paths retain their separate custody.
+Output-environment schema v2 records both roles. Original receipts retain their
+original source/schema and are not synthesized into the new policy.
 The lease binds their actual values before returning its execution environment.
 Without that selection, other commands' caller temporary paths remain semantic
 inputs. Both pre-execution validation and
@@ -289,8 +297,15 @@ Fresh adapter leaves retire through exact owned-path custody unless
 guest result and use the infrastructure-failure channel, never semantic
 comparison or expected-failure masking. Inherited explicit output selectors
 must agree with the selected root; remove conflicting selectors before admission.
-Without selection, existing
-cross-platform payload placement remains unchanged; no drive is auto-selected.
+An independent differential guest root cannot be combined with a queued Python
+Cargo driver's generation ownership; admission rejects that combination before
+provisioning or output creation. Use the queue's `--cargo-output-root` to choose
+its payload volume. Unqueued differential placement retains this independent
+root contract. Secondary isolated-retry and dyld target relocation is refused under queue
+custody before target/state creation or selector mutation. Unqueued retry and
+dyld behavior is unchanged.
+Without selection, existing unqueued cross-platform payload placement remains
+unchanged; no drive is auto-selected.
 
 Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
@@ -1304,8 +1319,13 @@ this for interactive use because it is the portable command surface:
 molt queue --queue-size 3 run --detach
 ```
 
-`molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
-a shell. The top-level `--queue-size N` is a portable per-invocation shorthand
+`molt queue ...` forwards to `tools/proof_queue.py` in the selected compiler
+source root using Python argv lists. POSIX replaces the wrapper process;
+Windows waits for the coordinator's return code. The queue owns detached runners
+and guards around proof payloads. An additional guard around this forwarding
+wrapper would retire those runners when the short coordinator command finishes.
+Use `molt queue -- --db PATH ...` to pass global coordinator options.
+The top-level `--queue-size N` is a portable per-invocation shorthand
 for `MOLT_PROOF_QUEUE_SIZE=N`; it avoids PowerShell/Bash/Fish-specific
 environment syntax while leaving scheduling and validation in
 `tools/proof_queue.py`. The wrapper rejects invalid top-level capacity before

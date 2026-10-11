@@ -1784,6 +1784,9 @@ def test_selected_dyld_and_retry_ignore_inherited_control_override(
 
     repo, env = admitted_guest_environment
     env["MOLT_BUILD_STATE_DIR"] = str(Path(env["MOLT_EXT_ROOT"]) / "shared-state")
+    # This control exercises the unqueued independent-root contract, even when
+    # pytest itself is launched by the queue.
+    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
     module = _load_diff_module()
     monkeypatch.setattr(module, "_repo_root", lambda: repo)
     for key, value in env.items():
@@ -2195,3 +2198,85 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
         }
     ]
     assert seen_cache_roots == [str(ext_root / ".molt_cache")]
+
+
+@pytest.mark.parametrize("selected_cases", [False, True])
+def test_queued_output_binding_reaches_native_wasm_and_compat_consumers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected_cases: bool
+) -> None:
+    from tools.proof_queue_pkg import command_admission, cargo_output_environment
+    import tests.wasm_linked_runner as wasm_runner
+
+    module = _load_diff_module()
+    lane = command_admission.proof_plan.ProofPlan.load().named_lane(
+        "runtime.public-consumers.native"
+    )
+    argv = (
+        command_admission.selected_differential_lane_command(
+            lane.id, cases=lane.differential_cases[:1]
+        )
+        if selected_cases
+        else list(lane.argv)
+    )
+    policy = cargo_output_environment.CargoOutputEnvironment.for_envelope(
+        command_admission.envelope_for_command(argv)
+    )
+    target = (tmp_path / "admitted-cargo").resolve()
+    scratch = (tmp_path / "admitted-proof-scratch").resolve()
+    target.mkdir()
+    scratch.mkdir()
+    env = policy.bind(
+        {
+            "MOLT_EXT_ROOT": str(tmp_path / "canonical"),
+            "MOLT_DIFF_ROOT": str(tmp_path / "canonical" / "receipts"),
+            "MOLT_PROOF_SCRATCH_ROOT": str(scratch),
+            "MOLT_DIFF_CARGO_TARGET_DIR": str(tmp_path / "foreign-target"),
+            "MOLT_WASM_TEST_CARGO_TARGET_DIR": str(tmp_path / "foreign-wasm"),
+            "MOLT_DIFF_TMPDIR": str(tmp_path / "foreign-scratch"),
+            "MOLT_COMPAT_SCRATCH_ROOT": str(tmp_path / "foreign-compat"),
+        },
+        target=target,
+    )
+    layout = module.DiffArtifactLayout.from_environment(
+        repo_root=REPO_ROOT, environment=env
+    )
+    assert layout.cargo_target_root == target
+    assert layout.tmp_root == scratch
+    assert layout.diff_root == tmp_path / "canonical" / "receipts"
+    assert module.compat_backends._cross_scratch_root(env) == scratch
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert wasm_runner._wasm_test_host_target_dir() == target
+    assert (
+        wasm_runner._wasm_test_target_dir(
+            REPO_ROOT, tmp_path / "output", tmp_path / "canonical"
+        )
+        == target
+    )
+    assert not any(tmp_path.glob("foreign-*"))
+
+
+@pytest.mark.parametrize("kind", ["dyld", "dyld-local", "retry", "retry-local"])
+def test_queued_target_relocation_refuses_before_any_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(tmp_path / "proof-scratch"))
+    before = dict(os.environ)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("secondary output touched before ownership refusal")
+
+    with monkeypatch.context() as mutation_guard:
+        mutation_guard.setattr(Path, "mkdir", forbidden)
+        mutation_guard.setattr(module.diff_output_layout, "new_guest_leaf", forbidden)
+        with pytest.raises(ValueError, match="queued Cargo ownership forbids"):
+            if kind.startswith("dyld"):
+                module._activate_dyld_quarantine_target(
+                    use_local=kind.endswith("local")
+                )
+            else:
+                module._run_isolated_retry(
+                    forbidden, local_tmp=kind.endswith("local"), environment=before
+                )
+    assert dict(os.environ) == before

@@ -375,7 +375,15 @@ def test_registered_python_cargo_driver_places_retained_outputs(tmp_path, comman
     assert outputs.external_placement and outputs.documentation
     target = root / "leased-target"
     target.mkdir()
-    bound = outputs.bind({"CARGO_BUILD_TARGET": "wasm32-wasip1"}, target=target)
+    scratch = root / "admitted-scratch"
+    scratch.mkdir()
+    bound = outputs.bind(
+        {
+            "CARGO_BUILD_TARGET": "wasm32-wasip1",
+            "MOLT_PROOF_SCRATCH_ROOT": str(scratch),
+        },
+        target=target,
+    )
     assert bound["CARGO_BUILD_TARGET"] == "wasm32-wasip1"
     assert set(bound) == {
         "CARGO_BUILD_TARGET",
@@ -384,8 +392,16 @@ def test_registered_python_cargo_driver_places_retained_outputs(tmp_path, comman
         "TMP",
         "TMPDIR",
         "PYTHONPYCACHEPREFIX",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_WASM_TEST_CARGO_TARGET_DIR",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_COMPAT_SCRATCH_ROOT",
+        "MOLT_PROOF_SCRATCH_ROOT",
     }
-    assert all(bound[name] == str(target) for name in outputs.names)
+    assert all(bound[name] == str(target) for name in outputs.build_names)
+    assert (
+        bound["MOLT_DIFF_TMPDIR"] == bound["MOLT_COMPAT_SCRATCH_ROOT"] == str(scratch)
+    )
     outputs.validate(bound, target=target)
     with pytest.raises(ValueError, match="differs"):
         outputs.validate({**bound, "CARGO_TARGET_DIR": str(root)}, target=target)
@@ -1137,3 +1153,50 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
     )
     assert calls == []
     assert not (receipts / "custody-cas").exists()
+
+
+@pytest.mark.parametrize(
+    "selector", ["MOLT_DIFF_GUEST_OUTPUT_ROOT", "MOLT_DIFF_GUEST_OUTPUT_IDENTITY"]
+)
+def test_independent_guest_root_refuses_before_queue_output_side_effects(
+    tmp_path: Path, monkeypatch, selector: str
+):
+    from tools.proof_queue_pkg import supervisor_generation
+
+    lane = admission.proof_plan.ProofPlan.load().named_lane(
+        "runtime.public-consumers.native"
+    )
+    command = list(lane.argv)
+    envelope = admission.envelope_for_command(command)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    result = receipts / "result.json"
+    request = receipts / "request.json"
+    request.write_text(
+        json.dumps(
+            {
+                "schema": admission.EXECUTION_SCHEMA,
+                "run_id": "independent-guest-output",
+                "execution_nonce": "a" * 64,
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(admission._REPO_ROOT),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(selector, str(tmp_path / "independent-output"))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("queue output side effect before independent-root refusal")
+
+    monkeypatch.setattr(layout.CargoOutputLayout, "for_envelope", forbidden)
+    monkeypatch.setattr(supervisor_generation, "provision", forbidden)
+    assert guarded_execution.execute_guarded_request(request) == 2
+    observed = json.loads(result.read_text(encoding="utf-8"))
+    assert observed["command_started"] is False
+    assert "independent differential guest output conflicts" in observed["error"]
+    assert not (tmp_path / "independent-output").exists()

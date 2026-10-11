@@ -19,6 +19,7 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
     REPO_ROOT / "src" / "molt" / "cli",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
+    REPO_ROOT / "src" / "molt" / "process_spawn.py",
     REPO_ROOT / "src" / "molt" / "pytest_memory_guard_bootstrap.py",
     REPO_ROOT / "src" / "molt" / "toolchain_identity.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
@@ -121,11 +122,30 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
-        "tools/venv_exec.py",
-        "main",
+        "tests/test_molt_queue_cli.py",
+        "_real_queue_cli",
+        "Popen",
+        "bounded real queue CLI ownership test; explicit child wait/termination "
+        "and socket rendezvous retain detached fixture custody through completion",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_molt_queue_cli.py",
+        "_real_queue_cli",
+        "process.terminate",
+        "terminates only the fixture-owned public CLI child during bounded cleanup",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_molt_queue_cli.py",
+        "_real_queue_cli",
+        "process.kill",
+        "kills only the fixture-owned public CLI child after its termination wait expires",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/process_spawn.py",
+        "forward_command",
         "run",
-        "Windows has no exec; the wrapper waits for its single child so the "
-        "wrapped gate's exit status is reported instead of a spawn-time 0",
+        "Windows counterpart of POSIX exec: wait for the forwarded command's "
+        "actual status; the command or existing outer guard owns descendants",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/cargo_quarantine.py",
@@ -527,6 +547,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded synthetic-repository git helper for dirty-tree landing audit tests",
     ),
     AllowedRawSubprocessUse(
+        "tests/tools/test_dirty_tree_landing_audit.py",
+        "test_real_git_index_path_bytes_round_trip_through_json",
+        "run",
+        "bounded synthetic-repository Git object/index byte-input controls under the suite guard",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
         "tests/tools/test_command_execution.py",
         "test_executor_loads_process_guard_without_repo_package_importable",
         "run",
@@ -721,12 +748,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_split_worker_live._terminate_worker_tree",
         "os.killpg",
         "interactive wrangler live-worker probe force-closes its own child group",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/uv_project_env.py",
-        "run_command",
-        "call",
-        "bounded project-environment helper command runner",
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli/command_runtime.py",
