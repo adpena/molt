@@ -182,7 +182,6 @@ fn extract_env_dict(_py: &PyToken<'_>, env_bits: u64) -> Result<Vec<(String, Str
     }
 }
 
-/// Apply a PIPE/DEVNULL/INHERIT constant to a Command's stdio.
 // ---------------------------------------------------------------------------
 // molt_subprocess_run
 // ---------------------------------------------------------------------------
