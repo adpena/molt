@@ -281,6 +281,34 @@ def test_platform_identity_makes_no_host_machine_query(
     assert identity["pointer_bits"] == 64
 
 
+def test_startup_selection_difference_names_fields_and_native_images() -> None:
+    before = {
+        "schema": "molt-python-startup-selection-v1",
+        "import_paths": [{"lexical": "/a"}],
+        "native": {
+            "executable": "/py",
+            "paths": ["/lib/a.dll", "/lib/wbemprox.dll"],
+            "contracts": [],
+        },
+    }
+    after = {
+        "schema": "molt-python-startup-selection-v1",
+        "import_paths": [{"lexical": "/a"}, {"lexical": "/b"}],
+        "native": {
+            "executable": "/py",
+            "paths": ["/lib/a.dll", "/lib/_hashlib.pyd"],
+            "contracts": ["c"],
+        },
+    }
+
+    assert runtime.startup_selection_difference(before, before) == []
+    assert runtime.startup_selection_difference(before, after) == [
+        "import_paths",
+        "native images gained /lib/_hashlib.pyd; lost /lib/wbemprox.dll; "
+        "changed contracts",
+    ]
+
+
 def test_platform_identity_loads_no_native_image() -> None:
     """The startup selection censuses loaded images, then a verification
     fence censuses them again. An image the identity itself loads, such as a
