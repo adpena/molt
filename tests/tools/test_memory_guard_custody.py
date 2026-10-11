@@ -7,27 +7,28 @@ snapshot boundary; markers, scratch generations and locks are real files.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
 import pytest
 
+from molt import file_publication
 from molt import temporary_artifacts as scratch
 from molt.exact_json import read_exact
-from tools import memory_guard_custody as cli
-from tools.memory_guard_core import active_custody as custody
-from tools.memory_guard_core import process_model, windows_snapshot
 from tests.process_guard_common import (
     close_owned_test_process,
     install_module_view,
     start_owned_test_process,
 )
+from tools import memory_guard_custody as cli
+from tools.memory_guard_core import active_custody as custody
+from tools.memory_guard_core import process_model, windows_snapshot
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -1209,7 +1210,15 @@ def test_retirement_issues_no_fsync(tmp_path, monkeypatch):
     marker = _marker(active, status="completed")
     fsyncs = []
     real_fsync = os.fsync
-    monkeypatch.setattr(os, "fsync", lambda fd: fsyncs.append(fd) or real_fsync(fd))
+    # Only file publication issues fsync on these paths; count it there
+    # without faking os.fsync for the whole process.
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        file_publication,
+        fsync=lambda fd: fsyncs.append(fd) or real_fsync(fd),
+    )
     assert custody.retire_active_guard_marker(marker, _payload(marker)["token"])
     assert fsyncs == []
     assert not marker.exists()
