@@ -2896,7 +2896,7 @@ fn record_exception_with_caller_frame(py: &PyToken<'_>, ptr: *mut u8, include_ca
             return;
         }
     }
-    if molt_cpython_abi::api::errors::raised_error_pending() {
+    if exception_pending(py) || molt_cpython_abi::api::errors::raised_error_pending() {
         return;
     }
     // Transfer through the same owner used by transport and task suspension.
