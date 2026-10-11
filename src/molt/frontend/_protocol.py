@@ -71,11 +71,15 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
     from molt.compiler_analysis.python_imports import ModuleImportFlow
+    from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArm
+    from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
+    from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.frontend.lowering.function_lifecycle import PythonFrameContextScope
+    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.compiler_analysis.python_lexical_scope import PythonScopeCellCaptures
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
@@ -89,6 +93,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -322,6 +327,19 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _builtin_exact_type_from_expr(self, value: ast.AST | None) -> str | None: ...
 
     def _builtin_exception_is_available(self, name: str) -> bool: ...
+
+    def _builtin_guard_bit(self, node: ast.AST) -> int: ...
+
+    def _builtin_guard_coverage(
+        self, root: ast.expr
+    ) -> tuple[int, frozenset[PythonNodeKey]]: ...
+
+    def _builtin_guard_covers(self, node: ast.AST) -> bool: ...
+
+    def _builtin_guard_may_open(self, callee: ast.AST) -> bool: ...
+
+    @staticmethod
+    def _builtin_guard_region_duplicable(region: ast.AST) -> bool: ...
 
     def _builtin_min_layout(self, mro_names: list[str]) -> int: ...
 
@@ -1652,6 +1670,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _expression_has_invalidated_binding(self, node: ast.expr) -> bool | None: ...
 
+    def _expression_runs_no_python(self, node: ast.expr) -> bool: ...
+
     def _extract_inline_init_assigns(
         self, item: ast.FunctionDef, params: list[str]
     ) -> list[tuple[str, ast.expr]] | None: ...
@@ -2606,6 +2626,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any: ...
 
+    def _try_emit_builtin_guarded_call(self, node: ast.Call) -> Any: ...
+
+    def _try_emit_builtin_guarded_range_loop(self, node: ast.For) -> bool: ...
+
     def _try_emit_imported_attribute_call(
         self, node: ast.Call, needs_bind: bool
     ) -> Any: ...
@@ -2876,6 +2900,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def visit_Match(self, node: ast.Match) -> None: ...
 
     def visit_Module(self, node: ast.Module) -> None: ...
+
+    def visit_MoltBuiltinGuardArm(self, node: MoltBuiltinGuardArm) -> None: ...
+
+    def visit_MoltBuiltinGuardArmExpr(self, node: MoltBuiltinGuardArmExpr) -> Any: ...
+
+    def visit_MoltBuiltinGuardTest(self, node: MoltBuiltinGuardTest) -> MoltValue: ...
 
     def visit_Name(self, node: ast.Name) -> Any: ...
 

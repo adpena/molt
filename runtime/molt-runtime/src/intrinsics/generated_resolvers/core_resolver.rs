@@ -345,6 +345,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_cell_ge",
             crate::molt_cell_ge as *const (),
         )),
+        "molt_guard_builtin_bindings" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_guard_builtin_bindings",
+            crate::molt_guard_builtin_bindings as *const (),
+        )),
         "molt_types_cell_contents_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_types_cell_contents_get",
             crate::molt_types_cell_contents_get as *const (),

@@ -2059,6 +2059,17 @@ pub(crate) fn module_cache_publish(
         if let Err(bits) = execution::on_module_publish(_py, &name, module_bits) {
             return bits;
         }
+        let builtins_dict = if initializing_builtins {
+            obj_from_bits(module_bits)
+                .as_ptr()
+                .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_MODULE)
+                .and_then(|ptr| obj_from_bits(unsafe { module_dict_bits(ptr) }).as_ptr())
+        } else {
+            None
+        };
+        // Bindings made before publication are not the runtime's (HF-79).
+        let prior_guard_bits =
+            builtins_dict.map_or(0, crate::builtins::binding_guards::namespace_guard_bits);
         // Seed only the exact namespace being published by the canonical
         // initializer. Constructing a same-named ModuleType, replacing the
         // visible cache, or re-publishing a live module grants no privilege.
@@ -2070,6 +2081,11 @@ pub(crate) fn module_cache_publish(
             )
         {
             return MoltObject::none().bits();
+        }
+        if let Some(dict) = builtins_dict {
+            // The namespace holds the runtime's builtins now. Seal it before
+            // aliases or the Python facade can run any code (HF-79).
+            crate::builtins::binding_guards::seal_builtins_namespace(_py, dict, prior_guard_bits);
         }
         let sys_modules_policy = execution::python_import_publication_policy(_py, &name);
         let suppress_sys_modules = sys_modules_policy != execution::PythonImportPublication::Normal;

@@ -15,8 +15,8 @@ Index mode executes the captured staged generator with its staged manifest, poli
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 342 |
-| Local path rules | 35 | 43 |
-| Unique local commands | 73 | 98 |
+| Local path rules | 35 | 44 |
+| Unique local commands | 73 | 101 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -306,6 +306,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `bootstrap-stdlib` | 4 | 2 | no |
 | `heap-kind-lifetime-authority` | 7 | 2 | no |
 | `python-effect-capability-authority` | 6 | 3 | no |
+| `builtin-binding-guard-authority` | 9 | 3 | no |
 | `host-capability-authority` | 7 | 2 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
 | `native-callable-abi` | 19 | 5 | no |

@@ -84,8 +84,8 @@ pub(crate) use dict_set_tables::{
     dict_publish_staged, dict_remove_last, dict_set_deferred, dict_set_in_place,
     dict_set_inline_int_in_place, dict_set_with_hash_in_place, dict_setdefault_in_place,
     dict_setdefault_method, dict_update_method, dict_update_set_via_store, dict_values_method,
-    set_add_in_place, set_add_with_hash_in_place, set_clear_in_place, set_copy_into_empty,
-    set_del_in_place, set_del_with_hash_in_place, set_find_entry,
+    exact_string_bytes, set_add_in_place, set_add_with_hash_in_place, set_clear_in_place,
+    set_copy_into_empty, set_del_in_place, set_del_with_hash_in_place, set_find_entry,
     set_find_entry_in_place_with_hash, set_pin_next, set_pop_owned, set_publish_staged,
 };
 pub(super) use dict_set_tables::{concat_bytes_like, fill_repeated_bytes, simd_bytes_eq};

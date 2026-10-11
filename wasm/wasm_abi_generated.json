@@ -3588,6 +3588,7 @@
     "graphlib_prepare": "molt_graphlib_prepare",
     "graphlib_static_order": "molt_graphlib_static_order",
     "gt": "molt_gt",
+    "guard_builtin_bindings": "molt_guard_builtin_bindings",
     "guard_layout": "molt_guard_layout",
     "guard_type": "molt_guard_type",
     "guarded_class_def": "molt_guarded_class_def",

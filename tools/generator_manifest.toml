@@ -181,6 +181,21 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_builtin_binding_guards.py"
+outputs = [
+  "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
+  "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
+]
+source = "runtime/builtin_binding_guards.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_builtin_binding_guards.py --check"
+toolchains = ["rustfmt"]
+idempotent = true
+sync_test = "tests/test_gen_builtin_binding_guards.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_host_capabilities.py"
 outputs = [
   "src/molt/_host_capabilities_generated.py",

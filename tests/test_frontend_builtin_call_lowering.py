@@ -774,11 +774,36 @@ def test_deferred_builtin_lookup_preserves_mutable_global_binding(name: str) -> 
     lookups = _module_attr_accesses(ops, "module_get_global", name)
     call = _positional_call(ops, lookups, 1)
     assert call["args"][1] in _local_reads(ops, "value")
+    # The runtime's builtin may stand in for the live binding only where the
+    # binding guard proved it (HF-79): never outside a guarded fast arm.
     assert not any(
         op["kind"] == "builtin_func"
         and op.get("s_value") == BUILTIN_FUNC_SPECS[name].runtime
-        for op in ops
+        for op in _outside_guarded_fast_arms(ops)
     )
+
+
+def _outside_guarded_fast_arms(ops: list[dict]) -> list[dict]:
+    """Ops not inside the fast arm of a builtin binding guard."""
+    guards = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "call" and op.get("s_value") == "molt_guard_builtin_bindings"
+    }
+    kept: list[dict] = []
+    # One entry per open IF: True while inside a guarded fast arm.
+    stack: list[bool] = []
+    for op in ops:
+        kind = op["kind"]
+        if kind == "if":
+            stack.append(op.get("args", [None])[0] in guards)
+        elif kind == "else" and stack:
+            stack[-1] = False
+        elif kind == "end_if" and stack:
+            stack.pop()
+        elif not any(stack):
+            kept.append(op)
+    return kept
 
 
 def _first_builtin_call_kind(source: str, runtime_name: str) -> str:

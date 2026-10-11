@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "26d5bab0a0ca2f145d50ebe47ea1fdf1f0d0d5bca47bdc5f991c33e6b5c77830",
+  "authority_sha256": "dc96aed9700bb70f683a23321ce4a011a19edd76e4eaa7c62c861e8b9a36fef7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2588,6 +2588,7 @@
         "tests/test_gen_op_kinds.py",
         "tests/test_gen_heap_kinds.py",
         "tests/test_gen_python_effects.py",
+        "tests/test_gen_builtin_binding_guards.py",
         "tests/tools/test_gen_python_numeric_errors.py",
         "tests/test_gen_wasm_abi.py",
         "tests/test_gen_intrinsics.py",
@@ -4299,6 +4300,7 @@
         "2",
         "-m",
         "not slow",
+        "tests/test_frontend_builtin_binding_guards.py",
         "tests/test_frontend_builtin_call_lowering.py",
         "tests/test_frontend_builtin_shape_authority.py",
         "tests/test_frontend_class_imports.py",
@@ -4357,6 +4359,7 @@
         "2",
         "-m",
         "not slow",
+        "tests/test_frontend_builtin_binding_guards.py",
         "tests/test_frontend_builtin_call_lowering.py",
         "tests/test_frontend_builtin_shape_authority.py",
         "tests/test_frontend_class_imports.py",
@@ -7379,6 +7382,9 @@
       "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
+      "local.builtin-binding-guard-authority.0": "python3 tools/gen_builtin_binding_guards.py --check",
+      "local.builtin-binding-guard-authority.1": "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+      "local.builtin-binding-guard-authority.2": "cargo test --locked -p molt-runtime --lib binding_guards",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
       "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python3 tools/gen_codecs.py --check",
@@ -7692,6 +7698,31 @@
           "tests/test_gen_python_effects.py"
         ],
         "name": "python-effect-capability-authority"
+      },
+      {
+        "command_ids": [
+          "local.builtin-binding-guard-authority.0",
+          "local.builtin-binding-guard-authority.1",
+          "local.builtin-binding-guard-authority.2"
+        ],
+        "description": "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79).",
+        "gates": [
+          "python3 tools/gen_builtin_binding_guards.py --check",
+          "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+          "cargo test --locked -p molt-runtime --lib binding_guards"
+        ],
+        "globs": [
+          "runtime/builtin_binding_guards.toml",
+          "tools/gen_builtin_binding_guards.py",
+          "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
+          "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
+          "runtime/molt-runtime/src/builtins/binding_guards.rs",
+          "runtime/molt-runtime/src/builtins/binding_guards_tests.rs",
+          "src/molt/frontend/lowering/builtin_guards.py",
+          "tests/test_gen_builtin_binding_guards.py",
+          "tests/test_frontend_builtin_binding_guards.py"
+        ],
+        "name": "builtin-binding-guard-authority"
       },
       {
         "command_ids": [

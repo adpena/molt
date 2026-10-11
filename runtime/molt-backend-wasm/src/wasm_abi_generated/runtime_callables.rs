@@ -549,6 +549,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_guard_builtin_bindings",
+        import: WasmRuntimeImport::GuardBuiltinBindings,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_types_cell_contents_get",
         import: WasmRuntimeImport::TypesCellContentsGet,
         arity: 2,
@@ -12908,6 +12913,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_cell_le" => Some(WasmRuntimeImport::CellLe),
         "molt_cell_gt" => Some(WasmRuntimeImport::CellGt),
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
+        "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
         "molt_types_cell_contents_get" => Some(WasmRuntimeImport::TypesCellContentsGet),
         "molt_types_cell_contents_set" => Some(WasmRuntimeImport::TypesCellContentsSet),
         "molt_types_cell_contents_delete" => Some(WasmRuntimeImport::TypesCellContentsDelete),
