@@ -167,6 +167,18 @@ not executed; direct extension libc calls and variadic-shim scratch allocations
 are outside this observation boundary. Production builds omit the probe.
 Explicit resurrection and task-admission rollback evidence remains required.
 
+The build at `353c795c8` also stops before execution: the migrated pending-error
+fixture still supplies an argument to the zero-argument transfer API. The
+successor removes that stale argument. Review of actual payload retirement also
+finds that reserve reset must publish its prepared managed and C fields before
+releasing detached owners. The shared reset now precedes callbacks for both
+recycling and shutdown. A callback may retain and mutate the value; its writes
+must survive. Mutation without a retained owner declines recycling and uses the
+existing terminal teardown, avoiding an unbounded reset loop. The same reset
+predicate governs reuse eligibility and shutdown work. These changes and their
+direct-C/managed resurrection controls still require compiled execution and
+allocation measurements; source review does not qualify them.
+
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an
 uncast native boolean pointer, and an unconstrained array storage-result error

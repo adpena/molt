@@ -807,7 +807,7 @@ unsafe fn assert_c_emergency_is_observable_and_not_consumed(py: &crate::PyToken<
         assert_eq!(raised.as_ptr(), value, "take/fetch round trip preserves exact identity");
         errors::PyErr_SetRaisedException(raised.into_ptr());
     }
-    crate::cpython_abi_hooks::transfer_pending_cpython_exception(py);
+    crate::cpython_abi_hooks::transfer_pending_cpython_exception();
     assert_emergency_pending(py);
 }
 
