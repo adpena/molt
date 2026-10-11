@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "04aeb67cba7ebc7dfbc1a75031085d9dc6285221f5b70aa6dd9ec01186b04dfc",
+  "authority_sha256": "4fd80b20735d415c8d18a08da42f086e8faf288ef28e385dec01fe1e5521d376",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4968,6 +4968,7 @@
         "tests/test_thread_private_module_surface.py",
         "tests/test_threading_local_private_module_surface.py",
         "tests/test_tinygrad_onnx_interpreter_ops.py",
+        "tests/test_tinygrad_onnx_public_interpreter.py",
         "tests/test_tinygrad_paddleocr_decode.py",
         "tests/test_tinygrad_stdlib_tensor_reductions.py",
         "tests/test_tinygrad_stdlib_typed_runtime.py",
@@ -5329,6 +5330,7 @@
         "tests/test_thread_private_module_surface.py",
         "tests/test_threading_local_private_module_surface.py",
         "tests/test_tinygrad_onnx_interpreter_ops.py",
+        "tests/test_tinygrad_onnx_public_interpreter.py",
         "tests/test_tinygrad_paddleocr_decode.py",
         "tests/test_tinygrad_stdlib_tensor_reductions.py",
         "tests/test_tinygrad_stdlib_typed_runtime.py",
