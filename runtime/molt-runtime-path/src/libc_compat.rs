@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(non_camel_case_types)]
 
 // Minimal libc constants/types for wasm builds where libc isn't available.

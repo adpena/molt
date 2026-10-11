@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-runtime-zoneinfo` — IANA timezone intrinsics for the Molt runtime.
 //!
 //! Isolates the zoneinfo module intrinsics (TZif parsing, UTC offset,

@@ -306,7 +306,6 @@ fn call_meta_finder_find_spec(
     Err(MoltObject::none().bits())
 }
 
-#[allow(dead_code)]
 fn call_path_entry_finder_find_spec(
     _py: &PyToken<'_>,
     finder_bits: u64,
@@ -440,7 +439,6 @@ fn importlib_find_spec_via_meta_path(
     result
 }
 
-#[allow(dead_code)]
 fn importlib_find_spec_via_path_hooks(
     _py: &PyToken<'_>,
     fullname: &str,

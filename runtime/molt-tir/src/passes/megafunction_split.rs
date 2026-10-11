@@ -496,10 +496,6 @@ pub(super) fn split_chunk_name(source_function_name: &str, index: usize) -> Stri
 /// parameter and every transported binding move through the split frame one
 /// owner at a time, so the chunk that rebinds, deletes or finally releases a
 /// binding holds its only reference there.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn split_large_function(
     func: FunctionIR,
     max_ops: usize,
@@ -1130,10 +1126,6 @@ pub fn split_large_function(
 ///
 /// Call this before the main compilation loop so that the chunk functions
 /// are present in `ir.functions` and will be compiled normally.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn split_megafunctions(ir: &mut SimpleIR) -> BTreeMap<String, String> {
     split_megafunctions_with_filter(ir, |_| true)
 }

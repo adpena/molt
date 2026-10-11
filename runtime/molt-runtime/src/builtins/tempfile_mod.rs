@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/tempfile_mod.rs ===
 //
 // tempfile intrinsics: secure temporary files and directories.
@@ -10,7 +9,7 @@ use crate::libc_compat as libc;
 
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Helpers

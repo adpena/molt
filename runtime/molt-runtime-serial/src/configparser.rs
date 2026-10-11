@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/configparser.rs ===
 //! Intrinsics for the `configparser` stdlib module.
 //!
@@ -355,15 +354,6 @@ fn next_handle_id() -> i64 {
 // ---------------------------------------------------------------------------
 // Object helpers
 // ---------------------------------------------------------------------------
-
-fn alloc_str_or_err(_py: &PyToken, s: &str) -> Result<u64, u64> {
-    let ptr = alloc_string(_py, s.as_bytes());
-    if ptr.is_null() {
-        Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"))
-    } else {
-        Ok(MoltObject::from_ptr(ptr).bits())
-    }
-}
 
 fn opt_str(bits: u64) -> Option<String> {
     let obj = obj_from_bits(bits);
@@ -1256,13 +1246,4 @@ pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
         };
         string_pairs_to_list(_py, &pairs)
     })
-}
-
-// Suppress unused import warnings.
-#[allow(dead_code)]
-fn _suppress(_py: &PyToken, b: u64) {
-    let _ = type_name(_py, obj_from_bits(b));
-    let _ = is_truthy(_py, obj_from_bits(b));
-    let _ = alloc_tuple(_py, &[]);
-    let _ = alloc_dict_with_pairs(_py, &[]);
 }

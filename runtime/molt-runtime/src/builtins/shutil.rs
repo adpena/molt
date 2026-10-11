@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/shutil.rs ===
 //
 // shutil intrinsics: high-level file and directory operations.
@@ -807,7 +806,6 @@ pub extern "C" fn molt_shutil_make_archive(
         match format.as_str() {
             #[cfg(feature = "stdlib_archive")]
             "zip" => {
-                use std::io::Write;
                 let file = match fs::File::create(&archive_path) {
                     Ok(f) => f,
                     Err(err) => return shutil_err(_py, err, "make_archive"),

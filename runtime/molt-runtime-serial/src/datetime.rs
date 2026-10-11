@@ -1324,27 +1324,6 @@ fn strftime_impl(args: &StrftimeArgs<'_>) -> Result<String, String> {
     let yday = day_of_year(y, m, d); // 1-based
     let wday_sun0 = (wday_mon0 + 1).rem_euclid(7); // Sun=0..Sat=6
 
-    #[allow(dead_code)]
-    fn push_num(out: &mut String, val: i32, width: usize, pad: char) {
-        let s = if val < 0 {
-            format!("-{:0>width$}", -val, width = width.saturating_sub(1))
-        } else {
-            format!("{val:0>width$}", width = width)
-        };
-        if pad == ' ' {
-            // right-align with spaces for the given width
-            let raw = format!("{val}");
-            if raw.len() < width {
-                for _ in 0..(width - raw.len()) {
-                    out.push(' ');
-                }
-            }
-            out.push_str(&raw);
-        } else {
-            out.push_str(&s);
-        }
-    }
-
     fn week_number_sun(yday: i32, wday_sun0: i32) -> i32 {
         // First Sunday of year: yday where (wday_sun0 of Jan1 + (yday-1)) % 7 == 0
         // jan1_sun0 = (wday_sun0 - (yday - 1)).rem_euclid(7)

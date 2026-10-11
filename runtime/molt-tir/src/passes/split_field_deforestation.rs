@@ -33,10 +33,6 @@ use std::collections::BTreeMap;
 /// representation plumbing changes; the three property ops raise the SAME
 /// `IndexError` the materializing path would (caught by the inserted
 /// `check_exception`).
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_SPLIT_FIELD_DEFOREST").is_ok() {
         return;

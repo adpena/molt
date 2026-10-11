@@ -6,10 +6,6 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::{FunctionIR, OpIR};
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 /// Count every textual use of a value name across an op's `args`, `var`, and
 /// (deliberately excluded) `out`.  Used by `fuse_method_dispatch` to prove a
 /// getattr / callargs temporary is single-use before fusing it away.
@@ -105,10 +101,6 @@ fn fused_argument_custody(
 /// and a fused source call adopts its receiver and arguments
 /// ([`fused_argument_custody`]). A body whose RC is already placed is left
 /// as placed.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn fuse_method_dispatch(func_ir: &mut FunctionIR) {
     fuse_method_dispatch_inner(func_ir, std::env::var("MOLT_DISABLE_METHOD_FUSION").is_ok())
 }

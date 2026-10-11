@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-runtime-logging` -- logging intrinsics for the Molt runtime.
 //!
 //! Isolates the `logging` Python module (LogRecord, Formatter, Handler,
