@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "26d5bab0a0ca2f145d50ebe47ea1fdf1f0d0d5bca47bdc5f991c33e6b5c77830",
+  "authority_sha256": "0e9ec498c7966327e1b873d85d7e69b8356cae4ec789ac3acdd744e6a772988a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -628,7 +628,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 254,
+      "timeout_minutes": 266,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -6350,6 +6350,105 @@
     {
       "argv": [
         "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "molt-backend",
+        "--no-default-features",
+        "--features",
+        "wasm-backend",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.clippy.backend-wasm-only",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "molt-backend",
+        "--no-default-features",
+        "--features",
+        "luau-backend",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.clippy.backend-luau-only",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "molt-backend",
+        "--no-default-features",
+        "--features",
+        "rust-backend",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.clippy.backend-rust-only",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "build",
         "--locked",
         "-p",
@@ -7082,14 +7181,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 15240,
+        "budget_seconds": 15960,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 15000,
-        "required_job_seconds": 15240,
+        "projected_makespan_seconds": 15720,
+        "required_job_seconds": 15960,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 15000
+          "compiler-build-resource": 15720
         }
       },
       "rust_security": {

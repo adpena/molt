@@ -1,27 +1,34 @@
 mod contract_pipeline;
+#[cfg(molt_backend_daemon)]
 mod daemon_cache;
+#[cfg(molt_backend_daemon)]
 mod daemon_env;
+#[cfg(molt_backend_daemon)]
 mod daemon_request_io;
 #[cfg(feature = "native-backend")]
 mod native_batch;
 #[cfg(feature = "native-backend")]
 mod native_objects;
 mod output_paths;
+mod request_limits;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib;
 
+#[cfg(feature = "wasm-backend")]
+use super::WasmTargetOptions;
 use super::run_luau_tir_module_pipeline;
 #[cfg(feature = "rust-backend")]
 use super::rust_source_for_ir;
-use super::validate_fact_graph_cli_contract;
+#[cfg(molt_backend_daemon)]
 use super::{
-    BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DAEMON_REQUEST_ENV_KEYS, DaemonCache,
-    DaemonJobRequest, DaemonJobResponse, DaemonRequest, DaemonResponse, GIB, MIB,
-    NativeArtifactKind, RequestBoundedRead, compile_single_job, daemon_response_payload,
-    default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
-    default_daemon_cache_bytes_from_physical_mem_bytes, ensure_output_parent_dir,
-    read_bounded_request_bytes, read_daemon_request_bytes, resolve_backend_output_path,
-    write_cached_output,
+    BACKEND_DAEMON_PROTOCOL_VERSION, DAEMON_REQUEST_ENV_KEYS, DaemonCache, DaemonJobRequest,
+    DaemonJobResponse, DaemonJobTarget, DaemonRequest, DaemonResponse, MIB, compile_single_job,
+    daemon_response_payload, default_daemon_cache_bytes_from_physical_mem_bytes,
+    read_daemon_request_bytes, write_cached_output,
+};
+use super::{
+    BackendTarget, GIB, RequestBoundedRead, default_backend_max_rss_gb_from_physical_mem_bytes,
+    ensure_output_parent_dir, read_bounded_request_bytes,
 };
 #[cfg(feature = "native-backend")]
 use super::{
@@ -38,17 +45,14 @@ use super::{
     stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
     with_shared_stdlib_cache_publish_lock, write_json_artifact, write_shared_stdlib_cache_sidecars,
 };
+#[cfg(feature = "native-backend")]
+use super::{NativeArtifactKind, NativeTargetOptions};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use std::io::{self, Cursor, Read};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
-const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
-    "MOLT_STDLIB_OBJ",
-    "MOLT_STDLIB_CACHE_KEY",
-    "MOLT_STDLIB_CACHE_MANIFEST",
-];
 
 struct TestEnvGuard {
     // Fields drop in declaration order: restore while the mutex is still held.
@@ -91,6 +95,7 @@ impl TestEnvGuard {
         }
     }
 
+    #[cfg(any(molt_backend_daemon, feature = "native-backend"))]
     fn clear(keys: &'static [&'static str]) -> Self {
         let guard = Self::capture(keys);
         for (key, _) in &guard.snapshot.0 {

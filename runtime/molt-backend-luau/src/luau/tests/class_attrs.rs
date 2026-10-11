@@ -885,9 +885,7 @@ fn test_compile_checked_lowers_class_layout_metadata() {
 }
 
 #[test]
-fn test_default_luau_dispatch_uses_checked_path() {
-    // Verify that both compile_via_ir and compile_checked reject the same unknown ops.
-    // This ensures no fail-open path exists.
+fn luau_compile_rejects_unknown_ops_instead_of_failing_open() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -908,18 +906,10 @@ fn test_default_luau_dispatch_uses_checked_path() {
         }],
         profile: None,
     };
-    let mut backend_ir = LuauBackend::new();
-    let mut backend_checked = LuauBackend::new();
-    let err_ir = backend_ir
-        .compile_via_ir(&ir)
-        .expect_err("compile_via_ir must reject unknown ops");
-    let err_checked = backend_checked
+    let error = LuauBackend::new()
         .compile_checked(&ir)
         .expect_err("compile_checked must reject unknown ops");
-    assert_eq!(
-        err_ir, err_checked,
-        "compile_via_ir and compile_checked must produce identical errors"
-    );
+    assert!(error.contains("unknown_luau_op"), "{error}");
 }
 
 #[test]

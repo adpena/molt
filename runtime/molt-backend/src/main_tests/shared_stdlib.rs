@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[test]
 fn user_owned_symbol_partition_uses_explicit_stdlib_modules() {
@@ -798,6 +799,7 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
 }
 
 #[test]
+#[cfg(molt_backend_daemon)]
 fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
     const MANIFEST: &str = r#"{"schema":"stdlib-manifest-v2-archive","artifact_kind":"archive","cache_key":"daemon-empty-key","cache_variant":"profile=test;codegen_env=test","compiler_fingerprint":"test","target_triple":null}"#;
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
@@ -830,13 +832,10 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
 
     let job = DaemonJobRequest {
         id: "job0".to_string(),
-        is_wasm: false,
-        target_triple: None,
-        native_output_kind: NativeArtifactKind::Archive,
-        wasm_link: false,
-        wasm_data_base: None,
-        wasm_table_base: None,
-        wasm_split_runtime_app_table_base: None,
+        target: DaemonJobTarget::Native(NativeTargetOptions {
+            target_triple: None,
+            output_kind: NativeArtifactKind::Archive,
+        }),
         output: output.to_string_lossy().into_owned(),
         cache_key: "".to_string(),
         function_cache_key: None,

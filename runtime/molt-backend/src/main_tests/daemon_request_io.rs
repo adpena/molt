@@ -18,45 +18,7 @@ fn read_daemon_request_bytes_rejects_oversized_request() {
     );
 }
 
-#[test]
-fn read_bounded_request_bytes_allows_exact_limit() {
-    let cursor = Cursor::new(b"abcd".to_vec());
-    let bytes =
-        read_bounded_request_bytes(cursor, 4, "backend stdin request").expect("request bytes");
-    assert_eq!(bytes, b"abcd");
-}
-
-#[test]
-fn read_bounded_request_bytes_rejects_oversized_request() {
-    let cursor = Cursor::new(b"abcde".to_vec());
-    let err = read_bounded_request_bytes(cursor, 4, "backend stdin request")
-        .expect_err("oversized request");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-    assert!(
-        err.to_string()
-            .contains("backend stdin request exceeded 4 byte limit")
-    );
-}
-
-#[test]
-fn request_bounded_read_rejects_streaming_read_past_limit() {
-    let cursor = Cursor::new(b"abcde".to_vec());
-    let mut reader = RequestBoundedRead::new(cursor, 4, "streaming backend stdin request");
-    let mut first_chunk = [0_u8; 4];
-    assert_eq!(
-        reader.read(&mut first_chunk).expect("first bounded read"),
-        4
-    );
-    assert_eq!(&first_chunk, b"abcd");
-    let mut probe = [0_u8; 1];
-    let err = reader.read(&mut probe).expect_err("stream overflow");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-    assert!(
-        err.to_string()
-            .contains("streaming backend stdin request exceeded 4 byte limit")
-    );
-}
-
+#[cfg(feature = "native-backend")]
 #[test]
 fn daemon_request_parse_applies_boolean_defaults() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
@@ -76,8 +38,10 @@ fn daemon_request_parse_applies_boolean_defaults() {
     .expect("request parse");
 
     let job = request.jobs.expect("job list").pop().expect("job");
-    assert!(!job.wasm_link);
-    assert_eq!(job.wasm_split_runtime_app_table_base, None);
+    assert_eq!(
+        job.target,
+        DaemonJobTarget::Native(NativeTargetOptions::default())
+    );
     assert!(!job.skip_module_output_if_synced);
     assert!(!job.skip_function_output_if_synced);
     assert!(!job.probe_cache_only);
@@ -85,6 +49,7 @@ fn daemon_request_parse_applies_boolean_defaults() {
     assert!(job.ir_path.is_none());
 }
 
+#[cfg(feature = "native-backend")]
 #[test]
 fn daemon_request_parse_accepts_path_backed_ir_lease() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
@@ -109,6 +74,7 @@ fn daemon_request_parse_accepts_path_backed_ir_lease() {
     assert_eq!(job.ir_path.as_deref(), Some("/tmp/molt-ir.json"));
 }
 
+#[cfg(feature = "native-backend")]
 #[test]
 fn daemon_request_parse_rejects_duplicate_ir_authority() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
@@ -132,6 +98,7 @@ fn daemon_request_parse_rejects_duplicate_ir_authority() {
     assert!(err.contains("request.jobs[0] must use exactly one IR custody field: ir or ir_path"));
 }
 
+#[cfg(feature = "wasm-backend")]
 #[test]
 fn daemon_request_parse_reads_split_runtime_app_table_base() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
@@ -155,10 +122,15 @@ fn daemon_request_parse_reads_split_runtime_app_table_base() {
     .expect("request parse");
 
     let job = request.jobs.expect("job list").pop().expect("job");
-    assert!(job.wasm_link);
-    assert_eq!(job.wasm_data_base, Some(1048576));
-    assert_eq!(job.wasm_table_base, Some(4096));
-    assert_eq!(job.wasm_split_runtime_app_table_base, Some(8192));
+    assert_eq!(
+        job.target,
+        DaemonJobTarget::Wasm(WasmTargetOptions {
+            link_relocs: true,
+            data_base: Some(1048576),
+            table_base: Some(4096),
+            split_runtime_app_table_base: Some(8192),
+        })
+    );
 }
 
 #[test]

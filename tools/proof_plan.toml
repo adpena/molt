@@ -1061,7 +1061,7 @@ required = true
 # Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
 # The full resource-serialized DAG, including the focused extension witness,
 # has a separate operational allowance inside the job backstop.
-timeout_minutes = 254
+timeout_minutes = 266
 # Observed setup/post-proof total 218s, rounded up to whole minutes.
 job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
@@ -2953,6 +2953,45 @@ timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+# The backend binary the CLI builds for --target wasm (backend_features_for_target).
+[[command]]
+id = "rust.clippy.backend-wasm-only"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cross-check"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+# The backend binary the CLI builds for --target luau (backend_features_for_target).
+[[command]]
+id = "rust.clippy.backend-luau-only"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cross-check"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "luau-backend", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+# The backend binary the CLI builds for --target rust (backend_features_for_target).
+[[command]]
+id = "rust.clippy.backend-rust-only"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cross-check"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "rust-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
