@@ -367,7 +367,7 @@ def test_measurement_failure_preserves_payload_and_records_indeterminate(
     def fail_measurement(_):
         raise OSError("fixture measurement failure")
 
-    monkeypatch.setattr(scratch, "_target_bytes", fail_measurement)
+    monkeypatch.setattr(scratch, "tree_bytes", fail_measurement)
     with pytest.raises(OSError, match="measurement failure"):
         _finish(lease, success=False)
     assert lease.target.is_dir() and lease.lock is None

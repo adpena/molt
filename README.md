@@ -177,6 +177,7 @@ For compatibility and proof detail:
 - Contributor map: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 - Operations and multi-agent workflow: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 - Build storage, output lifetimes, and proof custody: [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#cargo-output-placement)
+- Proof run evidence retention (`molt queue retention`): [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#run-evidence-retention)
 - Shared frontend analysis, streaming AST/tooling identities, and live import resolution:
   [source scan authority](docs/internals/source_scan_authority.md)
 - Benchmark workflows: [docs/BENCHMARKING.md](docs/BENCHMARKING.md)

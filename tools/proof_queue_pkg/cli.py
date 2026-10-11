@@ -366,6 +366,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     retire_p.set_defaults(func=commands._cmd_retire_terminal_sealed_generation)
 
+    retention_p = sub.add_parser(
+        "retention",
+        help="report run evidence outside the retention window; reclaim with --apply",
+        description=(
+            "Keep unresolved, failed, pinned and dependency rows, live Cargo "
+            "generations, and the newest runs within the count and byte bound. "
+            "Reclaim the other runs' evidence files through the queue database; "
+            "rows, notes and DAG edges stay."
+        ),
+    )
+    retention_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="claim and reclaim the reported runs; without it nothing changes",
+    )
+    retention_p.add_argument(
+        "--keep-runs",
+        type=int,
+        help="newest reclaimable runs to keep (default MOLT_PROOF_QUEUE_RETAIN_RUNS or 200)",
+    )
+    retention_p.add_argument(
+        "--keep-gb",
+        type=float,
+        help="byte bound of kept runs in GiB (default MOLT_PROOF_QUEUE_RETAIN_GB or 8)",
+    )
+    retention_p.add_argument(
+        "--limit",
+        type=int,
+        help="reclaim at most this many runs, oldest first",
+    )
+    retention_p.add_argument("--json", action="store_true")
+    retention_p.set_defaults(func=commands._cmd_retention)
+
     evidence_p = sub.add_parser(
         "evidence", help="export machine-readable proof evidence"
     )

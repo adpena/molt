@@ -4848,6 +4848,24 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "developer",
+      "default": "8",
+      "kind": "float",
+      "name": "MOLT_PROOF_QUEUE_RETAIN_GB",
+      "owner": "tools/proof_queue_pkg/run_retention.py",
+      "summary": "Byte bound in GiB (a positive number) for the newest reclaimable proof queue runs whose evidence files retention keeps; proof_queue.py retention --keep-gb overrides it; default 8.",
+      "values": []
+    },
+    {
+      "audience": "developer",
+      "default": "200",
+      "kind": "int",
+      "name": "MOLT_PROOF_QUEUE_RETAIN_RUNS",
+      "owner": "tools/proof_queue_pkg/run_retention.py",
+      "summary": "Number of newest reclaimable proof queue runs (a positive integer) whose evidence files retention keeps; failed, unresolved, pinned and dependency runs are kept beyond it; proof_queue.py retention --keep-runs overrides it; default 200.",
+      "values": []
+    },
+    {
       "audience": "internal",
       "default": "",
       "kind": "string",

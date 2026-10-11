@@ -45,6 +45,7 @@ from tools.proof_queue_pkg import (
     evidence,
     policy,
     process_image_capture,
+    run_retention,
     scheduling,
     state,
     toolchain_capture,
@@ -1904,8 +1905,40 @@ def _run_one(
     rc_text = "?" if rc is None else str(rc)
     print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
+    _apply_automatic_retention(db=db, logs_root=logs_root)
     return (
         2
         if disposition_failed
         else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
     )
+
+
+def _apply_automatic_retention(*, db: Path, logs_root: Path) -> None:
+    """Bound run evidence after each proof; never change the proof result.
+
+    The persisted row is already terminal. A retention failure is reported
+    and left for the next pass or the explicit `retention` command.
+    """
+    try:
+        report = run_retention.automatic_pass(
+            db=db, result_root=logs_root, env=os.environ
+        )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(
+            f"proof run retention failed (proof result unchanged): {exc}",
+            file=sys.stderr,
+        )
+        return
+    reclaimed, recovered, errors = (
+        report.get(key) for key in ("reclaimed", "recovered", "errors")
+    )
+    assert isinstance(reclaimed, list)
+    assert isinstance(recovered, list)
+    assert isinstance(errors, list)
+    if reclaimed or recovered:
+        print(
+            f"proof run retention: reclaimed={len(reclaimed)} "
+            f"recovered={len(recovered)}"
+        )
+    for error in errors:
+        print(f"proof run retention error: {error}", file=sys.stderr)
