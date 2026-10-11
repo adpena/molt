@@ -632,6 +632,7 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_dev_py()
+    _isolated_checkout(module, monkeypatch, tmp_path)
     calls: list[dict[str, str]] = []
     explicit_root = tmp_path / "external-root"
     explicit_cache = tmp_path / "cache"
