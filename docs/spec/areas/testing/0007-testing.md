@@ -297,6 +297,26 @@ run context back with the `checkout_run_context` fixture. To find such a
 test, run the family under `tools/hosted_ci_env.py` in a plain clone (not a
 checkout-family worktree, whose roots lie outside the tree).
 
+Guards that tests start never write the host's guard records. The session
+fixture `test_guard_custody_roots` in `tests/conftest.py` points
+`MOLT_MEMORY_GUARD_STATE_ROOT` at `<basetemp>/gc/memory_guard`, so every guard a
+test starts, in process or as a child, keeps its marker, scratch generation and
+lease target in that session's basetemp, which the run's outer guard reclaims.
+The outer guard keeps the host root: it is a real guard of the run, and its
+marker protects the checkout from disk reclamation while the run lasts. The
+pytest bootstrap keeps the current-test path it admitted under that root, so
+the outer guard still names the running test, and a Python child of a test
+recognizes the outer guard by its marker in that guard's own `active/`
+directory, not by the redirected root, so it neither samples processes nor
+re-runs itself under a new guard. A test that needs another root
+sets its own. `tests/test_memory_guard_wiring.py` proves that a guarded child
+leaves no record in the host roots.
+
+A background thread in the test process, such as the serial session's
+sentinel, binds every module it uses before the thread starts and never runs an
+import: a test may clear `molt.*` from `sys.modules`, and an import on another
+thread would load the real package into the middle of that test.
+
 A host test that exercises Molt stdlib sources loads them by path, through
 `tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,
 or runs them in a child interpreter. It never puts `src/molt/stdlib` on the

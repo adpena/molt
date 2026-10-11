@@ -148,7 +148,7 @@ def test_queue_environment_preserves_scratch_custody_without_admitting_secrets(
         selected, contract = execution_environment._deterministic_execution_environment(
             inherited, override_names=[]
         )
-        assert scratch.guard_scratch(tmp_path, selected) == lease.target
+        assert scratch.guard_scratch(selected) == lease.target
         assert contract["omitted_names"] == ["MOLT_API_TOKEN"]
         for name in selected:
             assert execution_environment.environment_override_policy_error(

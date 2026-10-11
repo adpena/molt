@@ -766,7 +766,8 @@ Read these first instead of rediscovering project structure:
   canonical evidence roots: command, cwd, guard pid, expected child pid when
   known, status, timestamp, and the evidence path. Prefer
   `tools/memory_guard.py` active markers in the guard state root
-  (`<artifact root>/tmp/memory_guard/active/`), incident summaries in its
+  (`<artifact root>/tmp/memory_guard/active/`; finished runs move to
+  `retired/`), incident summaries in its
   `incidents/` folder, pytest outer-guard
   summaries, and `logs/agents/codex_stall/*.json`.
 - If the agent, child command, or helper process disappears, the next agent must

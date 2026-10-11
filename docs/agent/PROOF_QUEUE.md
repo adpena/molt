@@ -417,11 +417,13 @@ generations and unknown legacy owners are not retroactively opted in. Source,
 toolchains, terminal receipts, output inventories and timing evidence are retained.
 Capacity admission still measures actual free space against its unchanged floor.
 
-Guard markers and terminal receipts are custody metadata, not disposable build
-payloads. A new guard does not prune earlier markers by age or count: unresolved
-ownership and terminal parent/child closure evidence must remain available.
-Legacy unbound markers remain conservative protection, not a license to infer
-process death or artifact ownership from their age, PID or command text.
+Guard markers are custody metadata, not disposable build payloads. A new guard
+never prunes another execution's marker by age or count. A marker leaves
+`active/` only through its own guard's retirement or through evidence-based
+reconciliation, and `retired/` keeps a bounded history (`docs/OPERATIONS.md`,
+guard-marker custody). Unreadable markers remain conservative protection, not a
+license to infer process death or artifact ownership from their age, PID or
+command text.
 
 Each Cargo generation owns an `owner.json` under its exclusive identity lease;
 `state.json` is only a latest-generation navigation pointer. Closing a lease
@@ -574,7 +576,21 @@ kernel-equivalent tree guarantee. The guard records the original POSIX process
 group and session before its independent exit-clock reaper starts, while the
 owned child PID is still reserved. A completed child never authorizes querying
 a recycled PID or inventing missing group identity. Indeterminate closure
-preserves the allocation.
+preserves the allocation until marker reconciliation proves the run's guard,
+child and child group gone, or an operator attests it. The payload then takes
+the failure path below through `resolve_guard_scratch`. It records no finish
+time, so retention keeps it only behind real failures. A payload that is
+already gone resolves with a receipt that says so; a target that is now another
+directory stays blocked. File identity alone cannot tell: Linux reuses a freed
+inode number. So each lease target holds an allocation receipt
+(`.molt-scratch-target.json`) whose nonce its owner records, and adoption needs
+both the recorded identity and that receipt. A busy lock means a live owner and
+defers the work. A consumer (`guard_scratch`, `new_guarded_directory`, the pytest
+temp root) finds its generation from the allocation it inherited, its lease
+target and guard token, never from `MOLT_MEMORY_GUARD_STATE_ROOT`: a process may
+point the guards it starts at another root without moving its own lease. A lock
+on a generation never creates it, so a generation that a remover moved away
+stays gone.
 After proven closure the parent exclusively retires the payload into its own
 `gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
 receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.
@@ -588,9 +604,20 @@ Index publication stages stay inside the locked generation; the shared pending
 namespace contains only complete entries. Discovery snapshots are reconciled
 under each generation's lock before reading the index or counting retained
 bytes. A disappeared entry is accepted only when verified terminal custody proves
-that generation was reclaimed; missing retained-owner indexes and malformed
-entries remain failures, never existence-check retries or ignored corruption.
-Owner/terminal/error receipts survive payload cleanup. Guard summaries and command
+that generation was reclaimed, or when the generation directory itself is gone:
+only the reclaimed transition removes it. Missing retained-owner indexes and
+malformed entries remain failures, never existence-check retries or ignored
+corruption. A reclaimed generation holds no custody, so its receipts are removed:
+after the generation lock is released, the generation moves into `gs/removing/`
+and is deleted, and only then is its index dropped. The generation namespace
+holds only live, retained, blocked and unresolved work. If the move cannot run
+now (Windows refuses while a contender holds the lock file), the index stays and
+the next sweep removes it; the sweep reports it under `deferred`. The move and
+the deletion carry no durability barrier: a crash can only roll the move back,
+and a reclaimed generation with its index is removed again. The finisher
+removes its own reclaimed generation directly, and the target receipt is
+written without an fsync, because its loss only blocks adoption. Guard summaries
+keep the outcome and closure evidence. Guard summaries and command
 profiles expose outcome, evidence path and finalization time; elapsed command
 time includes cleanup. `child_returncode` records the actual child result;
 `infrastructure_failure` records independent scratch-custody failures. Such a

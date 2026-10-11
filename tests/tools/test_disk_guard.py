@@ -363,6 +363,13 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     assert linked_session.exists()
     reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
     assert reasons[linked_session.resolve()] == "active-guard"
+    # The result names the blocking record and the command that inspects it.
+    (custody,) = result.custody
+    assert custody["active_dir"] == str(markers)
+    assert custody["blocking_records"] == 1
+    assert str(markers / f"guard-1-{1:032x}.json") in custody["examples"][0]
+    assert "tools/memory_guard_custody.py --active-dir" in custody["next_step"]
+    assert result.to_dict()["custody"] == result.custody
 
     _guard_marker(markers, 1, "completed")
     result = dg.ensure_free(
@@ -376,6 +383,7 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     assert {Path(item["path"]) for item in result.reclaimed} == {
         linked_session.resolve()
     }
+    assert result.custody == []
 
 
 def test_terminal_parent_watched_pid_cannot_retire_nested_marker(tmp_path):
