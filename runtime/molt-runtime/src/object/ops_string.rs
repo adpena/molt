@@ -1526,17 +1526,13 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
                 Err(EncodeError::InvalidChar {
                     encoding,
                     code,
-                    pos,
+                    start,
+                    end,
                     limit,
                 }) => {
                     let reason = encode_error_reason(encoding, code, limit);
                     return raise_unicode_encode_error::<_>(
-                        _py,
-                        encoding,
-                        hay_bits,
-                        pos,
-                        pos + 1,
-                        &reason,
+                        _py, encoding, hay_bits, start, end, &reason,
                     );
                 }
             };

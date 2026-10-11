@@ -17,12 +17,28 @@ pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
 pub(crate) enum EncodeError {
     UnknownEncoding(String),
     UnknownErrorHandler(String),
+    /// One strict failure covers CPython's whole range: `start` is the first
+    /// code point the handler could not consume and `end` closes the run of
+    /// consecutive code points the codec cannot encode (UTF-16/32 report one).
     InvalidChar {
         encoding: &'static str,
         code: u32,
-        pos: usize,
+        start: usize,
+        end: usize,
         limit: u32,
     },
+}
+
+/// End of the run of consecutive unencodable code points that begins at the
+/// unencodable code point `start`, as CPython's encoders collect it.
+fn unencodable_run_end(bytes: &[u8], start: usize, unencodable: impl Fn(u32) -> bool) -> usize {
+    start
+        + 1
+        + wtf8_from_bytes(bytes)
+            .code_points()
+            .skip(start + 1)
+            .take_while(|cp| unencodable(cp.to_u32()))
+            .count()
 }
 
 #[derive(Clone, Copy)]
@@ -198,14 +214,15 @@ pub(crate) fn encode_string_with_errors(
     };
     let error_encoding = kind.encode_error_label();
     let invalid_char_err =
-        |encoding: &'static str, code: u32, pos: usize, limit: u32| -> EncodeError {
+        |encoding: &'static str, code: u32, start: usize, end: usize, limit: u32| -> EncodeError {
             if let Some(name) = unknown_handler.as_ref() {
                 EncodeError::UnknownErrorHandler(name.clone())
             } else {
                 EncodeError::InvalidChar {
                     encoding,
                     code,
-                    pos,
+                    start,
+                    end,
                     limit,
                 }
             }
@@ -214,7 +231,12 @@ pub(crate) fn encode_string_with_errors(
         let Some(table) = single_byte_charmap(kind) else {
             unreachable!("single-byte charmap encoder called for non-charmap encoding");
         };
+        let unencodable =
+            |code: u32| code > 0x7F && encode_single_byte_charmap_byte(table, code).is_none();
         let mut out = Vec::new();
+        // CPython hands the whole unencodable run to the handler, so a run
+        // that surrogateescape cannot consume fails from its first position.
+        let mut run_end = 0;
         for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
             let code = cp.to_u32();
             if code <= 0x7F {
@@ -224,6 +246,18 @@ pub(crate) fn encode_string_with_errors(
             if let Some(byte) = encode_single_byte_charmap_byte(table, code) {
                 out.push(byte);
                 continue;
+            }
+            if idx >= run_end {
+                run_end = unencodable_run_end(bytes, idx, unencodable);
+                let escapable = handler == "surrogateescape"
+                    && wtf8_from_bytes(bytes)
+                        .code_points()
+                        .skip(idx)
+                        .take(run_end - idx)
+                        .all(|cp| (0xDC80..=0xDCFF).contains(&cp.to_u32()));
+                if matches!(handler, "surrogateescape" | "surrogatepass" | "strict") && !escapable {
+                    return Err(invalid_char_err(error_encoding, code, idx, run_end, 0));
+                }
             }
             match handler {
                 "ignore" => {}
@@ -237,15 +271,9 @@ pub(crate) fn encode_string_with_errors(
                 "xmlcharrefreplace" => {
                     push_xmlcharref_ascii(&mut out, code);
                 }
-                "surrogateescape" => {
-                    if (0xDC80..=0xDCFF).contains(&code) {
-                        out.push((code - 0xDC00) as u8);
-                    } else {
-                        return Err(invalid_char_err(error_encoding, code, idx, 0));
-                    }
-                }
+                "surrogateescape" => out.push((code - 0xDC00) as u8),
                 "surrogatepass" | "strict" => {
-                    return Err(invalid_char_err(error_encoding, code, idx, 0));
+                    unreachable!("strict charmap failures raise at their run start")
                 }
                 other => {
                     return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -266,7 +294,8 @@ pub(crate) fn encode_string_with_errors(
                     for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
                         let code = cp.to_u32();
                         if is_surrogate(code) {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                            let end = unencodable_run_end(bytes, idx, is_surrogate);
+                            return Err(invalid_char_err(error_encoding, code, idx, end, 0x110000));
                         }
                     }
                     Ok(bytes.to_vec())
@@ -277,7 +306,8 @@ pub(crate) fn encode_string_with_errors(
                         if (0xDC80..=0xDCFF).contains(&code) {
                             out.push((code - 0xDC00) as u8);
                         } else if is_surrogate(code) {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                            let end = unencodable_run_end(bytes, idx, is_surrogate);
+                            return Err(invalid_char_err(error_encoding, code, idx, end, 0x110000));
                         } else {
                             push_wtf8_codepoint(out, code);
                         }
@@ -345,11 +375,13 @@ pub(crate) fn encode_string_with_errors(
                         if (0xDC80..=0xDCFF).contains(&code) {
                             out.push((code - 0xDC00) as u8);
                         } else {
-                            return Err(invalid_char_err(error_encoding, code, idx, limit));
+                            let end = unencodable_run_end(bytes, idx, |code| code >= limit);
+                            return Err(invalid_char_err(error_encoding, code, idx, end, limit));
                         }
                     }
                     "surrogatepass" | "strict" => {
-                        return Err(invalid_char_err(error_encoding, code, idx, limit));
+                        let end = unencodable_run_end(bytes, idx, |code| code >= limit);
+                        return Err(invalid_char_err(error_encoding, code, idx, end, limit));
                     }
                     other => {
                         return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -414,7 +446,13 @@ pub(crate) fn encode_string_with_errors(
                             continue;
                         }
                         "strict" => {
-                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                            return Err(invalid_char_err(
+                                error_encoding,
+                                code,
+                                idx,
+                                idx + 1,
+                                0x110000,
+                            ));
                         }
                         other => {
                             return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -473,7 +511,13 @@ pub(crate) fn encode_string_with_errors(
                             continue;
                         }
                         "strict" => {
-                            return Err(invalid_char_err(kind.name(), code, idx, 0x110000));
+                            return Err(invalid_char_err(
+                                kind.name(),
+                                code,
+                                idx,
+                                idx + 1,
+                                0x110000,
+                            ));
                         }
                         other => {
                             return Err(EncodeError::UnknownErrorHandler(other.to_string()));
@@ -1233,5 +1277,238 @@ pub(crate) fn decode_bytes_text(
     match result {
         Ok((text, label)) => Ok((text, label)),
         Err((failure, label)) => Err(DecodeTextError::Failure(failure, label)),
+    }
+}
+
+#[cfg(test)]
+mod encode_error_range_tests {
+    use super::*;
+
+    fn text(code_points: &[u32]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for &code in code_points {
+            push_wtf8_codepoint(&mut bytes, code);
+        }
+        bytes
+    }
+
+    fn failure(code_points: &[u32], encoding: &str, errors: &str) -> (&'static str, usize, usize) {
+        match encode_string_with_errors(&text(code_points), encoding, Some(errors)) {
+            Err(EncodeError::InvalidChar {
+                encoding,
+                start,
+                end,
+                ..
+            }) => (encoding, start, end),
+            _ => panic!("{encoding}/{errors}: expected an encode failure"),
+        }
+    }
+
+    /// Ranges measured on CPython 3.12: one strict failure spans the whole run
+    /// of unencodable code points; UTF-16/32 report one surrogate.
+    #[test]
+    fn encode_failures_report_cpython_unencodable_runs() {
+        let a = u32::from('a');
+        let z = u32::from('z');
+        let b = u32::from('b');
+        let e_acute = 0xE9;
+        let euro = 0x20AC;
+        for (input, encoding, errors, expected) in [
+            (
+                vec![a, e_acute, euro, z],
+                "ascii",
+                "strict",
+                ("ascii", 1, 3),
+            ),
+            (
+                vec![a, e_acute, euro, z],
+                "latin-1",
+                "strict",
+                ("latin-1", 2, 3),
+            ),
+            (
+                vec![a, euro, euro, e_acute, b],
+                "latin-1",
+                "strict",
+                ("latin-1", 1, 3),
+            ),
+            (
+                vec![a, 0x100, 0x101, b],
+                "ascii",
+                "surrogatepass",
+                ("ascii", 1, 3),
+            ),
+            (
+                vec![a, 0xDC80, 0xD800, b],
+                "ascii",
+                "surrogateescape",
+                ("ascii", 2, 3),
+            ),
+            (
+                vec![a, 0x100, 0x101, b],
+                "ascii",
+                "surrogateescape",
+                ("ascii", 1, 3),
+            ),
+            (
+                vec![a, e_acute, euro, 0x100, z],
+                "cp1252",
+                "strict",
+                ("charmap", 3, 4),
+            ),
+            (
+                vec![a, euro, 0x101, 0x102, z],
+                "cp437",
+                "strict",
+                ("charmap", 1, 4),
+            ),
+            (
+                vec![a, 0xDC80, 0x100, b],
+                "cp437",
+                "surrogateescape",
+                ("charmap", 1, 3),
+            ),
+            (
+                vec![a, 0xD800, 0xDFFF, b],
+                "utf-8",
+                "strict",
+                ("utf-8", 1, 3),
+            ),
+            (
+                vec![a, 0xDC80, 0xD800, b],
+                "utf-8",
+                "surrogateescape",
+                ("utf-8", 2, 3),
+            ),
+            (
+                vec![a, 0xD800, 0xDFFF, b],
+                "utf-16-le",
+                "strict",
+                ("utf-16-le", 1, 2),
+            ),
+            (
+                vec![a, 0xD800, 0xDFFF, b],
+                "utf-32",
+                "strict",
+                ("utf-32", 1, 2),
+            ),
+        ] {
+            assert_eq!(
+                failure(&input, encoding, errors),
+                expected,
+                "{encoding}/{errors}"
+            );
+        }
+    }
+
+    #[test]
+    fn surrogateescape_consumes_an_escapable_charmap_run() {
+        let encoded = encode_string_with_errors(
+            &text(&[0x61, 0xDC80, 0xDCFF, 0x62]),
+            "cp437",
+            Some("surrogateescape"),
+        )
+        .unwrap_or_else(|_| panic!("an escapable run must encode"));
+        assert_eq!(encoded, [0x61, 0x80, 0xFF, 0x62]);
+    }
+}
+
+#[cfg(test)]
+mod python_encode_error_tests {
+    use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
+    use crate::{MoltObject, PyToken, alloc_string, dec_ref_bits, exception_pending};
+
+    fn string(py: &PyToken<'_>, text: &str) -> u64 {
+        let ptr = alloc_string(py, text.as_bytes());
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    /// Take the pending UnicodeEncodeError as CPython's `(args, str(exc))`.
+    fn take_encode_error(py: &PyToken<'_>) -> ((String, i64, i64, String), String) {
+        assert!(exception_pending(py));
+        let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            py,
+            exception.bits(),
+            "UnicodeEncodeError"
+        ));
+        crate::clear_exception(py);
+        let attribute = |name: &[u8]| {
+            let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+            let value = crate::molt_get_attr_name(exception.bits(), name);
+            dec_ref_bits(py, name);
+            ExceptionValue::adopt(py, value)
+        };
+        let text = |value: &ExceptionValue<'_, '_>| {
+            crate::string_obj_to_owned(crate::obj_from_bits(value.bits())).unwrap()
+        };
+        let int =
+            |value: &ExceptionValue<'_, '_>| crate::obj_from_bits(value.bits()).as_int().unwrap();
+        let fields = (
+            text(&attribute(b"encoding")),
+            int(&attribute(b"start")),
+            int(&attribute(b"end")),
+            text(&attribute(b"reason")),
+        );
+        let message = crate::format_exception_message(
+            py,
+            crate::obj_from_bits(exception.bits()).as_ptr().unwrap(),
+        );
+        assert!(!exception_pending(py));
+        (fields, message)
+    }
+
+    /// `str.encode` and `codecs.charmap_encode` report CPython 3.12's ranges.
+    #[test]
+    fn python_level_encode_errors_report_the_unencodable_run() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let text = string(py, "a\u{e9}\u{20ac}z");
+            let ascii = string(py, "ascii");
+            let strict = string(py, "strict");
+            assert!(
+                MoltObject::from_bits(crate::molt_string_encode(text, ascii, strict)).is_none()
+            );
+            assert_eq!(
+                take_encode_error(py),
+                (
+                    ("ascii".into(), 1, 3, "ordinal not in range(128)".into()),
+                    "'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)"
+                        .into()
+                )
+            );
+
+            let mapped = string(py, "a\u{100}\u{101}z");
+            let mapping = crate::alloc_dict_with_pairs(
+                py,
+                &[
+                    MoltObject::from_int(i64::from(b'a')).bits(),
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(i64::from(b'z')).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
+            );
+            assert!(!mapping.is_null());
+            let mapping = MoltObject::from_ptr(mapping).bits();
+            for (mapping, expected) in [
+                (mapping, ("charmap", "character maps to <undefined>")),
+                (none, ("latin-1", "ordinal not in range(256)")),
+            ] {
+                let result = crate::builtins::codecs_ext::molt_codecs_charmap_encode(
+                    mapped, strict, mapping,
+                );
+                assert!(MoltObject::from_bits(result).is_none());
+                let ((encoding, start, end, reason), _) = take_encode_error(py);
+                assert_eq!(
+                    (encoding.as_str(), start, end, reason.as_str()),
+                    (expected.0, 1, 3, expected.1)
+                );
+            }
+            for bits in [text, ascii, mapped, strict, mapping] {
+                dec_ref_bits(py, bits);
+            }
+        });
     }
 }

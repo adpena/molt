@@ -197,17 +197,13 @@ pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_b
                 Err(OpsEncodeError::InvalidChar {
                     encoding,
                     code,
-                    pos,
+                    start,
+                    end,
                     limit,
                 }) => {
                     let reason = crate::object::ops::encode_error_reason(encoding, code, limit);
                     return raise_unicode_encode_error::<_>(
-                        _py,
-                        encoding,
-                        obj_bits,
-                        pos,
-                        pos + 1,
-                        &reason,
+                        _py, encoding, obj_bits, start, end, &reason,
                     );
                 }
             };
