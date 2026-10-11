@@ -344,7 +344,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "66868293e978ef110f58568f3ad592424f87fc402db70d5c91512ae3a1f50b8e",
+  "authority_sha256": "b20f273532ab081e8567501cc774f9af12d742ca3cad9ccd5da6adab8769d15a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2638,7 +2638,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 900,
       "toolchains": [
         "python",
         "uv",
@@ -7067,13 +7067,13 @@
       },
       "repository_policy": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 1500,
-        "headroom_seconds": 1260,
+        "critical_path_seconds": 1800,
+        "headroom_seconds": 960,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2220,
-        "required_job_seconds": 2340,
+        "projected_makespan_seconds": 2520,
+        "required_job_seconds": 2640,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2070
+          "repository-policy": 2145
         }
       },
       "rust": {
