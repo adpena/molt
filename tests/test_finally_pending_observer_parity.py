@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -180,28 +181,11 @@ def _build_extension(
     ]
 
 
-@pytest.mark.slow
-def test_finally_pending_observer_native_wasm_parity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if sys.implementation.name != "cpython":
-        pytest.skip("the pending-call oracle requires CPython")
-    target_python = require_verified_subset_target(
-        TargetPythonVersion(*sys.version_info[:3])
-    )
-    require_wasm_toolchain()
-
-    artifact_root = tmp_path / "observer"
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    env = _test_env(artifact_root)
-    oracle = _run_cpython_oracle(artifact_root, env)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-    _build_extension(artifact_root, env, target="native", target_python=target_python)
-    _build_extension(artifact_root, env, target="wasm", target_python=target_python)
-
+def _run_native_program(
+    artifact_root: Path,
+    env: dict[str, str],
+    target_python: TargetPythonVersion,
+) -> subprocess.CompletedProcess[str]:
     native_path = artifact_root / ("observer.exe" if os.name == "nt" else "observer")
     native_build = run_native_test_process(
         [
@@ -224,7 +208,12 @@ def test_finally_pending_observer_native_wasm_parity(
     assert native_build.returncode == 0, native_build.stderr
     native = run_native_test_process([str(native_path)], cwd=ROOT, env=env, timeout=60)
     assert native.returncode == 0, native.stderr
+    return native
 
+
+def _run_wasm_program(
+    tmp_path: Path, target_python: TargetPythonVersion
+) -> subprocess.CompletedProcess[str]:
     wasm_path = build_wasm_linked(
         ROOT,
         PROGRAM,
@@ -233,11 +222,44 @@ def test_finally_pending_observer_native_wasm_parity(
     )
     wasm = run_wasm_linked(ROOT, wasm_path)
     assert wasm.returncode == 0, wasm.stderr
+    return wasm
 
-    for backend, result in (("native", native), ("wasm", wasm)):
-        actual = Outputs(result.stdout, result.stderr, result.returncode)
-        verdict = compare_outputs(oracle, actual, stderr_mode="exception")
-        assert verdict.equal, (
-            f"{backend} vs CPython {target_python.short}: {verdict.detail}\n"
-            f"oracle={oracle!r}\nactual={actual!r}"
-        )
+
+# Each target is an independent proof against the same oracle, and each builds
+# its own program-specific runtime. The proof plan runs each case in its own
+# row, so one target's cold build never spends the other target's budget.
+@pytest.mark.slow
+@pytest.mark.parametrize("target", ["native", "wasm"])
+def test_finally_pending_observer_parity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    if sys.implementation.name != "cpython":
+        pytest.skip("the pending-call oracle requires CPython")
+    target_python = require_verified_subset_target(
+        TargetPythonVersion(*sys.version_info[:3])
+    )
+    if target == "wasm":
+        require_wasm_toolchain()
+
+    artifact_root = tmp_path / "observer"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    env = _test_env(artifact_root)
+    oracle = _run_cpython_oracle(artifact_root, env)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    _build_extension(artifact_root, env, target=target, target_python=target_python)
+    result = (
+        _run_native_program(artifact_root, env, target_python)
+        if target == "native"
+        else _run_wasm_program(tmp_path, target_python)
+    )
+
+    actual = Outputs(result.stdout, result.stderr, result.returncode)
+    verdict = compare_outputs(oracle, actual, stderr_mode="exception")
+    assert verdict.equal, (
+        f"{target} vs CPython {target_python.short}: {verdict.detail}\n"
+        f"oracle={oracle!r}\nactual={actual!r}"
+    )
