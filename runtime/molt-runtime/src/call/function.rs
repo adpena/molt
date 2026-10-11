@@ -40,7 +40,7 @@ fn select_wasm_fixed_arity_call_target(direct_target: u64, tramp_ptr: u64) -> u6
     direct_target
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg(any(test, target_arch = "wasm32"))]
 #[inline]
 pub(crate) fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -82,7 +82,7 @@ pub(crate) fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg(any(test, target_arch = "wasm32"))]
 #[inline]
 fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -227,7 +227,7 @@ macro_rules! required_native_call_target {
     }};
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg(any(test, target_arch = "wasm32"))]
 #[inline]
 fn should_force_trampoline_for_fixed_arity_call(
     direct_target: u64,
