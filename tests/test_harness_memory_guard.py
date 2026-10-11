@@ -16,7 +16,7 @@ import molt.dx as molt_dx
 from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
-from tests.process_guard_common import current_thread_only
+from tests.process_guard_common import current_thread_only, guard_custody_env
 
 # Limit resolution here must not inherit the CI plan's guard caps.
 pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
@@ -942,7 +942,11 @@ def test_guarded_completed_process_writes_command_profile(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
         operation_role="build",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log), "MOLT_SESSION_ID": "unit"},
+        env={
+            **guard_custody_env(),
+            "MOLT_GUARD_PROFILE_LOG": str(profile_log),
+            "MOLT_SESSION_ID": "unit",
+        },
         limits=limits,
     )
 
@@ -1062,7 +1066,10 @@ def test_guarded_completed_process_profiles_incident_by_default(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
-        env={"PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)"},
+        env={
+            **guard_custody_env(),
+            "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
+        },
         limits=limits,
     )
 
@@ -1180,6 +1187,7 @@ def test_guarded_completed_process_rotates_command_profile(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
         env={
+            **guard_custody_env(),
             "MOLT_GUARD_PROFILE_LOG": str(profile_log),
             "MOLT_GUARD_PROFILE_MAX_MB": "0.001",
         },
@@ -1223,7 +1231,7 @@ def test_guarded_completed_process_streamed_commands_emit_keepalive(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_WASM_TEST",
-        env={"MOLT_WASM_TEST_KEEPALIVE_SEC": "3"},
+        env={**guard_custody_env(), "MOLT_WASM_TEST_KEEPALIVE_SEC": "3"},
         limits=limits,
         capture_output=False,
     )
@@ -1266,7 +1274,7 @@ def test_guarded_completed_process_capture_commands_use_explicit_keepalive(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_BENCH",
-        env={"MOLT_BENCH_KEEPALIVE_SEC": "4"},
+        env={**guard_custody_env(), "MOLT_BENCH_KEEPALIVE_SEC": "4"},
         limits=limits,
         capture_output=True,
         progress_label="throughput matrix build",
@@ -1640,7 +1648,7 @@ def test_guarded_completed_process_reports_guard_parent_signal(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
         prefix="MOLT_TEST",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
 
@@ -1701,7 +1709,7 @@ def test_guarded_completed_process_profiles_secondary_guard_signal(
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
         prefix="MOLT_TEST",
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
 
@@ -2146,7 +2154,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
         prefix="MOLT_CLI",
         input=b"ir",
         cwd=tmp_path,
-        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         timeout=10.0,
         progress_label="Backend compile",
         limits=limits,
@@ -3908,3 +3916,34 @@ def test_platform_query_guard_does_not_select_unused_managed_tools(
     assert observed[0][0] == ("selected-external-tool", "--version")
     assert len(observed) == 1
     assert invalid.read_text(encoding="utf-8") == "file"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="suite custody scopes POSIX scans")
+def test_sentinel_scan_imports_nothing_while_a_test_clears_molt(tmp_path, monkeypatch):
+    """A background scan must not reload ``molt`` into another test's surgery.
+
+    HF-163 CI: a probe test cleared ``molt.*`` from sys.modules; the serial
+    session's sentinel scan then imported suite custody, which reloaded
+    ``molt.dx`` and ``molt.path_custody``. The probe reported that real
+    module instead of the foreign one it was testing.
+    """
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="no-import-scan",
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=32,
+            max_total_rss_gb=64,
+            max_global_rss_gb=96,
+            poll_interval=0.01,
+        ),
+        drain_on_exit=False,
+        suppress_auto_guard=False,
+    )
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", str(tmp_path / "no-lease"))
+    for name in tuple(sys.modules):
+        if name == "molt" or name.startswith("molt."):
+            monkeypatch.delitem(sys.modules, name)
+    sentinel.scan_once()
+    assert [name for name in sys.modules if name.split(".")[0] == "molt"] == []

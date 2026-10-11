@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from tools.memory_guard_core import (
+    active_custody,
     cargo_quarantine,
     memory_limits,
     process_custody,
@@ -33,6 +34,7 @@ import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    guard_custody_env,
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
@@ -57,6 +59,14 @@ def _fake_guard(monkeypatch, attribute: str, real: object, **fakes: Any) -> None
     the real functions.
     """
     install_thread_module_view(monkeypatch, attribute, real, *_GUARD_MODULES, **fakes)
+
+
+# The real scratch authority, for tests that prove custody end to end in a
+# private state root; the autouse fixture below replaces it for all others.
+_REAL_SCRATCH = (
+    memory_guard._temporary_artifacts.acquire_guard_scratch,
+    memory_guard._temporary_artifacts.finish_guard_scratch,
+)
 
 
 @pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
@@ -176,7 +186,8 @@ def isolated_guard_scratch(
         if not closed:
             state = "indeterminate"
         elif success:
-            state = "reclaimed"
+            # The real authority removes a reclaimed generation's receipts.
+            return {"state": "reclaimed", "receipt": None}
         else:
             state = "retained"
         return {"state": state, "receipt": str(tmp_path / "owner.json")}
@@ -922,6 +933,125 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     assert set(marker_dir.glob("*.json")) == {*prior, new_marker}
     assert set(marker_dir.glob("*.lock")) == {new_marker.with_suffix(".lock")}
     assert {path: path.read_bytes() for path in prior} == prior
+
+
+def _use_real_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    acquire, finish = _REAL_SCRATCH
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts, "acquire_guard_scratch", acquire
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts, "finish_guard_scratch", finish
+    )
+
+
+def _guarded_pass(state_root: Path) -> memory_guard.GuardResult:
+    return memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+    )
+
+
+def test_completed_guard_retires_its_marker_lock_and_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_real_scratch(monkeypatch)
+    state_root = tmp_path / "memory_guard"
+    assert _guarded_pass(state_root).returncode == 0
+    assert list((state_root / "active").iterdir()) == []
+    (retired,) = (state_root / "retired").glob("guard-*.json")
+    payload = json.loads(retired.read_text(encoding="utf-8"))
+    assert payload["pid"] == os.getpid()
+    assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is True
+    assert payload["temporary_artifacts"]["state"] == "reclaimed"
+    assert payload["temporary_artifacts"]["receipt"] is None
+    generations = [
+        path.name for path in (tmp_path / "gs").iterdir() if len(path.name) == 32
+    ]
+    assert generations == []
+
+
+def test_unproven_closure_keeps_the_completed_marker_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proven = memory_guard._temporary_artifact_descendant_closure
+
+    def unproven(**kwargs: Any) -> tuple[bool, dict[str, object]]:
+        _closed, evidence = proven(**kwargs)
+        return False, {**evidence, "closed": False}
+
+    monkeypatch.setattr(
+        memory_guard, "_temporary_artifact_descendant_closure", unproven
+    )
+    state_root = tmp_path / "memory_guard"
+    _guarded_pass(state_root)
+    active = state_root / "active"
+    (marker,) = active.glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert payload["descendants_closed"] is False
+    # Orphans may still run beside its artifacts: it protects them.
+    assert not active_custody.read_marker_record(marker).terminal
+    assert active_custody.has_active_guard_marker(active)
+
+
+def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
+    state_root = tmp_path / "memory_guard"
+    missing = tmp_path / "molt-no-such-command"
+    with pytest.raises(FileNotFoundError):
+        memory_guard.run_guarded(
+            [str(missing)],
+            max_rss_kb=512 * 1024,
+            poll_interval=0.01,
+            child_rlimit_kb=None,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+        )
+    (marker,) = (state_root / "active").glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["status"] == "guard_exception"
+    assert payload["child_launch_state"] == "failed"
+    assert payload["child_process"] is None
+    assert payload["spawn_error_type"] == "FileNotFoundError"
+    record = active_custody.read_marker_record(marker)
+    # Once the guard pid is gone, nothing can still hold its launch.
+    observation = active_custody.observe_custody(record, {})
+    assert observation.state == "closed"
+
+
+def test_exiting_guard_sweeps_dead_custody_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_real_scratch(monkeypatch)
+    state_root = tmp_path / "memory_guard"
+    active = state_root / "active"
+    live = set(process_model.sample_processes())
+    dead = [pid for pid in range(70_000, 90_000) if pid not in live][
+        : active_custody.AUTO_SWEEP_GROWTH + 1
+    ]
+    for pid in dead:
+        token = f"{pid:032x}"
+        active_custody.write_active_guard_marker(
+            active / f"guard-{pid}-{token}.json",
+            {
+                "schema_version": 2,
+                "pid": pid,
+                "token": token,
+                "status": "launch_prepared",
+                "guard_process": {"pid": pid, "started_at_ns": 1},
+                "child_process": None,
+                "child_launch_state": "not_started",
+            },
+        )
+    assert _guarded_pass(state_root).returncode == 0
+    assert list(active.iterdir()) == []
+    assert len(list((state_root / "retired").glob("guard-*.json"))) == len(dead) + 1
+    receipt = json.loads((state_root / "sweep.json").read_text(encoding="utf-8"))
+    assert receipt["remaining"] == 0
 
 
 def test_active_guard_markers_follow_external_artifact_custody(
@@ -5847,7 +5977,7 @@ def test_run_command_timeout_teardown_uses_bounded_wait(
         max_rss_kb=1_000_000,
         poll_interval=0.001,
         timeout=0.001,
-        env={"MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
+        env={**guard_custody_env(), "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
         sampler=lambda: {},
     )
 
@@ -5910,7 +6040,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -5938,7 +6068,7 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
 
@@ -5994,7 +6124,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={"CARGO_TARGET_DIR": str(target)},
+        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
         sampler=lambda: {},
     )
     return result, calls, report

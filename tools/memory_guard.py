@@ -77,6 +77,8 @@ if str(SRC_ROOT) not in sys.path:
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.active_custody import (  # noqa: E402
     ACTIVE_GUARD_MARKER_SCHEMA_VERSION,
+    retire_active_guard_marker,
+    sweep_active_guard_markers,
     update_active_guard_marker,
     write_active_guard_marker,
 )
@@ -503,10 +505,29 @@ def _write_active_guard_marker(
         "updated_at": _utc_timestamp(),
     }
     write_active_guard_marker(marker_path, payload)
-    # These are custody records, not a bounded artifact cache. Removing an old
-    # marker can erase unresolved ownership or a parent's nested-child closure.
-    # New launches must not discard another execution's evidence.
+    # A launch never touches another execution's record. Each marker leaves
+    # active/ through its own retirement (_retire_guard_custody) or through
+    # evidence-based reconciliation, never by age or count.
     return token, marker_path
+
+
+# Captured at import: the custody sweep must read the native process table,
+# never a sampler that a caller or test substituted later.
+_NATIVE_PROCESS_SNAPSHOT = _process_model.sample_processes
+
+
+def _retire_guard_custody(marker_path: Path, token: str) -> None:
+    """Retire this guard's resolved marker, then sweep stale custody records.
+
+    Both steps run after the guarded result is final. A failure changes no
+    record's protection: the marker stays in active/, and the next sweep or
+    ``tools/memory_guard_custody.py --apply`` repeats the step.
+    """
+    try:
+        retire_active_guard_marker(marker_path, token)
+        sweep_active_guard_markers(marker_path.parent, _NATIVE_PROCESS_SNAPSHOT)
+    except (OSError, ValueError, RuntimeError):
+        return
 
 
 def _update_active_guard_marker(
@@ -1034,10 +1055,13 @@ def run_guarded(
             if guard_job is not None:
                 _win_job.close_job(guard_job)
             guard_job = None
+            # Popen raised, so no child exists: CPython reaps a child whose
+            # exec failed before it raises. Record that launch outcome.
             _update_active_guard_marker(
                 guard_marker,
                 guard_token,
                 status="spawn_failed",
+                child_launch_state="failed",
                 launch_command=list(launch.command),
                 spawn_error_type=type(exc).__name__,
                 spawn_error=str(exc),
@@ -2409,6 +2433,9 @@ def run_guarded(
             guard_marker,
             guard_token,
             status="completed",
+            # Without proven closure, orphaned processes may still run: the
+            # record then stays unresolved custody (active_custody.terminal).
+            descendants_closed=result.descendants_closed,
             owned_process_identities=process_identities_payload(
                 result.owned_process_identities
             ),
@@ -2498,6 +2525,8 @@ def run_guarded(
                 guard_marker,
                 guard_token,
                 status="finalizer_completed",
+                # The finalizer signals the tree but proves no closure.
+                descendants_closed=False,
                 child_process=guarded_child_process_payload(child_process),
                 child_returncode=proc.returncode,
                 termination_reports=termination_reports_payload(
@@ -2541,6 +2570,7 @@ def run_guarded(
                     if caught_exception is not None
                     else "finalizer_completed"
                 ),
+                descendants_closed=no_child_launched,
                 child_process=guarded_child_process_payload(child_process),
                 child_returncode=None if proc is None else proc.returncode,
                 termination_reports=termination_reports_payload(
@@ -2558,6 +2588,8 @@ def run_guarded(
         # Drop the job handle last. Successful execution has already proven the
         # exact Job empty; KILL_ON_JOB_CLOSE remains the crash-only safety net.
         _win_job.close_job(guard_job)
+        if caught_exception is None:
+            _retire_guard_custody(guard_marker, guard_token)
 
 
 _REPRO_ENV_KEYS = _repro_context.REPRO_ENV_KEYS
