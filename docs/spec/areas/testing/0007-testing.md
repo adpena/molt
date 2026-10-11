@@ -303,7 +303,10 @@ lease target in that session's basetemp, which the run's outer guard reclaims.
 The outer guard keeps the host root: it is a real guard of the run, and its
 marker protects the checkout from disk reclamation while the run lasts. The
 pytest bootstrap keeps the current-test path it admitted under that root, so
-the outer guard still names the running test. A test that needs another root
+the outer guard still names the running test, and a Python child of a test
+recognizes the outer guard by its marker in that guard's own `active/`
+directory, not by the redirected root, so it neither samples processes nor
+re-runs itself under a new guard. A test that needs another root
 sets its own. `tests/test_memory_guard_wiring.py` proves that a guarded child
 leaves no record in the host roots.
 
