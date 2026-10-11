@@ -111,7 +111,39 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
         "native batch worker path must write a non-empty object"
     );
 
-    std::fs::remove_dir_all(&tmp.path).expect("remove native batch worker temp dir");
+    // Explicit invalid custody must fail before publication instead of silently
+    // allocating in the process's unrelated platform temp directory.
+    let nondirectory = tmp.path.join("scratch-file");
+    std::fs::write(&nondirectory, b"not a directory").expect("write invalid scratch root");
+    for (index, invalid_root) in [
+        PathBuf::from("relative-scratch"),
+        tmp.path.join("missing-scratch"),
+        nondirectory,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let denied_output = tmp.path.join(format!("denied-{index}.a"));
+        let denied = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+            .args(["--native-output-kind", "archive"])
+            .arg("--ir-file")
+            .arg(&ir_path)
+            .arg("--output")
+            .arg(&denied_output)
+            .env("MOLT_BACKEND_BATCH_SIZE", "1")
+            .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
+            .env("MOLT_GUARD_SCRATCH_ROOT", invalid_root)
+            .output()
+            .expect("spawn backend with invalid scratch selector");
+        assert!(
+            !denied.status.success(),
+            "invalid scratch silently accepted: {invalid_root:?}"
+        );
+        assert!(
+            !denied_output.exists(),
+            "denied compilation published an archive"
+        );
+    }
 }
 
 #[test]
@@ -119,7 +151,14 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     let tmp = TestTempDir::new();
     let ir_path = tmp.path.join("stdlib_split.json");
     let output_path = tmp.path.join("out.a");
-    let stdlib_path = tmp.path.join("stdlib_shared.a");
+    let initial_key = "a".repeat(64);
+    let other_key = "b".repeat(64);
+    let emitter_key = "c".repeat(64);
+    let changed_key = "d".repeat(64);
+    let cache_root = tmp.path.join("cache");
+    let archive_for = |key: &str| cache_root.join("shared-stdlib").join(key).join("stdlib.a");
+    let required_archive_for = |output: &Path| output.with_extension("stdlib.a");
+    let stdlib_path = required_archive_for(&output_path);
     let runtime_symbols_path = tmp.path.join("runtime_callable_symbols.txt");
     std::fs::write(
         &runtime_symbols_path,
@@ -242,7 +281,8 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 .arg("--output")
                 .arg(destination)
                 .env("MOLT_ENTRY_MODULE", "demo")
-                .env("MOLT_STDLIB_OBJ", &stdlib_path)
+                .env("MOLT_STDLIB_OBJ", required_archive_for(destination))
+                .env("MOLT_STDLIB_CACHE_ENTRY", archive_for(cache_key))
                 .env("MOLT_STDLIB_CACHE_KEY", cache_key)
                 .env("MOLT_BACKEND_OPT_LEVEL", opt_level)
                 .env("MOLT_BACKEND_INLINE_EXC_DISABLED", inline_exc_disabled)
@@ -261,7 +301,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 .output()
                 .expect("spawn production molt-backend binary")
         };
-    let output = run_backend(&output_path, "stdlib-batch-key", "speed", "0");
+    let output = run_backend(&output_path, initial_key.as_str(), "speed", "0");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -306,13 +346,13 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         std::fs::read_to_string(stdlib_path.with_extension("key"))
             .expect("shared stdlib key sidecar")
             .trim(),
-        "stdlib-batch-key"
+        initial_key.as_str()
     );
     assert_eq!(
         std::fs::read_to_string(stdlib_path.with_extension("manifest.json"))
             .expect("shared stdlib manifest sidecar")
             .trim(),
-        manifest_for("stdlib-batch-key", "speed")
+        manifest_for(initial_key.as_str(), "speed")
     );
     let partition_manifest = std::fs::read_to_string(stdlib_path.with_extension("partition.json"))
         .expect("shared stdlib partition manifest sidecar");
@@ -329,9 +369,37 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "shared stdlib object digest sidecar must be populated"
     );
 
+    let required_bytes = std::fs::read(&stdlib_path).expect("required archive bytes");
+    assert_eq!(
+        std::fs::read(archive_for(&initial_key)).expect("optional cache archive"),
+        required_bytes
+    );
+
     let warm_output_path = tmp.path.join("out-warm.a");
-    let warm_output = run_backend(&warm_output_path, "stdlib-batch-key", "speed", "0");
+    let warm_output = run_backend(&warm_output_path, initial_key.as_str(), "speed", "0");
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
+    let warm_required = required_archive_for(&warm_output_path);
+    assert_eq!(
+        std::fs::read(&warm_required).expect("warm owned archive"),
+        required_bytes
+    );
+    for extension in ["count", "key", "manifest.json", "partition.json", "sha256"] {
+        assert_eq!(
+            std::fs::read(warm_required.with_extension(extension)).expect("warm metadata"),
+            std::fs::read(stdlib_path.with_extension(extension)).expect("cold metadata")
+        );
+    }
+    // Eviction after successful cache handoff cannot invalidate either build.
+    std::fs::remove_dir_all(archive_for(&initial_key).parent().expect("cache entry"))
+        .expect("evict optional archive generation");
+    assert_eq!(
+        std::fs::read(&stdlib_path).expect("cold output survives eviction"),
+        required_bytes
+    );
+    assert_eq!(
+        std::fs::read(&warm_required).expect("warm output survives eviction"),
+        required_bytes
+    );
     assert!(
         warm_output.status.success(),
         "warm shared-stdlib reuse failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
@@ -361,7 +429,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     let original_archive = std::fs::read(&stdlib_path).expect("read original stdlib archive");
     let constituent_output = run_backend(
         &tmp.path.join("other-program.a"),
-        "other-program",
+        other_key.as_str(),
         "speed",
         "0",
     );
@@ -379,12 +447,25 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "cache hits must not invoke stdlib workers: {constituent_stderr}"
     );
     assert_eq!(std::fs::read(&stdlib_path).unwrap(), original_archive);
+    assert_eq!(
+        std::fs::read(archive_for(&other_key)).unwrap(),
+        original_archive
+    );
+    assert_ne!(archive_for(&initial_key), archive_for(&other_key));
+    assert!(cache_root.join("native-stdlib-objects-v1").is_dir());
+    assert!(
+        !archive_for(&other_key)
+            .parent()
+            .unwrap()
+            .join("native-stdlib-objects-v1")
+            .exists()
+    );
 
     // This switch was absent from the old CLI digest. Keep the same manifest
     // variant to prove that the actual inherited worker input invalidates reuse.
     let emitter_output = run_backend(
         &tmp.path.join("changed-emitter.a"),
-        "changed-emitter",
+        emitter_key.as_str(),
         "speed",
         "1",
     );
@@ -402,7 +483,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     // Identical IR cannot admit the prior speed-optimized object generation.
     let changed_output = run_backend(
         &tmp.path.join("changed-codegen.a"),
-        "changed-codegen",
+        changed_key.as_str(),
         "none",
         "0",
     );
@@ -415,8 +496,6 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         changed_stderr.contains("stdlib object reuse: 0 hits, 2 misses"),
         "codegen authority changes must recompile both objects: {changed_stderr}"
     );
-
-    std::fs::remove_dir_all(&tmp.path).expect("remove native batch worker temp dir");
 }
 
 #[test]
@@ -543,6 +622,4 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
             && replay_args.iter().any(|arg| arg.ends_with("replay.o")),
         "failure manifest must describe a replayable worker command: {manifest}"
     );
-
-    std::fs::remove_dir_all(&tmp.path).expect("remove native batch worker temp dir");
 }

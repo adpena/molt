@@ -890,6 +890,7 @@ class _BackendCacheSetup:
     stdlib_module_symbols_json: str | None = None
     stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
+    stdlib_cache_entry_path: Path | None = None
 
 
 @dataclass(frozen=True)

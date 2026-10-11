@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 import contextlib
-from contextlib import contextmanager
-from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path
 import re
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Collection, Generator, Mapping
 
-from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
-from molt.file_locks import _acquire_file_lock, _release_file_lock
-from molt.default_paths import _default_molt_cache
-from molt.exact_json import loads_exact
-
-
-WASM_LINK_CACHE_DIRECTORY = "wasm_link"
-WASM_LINK_CACHE_FAMILIES = frozenset(
-    {"runtime_tree_shake", "split_app_optimize", "final_link"}
+from molt.default_paths import (
+    WASM_LINK_CACHE_DIRECTORY,
+    _default_molt_cache,
+    wasm_link_cache_paths,
 )
+
+from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
+from molt.exact_json import loads_exact
+from molt.file_locks import _acquire_file_lock, _release_file_lock
+
 WASM_LINK_CACHE_ENTRY_SCHEMA = "molt.wasm-link-cache-entry.v4"
 # A bundle entry holds every output role of one transform (for example the
 # complete private output family of one final link) under one content key.
@@ -29,8 +29,6 @@ _WASM_LINK_CACHE_ROOT_KEYS = frozenset({"schema", "cache", "payload"})
 _WASM_LINK_CACHE_RECORD_KEYS = frozenset(
     {"family", "transform_schema", "key", "artifact_bytes", "artifact_sha256"}
 )
-_CACHE_SCHEMA_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -70,19 +68,9 @@ def _wasm_link_cache_entry(
     *,
     cache_root: Path | None = None,
 ) -> WasmLinkCacheEntry:
-    if family not in WASM_LINK_CACHE_FAMILIES:
-        raise ValueError(f"unknown wasm linker cache family: {family}")
-    if not isinstance(schema, str) or _CACHE_SCHEMA_RE.fullmatch(schema) is None:
-        raise ValueError("wasm linker cache schema must be a lowercase identifier")
-    if not isinstance(key, str) or _SHA256_RE.fullmatch(key) is None:
-        raise ValueError("wasm linker cache key must be a lowercase SHA-256")
-    family_root = (cache_root or _default_wasm_link_cache()) / family
-    root = family_root / schema / key
-    # A fixed 256-stripe lock set bounds filesystem metadata for the lifetime of
-    # the cache while still single-flighting identical content keys. Deleting a
-    # per-key lock after release is racy on POSIX and invalid on Windows when a
-    # waiter already owns an open handle; stable stripes avoid both hazards.
-    lock = family_root / ".locks" / f"{key[:2]}.lock"
+    root, lock = wasm_link_cache_paths(
+        cache_root or _default_wasm_link_cache(), family, schema, key
+    )
     return WasmLinkCacheEntry(
         root=root,
         artifact=root / "artifact.wasm",

@@ -14,6 +14,10 @@ import time
 from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
+from molt.default_paths import (
+    validate_required_stdlib_output,
+    shared_stdlib_archive_cache_root,
+)
 from molt.backend_environment import environment_keys, codegen_environment_inputs
 from molt import backend_daemon_custody as _daemon_custody
 from molt.backend_executable_names import (
@@ -956,6 +960,32 @@ def _backend_daemon_compile_request_bytes(
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
+    cache_entry = request_environment.get("MOLT_STDLIB_CACHE_ENTRY")
+    if cache_entry is not None and (
+        not cache_entry
+        or stdlib_object_path is None
+        or Path(cache_entry).resolve() == stdlib_object_path.resolve()
+    ):
+        return (
+            None,
+            "Shared stdlib cache entry requires a distinct build-owned archive output",
+        )
+    if stdlib_object_path is not None:
+        try:
+            if (
+                cache_entry is not None
+                and shared_stdlib_archive_cache_root(Path(cache_entry).resolve())
+                is None
+            ):
+                return (
+                    None,
+                    "Shared stdlib cache entry must use the canonical shared-stdlib archive path",
+                )
+            validate_required_stdlib_output(
+                stdlib_object_path, Path(cache_entry) if cache_entry else None
+            )
+        except (OSError, ValueError) as error:
+            return None, str(error)
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
         shared_stdlib=bool(
@@ -1030,6 +1060,8 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough[ENTRY_OVERRIDE_ENV] = entry_module
     if stdlib_object_path is not None:
         env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
+    if cache_entry is not None:
+        env_passthrough["MOLT_STDLIB_CACHE_ENTRY"] = str(Path(cache_entry).resolve())
     if stdlib_object_cache_key:
         env_passthrough["MOLT_STDLIB_CACHE_KEY"] = stdlib_object_cache_key
     if stdlib_object_manifest:

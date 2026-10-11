@@ -18,14 +18,25 @@ pub(crate) fn try_reuse_existing_stdlib_cache(
     {
         return Ok(false);
     }
-    if !admit_or_invalidate_shared_stdlib_cache(
+    let mut admitted = admit_or_invalidate_shared_stdlib_cache(
         stdlib_path,
         request.expected_cache_key,
         request.expected_cache_manifest,
         current_partition_manifest,
         stdlib_funcs.len(),
         request.log_prefix,
-    )? {
+    )?;
+    if !admitted && let Some(cache_path) = request.cache_archive_path {
+        admitted = super::super::publish::hydrate_shared_stdlib_cache_archive(
+            Path::new(cache_path),
+            stdlib_path,
+            request.expected_cache_key,
+            request.expected_cache_manifest,
+            current_partition_manifest,
+            stdlib_funcs.len(),
+        )?;
+    }
+    if !admitted {
         return Ok(false);
     }
     let mut retained = std::mem::take(user_remaining);

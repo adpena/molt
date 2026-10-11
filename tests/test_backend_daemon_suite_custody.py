@@ -68,6 +68,7 @@ def lease(tmp_path, monkeypatch):
         "source_digest": suite._source_digest(),
         "interpreter": sys.executable,
         "interpreter_sha256": "b" * 64,
+        "scratch": suite._allocate_scratch(path.parent),
     }
     write_exact(path.parent / "adoption-index.json", suite._new_adoption_index(record))
     write_exact(path, record)
@@ -139,6 +140,7 @@ def test_unheld_or_closed_lease_cannot_adopt(tmp_path):
         "source_digest": suite._source_digest(),
         "interpreter": sys.executable,
         "interpreter_sha256": "b" * 64,
+        "scratch": suite._allocate_scratch(path.parent),
     }
     write_exact(path.parent / "adoption-index.json", suite._new_adoption_index(record))
     write_exact(path, record)
@@ -233,16 +235,139 @@ def test_persistent_daemon_cannot_use_command_scratch(tmp_path):
         "PYTEST_DEBUG_TEMPROOT": str(scratch),
         "TMPDIR": str(scratch / "nested"),
         "TEMP": str(external),
-        suite.LEASE_ENV: "owner",
         "MOLT_BACKEND_MAX_PROCESS_RSS_GB": "1",
     }
     clean = suite.persistent_daemon_env(env)
     assert clean == {
         "TEMP": str(external),
-        suite.LEASE_ENV: "owner",
         "MOLT_BACKEND_MAX_PROCESS_RSS_GB": "1",
     }
     assert env["MOLT_GUARD_SCRATCH_ROOT"] == str(scratch)
+
+
+def test_persistent_daemon_uses_exact_suite_scratch_without_changing_codegen_inputs(
+    lease, tmp_path
+):
+    path, _record, _handle = lease
+    donor = tmp_path / "request"
+    donor.mkdir()
+    diagnostic = tmp_path / "diagnostics"
+    env = {
+        suite.LEASE_ENV: str(path),
+        "MOLT_GUARD_SCRATCH_ROOT": str(donor),
+        "MOLT_MEMORY_GUARD_TOKEN": "request-token",
+        "MOLT_MEMORY_GUARD_MARKER": "request-marker",
+        "MOLT_DEBUG_ARTIFACT_DIR": str(diagnostic),
+        "TMPDIR": str(donor),
+        "TMP": str(donor),
+        "TEMP": str(donor),
+    }
+    result = suite.persistent_daemon_env(env)
+    expected = str(path.parent / "scratch")
+    assert [result[key] for key in ("TMPDIR", "TMP", "TEMP")] == [expected] * 3
+    assert result["MOLT_DEBUG_ARTIFACT_DIR"] == str(diagnostic)
+    assert "MOLT_GUARD_SCRATCH_ROOT" not in result
+    assert "MOLT_MEMORY_GUARD_TOKEN" not in result
+    assert "MOLT_MEMORY_GUARD_MARKER" not in result
+    donor.rmdir()
+    assert Path(expected).is_dir()
+    assert env["TMPDIR"] == str(donor)
+
+
+@pytest.mark.parametrize("replacement", ["directory", "receipt", "link"])
+def test_changed_suite_scratch_never_acquires_launch_or_deletion_authority(
+    lease, tmp_path, monkeypatch, replacement
+):
+    path, record, _handle = lease
+    scratch = path.parent / "scratch"
+    payload = scratch / "keep.o"
+    payload.write_bytes(b"original")
+    if replacement == "receipt":
+        (scratch / ".molt-scratch-target.json").write_text(
+            '{"schema":"molt.guard-scratch.v1","nonce":"replacement"}'
+        )
+    else:
+        scratch.rename(path.parent / "original")
+        if replacement == "directory":
+            scratch.mkdir()
+            (scratch / "keep.o").write_bytes(b"replacement")
+        else:
+            target = tmp_path / "foreign"
+            target.mkdir()
+            (target / "keep.o").write_bytes(b"foreign")
+            try:
+                scratch.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                pytest.skip(f"directory symlink unavailable: {exc}")
+    expected = payload.read_bytes()
+    with pytest.raises(ValueError):
+        suite.persistent_daemon_env({suite.LEASE_ENV: str(path)})
+    assert (
+        suite.live_lease(path, project_root=tmp_path, samples=lease_samples(record))
+        is None
+    )
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: lease_samples(record))
+    assert not suite.drain_lease(path)
+    assert payload.read_bytes() == expected
+    receipt = json.loads((path.parent / "drain.json").read_text())
+    assert receipt["closed"] is True
+    assert receipt["scratch"]["state"] == "blocked"
+
+
+def test_verified_daemon_closure_does_not_hide_scratch_reclamation_failure(
+    lease, monkeypatch
+):
+    path, record, _handle = lease
+    scratch = path.parent / "scratch"
+    payload = scratch / "keep.o"
+    payload.write_bytes(b"unfinished deletion")
+    attempts = []
+
+    def partial_delete(target):
+        attempts.append(target)
+        (target / ".molt-scratch-target.json").unlink()
+        return False, "denied"
+
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: lease_samples(record))
+    monkeypatch.setattr(suite, "delete_path", partial_delete)
+    assert not suite.drain_lease(path)
+    assert (path.parent / "scratch").is_dir()
+    receipt = json.loads((path.parent / "drain.json").read_text())
+    assert receipt["closed"] is True
+    assert receipt["scratch"] == {"state": "blocked", "error": "OSError: denied"}
+    assert not suite.drain_lease(path)
+    assert attempts == [scratch]
+    assert payload.read_bytes() == b"unfinished deletion"
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_unpublished_scratch_receipt_failure_retires_only_its_allocation(
+    tmp_path, monkeypatch, cleanup_fails
+):
+    primary = OSError("receipt publication failed")
+
+    def fail_receipt(_target, _nonce):
+        raise primary
+
+    monkeypatch.setattr(
+        suite.temporary_artifacts, "_write_target_receipt", fail_receipt
+    )
+    if cleanup_fails:
+
+        def fail_cleanup(_target, _identity):
+            raise OSError("cleanup denied")
+
+        monkeypatch.setattr(
+            suite.temporary_artifacts, "_cleanup_temporary_directory", fail_cleanup
+        )
+    with pytest.raises(OSError) as failure:
+        suite._allocate_scratch(tmp_path)
+    assert failure.value is primary
+    assert (tmp_path / "scratch").exists() is cleanup_fails
+    if cleanup_fails:
+        assert primary.__notes__ == [
+            "unpublished suite scratch preserved: cleanup denied"
+        ]
 
 
 def test_eof_guardian_drains_only_its_registered_births(lease, tmp_path, monkeypatch):
@@ -261,11 +386,16 @@ def test_eof_guardian_drains_only_its_registered_births(lease, tmp_path, monkeyp
         31: sample(31, 30, 30, 310),
         50: sample(50, 1, 50, 500, foreign.command),
     }
+    scratch = path.parent / "scratch"
+    payload = scratch / "batch" / "module.o"
+    payload.parent.mkdir()
+    payload.write_bytes(b"native object")
     monkeypatch.setattr(daemon, "process_started_at_ns", lambda pid: 200)
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: dict(samples))
     signaled = []
 
     def terminate(pid, **kwargs):
+        assert payload.read_bytes() == b"native object"
         signaled.extend(sorted(kwargs["watched"]))
         assert kwargs["expected_identities"] == {
             member: memory_guard.process_identity(samples[member])
@@ -278,6 +408,7 @@ def test_eof_guardian_drains_only_its_registered_births(lease, tmp_path, monkeyp
     assert suite.drain_lease(path)
     assert signaled == [30, 31]
     assert 50 in samples
+    assert not scratch.exists()
     assert (
         json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))["closed"]
         is True
@@ -451,9 +582,22 @@ def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
     "field,value",
     [
         ("unexpected", True),
+        ("schema", "molt.backend_daemon.suite-lease.v1"),
         ("source_digest", "invalid"),
         ("interpreter_sha256", "bad"),
         ("owner_pid", True),
+        ("scratch", None),
+        (
+            "scratch",
+            {
+                "target_identity": {"device": 0, "inode": True},
+                "target_receipt": "a" * 32,
+            },
+        ),
+        (
+            "scratch",
+            {"target_identity": {"device": 0, "inode": 1}, "target_receipt": ""},
+        ),
     ],
 )
 def test_lease_metadata_is_fail_closed(lease, field, value):
@@ -533,6 +677,8 @@ def test_persistent_snapshot_failure_is_bounded_and_fail_closed(lease, monkeypat
     receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is False
     assert receipt["sampling_errors"]
+    assert (path.parent / "scratch").is_dir()
+    assert receipt["scratch"]["state"] == "preserved"
 
 
 def test_dead_leader_never_claims_unobserved_worker_custody(
@@ -589,6 +735,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_cod
     assert active is not None
     env[suite.LEASE_ENV] = str(active.path)
     env["OWNED_PROTOCOL_PID_FILE"] = str(tmp_path / "daemon.pid")
+    env["OWNED_PROTOCOL_SCRATCH_FILE"] = str(tmp_path / "daemon.scratch")
     env["OWNED_PROTOCOL_EXIT"] = str(exit_code)
     script = textwrap.dedent("""
         import os, subprocess, sys, time
@@ -599,15 +746,32 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_cod
         )
         root=Path.cwd()
         socket=Path(os.environ['OWNED_PROTOCOL_PID_FILE']).with_suffix('.sock')
-        proc=subprocess.Popen([sys.executable,'-I','-S','-c','import time; time.sleep(30)','--daemon','--socket',str(socket)],
+        child_code = (
+            'import os, sys, tempfile, time; from pathlib import Path; '
+            'assert "MOLT_GUARD_SCRATCH_ROOT" not in os.environ; '
+            'assert sys.stdin.buffer.read(1) == b"g"; '
+            'scratch=Path(tempfile.mkdtemp(prefix="molt_batch_")); '
+            '(scratch/"module.o").write_bytes(b"native object"); '
+            'Path(os.environ["OWNED_PROTOCOL_SCRATCH_FILE"]).write_text(str(scratch)); '
+            'time.sleep(30)'
+        )
+        proc=subprocess.Popen([sys.executable,'-I','-S','-c',child_code,'--daemon','--socket',str(socket)],
             start_new_session=True, env=persistent_daemon_env(os.environ),
-            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         identity=custody.backend_daemon_identity_for_pid(proc.pid,socket_path=socket,
             project_root=root,cargo_profile='dev-fast',config_digest='c'*64,backend_bin=Path(sys.executable))
         assert identity.started_at_ns is not None
         custody.write_backend_daemon_identity(custody.backend_daemon_root_from_env(os.environ,project_root=root)/'protocol.identity.json',identity)
         if int(os.environ['OWNED_PROTOCOL_EXIT']) == 0:
             assert acknowledge_started_daemon(os.environ, project_root=root, daemon_pid=proc.pid)
+            # Native compilation starts only after receiver acknowledgement.
+            proc.stdin.write(b'g')
+            proc.stdin.flush()
+            deadline = time.monotonic() + 3
+            while not Path(os.environ['OWNED_PROTOCOL_SCRATCH_FILE']).exists():
+                assert proc.poll() is None
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
         Path(os.environ['OWNED_PROTOCOL_PID_FILE']).write_text(str(proc.pid))
         time.sleep(0.4)
         sys.exit(int(os.environ['OWNED_PROTOCOL_EXIT']))
@@ -631,11 +795,18 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_cod
         if exit_code == 0:
             assert [item["pgid"] for item in transfers] == [pid]
             assert pid in memory_guard.sample_processes()
+            native_scratch = Path(
+                (tmp_path / "daemon.scratch").read_text(encoding="utf-8")
+            )
+            assert native_scratch.parent == active.path.parent / "scratch"
+            assert (native_scratch / "module.o").read_bytes() == b"native object"
         else:
             assert transfers == []
             assert pid not in memory_guard.sample_processes()
+            assert not (tmp_path / "daemon.scratch").exists()
     finally:
         active.close()
+    assert not (active.path.parent / "scratch").exists()
     assert (
         json.loads((active.path.parent / "drain.json").read_text(encoding="utf-8"))[
             "closed"

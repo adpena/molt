@@ -46,6 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
     "MOLT_STDLIB_OBJ",
+    "MOLT_STDLIB_CACHE_ENTRY",
     "MOLT_STDLIB_CACHE_KEY",
     "MOLT_STDLIB_CACHE_MANIFEST",
 ];

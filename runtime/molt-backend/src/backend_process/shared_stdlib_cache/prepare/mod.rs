@@ -20,6 +20,10 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         .native_output_kind
         .validate_shared_stdlib(request.stdlib_archive_path.is_some())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    super::super::native_artifact::validate_shared_stdlib_cache_output(
+        request.stdlib_archive_path,
+        request.cache_archive_path,
+    )?;
     let mut module_context = None;
     let app_callable_manifest = request
         .stdlib_archive_path

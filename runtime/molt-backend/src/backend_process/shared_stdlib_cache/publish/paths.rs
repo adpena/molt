@@ -1,5 +1,6 @@
+use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("count")
@@ -30,29 +31,215 @@ pub(super) fn stdlib_cache_derived_sidecar_paths(stdlib_path: &Path) -> [PathBuf
     ]
 }
 
-pub(super) fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
-    stdlib_path.with_file_name(format!(
-        "{}.publish.lock",
-        stdlib_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("stdlib_shared")
-    ))
+fn exact_cache_key(path: &Path) -> io::Result<&str> {
+    let key = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    if key.len() != 64
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cache entry key must be a lowercase SHA-256",
+        ));
+    }
+    Ok(key)
 }
 
-pub(crate) fn stdlib_cache_temp_publish_path(stdlib_path: &Path, label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    stdlib_path.with_file_name(format!(
-        ".{}.{}.{}.{}.tmp",
-        stdlib_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("stdlib_shared"),
-        std::process::id(),
-        stamp,
-        label,
-    ))
+/// Cross-language path contract owned on the CLI side by molt.default_paths.
+/// Explicit standalone archives keep their selected directory; only the
+/// canonical shared archive layout projects to the shared cache namespace.
+pub(crate) fn canonical_stdlib_cache_root(archive: &Path) -> io::Result<Option<PathBuf>> {
+    let parent = archive.parent().unwrap_or_else(|| Path::new("."));
+    if archive.file_name() == Some(OsStr::new("stdlib.a"))
+        && parent.parent().and_then(Path::file_name) == Some(OsStr::new("shared-stdlib"))
+    {
+        exact_cache_key(parent)?;
+        return Ok(Some(
+            parent
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+        ));
+    }
+    Ok(None)
+}
+
+pub(super) fn stdlib_archive_cache_root(archive: &Path) -> io::Result<PathBuf> {
+    Ok(canonical_stdlib_cache_root(archive)?.unwrap_or_else(|| {
+        archive
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }))
+}
+
+/// Resolve existing ancestors (including symlinks) without creating an output.
+/// Missing suffix components remain in the resolved parent's namespace.
+pub(crate) fn resolved_archive_path(path: &Path) -> io::Result<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => {
+                resolved.push(other.as_os_str());
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = std::fs::canonicalize(&resolved)?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn validate_required_stdlib_output(
+    output: &Path,
+    source: Option<&Path>,
+) -> io::Result<()> {
+    let output = resolved_archive_path(output)?;
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "required build-owned stdlib output must be outside cache entries or inside canonical cache/home, and distinct from its source",
+        )
+    };
+    let adjacent = output.with_file_name(format!(
+        "{}.publish.lock",
+        output.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    if stdlib_cache_publish_lock_path(&output)? != adjacent {
+        return Err(invalid());
+    }
+    let source = source.map(resolved_archive_path).transpose()?;
+    if source.as_ref() == Some(&output) {
+        return Err(invalid());
+    }
+    let cache_root = source
+        .as_deref()
+        .map(canonical_stdlib_cache_root)
+        .transpose()?
+        .flatten()
+        .or_else(|| {
+            std::env::var_os("MOLT_CACHE")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        });
+    if let Some(root) = cache_root {
+        let root = resolved_archive_path(&root)?;
+        // Canonical home is durable across maintenance environments; a selected
+        // MOLT_HOME/MOLT_BIN exception alone is not future output custody.
+        let home = resolved_archive_path(&root.join("home"))?;
+        if output.starts_with(&root) && !output.starts_with(&home) {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn stdlib_cache_publish_lock_path(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let namespace = parent.parent();
+    let family = match (path.file_name(), namespace.and_then(Path::file_name)) {
+        (Some(leaf), Some(family)) if leaf == "stdlib.a" && family == "shared-stdlib" => {
+            Some("shared-stdlib")
+        }
+        (Some(leaf), Some(family))
+            if leaf == "object.entry" && family == "native-stdlib-objects-v1" =>
+        {
+            Some("native-stdlib-object")
+        }
+        _ => None,
+    };
+    if let Some(family) = family {
+        let key = exact_cache_key(parent)?;
+        let cache_root = namespace
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."));
+        return Ok(cache_root
+            .join("locks")
+            .join(format!("{family}.{}.lock", &key[..2])));
+    }
+    let mut name = path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("stdlib_shared"))
+        .to_os_string();
+    name.push(".publish.lock");
+    Ok(parent.join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_archive_refuses_every_leaf_inside_cache_entry() {
+        let source = PathBuf::from("cache/shared-stdlib")
+            .join("aa".repeat(32))
+            .join("stdlib.a");
+        for prefix in ["aa", "bb"] {
+            for leaf in ["stdlib.a", "nested/owned.a", "nested/../owned.a"] {
+                let output = PathBuf::from("cache/shared-stdlib")
+                    .join(prefix.repeat(32))
+                    .join(leaf);
+                assert_eq!(
+                    validate_required_stdlib_output(&output, Some(&source))
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::InvalidInput
+                );
+            }
+        }
+        validate_required_stdlib_output(Path::new("build/owned.a"), Some(&source)).unwrap();
+        let root = Path::new("cache");
+        validate_required_stdlib_output(&root.join("home/build/app/stdlib.a"), Some(&source))
+            .unwrap();
+        for relative in [
+            "wasm_link/schema/key/owned.a",
+            "module_lowering/entry.json",
+            "unclassified/owned.a",
+        ] {
+            assert_eq!(
+                validate_required_stdlib_output(&root.join(relative), Some(&source))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn archive_and_constituent_paths_share_durable_control_contract() {
+        let cache = Path::new("cache");
+        let key = "ab".repeat(32);
+        let archive = cache.join("shared-stdlib").join(&key).join("stdlib.a");
+        let object = cache
+            .join("native-stdlib-objects-v1")
+            .join(&key)
+            .join("object.entry");
+        assert_eq!(stdlib_archive_cache_root(&archive).unwrap(), cache);
+        assert_eq!(
+            stdlib_cache_publish_lock_path(&archive).unwrap(),
+            cache.join("locks/shared-stdlib.ab.lock")
+        );
+        assert_eq!(
+            stdlib_cache_publish_lock_path(&object).unwrap(),
+            cache.join("locks/native-stdlib-object.ab.lock")
+        );
+        assert_eq!(
+            stdlib_cache_publish_lock_path(Path::new("explicit/stdlib.a")).unwrap(),
+            Path::new("explicit/stdlib.a.publish.lock")
+        );
+        assert!(
+            stdlib_cache_publish_lock_path(Path::new("cache/shared-stdlib/invalid/stdlib.a"))
+                .is_err()
+        );
+    }
 }

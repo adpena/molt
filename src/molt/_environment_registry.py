@@ -991,7 +991,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_BACKEND_DAEMON_SUITE_LEASE",
       "owner": "src/molt/backend_daemon_suite_custody.py",
-      "summary": "tools/harness_memory_guard.py sets it to the suite daemon lease file it starts; molt's backend daemon custody reads it to allow persistent daemon paths, record the lease in the daemon identity and config digest, and transfer daemon process groups to the lease holder on POSIX.",
+      "summary": "tools/harness_memory_guard.py sets it to the suite daemon lease file; custody binds daemon identity and config digest, transfers daemon process groups on POSIX, and selects lease-owned native scratch through TMPDIR/TMP/TEMP at spawn. The EOF guardian reclaims scratch only after verified daemon closure; failed or unknown closure preserves it.",
       "values": []
     },
     {
@@ -1361,8 +1361,8 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "int",
       "name": "MOLT_CACHE_MAX_AGE_DAYS",
-      "owner": "tools/molt_cache_prune.py",
-      "summary": "Age in days after which tools/molt_cache_prune.py evicts cache entries when --max-age-days is absent; molt dx projects the default 30 into its environment.",
+      "owner": "src/molt/cache_eviction.py",
+      "summary": "Age in days after which cache retention evicts inactive entries; automatic development proof-queue maintenance and tools/molt_cache_prune.py share this budget, default 30.",
       "values": []
     },
     {
@@ -1370,8 +1370,8 @@ _REGISTRY_JSON = r"""{
       "default": "30",
       "kind": "float",
       "name": "MOLT_CACHE_MAX_GB",
-      "owner": "tools/molt_cache_prune.py",
-      "summary": "Cache size budget in GB that tools/molt_cache_prune.py prunes down to when --max-gb is absent; molt dx projects the default 30 into its environment.",
+      "owner": "src/molt/cache_eviction.py",
+      "summary": "Logical cache-entry size budget in GiB for automatic development proof-queue maintenance and tools/molt_cache_prune.py, default 30; active entries, durable state and protected legacy native generations are retained.",
       "values": []
     },
     {
@@ -1379,8 +1379,8 @@ _REGISTRY_JSON = r"""{
       "default": "1",
       "kind": "bool",
       "name": "MOLT_CACHE_PRUNE",
-      "owner": "tools/throughput_env.sh",
-      "summary": "Runs tools/molt_cache_prune.py against MOLT_CACHE (bounded by MOLT_CACHE_MAX_GB and MOLT_CACHE_MAX_AGE_DAYS) when throughput_env.sh applies the throughput environment; only the exact value 0 skips the prune, default 1.",
+      "owner": "tools/proof_queue_pkg/cache_retention.py",
+      "summary": "Enable automatic cache maintenance after source-development proof completion and throughput environment setup; only exact 0 disables automatic retention. Queue admission coalesces pending work and throttles attempts to five minutes per cache root; explicit molt.cache_eviction remains operator-directed.",
       "values": []
     },
     {
@@ -3912,7 +3912,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_GUARD_SCRATCH_ROOT",
       "owner": "src/molt/temporary_artifacts.py",
-      "summary": "tools/memory_guard.py sets it to the leased scratch directory of one guarded child; molt.temporary_artifacts.guard_scratch reads it and rejects a value that does not match the parent's owner.json allocation, and persistent daemon custody strips it and refuses dependency paths under it.",
+      "summary": "tools/memory_guard.py sets it to one guarded child's leased scratch directory; backend environment preparation validates the existing allocation and the Rust native batch helper requires an absolute existing directory. Suite daemons strip this requester selector and use their lease-owned platform temp root instead; guard closure owns one-shot abrupt-exit cleanup.",
       "values": []
     },
     {
@@ -5593,6 +5593,15 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "internal",
       "default": "",
+      "kind": "path",
+      "name": "MOLT_STDLIB_CACHE_ENTRY",
+      "owner": "runtime/molt-backend/src/backend_process/shared_stdlib_cache/prepare/request.rs",
+      "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry for constituent reuse and cache publication, and per-request environment reset prevents daemon state leakage.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_KEY",
       "owner": "runtime/molt-backend/src/backend_process/daemon/cache/job/policy.rs",
@@ -5623,7 +5632,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_STDLIB_OBJ",
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/module_metadata.rs",
-      "summary": "Path of the shared stdlib object or archive for the native stdlib partition; src/molt/cli/backend_compile.py sets it for the backend child, which activates partition externalization only when the file exists and MOLT_ENTRY_MODULE is set, and rejects a non-Unicode path; a person never sets it.",
+      "summary": "Required build-owned shared stdlib archive output for the native partition; backend requests retain its bytes and semantic sidecars through link independently of optional cache retention. Standalone native requests own their explicitly supplied output path; malformed non-Unicode paths are rejected.",
       "values": []
     },
     {

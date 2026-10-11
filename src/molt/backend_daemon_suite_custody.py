@@ -15,7 +15,9 @@ import threading
 import time
 import uuid
 
-from molt import backend_daemon_custody as daemon
+from molt import backend_daemon_custody as daemon, temporary_artifacts
+from molt.file_deletion import delete_path
+from molt.file_publication import resolve_owned_path
 from molt.exact_json import canonical_json_bytes, encode_exact, read_exact, write_exact
 from molt.file_locks import (
     _FileLockHandle,
@@ -28,7 +30,7 @@ from molt.file_locks import (
 )
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
-SCHEMA = "molt.backend_daemon.suite-lease.v1"
+SCHEMA = "molt.backend_daemon.suite-lease.v2"
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _SHA = re.compile(r"[0-9a-f]{64}")
 
@@ -109,7 +111,7 @@ if hasattr(os, "register_at_fork"):
 def _source_digest() -> str:
     value = hashlib.sha256()
     # This binds custody implementation files, not loaded compiler images.
-    from molt import exact_json, file_locks, file_publication
+    from molt import exact_json, file_deletion, file_locks, file_publication
     from tools.memory_guard_core import process_model
 
     for source in (
@@ -118,10 +120,64 @@ def _source_digest() -> str:
         Path(file_locks.__file__),
         Path(exact_json.__file__),
         Path(file_publication.__file__),
+        Path(temporary_artifacts.__file__),
+        Path(file_deletion.__file__),
         Path(process_model.__file__),
     ):
         value.update(source.read_bytes())
     return value.hexdigest()
+
+
+def _allocate_scratch(directory: Path) -> dict:
+    """Bind scratch to this lease before any daemon can receive its path."""
+    target = resolve_owned_path(directory / "scratch")
+    target.mkdir(mode=0o700)
+    identity = temporary_artifacts._identity(target)
+    nonce = uuid.uuid4().hex
+    try:
+        temporary_artifacts._write_target_receipt(target, nonce)
+    except BaseException as error:
+        # No consumer has received this path. The allocating frame still owns
+        # its direct directory even when no usable receipt could be published.
+        try:
+            temporary_artifacts._cleanup_temporary_directory(target, identity)
+        except (OSError, ValueError) as cleanup_error:
+            error.add_note(f"unpublished suite scratch preserved: {cleanup_error}")
+        raise
+    return {
+        "target_identity": identity,
+        "target_receipt": nonce,
+    }
+
+
+def _scratch_target(path: Path, lease: Mapping) -> Path:
+    """Consume the shared scratch generation proof, never just its pathname."""
+    target = resolve_owned_path(path.parent / "scratch")
+    owner = lease["scratch"]
+    if temporary_artifacts._identity(target) != owner[
+        "target_identity"
+    ] or not temporary_artifacts._holds_target_receipt(target, owner):
+        raise ValueError("suite scratch allocation changed")
+    return target
+
+
+def _finish_scratch(path: Path, lease: Mapping, *, closed: bool) -> dict:
+    """Only the EOF guardian's verified daemon drain authorizes reclamation."""
+    if not closed:
+        return {"state": "preserved", "reason": "daemon closure unverified"}
+    try:
+        target = _scratch_target(path, lease)
+        removed, error = delete_path(target)
+        if not removed:
+            raise OSError(error)
+    except FileNotFoundError:
+        # Repeated drain of an already reclaimed lease has no payload to delete.
+        return {"state": "absent"}
+    except (OSError, ValueError) as exc:
+        # A partial deletion can remove the receipt before its payload. The
+        # next drain preserves that ambiguous remainder instead of guessing.
+        return {"state": "blocked", "error": f"{type(exc).__name__}: {exc}"}
+    return {"state": "reclaimed"}
 
 
 def read_lease(path: Path) -> dict | None:
@@ -144,6 +200,7 @@ def read_lease(path: Path) -> dict | None:
         "source_digest",
         "interpreter",
         "interpreter_sha256",
+        "scratch",
     }
     if (
         not isinstance(record, dict)
@@ -177,6 +234,23 @@ def read_lease(path: Path) -> dict | None:
         return None
     if record.get("state") not in {"active", "closing", "closed"}:
         return None
+    scratch = record.get("scratch")
+    if not isinstance(scratch, dict) or set(scratch) != {
+        "target_identity",
+        "target_receipt",
+    }:
+        return None
+    identity = scratch["target_identity"]
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"device", "inode"}
+        or any(type(value) is not int for value in identity.values())
+        or identity["device"] < 0
+        or identity["inode"] <= 0
+        or not isinstance(scratch["target_receipt"], str)
+        or not _TOKEN.fullmatch(scratch["target_receipt"])
+    ):
+        return None
     return record
 
 
@@ -199,6 +273,7 @@ def live_lease(path: Path, *, project_root: Path, samples: Mapping) -> dict | No
             or record["source_digest"] != _source_digest()
         ):
             return None
+        _scratch_target(path, record)
         for prefix in ("owner", "guardian"):
             sample = samples.get(record[f"{prefix}_pid"])
             if (
@@ -739,8 +814,8 @@ def _guardian_import_path(inherited: str | None) -> str:
     return os.pathsep.join(dict.fromkeys([*roots, *entries]))
 
 
-def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
-    """A suite-owned daemon never inherits a command's scratch or guard token."""
+def _without_command_scratch(environ: Mapping[str, str]) -> dict[str, str]:
+    """Remove dependencies whose requesting guard may retire before the suite."""
     result = dict(environ)
     scratch = result.pop("MOLT_GUARD_SCRATCH_ROOT", None)
     result.pop("MOLT_MEMORY_GUARD_TOKEN", None)
@@ -755,6 +830,21 @@ def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
                 except ValueError:
                     continue
                 result.pop(key, None)
+    return result
+
+
+def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Bind daemon temporary files to its suite, outside request environment."""
+    result = _without_command_scratch(environ)
+    raw = result.get(LEASE_ENV)
+    if raw:
+        path = Path(raw)
+        lease = read_lease(path)
+        if lease is None or lease["state"] != "active":
+            raise ValueError("suite daemon scratch requires an active lease")
+        target = _scratch_target(path, lease)
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            result[key] = str(target)
     return result
 
 
@@ -784,7 +874,7 @@ class SuiteDaemonLease:
         daemon_root = daemon.backend_daemon_root_from_env(
             environ, project_root=project_root
         )
-        directory = daemon_root / "suite-leases" / token
+        directory = (daemon_root / "suite-leases" / token).resolve()
         directory.mkdir(parents=True)
         # Fork serialization covers lock acquisition as well as pipe admission:
         # otherwise a concurrent fork could inherit the lock before registration.
@@ -806,9 +896,13 @@ class SuiteDaemonLease:
                 _release_file_lock(lock)
                 raise
         guardian = None
+        scratch = None
         try:
             path = directory / "lease.json"
-            env = persistent_daemon_env(environ)
+            scratch = _allocate_scratch(directory)
+            env = _without_command_scratch(environ)
+            # The guardian owns this new lease, never an outer suite's lease.
+            env.pop(LEASE_ENV, None)
             env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))
             with (directory / "guardian.log").open("ab") as log:
                 guardian = subprocess.Popen(
@@ -860,13 +954,14 @@ class SuiteDaemonLease:
                 "source_digest": _source_digest(),
                 "interpreter": str(Path(sys.executable).resolve()),
                 "interpreter_sha256": interpreter_sha256,
+                "scratch": scratch,
             }
             write_exact(
                 path.parent / "adoption-index.json", _new_adoption_index(record)
             )
             write_exact(path, record)
             return cls(path, record, lock, write_fd, guardian)
-        except BaseException:
+        except BaseException as error:
             with _lease_descriptor_mutation():
                 _LEASE_PIPE_FDS.discard(write_fd)
                 os.close(write_fd)
@@ -879,6 +974,12 @@ class SuiteDaemonLease:
                 if guardian.poll() is None:
                     guardian.kill()
                     guardian.wait(timeout=2.0)
+            if scratch is not None:
+                # start() never returned this lease to a daemon producer, and
+                # its sole launched child is now stopped. No transfer exists.
+                outcome = _finish_scratch(path, {"scratch": scratch}, closed=True)
+                if outcome["state"] == "blocked":
+                    error.add_note(f"unpublished suite scratch preserved: {outcome}")
             _release_file_lock(lock)
             raise
 
@@ -1133,6 +1234,7 @@ def drain_lease(path: Path) -> bool:
         )
         errors.extend(final_seal_errors)
         closed = not final_seal_errors
+    scratch = _finish_scratch(path, lease, closed=closed)
     write_exact(
         path.parent / "drain.json",
         {
@@ -1142,6 +1244,7 @@ def drain_lease(path: Path) -> bool:
             "unresolved_pgids": sorted(set(unresolved)),
             "sampling_errors": errors,
             "clean_passes": clean_passes,
+            "scratch": scratch,
             "observed_members": {
                 f"{pid}.{born}": {
                     str(member): marker for member, marker in sorted(history.items())
@@ -1150,7 +1253,7 @@ def drain_lease(path: Path) -> bool:
             },
         },
     )
-    return closed
+    return closed and scratch["state"] in {"reclaimed", "absent"}
 
 
 def main():

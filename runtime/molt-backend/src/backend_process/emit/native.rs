@@ -15,6 +15,8 @@ pub(super) fn emit_native_target(
     native_output_kind: super::super::NativeArtifactKind,
 ) -> io::Result<()> {
     let stdlib_archive_path = super::super::shared_stdlib_archive_path_from_env()?;
+    let cache_archive_path =
+        super::super::native_artifact::shared_stdlib_cache_entry_path_from_env()?;
     let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
     let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
     let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
@@ -28,6 +30,7 @@ pub(super) fn emit_native_target(
             native_output_kind,
             target_triple,
             stdlib_archive_path: stdlib_archive_path.as_deref(),
+            cache_archive_path: cache_archive_path.as_deref(),
             expected_cache_key: expected_stdlib_cache_key.as_deref(),
             expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
             have_entry_module,

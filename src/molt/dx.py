@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Collection
-from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -13,25 +11,29 @@ import sys
 import tempfile
 import tomllib
 import uuid
+from collections.abc import Collection
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
-from molt import custody_layout
-from molt.environment_registry import (
-    EnvironmentRegistryError,
-    check_process_environment,
-)
-from molt.source_root import compiler_source_root, installed_distribution_root
 from molt.default_paths import (
+    DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
+    DEFAULT_MOLT_CACHE_MAX_GB,
     _default_molt_home,
     executable_environment_value,
     expand_user_path,
 )
+from molt.environment_registry import (
+    EnvironmentRegistryError,
+    check_process_environment,
+)
+
+from molt import custody_layout
 from molt.path_custody import (
     host_path_is_within,
     same_host_path,
 )
-
+from molt.source_root import compiler_source_root, installed_distribution_root
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
 GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
@@ -109,8 +111,6 @@ TOOLCHAINS_DIRNAME = "toolchains"
 # writes into the watched source checkout.
 PROOF_SCRATCH_ROOT_ENV = "MOLT_PROOF_SCRATCH_ROOT"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
-DEFAULT_MOLT_CACHE_MAX_GB = "30"
-DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
 REQUIRE_EXTERNAL_ARTIFACTS_ENV = "MOLT_REQUIRE_EXTERNAL_ARTIFACTS"
 PREFER_EXTERNAL_ARTIFACTS_ENV = "MOLT_PREFER_EXTERNAL_ARTIFACTS"
 EXTERNAL_ARTIFACT_ROOTS_ENV = "MOLT_EXTERNAL_ARTIFACT_ROOTS"
