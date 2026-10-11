@@ -73,21 +73,6 @@ _RUNTIME_IDENTITY_FIELDS = frozenset(
 )
 
 
-def _interpreter_machine() -> str:
-    """The running interpreter's machine name, read without host queries.
-
-    On Windows, CPython 3.12+ answers ``platform.machine()`` with a WMI query
-    through COM. COM frees those provider images while a capture runs, so the
-    loaded-image census in the startup selection changed under the
-    verification fence (HF-169). The interpreter's build platform names its
-    architecture and loads nothing. On POSIX, ``platform.machine()`` reads
-    ``os.uname()`` itself.
-    """
-    if os.name == "nt":
-        return sysconfig.get_platform().removeprefix("win-")
-    return os.uname().machine
-
-
 def _platform_identity() -> dict[str, object]:
     if sys.implementation.name != "cpython" or sys.version_info < (3, 12):
         raise PythonEnvironmentIdentityError(
@@ -102,7 +87,7 @@ def _platform_identity() -> dict[str, object]:
         raise PythonEnvironmentIdentityError(
             f"unsupported provisioned-Python operating system: {sys.platform}"
         )
-    raw_architecture = _interpreter_machine().strip().casefold()
+    raw_architecture = platform.machine().strip().casefold()
     architecture = {
         "amd64": "x86_64",
         "x86_64": "x86_64",
