@@ -682,8 +682,9 @@ pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) -> bool {
 }
 
 /// Existing service fields own this handle set. Publication precedes native
-/// startup; one mutex serializes New -> Ready/Failed, so no caller can consume
-/// partial readiness. Joins release the mutex and retain their failure payload.
+/// startup; one mutex serializes one-shot New -> Ready/Failed and demand-driven
+/// append, so no caller can consume partial readiness. Joins release the mutex
+/// and retain their failure payload. Pool stop excludes any subsequent append.
 #[derive(Default)]
 pub(crate) struct RuntimeServiceWorkers {
     inner: std::sync::Mutex<RuntimeServiceWorkerState>,
@@ -722,6 +723,28 @@ pub(crate) enum RuntimeServiceJoinStatus {
     Failed,
 }
 
+/// Distinguish handle-storage allocation from native thread-start refusal:
+/// CPython exposes MemoryError for preparation and RuntimeError for OS startup.
+pub(crate) enum RuntimeServiceGrowthError {
+    Capacity,
+    Start(std::io::Error),
+}
+
+impl From<std::io::Error> for RuntimeServiceGrowthError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Start(error)
+    }
+}
+
+impl std::fmt::Display for RuntimeServiceGrowthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Capacity => formatter.write_str("worker handle allocation failed"),
+            Self::Start(error) => error.fmt(formatter),
+        }
+    }
+}
+
 impl RuntimeServiceWorkers {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(
@@ -729,13 +752,49 @@ impl RuntimeServiceWorkers {
         origin: crate::state::runtime_state::RuntimeWorkerOrigin,
         start: impl FnOnce(&mut Vec<RuntimeServiceWorker>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
+        self.start_transaction(origin, true, start)
+    }
+
+    /// Add at most one native worker for actual queued/in-flight demand. The
+    /// caller serializes pool submission and stop; joins only follow stop.
+    /// Ordinary spawn errors leave this operation retryable, unlike one-shot
+    /// service startup. Every successful handle uses the same retained owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn grow_for_demand(
+        &self,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        demand: &std::sync::atomic::AtomicUsize,
+        maximum: usize,
+        spawn: impl FnOnce(usize) -> std::io::Result<RuntimeServiceWorker>,
+    ) -> Result<(), RuntimeServiceGrowthError> {
+        self.start_transaction(origin, false, |workers| {
+            let count = workers.len();
+            if count < maximum && count < demand.load(std::sync::atomic::Ordering::Relaxed) {
+                // Reserve handle storage before creating an OS thread: even a
+                // failed allocation must never detach a successfully spawned child.
+                workers
+                    .try_reserve(1)
+                    .map_err(|_| RuntimeServiceGrowthError::Capacity)?;
+                workers.push(spawn(count)?);
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_transaction<E: From<std::io::Error> + std::fmt::Display>(
+        &self,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        once: bool,
+        start: impl FnOnce(&mut Vec<RuntimeServiceWorker>) -> Result<(), E>,
+    ) -> Result<(), E> {
         let mut inner = self.inner.lock().unwrap();
         match &inner.start {
-            RuntimeServiceStart::Ready => return Ok(()),
+            RuntimeServiceStart::Ready if once => return Ok(()),
             RuntimeServiceStart::Failed(reason) => {
-                return Err(std::io::Error::other(reason.clone()));
+                return Err(std::io::Error::other(reason.clone()).into());
             }
-            RuntimeServiceStart::New => {}
+            RuntimeServiceStart::New | RuntimeServiceStart::Ready => {}
         }
         let outcome = if origin.state().thread_borrow_admission_is_open() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -752,12 +811,13 @@ impl RuntimeServiceWorkers {
                 }
             }
         } else {
-            Err(std::io::Error::other("runtime service admission is closed"))
+            Err(std::io::Error::other("runtime service admission is closed").into())
         };
-        inner.start = match &outcome {
-            Ok(()) => RuntimeServiceStart::Ready,
-            Err(error) => RuntimeServiceStart::Failed(error.to_string()),
-        };
+        match &outcome {
+            Ok(()) => inner.start = RuntimeServiceStart::Ready,
+            Err(error) if once => inner.start = RuntimeServiceStart::Failed(error.to_string()),
+            Err(_) => {} // A failed dynamic append may be retried by later demand.
+        }
         outcome
     }
 
@@ -914,12 +974,33 @@ impl RuntimeServiceWorkers {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 thread_local! {
+    static SERVICE_SPAWN_FAILURE: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
     pub(crate) static SERVICE_JOIN_PAUSE: std::cell::RefCell<Option<(
         std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>
     )>> = const { std::cell::RefCell::new(None) };
     pub(crate) static SERVICE_JOIN_WAITING: std::cell::RefCell<Option<
         std::sync::mpsc::Sender<()>
     >> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn with_service_spawn_failure_for_test<R>(
+    kind: std::io::ErrorKind,
+    action: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<std::io::ErrorKind>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SERVICE_SPAWN_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(SERVICE_SPAWN_FAILURE.with(|slot| slot.replace(Some(kind))));
+    let result = action();
+    assert!(
+        SERVICE_SPAWN_FAILURE.with(|slot| slot.get()).is_none(),
+        "native spawn boundary was not reached"
+    );
+    result
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -929,6 +1010,10 @@ impl RuntimeServiceWorker {
         builder: std::thread::Builder,
         worker: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
+        #[cfg(test)]
+        if let Some(kind) = SERVICE_SPAWN_FAILURE.with(|slot| slot.take()) {
+            return Err(std::io::Error::from(kind));
+        }
         let handle = builder.spawn(move || run_runtime_worker(origin, worker))?;
         Ok(Self {
             handle: Some(handle),

@@ -13,7 +13,7 @@ use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -99,7 +99,6 @@ fn release_future_owners(py: &PyToken<'_>, future: &SharedFuture, workers_stoppe
 struct WorkItem {
     future: SharedFuture,
     future_id: i64,
-    pending: Arc<Mutex<HashMap<i64, SharedFuture>>>,
     /// Owned callable and argument references retained through worker dispatch.
     fn_bits: u64,
     args_bits: u64,
@@ -112,7 +111,82 @@ struct ThreadPoolState {
     receiver: Receiver<Option<WorkItem>>,
     workers: crate::state::lifecycle::RuntimeServiceWorkers,
     shutdown: AtomicBool,
-    pending: Arc<Mutex<HashMap<i64, SharedFuture>>>,
+    pending: Mutex<HashMap<i64, SharedFuture>>,
+    limit: WorkerLimit,
+    submission: Mutex<()>,
+    // One obligation per accepted/reserved item, through callbacks and all
+    // execution cleanup. This sizes demand; queue/owner locks publish objects.
+    unfinished: AtomicUsize,
+}
+
+/// Native ceilings need no Python owner. Other admitted limits preserve their
+/// original comparison protocol and exactly one pool-owned reference.
+enum WorkerLimit {
+    Native(usize),
+    Dynamic(AtomicU64),
+}
+
+impl WorkerLimit {
+    fn new(py: &PyToken<'_>, bits: u64) -> Result<Self, u64> {
+        let class = type_of_bits(py, bits);
+        let classes = builtin_classes(py);
+        if class == classes.int || class == classes.bool {
+            let payload = crate::builtins::numbers::index_integral_payload_bits(bits)
+                .expect("exact builtin integer storage");
+            let maximum = if let Some(value) = to_i64(obj_from_bits(payload)) {
+                if value <= 0 {
+                    return Err(raise_exception::<u64>(
+                        py,
+                        "ValueError",
+                        "max_workers must be greater than 0",
+                    ));
+                }
+                usize::try_from(value).unwrap_or(usize::MAX)
+            } else {
+                use num_traits::ToPrimitive;
+                let ptr = crate::builtins::numbers::bigint_ptr_from_bits(payload)
+                    .expect("exact bigint storage");
+                let value = unsafe { crate::builtins::numbers::bigint_ref(ptr) };
+                if value.sign() != num_bigint::Sign::Plus {
+                    return Err(raise_exception::<u64>(
+                        py,
+                        "ValueError",
+                        "max_workers must be greater than 0",
+                    ));
+                }
+                value.to_usize().unwrap_or(usize::MAX)
+            };
+            return Ok(Self::Native(maximum));
+        }
+        if class == classes.float {
+            let value =
+                as_float_extended(obj_from_bits(bits)).expect("exact builtin float storage");
+            if value <= 0.0 {
+                return Err(raise_exception::<u64>(
+                    py,
+                    "ValueError",
+                    "max_workers must be greater than 0",
+                ));
+            }
+            // Integer count < positive real permits ceil(real) workers. Rust's
+            // saturating cast maps +inf to the physical count maximum and NaN
+            // to zero, matching their respective true/false count comparisons.
+            return Ok(Self::Native(value.ceil() as usize));
+        }
+        // Python already performed the observable max_workers <= 0 check.
+        // Do not repeat it or coerce custom/Decimal/Fraction protocols here.
+        inc_ref_bits(py, bits);
+        Ok(Self::Dynamic(AtomicU64::new(bits)))
+    }
+
+    fn release(&self, py: &PyToken<'_>) {
+        if let Self::Dynamic(owner) = self {
+            // Concurrent public shutdown and the reaper may both observe joined
+            // empty state. Detach before callbacks so retirement remains once-only.
+            let bits = owner.swap(MoltObject::none().bits(), Ordering::AcqRel);
+            dec_ref_bits(py, bits);
+        }
+    }
 }
 
 // ── Handle-id counter ─────────────────────────────────────────────────────
@@ -171,16 +245,57 @@ fn future_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, SharedFutur
     &concurrent_state(_py).futures
 }
 
+enum PoolSubmission {
+    Accepted,
+    Rejected,
+    NoCapacity,
+    AdmissionClosed,
+    ComparisonFailed,
+    SpawnFailed(crate::state::lifecycle::RuntimeServiceGrowthError),
+}
+
 impl ThreadPoolState {
-    fn stop(&self) -> bool {
-        if !self.shutdown.swap(true, Ordering::AcqRel) {
+    fn finish_work(&self) {
+        let previous = self.unfinished.fetch_sub(1, Ordering::Relaxed);
+        assert_ne!(previous, 0, "executor work obligation retired twice");
+    }
+
+    /// Only submit/stop use this callback-bearing gate. Shared worker handle
+    /// locks stay short and callback-free; a contending Python caller must let
+    /// the current comparator reacquire GIL after a nested blocking operation.
+    fn submission_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.submission.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                panic!("executor submission gate poisoned: {error}")
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                tests::SUBMISSION_WAITING.with(|slot| {
+                    if let Some(waiting) = slot.borrow_mut().take() {
+                        waiting.send(()).unwrap();
+                    }
+                });
+                let _release = GilReleaseGuard::suspend();
+                self.submission.lock().unwrap()
+            }
+        }
+    }
+
+    fn stop(&self, cancel_pending: bool) -> (bool, HashMap<i64, SharedFuture>) {
+        let _submission = self.submission_guard();
+        let pending = if cancel_pending {
+            std::mem::take(&mut *self.pending.lock().unwrap())
+        } else {
+            HashMap::new()
+        };
+        let started = !self.shutdown.swap(true, Ordering::AcqRel);
+        if started {
             for _ in 0..self.workers.count() {
                 let _ = self.sender.send(None);
             }
-            true
-        } else {
-            false
         }
+        (started, pending)
     }
 }
 
@@ -237,11 +352,7 @@ pub(crate) fn concurrent_reap_stopped_pools(
 #[cfg(not(target_arch = "wasm32"))]
 #[cold]
 #[inline(never)]
-fn reap_stopped_pools_pending(
-    py: &PyToken<'_>,
-    state: &ConcurrentRuntimeState,
-    mut budget: usize,
-) {
+fn reap_stopped_pools_pending(py: &PyToken<'_>, state: &ConcurrentRuntimeState, mut budget: usize) {
     use crate::state::lifecycle::RuntimeServiceJoinStatus;
     while budget != 0 && state.stopped_pending.load(Ordering::Acquire) {
         let quantum = budget.min(8);
@@ -299,9 +410,18 @@ fn reap_stopped_pools_pending(
 }
 
 pub(crate) fn concurrent_stop_runtime_workers(state: &crate::state::RuntimeState) -> bool {
-    let pools = state.concurrent.pools.lock().unwrap();
-    for pool in pools.values() {
-        pool.stop();
+    // Runtime teardown closes origin admission before taking this cohort.
+    // Never retain the registry mutex while waiting for a pool's comparator.
+    let pools: Vec<_> = state
+        .concurrent
+        .pools
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    for pool in &pools {
+        pool.stop(false);
     }
     !pools.is_empty()
 }
@@ -333,10 +453,11 @@ fn release_stopped_pool_work_bounded(
 ) -> bool {
     for _ in 0..budget {
         let Ok(message) = pool.receiver.try_recv() else {
+            pool.limit.release(py);
             return true;
         };
         if let Some(item) = message {
-            item.pending.lock().unwrap().remove(&item.future_id);
+            pool.pending.lock().unwrap().remove(&item.future_id);
             {
                 let mut future = item.future.lock().unwrap();
                 if matches!(future.outcome, FutureOutcome::Pending) {
@@ -347,11 +468,16 @@ fn release_stopped_pool_work_bounded(
             release_future_owners(py, &item.future, true);
             dec_ref_bits(py, item.fn_bits);
             dec_ref_bits(py, item.args_bits);
+            pool.finish_work();
         }
     }
     // All native workers joined before this drain. Submit refuses a stopped
     // pool, including finalizer reentry, so no live producer can refill it.
-    pool.receiver.is_empty()
+    let empty = pool.receiver.is_empty();
+    if empty {
+        pool.limit.release(py);
+    }
+    empty
 }
 
 pub(crate) fn concurrent_clear_runtime_state(
@@ -359,28 +485,36 @@ pub(crate) fn concurrent_clear_runtime_state(
     state: &crate::state::RuntimeState,
 ) -> bool {
     crate::gil_assert();
-    concurrent_stop_runtime_workers(state);
+    // Preserve the exact owner cohort across GIL-releasing joins. Production
+    // teardown has closed admission; ready-runtime test drains may run callbacks
+    // that publish a later cohort, which must remain visible and owned.
+    let pools = state.concurrent.pools.lock().unwrap().clone();
+    let futures = state.concurrent.futures.lock().unwrap().clone();
+    for pool in pools.values() {
+        pool.stop(false);
+    }
     let closed = {
         let _release = GilReleaseGuard::suspend();
-        concurrent_join_runtime_workers(state)
+        pools
+            .values()
+            .fold(true, |closed, pool| pool.workers.join() && closed)
     };
     assert!(closed, "runtime executor workers failed; origin retained");
-    // Publish no detached root cohort until every native join succeeded.
     {
         let mut stopped = state.concurrent.stopped.lock().unwrap();
-        stopped.ids.clear();
+        stopped.ids.retain(|id| !pools.contains_key(id));
         state
             .concurrent
             .stopped_pending
-            .store(false, Ordering::Release);
+            .store(!stopped.ids.is_empty(), Ordering::Release);
     }
-    let pools = std::mem::take(&mut *state.concurrent.pools.lock().unwrap());
-    let futures = std::mem::take(&mut *state.concurrent.futures.lock().unwrap());
     let changed = !pools.is_empty() || !futures.is_empty();
-    for pool in pools.into_values() {
+    for (id, pool) in pools {
+        state.concurrent.pools.lock().unwrap().remove(&id);
         release_stopped_pool_work(py, &pool);
     }
-    for future in futures.into_values() {
+    for (id, future) in futures {
+        state.concurrent.futures.lock().unwrap().remove(&id);
         release_future_owners(py, &future, true);
     }
     changed
@@ -395,19 +529,18 @@ pub(crate) fn concurrent_clear_runtime_state(
 #[cfg(not(target_arch = "wasm32"))]
 fn worker_loop(
     origin: crate::state::runtime_state::RuntimeWorkerOrigin,
-    receiver: Receiver<Option<WorkItem>>,
-    sender: Sender<Option<WorkItem>>,
+    pool: Arc<ThreadPoolState>,
 ) {
-    while let Ok(Some(item)) = receiver.recv() {
+    while let Ok(Some(item)) = pool.receiver.recv() {
         let Some(execution) =
             crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
         else {
-            assert!(sender.send(Some(item)).is_ok());
+            assert!(pool.sender.send(Some(item)).is_ok());
             break;
         };
         let token = execution.token();
         let py = &token;
-        item.pending.lock().unwrap().remove(&item.future_id);
+        pool.pending.lock().unwrap().remove(&item.future_id);
         let cancelled = {
             let mut state = item.future.lock().unwrap();
             let cancelled = state.is_cancelled();
@@ -463,6 +596,10 @@ fn worker_loop(
         }
         dec_ref_bits(py, item.fn_bits);
         dec_ref_bits(py, item.args_bits);
+        // WorkerEnd cleanup may run finalizers that submit and wait. Keep this
+        // worker counted as busy until that callback-bearing boundary closes.
+        drop(execution);
+        pool.finish_work();
     }
 }
 
@@ -491,47 +628,42 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
                     "runtime thread admission is closed",
                 );
             }
-            let max_workers = to_i64(obj_from_bits(max_workers_bits)).unwrap_or(0).max(1) as usize;
-            let workers_capped = max_workers.min(512);
-            // Pay existing FIFO retirement debt in proportion to this cold
-            // operation's native-worker work, with a fixed hot safepoint cap.
-            concurrent_reap_stopped_pools(_py, &state.concurrent, workers_capped * 2 + 8);
+            let limit = match WorkerLimit::new(_py, max_workers_bits) {
+                Ok(limit) => limit,
+                Err(error) => return error,
+            };
+            // Creation has no native startup work. Actual submissions service
+            // additional bounded retirement debt independently of capacity.
+            concurrent_reap_stopped_pools(_py, &state.concurrent, 8);
             let (sender, receiver) = unbounded::<Option<WorkItem>>();
             let pool = Arc::new(ThreadPoolState {
                 sender,
                 receiver,
                 workers: crate::state::lifecycle::RuntimeServiceWorkers::default(),
                 shutdown: AtomicBool::new(false),
-                pending: Arc::new(Mutex::new(HashMap::new())),
+                pending: Mutex::new(HashMap::new()),
+                limit,
+                submission: Mutex::new(()),
+                unfinished: AtomicUsize::new(0),
             });
             let id = next_pool_id(_py);
-            pool_registry(_py)
-                .lock()
-                .unwrap()
-                .insert(id, Arc::clone(&pool));
-            let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(state);
-            let started = pool.workers.start(origin, |handles| {
-                for index in 0..workers_capped {
-                    let rx = pool.receiver.clone();
-                    let tx = pool.sender.clone();
-                    handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
-                        origin,
-                        thread::Builder::new().name(format!("molt-executor-{index}")),
-                        move || worker_loop(origin, rx, tx),
-                    )?);
+            let published = {
+                let mut pools = pool_registry(_py).lock().unwrap();
+                // Pair closure with registry publication: a delayed constructor
+                // cannot appear after teardown's closed-admission snapshot.
+                if state.thread_borrow_admission_is_open() {
+                    pools.insert(id, Arc::clone(&pool));
+                    true
+                } else {
+                    false
                 }
-                Ok(())
-            });
-            if let Err(error) = started {
-                // The unpublished public id remains in the same runtime owner;
-                // already-started workers and queued owners cannot outlive its join.
-                if pool.stop() {
-                    schedule_stopped_pool(concurrent_state(_py), id);
-                }
+            };
+            if !published {
+                pool.limit.release(_py);
                 return raise_exception::<u64>(
                     _py,
                     "RuntimeError",
-                    &format!("thread pool startup failed: {error}"),
+                    "runtime thread admission is closed",
                 );
             }
             int_bits_from_i64(_py, id)
@@ -561,54 +693,158 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             }
         };
 
+        let state = concurrent_state(_py);
+        concurrent_reap_stopped_pools(_py, state, 2);
         let future_shared = Arc::new(Mutex::new(FutureState::new()));
         let future_id = next_future_id(_py);
 
         inc_ref_bits(_py, fn_bits);
         inc_ref_bits(_py, args_bits);
-        let sent = {
-            let map = pool_registry(_py).lock().unwrap();
-            if let Some(pool) = map.get(&pool_id) {
-                if pool.shutdown.load(Ordering::Acquire) {
-                    false
-                } else {
-                    let item = WorkItem {
-                        future: future_shared.clone(),
-                        future_id,
-                        pending: Arc::clone(&pool.pending),
-                        fn_bits,
-                        args_bits,
-                    };
-                    pool.pending
-                        .lock()
-                        .unwrap()
-                        .insert(future_id, future_shared.clone());
-                    let sent = pool.sender.send(Some(item)).is_ok();
-                    if !sent {
-                        pool.pending.lock().unwrap().remove(&future_id);
-                    }
-                    sent
-                }
-            } else {
-                false
+        let submission = 'publish: {
+            let pool = state.pools.lock().unwrap().get(&pool_id).cloned();
+            let Some(pool) = pool else {
+                break 'publish PoolSubmission::Rejected;
+            };
+            let _submission = pool.submission_guard();
+            #[cfg(not(target_arch = "wasm32"))]
+            if !runtime_state(_py).thread_borrow_admission_is_open() {
+                break 'publish PoolSubmission::AdmissionClosed;
             }
+            if pool.shutdown.load(Ordering::Acquire) {
+                break 'publish PoolSubmission::Rejected;
+            }
+            if pool
+                .unfinished
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    count.checked_add(1)
+                })
+                .is_err()
+            {
+                break 'publish PoolSubmission::NoCapacity;
+            }
+            let item = WorkItem {
+                future: Arc::clone(&future_shared),
+                future_id,
+                fn_bits,
+                args_bits,
+            };
+            pool.pending
+                .lock()
+                .unwrap()
+                .insert(future_id, Arc::clone(&future_shared));
+            // A worker must be able to resolve its public future as soon as the
+            // channel makes the job visible, including without a global GIL.
+            state
+                .futures
+                .lock()
+                .unwrap()
+                .insert(future_id, Arc::clone(&future_shared));
+            if pool.sender.send(Some(item)).is_err() {
+                pool.pending.lock().unwrap().remove(&future_id);
+                state.futures.lock().unwrap().remove(&future_id);
+                pool.finish_work();
+                break 'publish PoolSubmission::Rejected;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let maximum = match &pool.limit {
+                    WorkerLimit::Native(maximum) => *maximum,
+                    WorkerLimit::Dynamic(owner) => {
+                        let count = pool.workers.count();
+                        if count >= pool.unfinished.load(Ordering::Relaxed) {
+                            break 'publish PoolSubmission::Accepted;
+                        }
+                        use crate::object::ops_compare::{
+                            CompareBoolOutcome, CompareOp, rich_compare_op_bool,
+                        };
+                        let count = int_bits_from_i64(
+                            _py,
+                            i64::try_from(count).expect("addressable worker count"),
+                        );
+                        let compared = rich_compare_op_bool(
+                            _py,
+                            obj_from_bits(count),
+                            obj_from_bits(owner.load(Ordering::Acquire)),
+                            CompareOp::Lt,
+                        );
+                        dec_ref_bits(_py, count);
+                        match compared {
+                            CompareBoolOutcome::True => usize::MAX,
+                            CompareBoolOutcome::False => break 'publish PoolSubmission::Accepted,
+                            CompareBoolOutcome::Error => {
+                                break 'publish PoolSubmission::ComparisonFailed;
+                            }
+                            CompareBoolOutcome::NotComparable => {
+                                unreachable!("ordering authority supplies TypeError")
+                            }
+                        }
+                    }
+                };
+                let origin =
+                    crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(_py));
+                let started =
+                    pool.workers
+                        .grow_for_demand(origin, &pool.unfinished, maximum, |index| {
+                            let pool = Arc::clone(&pool);
+                            crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                                origin,
+                                thread::Builder::new().name(format!("molt-executor-{index}")),
+                                move || worker_loop(origin, pool),
+                            )
+                        });
+                if let Err(error) = started {
+                    break 'publish PoolSubmission::SpawnFailed(error);
+                }
+            }
+            PoolSubmission::Accepted
         };
-
-        if !sent {
-            dec_ref_bits(_py, fn_bits);
-            dec_ref_bits(_py, args_bits);
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "cannot submit to a shut-down executor",
-            );
+        match submission {
+            PoolSubmission::Accepted => {}
+            PoolSubmission::ComparisonFailed => {
+                state.futures.lock().unwrap().remove(&future_id);
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    release_future_owners(_py, &future_shared, false)
+                });
+                return MoltObject::none().bits();
+            }
+            PoolSubmission::SpawnFailed(error) => {
+                // Match queue-before-start semantics: the accepted job remains
+                // executable and later submissions may retry native growth.
+                // Only the never-returned public handle is unpublished. The
+                // queued Arc retains result/argument retirement independently.
+                state.futures.lock().unwrap().remove(&future_id);
+                release_future_owners(_py, &future_shared, false);
+                if matches!(
+                    error,
+                    crate::state::lifecycle::RuntimeServiceGrowthError::Capacity
+                ) {
+                    return raise_exception::<u64>(_py, "MemoryError", "");
+                }
+                return raise_exception::<u64>(_py, "RuntimeError", "can't start new thread");
+            }
+            failure @ (PoolSubmission::Rejected
+            | PoolSubmission::NoCapacity
+            | PoolSubmission::AdmissionClosed) => {
+                dec_ref_bits(_py, fn_bits);
+                dec_ref_bits(_py, args_bits);
+                if matches!(failure, PoolSubmission::NoCapacity) {
+                    return raise_exception::<u64>(_py, "MemoryError", "");
+                }
+                if matches!(failure, PoolSubmission::AdmissionClosed) {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "runtime thread admission is closed",
+                    );
+                }
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "cannot submit to a shut-down executor",
+                );
+            }
         }
 
-        // Store in this runtime's future registry keyed by future_id.
-        future_registry(_py)
-            .lock()
-            .unwrap()
-            .insert(future_id, future_shared);
         int_bits_from_i64(_py, future_id)
     })
 }
@@ -628,21 +864,16 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         };
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
         let cancel_futures = is_truthy(_py, obj_from_bits(cancel_futures_bits));
-        let mut pending = HashMap::new();
         let state = concurrent_state(_py);
-
-        let pool = {
-            let pools = state.pools.lock().unwrap();
-            let pool = pools.get(&pool_id).cloned();
-            if let Some(pool) = &pool {
-                if cancel_futures {
-                    pending = std::mem::take(&mut *pool.pending.lock().unwrap());
-                }
-                if pool.stop() {
-                    schedule_stopped_pool(state, pool_id);
-                }
+        let pool = state.pools.lock().unwrap().get(&pool_id).cloned();
+        let pending = if let Some(pool) = &pool {
+            let (started, pending) = pool.stop(cancel_futures);
+            if started {
+                schedule_stopped_pool(state, pool_id);
             }
-            pool
+            pending
+        } else {
+            HashMap::new()
         };
         let retirement_budget = pool.as_ref().map_or(8, |pool| pool.workers.count() * 2 + 8);
         for (id, future) in pending {
@@ -1213,6 +1444,19 @@ mod tests {
     static REENTRANT_DISPATCH_OK: AtomicBool = AtomicBool::new(false);
     static REENTRANT_CALLBACK_OK: AtomicBool = AtomicBool::new(false);
     static CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static DEMAND_RELEASE: AtomicBool = AtomicBool::new(false);
+    static DEMAND_STARTED: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_POOL: AtomicI64 = AtomicI64::new(0);
+    static NESTED_CALLBACK_OK: AtomicBool = AtomicBool::new(false);
+    static LIMIT_BEHAVIOR: AtomicUsize = AtomicUsize::new(0);
+    static LIMIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LIMIT_OTHER_POOL: AtomicI64 = AtomicI64::new(0);
+    static LIMIT_CREATED_POOL: AtomicI64 = AtomicI64::new(0);
+    static LIMIT_ERROR: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        pub(super) static SUBMISSION_WAITING: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+        static LIMIT_ENTERED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+    }
 
     fn owner_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
@@ -1234,6 +1478,147 @@ mod tests {
             inc_ref_bits(py, bits);
             bits
         })
+    }
+
+    extern "C" fn blocked_argument(bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            DEMAND_STARTED.fetch_add(1, Ordering::AcqRel);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !DEMAND_RELEASE.load(Ordering::Acquire) {
+                if std::time::Instant::now() >= deadline {
+                    return raise_exception::<u64>(
+                        py,
+                        "RuntimeError",
+                        "test work release timed out",
+                    );
+                }
+                let _release = GilReleaseGuard::suspend();
+                thread::yield_now();
+            }
+            retained_argument(bits)
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn nested_submit_callback(_bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let pool_id = CALLBACK_POOL.load(Ordering::Acquire);
+            let callable = native_callable(py, retained_argument as *const ());
+            let future = molt_concurrent_threadpool_submit(
+                MoltObject::from_int(pool_id).bits(),
+                callable,
+                MoltObject::from_int(7).bits(),
+            );
+            let result = molt_concurrent_future_result(
+                future,
+                MoltObject::from_float(5.0).bits(),
+                builtin_classes(py).exception,
+                builtin_classes(py).exception,
+            );
+            NESTED_CALLBACK_OK.store(
+                !exception_pending(py)
+                    && to_i64(obj_from_bits(result)) == Some(7)
+                    && state_pool_for_test(py, pool_id).workers.count() == 2,
+                Ordering::Release,
+            );
+            if exception_pending(py) {
+                clear_exception(py);
+            }
+            dec_ref_bits(py, result);
+            molt_concurrent_future_drop(future);
+            dec_ref_bits(py, callable);
+            MoltObject::none().bits()
+        })
+    }
+
+    extern "C" fn limit_greater_than(_limit: u64, count: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            LIMIT_CALLS.fetch_add(1, Ordering::AcqRel);
+            match LIMIT_BEHAVIOR.load(Ordering::Acquire) {
+                1 => {
+                    let result = raise_exception::<u64>(
+                        py,
+                        "LookupError",
+                        "original limit comparison failure",
+                    );
+                    LIMIT_ERROR.store(molt_exception_last_pending(), Ordering::Release);
+                    return result;
+                }
+                2 => {
+                    LIMIT_ENTERED.with(|slot| {
+                        if let Some(entered) = slot.borrow_mut().take() {
+                            entered.send(()).unwrap();
+                        }
+                    });
+                    // This waits for another real pool and releases the GIL while
+                    // retaining only this executor's callback-bearing gate.
+                    molt_concurrent_threadpool_shutdown(
+                        MoltObject::from_int(LIMIT_OTHER_POOL.load(Ordering::Acquire)).bits(),
+                        MoltObject::from_bool(true).bits(),
+                        MoltObject::none().bits(),
+                    );
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
+                    }
+                }
+                _ => {}
+            }
+            MoltObject::from_bool(to_i64(obj_from_bits(count)).is_some_and(|count| count < 4))
+                .bits()
+        })
+    }
+
+    extern "C" fn limit_destructor_creates_pool(_limit: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+            LIMIT_CREATED_POOL.store(
+                to_i64(obj_from_bits(handle)).unwrap_or(-1),
+                Ordering::Release,
+            );
+            MoltObject::none().bits()
+        })
+    }
+
+    fn dynamic_limit(py: &PyToken<'_>, create_on_drop: bool) -> (u64, u64) {
+        let name = attr_name_bits_from_bytes(py, b"ExecutorLimitContract").unwrap();
+        let class = molt_class_new(name);
+        dec_ref_bits(py, name);
+        molt_class_set_base(class, builtin_classes(py).object);
+        let mut methods = vec![(b"__gt__".as_slice(), limit_greater_than as *const (), 2)];
+        if create_on_drop {
+            methods.push((
+                b"__del__".as_slice(),
+                limit_destructor_creates_pool as *const (),
+                1,
+            ));
+        }
+        for (name, address, arity) in methods {
+            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let function = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(address),
+                arity,
+            );
+            assert!(!function.is_null());
+            let function = MoltObject::from_ptr(function).bits();
+            molt_set_attr_name(class, name, function);
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, function);
+        }
+        unsafe {
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
+                .unwrap();
+        }
+        let size = unsafe {
+            crate::object::layout::class_cached_layout_size(obj_from_bits(class).as_ptr().unwrap())
+                .unwrap()
+        };
+        let value = crate::object::builders::alloc_class_instance(py, size, class);
+        unsafe {
+            crate::object::gc::gc_publish_initialized(py, obj_from_bits(value).as_ptr().unwrap());
+        }
+        assert!(!exception_pending(py));
+        (class, value)
     }
 
     extern "C" fn reentrant_argument(bits: u64) -> u64 {
@@ -1598,16 +1983,491 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    fn generic_limit_comparison_failure_keeps_work_and_retires_owner_once() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                LIMIT_BEHAVIOR.store(1, Ordering::Release);
+                LIMIT_CALLS.store(0, Ordering::Release);
+                let (class, limit) = dynamic_limit(py, false);
+                let baseline = owner_count(limit);
+                let handle = molt_concurrent_threadpool_new(limit);
+                let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
+                assert_eq!(
+                    LIMIT_CALLS.load(Ordering::Acquire),
+                    0,
+                    "constructor repeated a user comparison"
+                );
+                assert_eq!(owner_count(limit), baseline + 1);
+                let callable = native_callable(py, retained_argument as *const ());
+                let failed_id = concurrent_state(py).next_future_id.load(Ordering::Relaxed);
+                molt_concurrent_threadpool_submit(handle, callable, MoltObject::from_int(7).bits());
+                assert!(exception_pending(py));
+                let error = molt_exception_last_pending();
+                let original = LIMIT_ERROR.swap(0, Ordering::AcqRel);
+                assert_eq!(error, original);
+                assert_eq!(class_name_for_error(type_of_bits(py, error)), "LookupError");
+                clear_exception(py);
+                dec_ref_bits(py, error);
+                dec_ref_bits(py, original);
+                assert!(get_future(py, failed_id).is_none());
+                assert_eq!(pool.unfinished.load(Ordering::Relaxed), 1);
+                assert_eq!(pool.workers.count(), 0);
+                LIMIT_BEHAVIOR.store(0, Ordering::Release);
+                let future = molt_concurrent_threadpool_submit(
+                    handle,
+                    callable,
+                    MoltObject::from_int(9).bits(),
+                );
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                assert!(!exception_pending(py));
+                assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
+                assert!(pool.pending.lock().unwrap().is_empty());
+                assert_eq!(owner_count(limit), baseline);
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                assert_eq!(owner_count(limit), baseline);
+                let result = molt_concurrent_future_result(
+                    future,
+                    MoltObject::none().bits(),
+                    builtin_classes(py).exception,
+                    builtin_classes(py).exception,
+                );
+                assert_eq!(to_i64(obj_from_bits(result)), Some(9));
+                dec_ref_bits(py, result);
+                molt_concurrent_future_drop(future);
+                for bits in [callable, limit, class] {
+                    dec_ref_bits(py, bits);
+                }
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn limit_reentry_and_contended_submission_release_global_locks_and_gil() {
+        use crate::state::lifecycle::run_runtime_worker;
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                LIMIT_BEHAVIOR.store(2, Ordering::Release);
+                DEMAND_RELEASE.store(false, Ordering::Release);
+                let other = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                LIMIT_OTHER_POOL.store(to_i64(obj_from_bits(other)).unwrap(), Ordering::Release);
+                let blocked = native_callable(py, blocked_argument as *const ());
+                let other_future = molt_concurrent_threadpool_submit(
+                    other,
+                    blocked,
+                    MoltObject::from_int(1).bits(),
+                );
+                let (class, limit) = dynamic_limit(py, false);
+                let primary = molt_concurrent_threadpool_new(limit);
+                let callable = native_callable(py, retained_argument as *const ());
+                let origin =
+                    crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
+                let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+                let first = thread::spawn(move || {
+                    run_runtime_worker(origin, || {
+                        crate::with_gil_entry_nopanic!(py, {
+                            LIMIT_ENTERED.with(|slot| *slot.borrow_mut() = Some(entered_tx));
+                            let future = molt_concurrent_threadpool_submit(
+                                primary,
+                                callable,
+                                MoltObject::from_int(7).bits(),
+                            );
+                            assert!(!exception_pending(py));
+                            future
+                        })
+                    })
+                });
+                {
+                    let _release = GilReleaseGuard::suspend();
+                    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+                let second = thread::spawn(move || {
+                    run_runtime_worker(origin, || {
+                        crate::with_gil_entry_nopanic!(py, {
+                            SUBMISSION_WAITING.with(|slot| *slot.borrow_mut() = Some(waiting_tx));
+                            let future = molt_concurrent_threadpool_submit(
+                                primary,
+                                callable,
+                                MoltObject::from_int(7).bits(),
+                            );
+                            assert!(!exception_pending(py));
+                            future
+                        })
+                    })
+                });
+                {
+                    let _release = GilReleaseGuard::suspend();
+                    waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                // Reacquiring GIL here proves the actual contended submit did
+                // not retain it. The first comparator still owns its pool gate.
+                DEMAND_RELEASE.store(true, Ordering::Release);
+                let futures = {
+                    let _release = GilReleaseGuard::suspend();
+                    [first.join().unwrap(), second.join().unwrap()]
+                };
+                molt_concurrent_threadpool_shutdown(
+                    primary,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                assert!(!exception_pending(py));
+                for future in futures {
+                    let result = molt_concurrent_future_result(
+                        future,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    );
+                    assert_eq!(to_i64(obj_from_bits(result)), Some(7));
+                    dec_ref_bits(py, result);
+                    molt_concurrent_future_drop(future);
+                }
+                molt_concurrent_future_drop(other_future);
+                for bits in [blocked, callable, limit, class] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(pool_registry(py).lock().unwrap().is_empty());
+                assert!(future_registry(py).lock().unwrap().is_empty());
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn manual_clear_preserves_limit_finalizer_replacement_cohort() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                LIMIT_CREATED_POOL.store(0, Ordering::Release);
+                let (class, limit) = dynamic_limit(py, true);
+                let old = molt_concurrent_threadpool_new(limit);
+                dec_ref_bits(py, limit); // Pool is now the sole limit owner.
+                assert!(concurrent_clear_runtime_state(py, runtime_state(py)));
+                let replacement = LIMIT_CREATED_POOL.load(Ordering::Acquire);
+                assert!(replacement > to_i64(obj_from_bits(old)).unwrap());
+                assert_eq!(pool_registry(py).lock().unwrap().len(), 1);
+                assert_eq!(state_pool_for_test(py, replacement).workers.count(), 0);
+                assert!(concurrent_clear_runtime_state(py, runtime_state(py)));
+                assert!(pool_registry(py).lock().unwrap().is_empty());
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, class);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pool_workers_follow_demand_and_reuse_settled_capacity() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let huge = crate::builtins::numbers::int_bits_from_bigint(
+                    py,
+                    num_bigint::BigInt::from(1u8) << 100usize,
+                );
+                let nan = crate::object::ops::float_result_bits(py, f64::NAN);
+                for (limit, expected) in [
+                    (MoltObject::from_int(513).bits(), 513),
+                    (huge, usize::MAX),
+                    (MoltObject::from_bool(true).bits(), 1),
+                    (MoltObject::from_float(0.5).bits(), 1),
+                    (MoltObject::from_float(3.5).bits(), 4),
+                    (MoltObject::from_float(f64::INFINITY).bits(), usize::MAX),
+                    (nan, 0),
+                ] {
+                    let handle = molt_concurrent_threadpool_new(limit);
+                    assert!(!exception_pending(py));
+                    let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
+                    assert!(matches!(pool.limit, WorkerLimit::Native(value) if value == expected));
+                    assert_eq!(
+                        pool.workers.count(),
+                        0,
+                        "unused capacity started native workers"
+                    );
+                    molt_concurrent_threadpool_shutdown(
+                        handle,
+                        MoltObject::from_bool(true).bits(),
+                        MoltObject::none().bits(),
+                    );
+                }
+                let handle = molt_concurrent_threadpool_new(nan);
+                let callable = native_callable(py, retained_argument as *const ());
+                let future = molt_concurrent_threadpool_submit(
+                    handle,
+                    callable,
+                    MoltObject::from_int(1).bits(),
+                );
+                assert_eq!(
+                    molt_concurrent_future_done(future),
+                    MoltObject::from_bool(false).bits()
+                );
+                assert_eq!(
+                    state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap())
+                        .workers
+                        .count(),
+                    0
+                );
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::from_bool(true).bits(),
+                );
+                assert_eq!(
+                    molt_concurrent_future_cancelled(future),
+                    MoltObject::from_bool(true).bits()
+                );
+                molt_concurrent_future_drop(future);
+                dec_ref_bits(py, callable);
+                dec_ref_bits(py, nan);
+                dec_ref_bits(py, huge);
+                for value in [0, -1] {
+                    molt_concurrent_threadpool_new(MoltObject::from_int(value).bits());
+                    assert_pending_class(py, "ValueError");
+                }
+                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(4).bits());
+                let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
+                let callable = native_callable(py, retained_argument as *const ());
+                for _ in 0..3 {
+                    let future = molt_concurrent_threadpool_submit(
+                        handle,
+                        callable,
+                        MoltObject::from_int(7).bits(),
+                    );
+                    let result = molt_concurrent_future_result(
+                        future,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    );
+                    assert_eq!(to_i64(obj_from_bits(result)), Some(7));
+                    dec_ref_bits(py, result);
+                    molt_concurrent_future_drop(future);
+                    // Completion notification precedes callbacks/cleanup. Wait for
+                    // the actual owner boundary before asserting idle reuse.
+                    poll_until(py, || pool.unfinished.load(Ordering::Relaxed) == 0);
+                    assert_eq!(pool.workers.count(), 1);
+                }
+                dec_ref_bits(py, callable);
+                DEMAND_RELEASE.store(false, Ordering::Release);
+                DEMAND_STARTED.store(0, Ordering::Release);
+                let callable = native_callable(py, blocked_argument as *const ());
+                let futures: Vec<_> = (0..8)
+                    .map(|_| {
+                        molt_concurrent_threadpool_submit(
+                            handle,
+                            callable,
+                            MoltObject::from_int(9).bits(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    pool.workers.count(),
+                    4,
+                    "demand did not saturate declared capacity"
+                );
+                assert_eq!(pool.unfinished.load(Ordering::Relaxed), 8);
+                poll_until(py, || DEMAND_STARTED.load(Ordering::Acquire) == 4);
+                DEMAND_RELEASE.store(true, Ordering::Release);
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                assert!(!exception_pending(py));
+                assert_eq!(DEMAND_STARTED.load(Ordering::Acquire), 8);
+                assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
+                for future in futures {
+                    let result = molt_concurrent_future_result(
+                        future,
+                        MoltObject::none().bits(),
+                        builtin_classes(py).exception,
+                        builtin_classes(py).exception,
+                    );
+                    assert_eq!(to_i64(obj_from_bits(result)), Some(9));
+                    dec_ref_bits(py, result);
+                    molt_concurrent_future_drop(future);
+                }
+                dec_ref_bits(py, callable);
+            });
+        });
+    }
+
+    fn assert_pending_class(py: &PyToken<'_>, name: &str) {
+        assert!(exception_pending(py));
+        let error = molt_exception_last_pending();
+        assert_eq!(class_name_for_error(type_of_bits(py, error)), name);
+        clear_exception(py);
+        dec_ref_bits(py, error);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_spawn_refusal_preserves_queued_work_and_pool_usability() {
+        use crate::state::lifecycle::with_service_spawn_failure_for_test;
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                // First-spawn refusal: retry or either shutdown disposition.
+                // Later growth refusal: an existing worker and both accepted
+                // jobs survive. OS ENOMEM is still native startup RuntimeError.
+                for kind in [
+                    std::io::ErrorKind::WouldBlock,
+                    std::io::ErrorKind::OutOfMemory,
+                ] {
+                    for (existing, retry, wait, cancel) in [
+                        (0, true, true, false),
+                        (0, false, true, false),
+                        (0, false, true, true),
+                        (0, false, false, false),
+                        (1, true, true, false),
+                    ] {
+                        DEMAND_RELEASE.store(false, Ordering::Release);
+                        DEMAND_STARTED.store(0, Ordering::Release);
+                        let handle = molt_concurrent_threadpool_new(MoltObject::from_int(2).bits());
+                        let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
+                        let callable = native_callable(py, blocked_argument as *const ());
+                        let payload =
+                            MoltObject::from_ptr(alloc_string(py, b"accepted job owner")).bits();
+                        let callable_base = owner_count(callable);
+                        let payload_base = owner_count(payload);
+                        let mut returned = Vec::new();
+                        for _ in 0..existing {
+                            returned
+                                .push(molt_concurrent_threadpool_submit(handle, callable, payload));
+                        }
+                        let failed_id = concurrent_state(py).next_future_id.load(Ordering::Relaxed);
+                        with_service_spawn_failure_for_test(kind, || {
+                            molt_concurrent_threadpool_submit(handle, callable, payload)
+                        });
+                        assert_pending_class(py, "RuntimeError");
+                        assert!(!pool.shutdown.load(Ordering::Acquire));
+                        assert_eq!(pool.workers.count(), existing);
+                        assert_eq!(pool.unfinished.load(Ordering::Relaxed), existing + 1);
+                        assert!(
+                            get_future(py, failed_id).is_none(),
+                            "unreturned future leaked its registry owner"
+                        );
+                        assert_eq!(future_registry(py).lock().unwrap().len(), existing);
+                        let failed =
+                            Arc::downgrade(pool.pending.lock().unwrap().get(&failed_id).unwrap());
+                        assert_eq!(owner_count(callable), callable_base + existing as u32 + 1);
+                        assert_eq!(owner_count(payload), payload_base + existing as u32 + 1);
+                        if retry {
+                            returned
+                                .push(molt_concurrent_threadpool_submit(handle, callable, payload));
+                            assert!(
+                                !exception_pending(py),
+                                "transient failure poisoned later startup"
+                            );
+                            assert_eq!(pool.workers.count(), existing + 1);
+                        }
+                        DEMAND_RELEASE.store(true, Ordering::Release);
+                        molt_concurrent_threadpool_shutdown(
+                            handle,
+                            MoltObject::from_bool(wait).bits(),
+                            MoltObject::from_bool(cancel).bits(),
+                        );
+                        assert!(!exception_pending(py));
+                        poll_until(py, || pool.unfinished.load(Ordering::Relaxed) == 0);
+                        assert_eq!(
+                            DEMAND_STARTED.load(Ordering::Acquire),
+                            if retry { existing + 2 } else { 0 }
+                        );
+                        for future in returned {
+                            let result = molt_concurrent_future_result(
+                                future,
+                                MoltObject::none().bits(),
+                                builtin_classes(py).exception,
+                                builtin_classes(py).exception,
+                            );
+                            assert_eq!(result, payload);
+                            dec_ref_bits(py, result);
+                            molt_concurrent_future_drop(future);
+                        }
+                        assert!(
+                            failed.upgrade().is_none(),
+                            "unreturned accepted job retained its future"
+                        );
+                        assert!(pool.pending.lock().unwrap().is_empty());
+                        assert!(future_registry(py).lock().unwrap().is_empty());
+                        assert_eq!(owner_count(callable), callable_base);
+                        assert_eq!(owner_count(payload), payload_base);
+                        dec_ref_bits(py, callable);
+                        dec_ref_bits(py, payload);
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn callback_submitted_work_grows_while_origin_worker_is_busy() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                NESTED_CALLBACK_OK.store(false, Ordering::Release);
+                DEMAND_RELEASE.store(false, Ordering::Release);
+                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(2).bits());
+                let id = to_i64(obj_from_bits(handle)).unwrap();
+                CALLBACK_POOL.store(id, Ordering::Release);
+                let pool = state_pool_for_test(py, id);
+                let callable = native_callable(py, blocked_argument as *const ());
+                let callback = native_callable(py, nested_submit_callback as *const ());
+                let future = molt_concurrent_threadpool_submit(
+                    handle,
+                    callable,
+                    MoltObject::from_int(3).bits(),
+                );
+                molt_concurrent_future_add_done_callback(future, callback);
+                DEMAND_RELEASE.store(true, Ordering::Release);
+                poll_until(py, || pool.unfinished.load(Ordering::Relaxed) == 0);
+                assert!(NESTED_CALLBACK_OK.load(Ordering::Acquire));
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                molt_concurrent_future_drop(future);
+                dec_ref_bits(py, callable);
+                dec_ref_bits(py, callback);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn repeated_nonwaiting_executor_drops_reclaim_completed_pool_owners() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let state = concurrent_state(py);
                 let baseline = state.pools.lock().unwrap().len();
                 let mut previous: Option<std::sync::Weak<ThreadPoolState>> = None;
-                for _ in 0..24 {
-                    // Exceeds the old two cold polls' 16-record total budget.
+                let callable = native_callable(py, blocked_argument as *const ());
+                for cycle in 0..25 {
+                    DEMAND_RELEASE.store(false, Ordering::Release);
+                    // Actual demand creates 33 workers, exceeding the old two
+                    // cold polls' 16-record budget. No capacity-only fixture.
                     let handle = molt_concurrent_threadpool_new(MoltObject::from_int(33).bits());
+                    let id = to_i64(obj_from_bits(handle)).unwrap();
+                    let pool = state_pool_for_test(py, id);
+                    let futures: Vec<_> = (0..33)
+                        .map(|_| {
+                            molt_concurrent_threadpool_submit(
+                                handle,
+                                callable,
+                                MoltObject::from_int(1).bits(),
+                            )
+                        })
+                        .collect();
                     assert!(!exception_pending(py));
+                    assert_eq!(pool.workers.count(), 33);
                     if let Some(previous) = previous.take() {
                         assert!(
                             previous.upgrade().is_none(),
@@ -1615,26 +2475,31 @@ mod tests {
                         );
                     }
                     assert_eq!(state.pools.lock().unwrap().len(), baseline + 1);
-                    let id = to_i64(obj_from_bits(handle)).unwrap();
-                    let pool = state.pools.lock().unwrap().get(&id).cloned().unwrap();
+                    for future in futures {
+                        molt_concurrent_future_drop(future);
+                    }
+                    DEMAND_RELEASE.store(true, Ordering::Release);
+                    if cycle == 24 {
+                        molt_concurrent_threadpool_shutdown(
+                            handle,
+                            MoltObject::from_bool(true).bits(),
+                            MoltObject::none().bits(),
+                        );
+                        break;
+                    }
                     previous = Some(Arc::downgrade(&pool));
                     molt_concurrent_threadpool_drop(handle);
-                    // Wait only for actual native completion, never run cleanup
-                    // polls: the next public create must repay completed debt.
+                    // No cleanup polls: subsequent public creation/submission
+                    // must repay the previous completed native-handle debt.
                     let deadline = std::time::Instant::now() + Duration::from_secs(5);
                     while !pool.workers.finished_for_test() {
                         assert!(std::time::Instant::now() < deadline);
                         let _release = GilReleaseGuard::suspend();
                         std::thread::yield_now();
                     }
+                    assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
                 }
-                let final_pool = molt_concurrent_threadpool_new(MoltObject::from_int(33).bits());
-                assert!(previous.unwrap().upgrade().is_none());
-                molt_concurrent_threadpool_shutdown(
-                    final_pool,
-                    MoltObject::from_bool(true).bits(),
-                    MoltObject::none().bits(),
-                );
+                dec_ref_bits(py, callable);
                 assert!(!exception_pending(py));
                 assert_eq!(state.pools.lock().unwrap().len(), baseline);
                 assert!(state.stopped.lock().unwrap().ids.is_empty());
@@ -1654,7 +2519,10 @@ mod tests {
             receiver,
             workers: crate::state::lifecycle::RuntimeServiceWorkers::default(),
             shutdown: AtomicBool::new(false),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Mutex::new(HashMap::new()),
+            limit: WorkerLimit::Native(1),
+            submission: Mutex::new(()),
+            unfinished: AtomicUsize::new(0),
         });
         let id = next_pool_id(py);
         pool_registry(py)
@@ -1686,7 +2554,18 @@ mod tests {
                 let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 let pool = state_pool_for_test(py, id);
-                assert!(pool.stop());
+                let callable = native_callable(py, retained_argument as *const ());
+                let future = molt_concurrent_threadpool_submit(
+                    handle,
+                    callable,
+                    MoltObject::from_int(7).bits(),
+                );
+                assert_eq!(
+                    pool.workers.count(),
+                    1,
+                    "join race requires a real native worker"
+                );
+                assert!(pool.stop(false).0);
                 schedule_stopped_pool(concurrent_state(py), id);
                 let origin =
                     crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
@@ -1748,6 +2627,9 @@ mod tests {
                 assert!(success, "concurrent successful join became a RuntimeError");
                 assert!(!pool_registry(py).lock().unwrap().contains_key(&id));
                 assert!(pool.workers.join());
+                assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
+                molt_concurrent_future_drop(future);
+                dec_ref_bits(py, callable);
             });
         });
     }

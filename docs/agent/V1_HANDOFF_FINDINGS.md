@@ -88,6 +88,16 @@ construction eagerly starts workers while pinned CPython starts them on demand;
 any correction must preserve submit, cancellation, shutdown and retirement custody
 and be measured through both empty and active workloads.
 
+The current-main baseline plus an identical four-case probe (`cb8d3c82f`) passes
+the same 1,846 optimized semantic cases with the allocation observer absent.
+The demand-driven successor preserves original numeric worker limits, uses a
+pool-local GIL-aware submit/stop gate, and removes per-job pending-map ownership.
+Independent source review and focused formatting pass; the expanded public
+fixture passes on CPython. Candidate runtime execution, public differential
+execution and matched active/steady performance remain unverified. The private
+paired runner consumes both current gate publications and identical metric
+rosters, with one retained image per side and no historical configuration waiver.
+
 Automatic cache retention has an independently reviewed complete source candidate.
 Required stdlib outputs are build-owned before cache admission, optional cache
 entries use their existing persistent locks, and pruning selects completed entries

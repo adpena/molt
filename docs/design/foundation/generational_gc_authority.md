@@ -149,12 +149,47 @@ owners return to the FIFO tail so they cannot block completed owners. Inspection
 charges actual records, with a minimum one-unit charge for stale/empty IDs.
 Closed pools reserve the same turn quantum for queued-message release. Thus a
 hot poll inspects at most eight records and releases at most eight messages;
-finalizer execution is not preemptible. Cold pool creation and shutdown use the
-same loop with a `2 * worker_count + 8` budget (creation caps workers at 512),
-then stop early when the FIFO empties. This pays completed worker-record debt in
-proportion to the spawn/stop work rather than accumulating large completed
-pools behind a constant cold budget. Live or failed workers remain retained;
-queued work rejected after origin closure retires in bounded later turns.
+finalizer execution is not preemptible. Pool creation uses eight units, each
+submission two units, and shutdown `2 * actual_worker_count + 8` units, stopping
+early when the FIFO empties. Retirement effort follows actual work instead of
+configured capacity. Live or failed workers remain retained; queued work rejected
+after origin closure retires in bounded later turns.
+
+Executor construction starts no native workers and imposes no arbitrary worker
+limit. The Python constructor retains the original `max_workers` object and owns
+its observable `<= 0` validation. Exact builtin integer, boolean and float limits
+use a native ceiling equivalent to integer-count comparison, including positive
+fractions, infinity and NaN. Larger-than-addressable positive ceilings allocate
+no capacity; NaN admits construction but never starts workers. Other admitted
+limits retain one runtime owner and use the canonical reflected comparison
+protocol only when growth is needed, preserving Fraction, Decimal and custom
+objects without coercion.
+
+Each pool serializes submission and stop through its own gate. Registry locks
+only publish, find or remove owners; the shared service handle lock remains
+callback-free. A contended pool gate releases the GIL while waiting, so a limit
+comparison can block on another pool without preventing its own resumption.
+Each queued job owns one unfinished obligation through execution, callbacks,
+reference destruction and execution-guard cleanup. Submission appends at most
+one worker when unfinished demand exceeds the existing handle count and capacity
+remains; settled idle workers are reused. The shared service handle owner
+reserves storage before native startup and retains every successful handle for
+join. Fixed services retain their one-shot readiness rule.
+
+The dynamic limit owner is detached exactly once after worker join and queued
+work retirement, outside pool and registry locks. Runtime teardown closes thread
+admission before taking its owner cohort, and constructors recheck admission
+under registry publication. Manual drains retain the exact pool/future cohort
+across joins and callback-bearing destruction; a later cohort created by those
+callbacks remains registered for a subsequent drain.
+
+Following CPython, submission publishes its future before queueing the work and
+then attempts native growth. Ordinary native startup refusal leaves the pool
+usable and its accepted work queued; only the unreturned public future owner is
+removed, outside callback-hostile locks. A later submission can retry startup.
+Preparing handle storage can raise `MemoryError`; OS thread-start refusal raises
+`RuntimeError`. Origin-refused requeue retains its unfinished obligation; actual
+worker or stopped-queue retirement settles it exactly once.
 
 A single shared handle transaction implements blocking join and completed-worker
 reaping, releasing both owner locks and GIL before actual native joining.

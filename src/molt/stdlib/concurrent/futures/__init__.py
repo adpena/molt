@@ -486,7 +486,7 @@ class ThreadPoolExecutor(Executor):
                 "in Molt compiled binaries (no CPython runtime)"
             )
 
-        self._max_workers: int = int(max_workers)
+        self._max_workers = max_workers
         self._thread_name_prefix: str = str(thread_name_prefix)
         self._shutdown: bool = False
         self._handle: int | None = None  # set after successful pool creation
