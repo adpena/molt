@@ -231,10 +231,8 @@ fn next_pool_id(_py: &PyToken<'_>) -> i64 {
         .fetch_add(1, Ordering::Relaxed)
 }
 
-fn next_future_id(_py: &PyToken<'_>) -> i64 {
-    concurrent_state(_py)
-        .next_future_id
-        .fetch_add(1, Ordering::Relaxed)
+fn next_future_id(state: &ConcurrentRuntimeState) -> i64 {
+    state.next_future_id.fetch_add(1, Ordering::Relaxed)
 }
 
 fn pool_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, Arc<ThreadPoolState>>> {
@@ -678,8 +676,9 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
     args_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let runtime = runtime_state(_py);
         #[cfg(not(target_arch = "wasm32"))]
-        if !runtime_state(_py).thread_borrow_admission_is_open() {
+        if !runtime.thread_borrow_admission_is_open() {
             return raise_exception::<u64>(
                 _py,
                 "RuntimeError",
@@ -693,10 +692,10 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             }
         };
 
-        let state = concurrent_state(_py);
+        let state = &runtime.concurrent;
         concurrent_reap_stopped_pools(_py, state, 2);
         let future_shared = Arc::new(Mutex::new(FutureState::new()));
-        let future_id = next_future_id(_py);
+        let future_id = next_future_id(state);
 
         inc_ref_bits(_py, fn_bits);
         inc_ref_bits(_py, args_bits);
@@ -707,7 +706,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             };
             let _submission = pool.submission_guard();
             #[cfg(not(target_arch = "wasm32"))]
-            if !runtime_state(_py).thread_borrow_admission_is_open() {
+            if !runtime.thread_borrow_admission_is_open() {
                 break 'publish PoolSubmission::AdmissionClosed;
             }
             if pool.shutdown.load(Ordering::Acquire) {
@@ -734,11 +733,13 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                 .insert(future_id, Arc::clone(&future_shared));
             // A worker must be able to resolve its public future as soon as the
             // channel makes the job visible, including without a global GIL.
+            // Transfer the initial owner; failure takes it back from the registry
+            // unless a reentrant public drop has already retired that owner.
             state
                 .futures
                 .lock()
                 .unwrap()
-                .insert(future_id, Arc::clone(&future_shared));
+                .insert(future_id, future_shared);
             if pool.sender.send(Some(item)).is_err() {
                 pool.pending.lock().unwrap().remove(&future_id);
                 state.futures.lock().unwrap().remove(&future_id);
@@ -780,8 +781,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                         }
                     }
                 };
-                let origin =
-                    crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(_py));
+                let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime);
                 let started =
                     pool.workers
                         .grow_for_demand(origin, &pool.unfinished, maximum, |index| {
@@ -801,10 +801,12 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
         match submission {
             PoolSubmission::Accepted => {}
             PoolSubmission::ComparisonFailed => {
-                state.futures.lock().unwrap().remove(&future_id);
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    release_future_owners(_py, &future_shared, false)
-                });
+                let future = state.futures.lock().unwrap().remove(&future_id);
+                if let Some(future) = future {
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        release_future_owners(_py, &future, false)
+                    });
+                }
                 return MoltObject::none().bits();
             }
             PoolSubmission::SpawnFailed(error) => {
@@ -812,8 +814,10 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                 // executable and later submissions may retry native growth.
                 // Only the never-returned public handle is unpublished. The
                 // queued Arc retains result/argument retirement independently.
-                state.futures.lock().unwrap().remove(&future_id);
-                release_future_owners(_py, &future_shared, false);
+                let future = state.futures.lock().unwrap().remove(&future_id);
+                if let Some(future) = future {
+                    release_future_owners(_py, &future, false);
+                }
                 if matches!(
                     error,
                     crate::state::lifecycle::RuntimeServiceGrowthError::Capacity
@@ -1756,7 +1760,7 @@ mod tests {
             };
             let cancelled_error = new_error_class(b"ModuleCancelledError");
             let timeout_error = new_error_class(b"ModuleTimeoutError");
-            let id = next_future_id(py);
+            let id = next_future_id(concurrent_state(py));
             let handle = MoltObject::from_int(id).bits();
             let future = Arc::new(Mutex::new(FutureState::new()));
             future_registry(py)
@@ -2896,7 +2900,7 @@ mod tests {
                 assert_eq!(second_pool_id, first_pool_id + 1);
                 assert_eq!(state.concurrent.pools.lock().unwrap().len(), 2);
 
-                let future_id = next_future_id(_py);
+                let future_id = next_future_id(&state.concurrent);
                 state
                     .concurrent
                     .futures
@@ -2919,7 +2923,7 @@ mod tests {
 
                 let new_pool = molt_concurrent_threadpool_new(one_worker);
                 assert_eq!(to_i64(obj_from_bits(new_pool)), Some(second_pool_id + 1));
-                assert_eq!(next_future_id(_py), future_id + 1);
+                assert_eq!(next_future_id(&state.concurrent), future_id + 1);
                 assert!(get_future(_py, future_id).is_none());
                 assert!(
                     !state

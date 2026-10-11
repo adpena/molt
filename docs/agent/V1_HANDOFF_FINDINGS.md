@@ -93,8 +93,13 @@ the same 1,846 optimized semantic cases with the allocation observer absent.
 The demand-driven successor preserves original numeric worker limits, uses a
 pool-local GIL-aware submit/stop gate, and removes per-job pending-map ownership.
 Independent source review and focused formatting pass; the expanded public
-fixture passes on CPython. Candidate runtime execution, public differential
-execution and matched active/steady performance remain unverified. The private
+fixture passes on CPython. Candidate `1b453d030` passes all 1,852 optimized
+runtime cases. Seven alternating timing pairs measure empty-pool creation and
+waiting shutdown at 279.53 ns versus 26,662 ns; first-job cost is approximately
+unchanged, while steady submission/result/drop rises from 14,175 to 14,355 ns
+(1.27%). The additional steady cost remains explicit; unused-pool savings do not
+offset it. Review identified one redundant future-owner clone to remove before
+the final comparison. Public differential execution remains unverified. The private
 paired runner consumes both current gate publications and identical metric
 rosters, with one retained image per side and no historical configuration waiver.
 
