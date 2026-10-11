@@ -634,6 +634,15 @@ pub(crate) unsafe fn numeric_native_value(op: *mut PyObject) -> Option<RuntimeVa
         ResolvedPyObject::ManagedMolt(_) => return unsafe { RuntimeValue::acquire(op) },
         ResolvedPyObject::Foreign => {}
     }
+    unsafe { numeric_value_from_storage(op) }
+}
+
+/// Read the admitted physical scalar prefix into an exact builtin value. This
+/// is also the representation of a managed scalar C view: allocate_numeric_view
+/// initializes its complete immutable long/float/complex payload. Callers must
+/// observe the source first; the original object's identity and subtype remain
+/// untouched. No conversion or rendering override is invoked.
+pub(crate) unsafe fn numeric_value_from_storage(op: *mut PyObject) -> Option<RuntimeValue> {
     if unsafe { has_layout_long(op) } {
         let exact = unsafe { copy_layout_long_to_exact(op) };
         if exact.is_null() {

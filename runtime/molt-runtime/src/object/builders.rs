@@ -266,9 +266,6 @@ fn alloc_hash_aggregate_for_class_unpublished(
         type_id,
         TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
     ));
-    if exception_pending(_py) {
-        return std::ptr::null_mut();
-    }
     let table_capacity = if capacity == 0 {
         0
     } else {
@@ -376,8 +373,7 @@ pub(crate) fn alloc_set_like_with_capacity_and_entries(
     }
     unsafe {
         for &entry in entries {
-            set_add_in_place(_py, ptr, entry, HashContext::SetElement);
-            if exception_pending(_py) {
+            if !set_add_in_place(_py, ptr, entry, HashContext::SetElement) {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return std::ptr::null_mut();
             }
@@ -2278,10 +2274,7 @@ pub(crate) unsafe fn alloc_native_set(
     if !ptr.is_null()
         && let Some(source) = source
     {
-        unsafe {
-            super::ops::set_copy_into_empty(py, source, ptr);
-        }
-        if exception_pending(py) {
+        if !unsafe { super::ops::set_copy_into_empty(py, source, ptr) } {
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         }
@@ -2842,6 +2835,66 @@ mod sequence_builder_tests {
     }
 
     #[test]
+    fn hash_storage_success_with_prior_error_preserves_edges_and_allocation_failure_status() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = bits_from_ptr(alloc_string(py, b"prior-error-hash-owner"));
+            let _item_owner = crate::builtins::exceptions::ExceptionValue::adopt(py, item);
+            let baseline = refs(item);
+            for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
+                let construct = || {
+                    if type_id == TYPE_ID_DICT {
+                        alloc_dict_with_pairs(py, &[item, item])
+                    } else {
+                        alloc_set_like_with_entries(py, &[item, item], type_id)
+                    }
+                };
+                let warm = construct();
+                assert!(!warm.is_null());
+                dec_ref_bits(py, bits_from_ptr(warm));
+                raise_exception::<()>(py, "LookupError", "admitted allocation caller error");
+                let original = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                let ptr = construct();
+                assert!(!ptr.is_null(), "type={type_id}");
+                let result =
+                    crate::builtins::exceptions::ExceptionValue::adopt(py, bits_from_ptr(ptr));
+                assert!(unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() });
+                assert_eq!(
+                    refs(item),
+                    baseline + if type_id == TYPE_ID_DICT { 2 } else { 1 }
+                );
+                let observed = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                assert_eq!(observed.bits(), original.bits());
+                drop(result);
+                assert_eq!(refs(item), baseline);
+                let budget = deny_allocations();
+                assert!(
+                    construct().is_null(),
+                    "actual allocation denial still fails"
+                );
+                drop(budget);
+                assert_eq!(refs(item), baseline);
+                let observed = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                assert_eq!(
+                    observed.bits(),
+                    original.bits(),
+                    "raw emergency allocation retains its first-error policy"
+                );
+                clear_exception(py);
+            }
+        });
+    }
+
+    #[test]
     fn hash_storage_capacity_overflow_raises_and_preserves_first_error() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -2947,7 +3000,7 @@ mod sequence_builder_tests {
     }
 
     #[test]
-    fn hash_aggregate_constructors_fail_with_pending_error_and_never_publish() {
+    fn hash_aggregate_constructors_report_exhaustion_and_allow_later_success_with_prior_error() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for (constructor, capacity) in [
@@ -2959,15 +3012,28 @@ mod sequence_builder_tests {
                 assert!(obj_from_bits(constructor(capacity)).is_none());
                 drop(budget);
                 assert!(exception_pending(py));
-                let pending = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(obj_from_bits(constructor(capacity)).is_none());
-                let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                let pending = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
+                let result =
+                    crate::builtins::exceptions::ExceptionValue::adopt(py, constructor(capacity));
+                let ptr = obj_from_bits(result.bits())
+                    .as_ptr()
+                    .expect("a prior error is not allocation failure");
+                assert!(unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() });
+                drop(result);
+                let still_pending = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_last_pending(),
+                );
                 assert_eq!(
-                    still_pending, pending,
+                    still_pending.bits(),
+                    pending.bits(),
                     "constructor must preserve first failure"
                 );
-                dec_ref_bits(py, still_pending);
-                dec_ref_bits(py, pending);
+                drop(still_pending);
+                drop(pending);
                 clear_exception(py);
             }
         });
@@ -3005,10 +3071,18 @@ mod sequence_builder_tests {
                 let pending = crate::builtins::exceptions::molt_exception_last_pending();
                 assert!(
                     construct().is_null(),
-                    "pending failure rejects construction"
+                    "the new hash failure rejects construction"
                 );
                 let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
-                assert_eq!(still_pending, pending);
+                assert_ne!(
+                    still_pending, pending,
+                    "the second operation selects its own TypeError"
+                );
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    still_pending,
+                    "TypeError"
+                ));
                 assert_eq!(refs(item), baseline);
                 dec_ref_bits(py, still_pending);
                 dec_ref_bits(py, pending);

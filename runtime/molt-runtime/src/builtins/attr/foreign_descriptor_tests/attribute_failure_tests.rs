@@ -192,12 +192,25 @@ unsafe extern "C" fn legacy_set(
     _value: *mut PyObject,
 ) -> c_int {
     unsafe { attribute_get(obj, ptr::null_mut()) };
-    // Deliberately violate the callback result/error protocol.
+    // Direct tp_setattr completion is its status, independent of the indicator.
     0
 }
 
+unsafe extern "C" fn legacy_callable_with_error(
+    obj: *mut PyObject,
+    _args: *mut PyObject,
+    _kwargs: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        attribute_get(obj, ptr::null_mut());
+        let result = &raw mut molt_cpython_abi::abi_types::Py_None;
+        refcount::Py_INCREF(result);
+        result
+    }
+}
+
 #[test]
-fn legacy_attribute_setters_validate_the_same_result_error_contract() {
+fn legacy_attribute_slots_and_generic_calls_have_distinct_completion_contracts() {
     use molt_cpython_abi::api::{object, strings};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
@@ -205,6 +218,7 @@ fn legacy_attribute_setters_validate_the_same_result_error_contract() {
         kind.ob_base.ob_base.ob_refcnt = 1;
         kind.tp_name = c"LegacyAttributes".as_ptr();
         kind.tp_setattr = Some(legacy_set);
+        kind.tp_call = Some(legacy_callable_with_error);
         let mut receiver = Receiver {
             object: PyObject {
                 ob_refcnt: 1,
@@ -213,7 +227,9 @@ fn legacy_attribute_setters_validate_the_same_result_error_contract() {
             calls: 0,
             malformed: false,
         };
-        let name = strings::PyUnicode_FromString(c"field".as_ptr());
+        let name =
+            refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"field".as_ptr()));
+        assert!(!name.as_ptr().is_null());
         for as_string in [false, true] {
             let status = if as_string {
                 object::PyObject_SetAttrString(
@@ -222,12 +238,12 @@ fn legacy_attribute_setters_validate_the_same_result_error_contract() {
                     ptr::null_mut(),
                 )
             } else {
-                object::PyObject_SetAttr(&raw mut receiver.object, name, ptr::null_mut())
+                object::PyObject_SetAttr(&raw mut receiver.object, name.as_ptr(), ptr::null_mut())
             };
-            assert_eq!(status, -1);
+            assert_eq!(status, 0);
             assert_eq!(
                 errors::PyErr_ExceptionMatches(
-                    (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
                 ),
                 1
             );
@@ -235,7 +251,17 @@ fn legacy_attribute_setters_validate_the_same_result_error_contract() {
             crate::clear_exception(&py);
         }
         assert_eq!(receiver.calls, 2);
-        refcount::Py_DECREF(name);
+        // Calling the same physical receiver through tp_call is a generic
+        // invocation, where _Py_CheckFunctionResult rejects value plus error.
+        assert!(object::PyObject_CallNoArgs(&raw mut receiver.object).is_null());
+        assert_eq!(receiver.calls, 3);
+        assert_eq!(
+            errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+            ),
+            1
+        );
+        errors::PyErr_Clear();
         assert_eq!(receiver.object.ob_refcnt, 1);
         assert_eq!(kind.ob_base.ob_base.ob_refcnt, 1);
     });

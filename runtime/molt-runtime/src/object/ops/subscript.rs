@@ -2144,7 +2144,9 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                             container_bits,
                             item_bits,
                             crate::object::ops_set::SetContainsPolicy::Python,
-                        );
+                        )
+                        .map(|found| MoltObject::from_bool(found).bits())
+                        .unwrap_or_else(|()| MoltObject::none().bits());
                     }
                     TYPE_ID_STRING => {
                         let Some(item_ptr) = item.as_ptr() else {

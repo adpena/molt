@@ -1378,8 +1378,8 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
     set: *mut u8,
     key: u64,
     hash: u64,
-) -> Option<usize> {
-    unsafe { set_probe_with_hash(py, set, key, hash).map(|probe| probe.row) }
+) -> Result<Option<usize>, ()> {
+    unsafe { set_probe_with_hash(py, set, key, hash).map(|probe| probe.map(|probe| probe.row)) }
 }
 
 unsafe fn set_probe_with_hash(
@@ -1387,7 +1387,7 @@ unsafe fn set_probe_with_hash(
     set: *mut u8,
     key: u64,
     hash: u64,
-) -> Option<HashProbe> {
+) -> Result<Option<HashProbe>, ()> {
     unsafe {
         'restart: loop {
             let epoch = crate::object::backing::tracked_vec_mutation_epoch(set_entries_ptr(set));
@@ -1396,14 +1396,14 @@ unsafe fn set_probe_with_hash(
                 (table.as_ptr(), table.len())
             };
             if length == 0 {
-                return None;
+                return Ok(None);
             }
             let mask = length - 1;
             let mut slot = hash as usize & mask;
             for _ in 0..length {
                 let entry = set_table(set)[slot];
                 if entry == 0 {
-                    return None;
+                    return Ok(None);
                 }
                 if entry != TABLE_TOMBSTONE {
                     let index = entry - 1;
@@ -1414,25 +1414,26 @@ unsafe fn set_probe_with_hash(
                         .map(StoredHash::get);
                     let (Some(candidate), Some(candidate_hash)) = (candidate, candidate_hash)
                     else {
-                        return raise_exception(
+                        raise_exception::<()>(
                             py,
                             "SystemError",
                             "set table references an invalid entry",
                         );
+                        return Err(());
                     };
                     if candidate_hash == hash {
                         if candidate == key {
-                            return Some(HashProbe { row: index, slot });
+                            return Ok(Some(HashProbe { row: index, slot }));
                         }
                         if let Some(equal) = string_bits_eq(py, candidate, key) {
                             if equal {
-                                return Some(HashProbe { row: index, slot });
+                                return Ok(Some(HashProbe { row: index, slot }));
                             }
                         } else {
                             inc_ref_bits(py, candidate);
                             let equal = eq_bool_from_bits(py, candidate, key);
                             dec_ref_bits(py, candidate);
-                            let equal = equal?;
+                            let equal = equal.ok_or(())?;
                             let unchanged = {
                                 let table = set_table(set);
                                 crate::object::backing::tracked_vec_mutation_epoch(set_entries_ptr(
@@ -1453,24 +1454,29 @@ unsafe fn set_probe_with_hash(
                                 continue 'restart;
                             }
                             if equal {
-                                return Some(HashProbe { row: index, slot });
+                                return Ok(Some(HashProbe { row: index, slot }));
                             }
                         }
                     }
                 }
                 slot = (slot + 1) & mask;
             }
-            return raise_exception(py, "SystemError", "set table has no empty slot");
+            raise_exception::<()>(py, "SystemError", "set table has no empty slot");
+            return Err(());
         }
     }
 }
 
 /// A lookup caller supplies an owner pointer, never a borrowed table triple.
-pub(crate) unsafe fn set_find_entry(py: &PyToken<'_>, set: *mut u8, key: u64) -> Option<usize> {
+pub(crate) unsafe fn set_find_entry(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    key: u64,
+) -> Result<Option<usize>, ()> {
     let _key = PinnedSetEntry::borrow(py, key, 0);
     let hash = hash_bits(py, key);
     if hash == u64::MAX {
-        return None;
+        return Err(());
     }
     unsafe { set_find_entry_in_place_with_hash(py, set, key, hash) }
 }
@@ -1875,45 +1881,57 @@ pub(crate) unsafe fn dict_get_inline_int_in_place(
 ) -> Result<Option<u64>, ()> {
     unsafe { dict_get_with_hash_in_place(_py, ptr, key_bits, hash_int(key_int) as u64) }
 }
-pub(crate) unsafe fn set_add_in_place(py: &PyToken<'_>, ptr: *mut u8, key: u64, ctx: HashContext) {
+#[must_use]
+pub(crate) unsafe fn set_add_in_place(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key: u64,
+    ctx: HashContext,
+) -> bool {
     let _key = PinnedSetEntry::borrow(py, key, 0);
     if !ensure_hashable(py, key, ctx) {
-        return;
+        return false;
     }
     let hash = hash_bits(py, key);
     if hash == u64::MAX {
-        return;
+        return false;
     }
-    unsafe { set_add_with_hash_in_place(py, ptr, key, hash) };
+    unsafe { set_add_with_hash_in_place(py, ptr, key, hash) }
 }
 
 /// Trusted hash from an existing set entry: no repeat __hash__ invocation.
+#[must_use]
 pub(crate) unsafe fn set_add_with_hash_in_place(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     key_bits: u64,
     hash: u64,
-) {
+) -> bool {
     let Some(hash) = admit_stored_hash(_py, hash) else {
-        return;
+        return false;
     };
     let _key = PinnedSetEntry::borrow(_py, key_bits, hash.get());
     unsafe {
         crate::gil_assert();
-        let found = set_find_entry_in_place_with_hash(_py, ptr, key_bits, hash.get());
-        if exception_pending(_py) || found.is_some() {
-            return;
+        match set_find_entry_in_place_with_hash(_py, ptr, key_bits, hash.get()) {
+            Ok(Some(_)) => true,
+            Ok(None) => set_insert_absent_with_hash(_py, ptr, key_bits, hash),
+            Err(()) => false,
         }
-        set_insert_absent_with_hash(_py, ptr, key_bits, hash);
     }
 }
 
 /// The caller has proved absence or is copying distinct stored source keys.
 /// This callback-free insertion is shared by normal insertion and exact copy.
-unsafe fn set_insert_absent_with_hash(py: &PyToken<'_>, ptr: *mut u8, key: u64, hash: StoredHash) {
+unsafe fn set_insert_absent_with_hash(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key: u64,
+    hash: StoredHash,
+) -> bool {
     unsafe {
         if !reserve_hash_storage(py, ptr.cast::<HashStorage<SetEntry>>(), 1, &mut []) {
-            return;
+            return false;
         }
         inc_ref_bits(py, key);
         let index = set_entries(ptr).len();
@@ -1929,27 +1947,33 @@ unsafe fn set_insert_absent_with_hash(py: &PyToken<'_>, ptr: *mut u8, key: u64, 
         if crate::object::refcount_opt::is_heap_ref(key) {
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
+        true
     }
 }
 
 /// Copy preserves all stored entries even if a key's equality changed since
 /// insertion. Re-inserting through rich lookup would incorrectly deduplicate
 /// them and invoke user equality during set.copy().
-pub(crate) unsafe fn set_copy_into_empty(py: &PyToken<'_>, source: *mut u8, target: *mut u8) {
+#[must_use]
+pub(crate) unsafe fn set_copy_into_empty(
+    py: &PyToken<'_>,
+    source: *mut u8,
+    target: *mut u8,
+) -> bool {
     unsafe {
         assert_eq!(set_len(target), 0);
         let mut index = 0;
         while let Some(entry) = set_pin_next(py, source, &mut index) {
-            set_insert_absent_with_hash(
+            if !set_insert_absent_with_hash(
                 py,
                 target,
                 entry.bits(),
                 admit_stored_hash(py, entry.hash()).expect("stored source hash"),
-            );
-            if exception_pending(py) {
-                return;
+            ) {
+                return false;
             }
         }
+        true
     }
 }
 
@@ -2039,14 +2063,18 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
     }
 }
 
-pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
+pub(crate) unsafe fn set_del_in_place(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Result<bool, ()> {
     let _key = PinnedSetEntry::borrow(_py, key_bits, 0);
     if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
-        return false;
+        return Err(());
     }
     let hash = hash_bits(_py, key_bits);
     if hash == u64::MAX {
-        return false;
+        return Err(());
     }
     unsafe { set_del_with_hash_in_place(_py, ptr, key_bits, hash) }
 }
@@ -2056,22 +2084,19 @@ pub(crate) unsafe fn set_del_with_hash_in_place(
     ptr: *mut u8,
     key: u64,
     hash: u64,
-) -> bool {
+) -> Result<bool, ()> {
     let Some(hash) = admit_stored_hash(py, hash) else {
-        return false;
+        return Err(());
     };
     let hash = hash.get();
     let _key = PinnedSetEntry::borrow(py, key, hash);
     unsafe {
-        let Some(probe) = set_probe_with_hash(py, ptr, key, hash) else {
-            return false;
+        let Some(probe) = set_probe_with_hash(py, ptr, key, hash)? else {
+            return Ok(false);
         };
-        if exception_pending(py) {
-            return false;
-        }
         let key = set_remove_row(ptr, probe);
         dec_ref_bits(py, key);
-        true
+        Ok(true)
     }
 }
 

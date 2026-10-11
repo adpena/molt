@@ -2911,35 +2911,37 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
 
 unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> OwnedHandleResult {
     use molt_cpython_abi::SetOp;
-    let bits = match op {
-        x if x == SetOp::Pop as u32 => crate::c_api::PySet_Pop(set_bits),
-        x if x == SetOp::Clear as u32 => {
-            let rc = crate::c_api::PySet_Clear(set_bits);
-            if rc == 0 {
-                MoltObject::none().bits()
-            } else {
-                0
+    with_gil(|py| {
+        let result = match op {
+            x if x == SetOp::Pop as u32 => crate::object::ops_set::set_pop(&py, set_bits),
+            x if x == SetOp::Clear as u32 => {
+                if crate::c_api::PySet_Clear(set_bits) == 0 {
+                    Ok(MoltObject::none().bits())
+                } else {
+                    Err(())
+                }
             }
+            _ => {
+                crate::raise_exception::<()>(
+                    &py,
+                    "SystemError",
+                    "PySet op: unknown operation discriminant",
+                );
+                Err(())
+            }
+        };
+        match result {
+            Ok(bits) => OwnedHandleResult::ok(bits),
+            Err(()) => OwnedHandleResult::error(),
         }
-        _ => with_gil(|_py| {
-            crate::raise_exception::<u64>(
-                &_py,
-                "SystemError",
-                "PySet op: unknown operation discriminant",
-            )
-        }),
-    };
-    owned_result_from_pending(bits)
+    })
 }
 
 // ── Set protocol (PySet_*) ────────────────────────────────────────────────
 //
-// The single set authority is the runtime's `PySet_*` compat functions
-// (`crate::c_api::PySet_*`), which delegate to the runtime set object's hash
-// table (`molt_set_*` / `set_del_in_place`) with dedup, hashed membership,
-// frozenset immutability, and CPython-shaped exceptions (TypeError for
-// unhashable keys, SystemError for non-sets). These hooks are a thin routing
-// layer; they perform NO set logic themselves.
+// These hooks route to the runtime set operations and their `PySet_*` compat
+// entry points. The shared hash table owns deduplication, membership and
+// mutation; the hooks transport each operation's explicit completion status.
 
 /// One tagged constructor ingress for both mutable and frozen sets.
 unsafe extern "C" fn hook_set_new(iterable: BorrowedHandleResult, frozen: bool) -> u64 {

@@ -1078,9 +1078,11 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
     let ptr = obj.as_ptr()?;
     unsafe {
         let class_bits = object_class_bits(ptr);
-        if class_bits == 0 {
+        if class_bits == 0 && object_type_id(ptr) != TYPE_ID_FOREIGN {
             return None;
         }
+        // FOREIGN has no managed class edge. Its real native __format__ still
+        // belongs to the existing special lookup/call authority below.
         if let Some(base_bits) = native_format_base(py, obj) {
             if class_bits == base_bits {
                 return None;
@@ -3152,9 +3154,12 @@ fn format_int_with_spec(
     validate_integer_format_spec(ty, spec)?;
     // Only actual integer rendering needs an owned BigInt. Admission and
     // floating presentations carry borrowed bits without cloning the payload.
-    let mut value = payload
-        .and_then(index_bigint_integral_bits)
-        .ok_or_else(|| unknown_format_code_error(_py, spec.presentation().unwrap_or('d'), obj))?;
+    let mut value = match payload {
+        Some(payload) => index_bigint_integral_bits(payload),
+        None => crate::builtins::numbers::integer_storage_bigint(_py, obj.bits())
+            .map_err(|()| FormatError::Pending)?,
+    }
+    .ok_or_else(|| unknown_format_code_error(_py, spec.presentation().unwrap_or('d'), obj))?;
     if ty == 'c' {
         if value
             .to_i64()
@@ -3492,9 +3497,28 @@ pub(crate) fn format_with_spec(
         .as_ptr()
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
     let integer = index_integral_payload_bits(obj.bits());
+    // Only FOREIGN scalar receivers need physical type admission. Keep pure
+    // managed carrier probes unchanged, and delay integer payload copying until
+    // an integer presentation actually consumes it. Floating presentations must
+    // retain the original receiver for its numeric conversion protocol.
+    let native = obj.as_ptr().and_then(|ptr| unsafe {
+        (object_type_id(ptr) == TYPE_ID_FOREIGN).then(|| {
+            std::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
+                crate::object::foreign::foreign_ptr_from_obj(ptr),
+            )
+        })
+    });
+    let native_integer = native.is_some_and(|value| unsafe {
+        molt_cpython_abi::api::numbers::PyLong_Check(value) != 0
+    });
+    let is_integral = integer.is_some() || native_integer;
+    let is_float = as_float_extended(obj).is_some()
+        || native.is_some_and(|value| unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Check(value) != 0
+        });
     let default_type = if is_string {
         's'
-    } else if integer.is_some() {
+    } else if is_integral {
         'd'
     } else {
         '\0'
@@ -3518,8 +3542,23 @@ pub(crate) fn format_with_spec(
             }
         }
     }
-    let is_integral = integer.is_some();
-    let is_float = as_float_extended(obj).is_some();
+    if let Some(native) = native
+        && unsafe { molt_cpython_abi::api::numbers::PyComplex_Check(native) } != 0
+    {
+        // The admitted physical complex prefix makes this a storage read, not
+        // __complex__ dispatch. No temporary managed complex allocation.
+        let value = unsafe { molt_cpython_abi::api::numbers::PyComplex_AsCComplex(native) };
+        return format_complex_with_spec(
+            _py,
+            obj,
+            ComplexParts {
+                re: value.real,
+                im: value.imag,
+            },
+            spec,
+        )
+        .map(FormatOutput::from);
+    }
     let is_number = is_integral || is_float;
     if !is_string && !is_number && !is_empty_format_spec(spec) {
         return Err(unsupported_format_string_error(_py, obj));

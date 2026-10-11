@@ -66,7 +66,25 @@ newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
-The runtime ownership candidate remains unqualified. The earlier optimized
+The runtime ownership candidate remains unqualified. The optimized
+Linux/aarch64 image at `960eef889` compiles and passes all nine isolated
+lifecycle cases. Its parallel partition fails five assertions and then faults;
+retained-image execution reproduces each assertion independently. The reviewed
+successor separates actual allocation and set-operation failure from an incoming
+error through every table, public operation and ABI consumer. It also connects
+physical numeric storage to the canonical repr and format authorities, including
+explicit base methods and the runtime public format entry. These source repairs
+await execution and measurement. The native fault is traced to development
+fixtures: cyclic heap class namespaces retain descriptor instances after their
+scoped static type storage is freed. The factory's complete consumer family now
+clears its owned heap type before releasing the backing declarations, with
+independent descriptor retirement witnesses; this test-only repair adds no work
+to emitted programs. Managed truth and length callbacks still need their
+version-specific result-validation and retirement ordering reconciled with the
+existing native slot authority. Full combined runtime,
+standalone ABI, WASM and affected performance qualification remain required.
+
+The earlier optimized
 Linux/aarch64 image passes 33 of 36 selected cases, including managed/native
 exception rendering, isolate rendering, lifecycle failure retention and the
 encoding kernel oracle. Two cases fail; one has ambiguous descendant output.

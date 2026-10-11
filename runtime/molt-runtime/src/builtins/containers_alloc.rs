@@ -7,9 +7,6 @@ use crate::{
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         let Ok(capacity_hint) = usize::try_from(capacity_bits) else {
             return aggregate_allocation_failed(_py);
         };
@@ -108,10 +105,7 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
         if obj_from_bits(dict_bits).is_none() {
             return MoltObject::none().bits();
         }
-        unsafe {
-            let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, obj_bits);
-        }
-        if exception_pending(_py) {
+        if !unsafe { dict_update_apply(_py, dict_bits, dict_update_set_in_place, obj_bits) } {
             dec_ref_bits(_py, dict_bits);
             return MoltObject::none().bits();
         }
@@ -129,9 +123,6 @@ fn aggregate_allocation_failed(py: &PyToken<'_>) -> u64 {
 }
 
 fn set_like_new(py: &PyToken<'_>, capacity_bits: u64, type_id: u32) -> u64 {
-    if exception_pending(py) {
-        return MoltObject::none().bits();
-    }
     let Some(capacity) = usize_from_bits(capacity_bits) else {
         return aggregate_allocation_failed(py);
     };

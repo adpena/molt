@@ -1075,13 +1075,13 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
             let set = crate::molt_set_new(0);
             let ptr = obj_from_bits(set).as_ptr().unwrap();
             let before = owners(key);
-            set_add_with_hash_in_place(py, ptr, key, u64::MAX);
+            assert!(!set_add_with_hash_in_place(py, ptr, key, u64::MAX));
             assert!(exception_pending(py));
             crate::molt_exception_clear();
             assert_eq!(owners(key), before);
             assert_eq!(set_len(ptr), 0);
             assert!(set_entries(ptr).is_empty());
-            assert!(!set_del_with_hash_in_place(py, ptr, key, u64::MAX));
+            assert_eq!(set_del_with_hash_in_place(py, ptr, key, u64::MAX), Err(()));
             assert!(exception_pending(py));
             crate::molt_exception_clear();
             assert_eq!(owners(key), before);

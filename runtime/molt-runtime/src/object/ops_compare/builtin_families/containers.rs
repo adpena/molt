@@ -61,9 +61,7 @@ fn set_contained(
         while let Some(entry) = crate::object::ops::set_pin_next(py, left, &mut index) {
             let found = set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash());
             drop(entry);
-            if exception_pending(py) {
-                return Err(molt_runtime_core::ErrorIndicatorSet);
-            }
+            let found = found.map_err(|()| molt_runtime_core::ErrorIndicatorSet)?;
             if found.is_none() {
                 return Ok(false);
             }
