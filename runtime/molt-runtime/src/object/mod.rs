@@ -4247,6 +4247,11 @@ unsafe fn dec_ref_ptr_terminal(
                 std::process::abort();
             }
         }
+        if type_id == TYPE_ID_EXCEPTION
+            && crate::builtins::exceptions::memory_error::try_recycle(py, ptr)
+        {
+            return;
+        }
         // Module m_free is a terminal callback, after the resurrection verdict
         // and before the canonical C identity/state disappear. Checked retains
         // reject reopening the committed-dead object, as for weakref callbacks;

@@ -494,6 +494,7 @@ fn run_isolate_thread(
             let gil = GilGuard::new();
             let py = gil.token();
             runtime_reset_for_init(&py, unsafe { &*state_ptr });
+            crate::builtins::exceptions::memory_error::initialize(&py);
         }
         crate::with_gil_entry_nopanic!(_py, {
             if exception_pending(_py) {

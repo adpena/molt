@@ -2588,9 +2588,6 @@ pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
     }
     match unsafe { (crate::hooks::hooks_or_stubs().pending_exception_class)() } {
         crate::hooks::PendingExceptionClass::None => ptr::null_mut(),
-        crate::hooks::PendingExceptionClass::EmergencyMemoryError => {
-            (&raw mut crate::abi_types::PyExc_MemoryError).cast()
-        }
         crate::hooks::PendingExceptionClass::Class(bits) => {
             // Builtins use their canonical static bindings. A heap class may
             // need its Type view, but observing that class must never consume
@@ -2881,12 +2878,7 @@ pub unsafe extern "C" fn PyErr_SetObject(exc_type: *mut PyObject, value: *mut Py
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NoMemory() -> *mut PyObject {
-    unsafe {
-        PyErr_SetString(
-            (&raw mut crate::abi_types::PyExc_MemoryError).cast::<crate::abi_types::PyObject>(),
-            c"out of memory".as_ptr(),
-        );
-    }
+    unsafe { (crate::hooks::hooks_or_stubs().memory_error)() };
     ptr::null_mut()
 }
 

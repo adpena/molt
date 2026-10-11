@@ -307,6 +307,10 @@ fn task_new_with_context(
             *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(1).bits();
         }
     }
+    if !crate::builtins::exceptions::task_raised_slot_admit(_py, ptr) {
+        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+        return MoltObject::none().bits();
+    }
     if trace_alloc {
         eprintln!(
             "molt_task_new ok ptr=0x{:x} bits=0x{:x} type_id={}",

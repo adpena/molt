@@ -2454,10 +2454,9 @@ mod tests {
 
         assert!(crate::exception_pending(py));
         let pending = kwd_mark_error_identity(py);
-        // Emergency MemoryError deliberately has no heap exception to fetch.
-        // Class metadata borrows the raised state and preserves its owners.
+        // Class metadata borrows the reserved raised instance without
+        // consuming or materializing a replacement owner.
         let is_memory_error = match pending.0 {
-            PendingExceptionClass::EmergencyMemoryError => true,
             PendingExceptionClass::Class(class) => {
                 let memory_error = exception_type_bits_from_name(py, "MemoryError");
                 exception_class_is_subtype(py, class, memory_error)

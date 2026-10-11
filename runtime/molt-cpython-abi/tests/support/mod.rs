@@ -235,6 +235,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             attached_runtime_context,
             pending_call_error,
             warning_emit,
+            memory_error,
             alloc_bytes,
             alloc_bytearray,
             float_payload,
@@ -432,6 +433,7 @@ impl AbiTestThreadStateTransaction {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         hooks.runtime_is_initialized = runtime_is_initialized;
+        hooks.memory_error = memory_error;
         hooks.gil_ensure = gil_ensure;
         hooks.operation_enter = operation_enter;
         hooks.operation_leave = operation_leave;
@@ -557,6 +559,17 @@ impl Drop for StaticType {
             }
             molt_cpython_abi::api::memory::PyObject_Free(self.0.cast());
         });
+    }
+}
+
+// Standalone ABI fixtures have their own admitted native allocation provider.
+// Real zero-budget reserve behavior is exercised by runtime-backed tests, not
+// by this provider that constructs a normal native exception.
+unsafe extern "C" fn memory_error() {
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetNone(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast(),
+        );
     }
 }
 

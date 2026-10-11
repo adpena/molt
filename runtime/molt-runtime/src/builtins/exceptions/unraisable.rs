@@ -219,25 +219,6 @@ impl<'a, 'py> UnraisableTransaction<'a, 'py> {
                     reporter(self.py, context_bits, *bits, err_msg);
                 }))
             }
-            Some(RaisedSnapshot::Emergency(_)) => {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // The snapshot itself is allocation-free. Materialize only
-                    // when reporting can recover enough memory to do so.
-                    let pointer = alloc_exception(self.py, "MemoryError", "");
-                    if pointer.is_null() {
-                        eprintln!("Exception ignored in unraisable callback: MemoryError");
-                        return;
-                    }
-                    let bits = MoltObject::from_ptr(pointer).bits();
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        reporter(self.py, context_bits, bits, err_msg);
-                    }));
-                    dec_ref_bits(self.py, bits);
-                    if let Err(payload) = result {
-                        std::panic::resume_unwind(payload);
-                    }
-                }))
-            }
             Some(RaisedSnapshot::None) | None => Ok(()),
         };
         discard_current_raised(self.py);
@@ -1325,7 +1306,7 @@ mod tests {
             assert!(poisoned.is_err() && map.is_poisoned());
             map.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key, PtrSlot(task_ptr));
+                .insert(key, Some(PtrSlot(task_ptr)));
             crate::CURRENT_TASK.with(|slot| slot.set(task_ptr));
             CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
 
@@ -1338,8 +1319,11 @@ mod tests {
                 let mut guard = map
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                assert_eq!(guard.get(&key).copied(), Some(PtrSlot(task_ptr)));
-                guard.remove(&key).expect("restored task exception edge")
+                assert_eq!(guard.get(&key).copied().flatten(), Some(PtrSlot(task_ptr)));
+                guard
+                    .remove(&key)
+                    .flatten()
+                    .expect("restored task exception edge")
             };
             crate::CURRENT_TASK.with(|slot| slot.set(std::ptr::null_mut()));
             CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));

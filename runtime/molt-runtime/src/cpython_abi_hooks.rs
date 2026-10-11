@@ -2729,6 +2729,10 @@ unsafe extern "C" fn hook_take_pending_exception(
     OwnedHandleResult::ok(exception_bits)
 }
 
+unsafe extern "C" fn hook_memory_error() {
+    with_gil(|py| crate::record_memory_error_without_allocation(&py));
+}
+
 unsafe extern "C" fn hook_pending_exception_class() -> molt_cpython_abi::hooks::PendingExceptionClass
 {
     with_gil(|py| crate::builtins::exceptions::pending_exception_class(&py))
@@ -5281,6 +5285,7 @@ pub fn register_cpython_hooks() -> bool {
                 attached_runtime_context: hook_attached_runtime_context,
                 pending_call_error: hook_pending_call_error,
                 warning_emit: hook_warning_emit,
+                memory_error: hook_memory_error,
                 alloc_str: Some(hook_alloc_str),
                 alloc_bytes: hook_alloc_bytes,
                 alloc_bytearray: hook_alloc_bytearray,

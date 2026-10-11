@@ -1,11 +1,8 @@
 use super::*;
 
 pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
-    if emergency_memory_error_pending_for_current() {
-        return MoltObject::none().bits();
-    }
-    // Fast path: if neither the current-thread nor task pending flag is set,
-    // there is no live exception — return None immediately.  This
+    // Fast path: the current execution context's pending flag is authoritative.
+    // With no raised owner, return the handled owner or None. This
     // keeps `exception_last` in sync with the inline `check_exception`
     // flag byte that the Cranelift backend uses.
     if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
@@ -19,7 +16,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     if let Some(task_key) = current_task_key() {
         let ptr = {
             let guard = task_last_exceptions(_py).lock().unwrap();
-            match guard.get(&task_key).copied() {
+            match guard.get(&task_key).copied().flatten() {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
                 Some(_) => panic!("owned task exception slot must reference a live exception"),
                 None => None,
@@ -90,14 +87,12 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
 /// Borrow from the canonical pending slot without changing raised state or RC.
 /// The caller holds the GIL and must not invoke Python while using this borrow.
 fn pending_exception_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    if emergency_memory_error_pending_for_current()
-        || !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get())
-    {
+    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         return None;
     }
     if let Some(task_key) = current_task_key() {
         let guard = task_last_exceptions(_py).lock().unwrap();
-        match guard.get(&task_key).copied() {
+        match guard.get(&task_key).copied().flatten() {
             Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
             Some(_) => panic!("owned task exception slot must reference a live exception"),
             None => None,
@@ -108,21 +103,18 @@ fn pending_exception_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
 }
 
 /// Observe the canonical raised slot without taking ownership or materializing
-/// an instance. Emergency state precedes the heap slot just as in take_raised.
+/// an instance. The raised owner is the same one returned by take_raised.
 pub(crate) fn pending_exception_matches_type(py: &PyToken<'_>, target: u64) -> bool {
     pending_exception_slot(py)
         .is_some_and(|slot| exception_matches_type(py, MoltObject::from_ptr(slot.0).bits(), target))
 }
 
 /// Observe the canonical raised slot without taking ownership or materializing
-/// an instance. Emergency state precedes the heap slot just as in take_raised.
+/// an instance. The raised owner is the same one returned by take_raised.
 pub(crate) fn pending_exception_class(
     _py: &PyToken<'_>,
 ) -> molt_cpython_abi::hooks::PendingExceptionClass {
     use molt_cpython_abi::hooks::PendingExceptionClass;
-    if emergency_memory_error_pending_for_current() {
-        return PendingExceptionClass::EmergencyMemoryError;
-    }
     match pending_exception_slot(_py) {
         Some(slot) => unsafe {
             if object_type_id(slot.0) == TYPE_ID_EXCEPTION {
@@ -155,7 +147,7 @@ pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
         return bits;
     }
 
-    if !emergency_memory_error_pending_for_current() && current_task_key().is_some() {
+    if current_task_key().is_some() {
         CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
     }
     if debug_exception_flow() {
@@ -168,12 +160,6 @@ pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
 /// invoke descriptors/formatting hooks, or acquire references whose release can
 /// reenter Python. Unstored messages remain unstored even when tracing is enabled.
 pub(crate) fn pending_exception_diagnostic(_py: &PyToken<'_>) -> Option<(String, String)> {
-    if emergency_memory_error_pending_for_current() {
-        return Some((
-            "MemoryError".into(),
-            "<emergency allocation failure>".into(),
-        ));
-    }
     let ptr = pending_exception_slot(_py)?;
     let kind = exception_diagnostic_name(ptr.0);
     let message = if unsafe { object_type_id(ptr.0) } == TYPE_ID_EXCEPTION {

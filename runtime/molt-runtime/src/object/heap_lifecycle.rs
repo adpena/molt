@@ -1530,8 +1530,14 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
     }
 
     unsafe { clear_cycle_edges_with_sink(py, ptr, sink) };
-    let handler = heap_lifecycle_handler(unsafe { object_type_id(ptr) })
-        .expect("unknown heap kind in terminal detach");
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id == crate::TYPE_ID_GENERATOR
+        || (type_id == crate::TYPE_ID_OBJECT
+            && super::object_shape_is_task(unsafe { super::object_shape_id(ptr) }))
+    {
+        crate::builtins::exceptions::task_raised_slot_forget(py, ptr);
+    }
+    let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in terminal detach");
     unsafe {
         match handler {
             HeapLifecycleHandler::Module => {

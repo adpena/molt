@@ -579,8 +579,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_exception_stacks: Mutex<HashMap<PtrSlot, Vec<u64>>>,
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_exception_baselines: Mutex<HashMap<PtrSlot, usize>>,
-    pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
-    pub(crate) task_last_exception_pending: AtomicBool,
+    pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, Option<PtrSlot>>>,
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) attributes: AttributesRuntimeState,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
@@ -698,7 +697,6 @@ impl RuntimeState {
             task_exception_depths: Mutex::new(HashMap::new()),
             task_exception_baselines: Mutex::new(HashMap::new()),
             task_last_exceptions: Mutex::new(HashMap::new()),
-            task_last_exception_pending: AtomicBool::new(false),
             task_results: Mutex::new(HashMap::new()),
             attributes: AttributesRuntimeState::new(),
             await_waiters: Mutex::new(HashMap::new()),
@@ -1736,6 +1734,8 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     }
     trace_runtime_init("capabilities");
 
+    crate::builtins::exceptions::memory_error::initialize(&gil.token());
+
     // Publish the one CPython ABI hook table as part of the runtime
     // initialization transaction. Lifecycle queries such as
     // `Py_IsInitialized` must observe this lifecycle authority immediately
@@ -1748,6 +1748,10 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     assert!(
         crate::cpython_abi_hooks::register_cpython_hooks(),
         "primary runtime C-API bootstrap was rejected"
+    );
+    assert!(
+        crate::builtins::exceptions::memory_error::prepare_c_views(&gil.token()),
+        "MemoryError C transport bootstrap failed"
     );
     drop(cpython_bootstrap_state);
     trace_runtime_init("cpython_abi_hooks");

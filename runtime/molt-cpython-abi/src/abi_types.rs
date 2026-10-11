@@ -2392,7 +2392,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         // before their runtime dictionaries are projected. Publish the inherited
         // object setter now, as an actual C slot. The metatype installs its own
         // override in init_type_getattro; extension-owned NULL slots stay NULL.
-        for object in type_static_ptrs().into_iter().chain(exc_singleton_ptrs()) {
+        for object in type_static_ptrs().chain(exc_singleton_ptrs()) {
             let kind = object.cast::<PyTypeObject>();
             if (*kind).tp_setattro.is_none() && (*kind).tp_setattr.is_none() {
                 (*kind).tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
@@ -2413,8 +2413,8 @@ pub(crate) unsafe fn initialize_static_type_storage() {
 /// Runtime builtin classes are explicitly bound by `register_cpython_hooks`;
 /// other genuine C objects acquire foreign custody lazily on first crossing.
 /// Bootstrap never mints synthetic handles.
-pub fn type_static_ptrs() -> Vec<*mut PyObject> {
-    vec![
+pub fn type_static_ptrs() -> impl Iterator<Item = *mut PyObject> {
+    [
         &raw mut MoltManaged_Type as *mut PyObject,
         &raw mut PyBaseObject_Type as *mut PyObject,
         &raw mut PyBool_Type as *mut PyObject,
@@ -2462,6 +2462,7 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut _PyMethodWrapper_Type as *mut PyObject,
         &raw mut Py_GenericAliasType as *mut PyObject,
     ]
+    .into_iter()
 }
 
 /// Retire runtime-backed state without destroying canonical builtin C shells.
@@ -2481,25 +2482,57 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
 /// `ready_exception_singleton_types`; this also rebuilds ordinary builtin shells
 /// with retired roots. Readiness admission stays closed between those runtimes.
 pub unsafe fn retire_builtin_static_type_runtime_state() {
-    let types = builtin_static_type_runtime_cohort();
+    let types: Vec<_> = builtin_static_type_runtime_cohort()
+        .map(|entry| (entry.type_ptr, entry.bootstrap_ready))
+        .collect();
     unsafe { crate::api::typeobj::retire_static_type_runtime_roots(&types) };
 }
 
-fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
+/// One process-shell inventory with distinct lifecycle and declaration policy.
+/// `bootstrap_ready` retains the existing readiness rule for rootless shells; it does not mean
+/// the shell is bound to a managed builtin class or uses CP static-builtin slots.
+pub struct StaticTypeRuntimeEntry {
+    pub type_ptr: *mut PyTypeObject,
+    bootstrap_ready: bool,
+    pub builtin_slot_namespace: bool,
+}
+
+/// Allocation-free projection of the canonical process-static shell cohort.
+/// The CP object.c static_types cohort includes the private buffer wrapper and
+/// sequence iterator. Datetime extension types and Molt's internal carrier use
+/// ordinary static-extension declarations, despite sharing runtime retirement.
+pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRuntimeEntry> {
     type_static_ptrs()
-        .into_iter()
-        .map(|object| (object.cast(), true))
-        .chain(
-            exc_singleton_ptrs()
-                .into_iter()
-                .map(|object| (object.cast(), false)),
-        )
+        .map(|object| {
+            let builtin_slot_namespace = ![
+                (&raw mut MoltManaged_Type).cast::<PyObject>(),
+                (&raw mut PyDateTime_DateTimeType).cast::<PyObject>(),
+                (&raw mut PyDateTime_DateType).cast::<PyObject>(),
+                (&raw mut PyDateTime_DeltaType).cast::<PyObject>(),
+                (&raw mut PyDateTime_TZInfoType).cast::<PyObject>(),
+                (&raw mut PyDateTime_TimeType).cast::<PyObject>(),
+            ]
+            .contains(&object);
+            StaticTypeRuntimeEntry {
+                type_ptr: object.cast(),
+                bootstrap_ready: true,
+                builtin_slot_namespace,
+            }
+        })
+        .chain(exc_singleton_ptrs().map(|object| StaticTypeRuntimeEntry {
+            type_ptr: object.cast(),
+            bootstrap_ready: false,
+            builtin_slot_namespace: true,
+        }))
         .chain(
             crate::api::typeobj::private_process_type_shells()
                 .into_iter()
-                .map(|shell| (shell, false)),
+                .map(|type_ptr| StaticTypeRuntimeEntry {
+                    type_ptr,
+                    bootstrap_ready: false,
+                    builtin_slot_namespace: true,
+                }),
         )
-        .collect()
 }
 
 /// Open builtin type readiness for a new runtime, after its bindings are live.
@@ -2511,7 +2544,10 @@ fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
 /// the cohort again with `retire_builtin_static_type_runtime_state` while its
 /// runtime and bindings are still available.
 pub unsafe fn prepare_builtin_static_type_runtime_state() {
-    crate::api::typeobj::reopen_static_type_runtime_roots(&builtin_static_type_runtime_cohort());
+    let types: Vec<_> = builtin_static_type_runtime_cohort()
+        .map(|entry| (entry.type_ptr, entry.bootstrap_ready))
+        .collect();
+    crate::api::typeobj::reopen_static_type_runtime_roots(&types);
     crate::api::typeobj::reset_type_watchers_for_runtime();
 }
 
@@ -2689,12 +2725,11 @@ macro_rules! exc_singletons {
         /// split-runtime GOT data retarget) and then hands back to the runtime as a
         /// `PyDict_SetItem` value (numpy's `error = Exception`), so the bridge must
         /// resolve them in `pyobj_to_handle` instead of failing the lookup.
-        pub fn exc_singleton_ptrs() -> Vec<*mut PyObject> {
-            let mut pointers = vec![
+        pub fn exc_singleton_ptrs() -> impl Iterator<Item = *mut PyObject> {
+            [
                 $( &raw mut $name as *mut PyObject, )*
-            ];
-            pointers.push((&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>());
-            pointers
+                (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyObject>(),
+            ].into_iter()
         }
 
         pub unsafe fn init_exception_singleton_types() {
@@ -3266,10 +3301,9 @@ mod unresolved_pyobject_tests {
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
         // Canonical builtin shells, including the internal managed carrier
-        // and all three Context-family types (45 statics). Guards
+        // and all three Context-family types. Guards
         // against an accidental drop/duplicate when the type static list changes.
-        let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 45, "type static count drifted");
+        let ptrs: Vec<_> = type_static_ptrs().collect();
         for required in [
             &raw mut PyContextVar_Type,
             &raw mut PyContext_Type,
@@ -3280,6 +3314,29 @@ mod unresolved_pyobject_tests {
         for p in &ptrs {
             assert!(!p.is_null());
         }
+        let cohort: Vec<_> = builtin_static_type_runtime_cohort().collect();
+        for required in [&raw mut PyUnicode_Type, &raw mut PyExc_ImportError]
+            .into_iter()
+            .chain(crate::api::typeobj::private_process_type_shells())
+        {
+            assert!(
+                cohort
+                    .iter()
+                    .any(|entry| entry.type_ptr == required && entry.builtin_slot_namespace)
+            );
+        }
+        for extension in [&raw mut MoltManaged_Type, &raw mut PyDateTime_DateType] {
+            assert!(
+                cohort
+                    .iter()
+                    .any(|entry| entry.type_ptr == extension && !entry.builtin_slot_namespace)
+            );
+        }
+        let mut cohort_addresses: Vec<_> =
+            cohort.iter().map(|entry| entry.type_ptr as usize).collect();
+        cohort_addresses.sort_unstable();
+        cohort_addresses.dedup();
+        assert_eq!(cohort_addresses.len(), cohort.len());
         let mut addrs: Vec<usize> = ptrs.iter().map(|p| *p as usize).collect();
         addrs.sort_unstable();
         addrs.dedup();

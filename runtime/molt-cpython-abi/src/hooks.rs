@@ -178,9 +178,8 @@ pub enum ClassInfoOperation {
     Subclass = 1,
 }
 
-/// Non-consuming raised-class metadata. An emergency MemoryError deliberately
-/// has no heap exception or class-bootstrap requirement. Managed class handles
-/// and native class pointers borrow from the live raised instance and remain
+/// Non-consuming raised-class metadata. Managed class handles and native class
+/// pointers borrow from the live raised instance and remain
 /// valid while that state is pending; a native query needs no wrapper allocation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -188,7 +187,6 @@ pub enum PendingExceptionClass {
     None,
     Class(u64),
     NativeClass(*mut crate::abi_types::PyTypeObject),
-    EmergencyMemoryError,
 }
 
 /// Immutable fields borrowed from the canonical runtime method owner.
@@ -625,6 +623,11 @@ pub struct RuntimeHooks {
     pub warning_emit:
         unsafe extern "C" fn(message: u64, category: u64, stacklevel: i64) -> std::os::raw::c_int,
     // ── Allocation ────────────────────────────────────────────────────────────
+    /// Select a real owned MemoryError from the runtime's prepared reserve.
+    /// This replaces either incoming raised channel without allocating; public
+    /// take/fetch operations can transfer the instance under the same denial.
+    /// Calling before runtime exception bootstrap is a fatal admission error.
+    pub memory_error: unsafe extern "C" fn(),
     /// Allocate a string from an admitted non-NULL UTF-8/WTF-8 byte span.
     /// Returns owned handle bits, or 0 with the producer-selected error.
     /// Consumers forward failure; missing support selects SystemError.
@@ -1301,7 +1304,7 @@ pub struct RuntimeHooks {
     /// Invoke `callback(context)` exactly once, synchronously, with the runtime
     /// raised state detached on the stack. Status 0 restores the exact incoming
     /// owner; status -1 retains the callback failure and ordinarily retires the
-    /// incoming owner under it. Emergency errors need no heap instance; handled
+    /// incoming owner under it. Reserved errors already own their instances; handled
     /// state stays live. Success must leave no callback error. The callback must
     /// not unwind across C; neither callback nor context may escape this call.
     pub with_saved_pending_exception: unsafe extern "C" fn(
@@ -1467,7 +1470,7 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 61 adds the sole Context owner and cold static-shell admission.
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
 // Version 65 exposes sealed managed scalar fields as borrowed payloads.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 65;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 66;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2709,6 +2712,11 @@ unsafe extern "C" fn stub_context_reset(_: u64, _: u64) -> i32 {
     -1
 }
 
+unsafe extern "C" fn stub_memory_error() {
+    eprintln!("molt fatal: PyErr_NoMemory called before runtime exception bootstrap");
+    std::process::abort();
+}
+
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: RUNTIME_HOOKS_ABI_MAGIC,
     abi_version: RUNTIME_HOOKS_ABI_VERSION,
@@ -2726,6 +2734,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     attached_runtime_context: stub_attached_runtime_context,
     pending_call_error: stub_pending_call_error,
     warning_emit: stub_warning_emit,
+    memory_error: stub_memory_error,
     alloc_str: None,
     alloc_bytes: stub_alloc_bytes,
     alloc_bytearray: stub_alloc_bytes,

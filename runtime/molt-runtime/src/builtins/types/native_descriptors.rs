@@ -1214,9 +1214,9 @@ mod tests {
                 for emergency in [false, true] {
                     for callable_admission in [true, false] {
                         if emergency {
-                            // The allocation-free error is a real raised class
-                            // without a heap value or a C triple. Structural
-                            // inquiries preserve it even if projection fails.
+                            // The allocation-free reserve publishes a real instance.
+                            // Structural inquiries preserve that exact owner
+                            // even if an unrelated projection fails.
                             crate::record_memory_error_without_allocation(py);
                             assert!(is_real_subtype(py, class_bits, builtins.object));
                             assert!(is_real_instance(py, bits, builtins.object));
@@ -1224,9 +1224,12 @@ mod tests {
                             assert!(!is_real_instance(py, bits, owner));
                             assert_eq!(
                                 pending_exception_class(py),
-                                PendingExceptionClass::EmergencyMemoryError
+                                PendingExceptionClass::Class(crate::exception_type_bits_from_name(
+                                    py,
+                                    "MemoryError"
+                                ))
                             );
-                            assert!(crate::exception_last_bits_noinc(py).is_none());
+                            assert!(crate::exception_last_bits_noinc(py).is_some());
                             observe_class((&raw mut PyExc_MemoryError).cast());
                         }
                         // Admission is fallible preparation, not an inquiry.

@@ -123,6 +123,33 @@ family-wide acceptance claim; a cascade is not evidence of hundreds of
 independent defects. The order-dependent class-name projection remains
 unqualified by its standalone pass.
 
+The candidate now joins main at `be312fae0`, including retirement of the
+private native buffer and sequence-iterator type shells. The merged Python
+identity, runtime-family and proof-plan controls pass 616 tests; generated
+projections and pre-commit checks pass. This is development-tooling evidence,
+not execution of the merged runtime. The raw native type lookup fixture reuses
+the existing stable declaration owner and retires its namespace and MRO edges.
+All previous finding identities remain represented or explicitly renamed; the
+completed parts of V1-13, V1-17 and V1-19 do not close their wider obligations.
+
+The real MemoryError reserve is composed into that candidate with hook ABI 66.
+Its one ordinary instance owner now reaches thread/task raised state, public
+Get/Fetch, constructor reuse, terminal recycling and shutdown. Actual task
+producers admit their error slot before execution; the obsolete unread pending
+flag and emergency discriminator are deleted. Independent source review covers
+the complete provider and fixture migration. Runtime/ABI execution, allocator
+traffic outside the Molt resource tracker, resurrection/admission-failure
+controls, startup and retained-memory cost remain unqualified. Native/WASM and
+affected platform/profile cells must execute before family or release closure.
+
+The inherited-slot correction also joins the existing target-version namespace
+transaction and the shared process-type cohort. The 16 WASM GOT projection
+controls pass; actual target execution remains required. Adversarial review
+caught a quadratic deduplication scan in the prepared native invalidation plan;
+one shared traversal now visits descendants once across affected roots. The
+restart reproducer, version-publication rollback/watcher controls and measured
+startup policy costs remain required on the compiled composition.
+
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an
 uncast native boolean pointer, and an unconstrained array storage-result error

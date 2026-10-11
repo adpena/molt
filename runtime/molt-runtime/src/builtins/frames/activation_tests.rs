@@ -619,9 +619,11 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             assert_eq!(failed, None);
             assert_eq!(
                 crate::builtins::exceptions::pending_exception_class(py),
-                molt_cpython_abi::hooks::PendingExceptionClass::EmergencyMemoryError
+                molt_cpython_abi::hooks::PendingExceptionClass::Class(
+                    crate::exception_type_bits_from_name(py, "MemoryError")
+                )
             );
-            assert!(crate::exception_last_bits_noinc(py).is_none());
+            assert!(crate::exception_last_bits_noinc(py).is_some());
             assert_eq!(
                 unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
                 (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()

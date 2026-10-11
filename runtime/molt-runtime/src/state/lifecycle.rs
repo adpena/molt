@@ -258,6 +258,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     // an ordinary lease; raw GIL or C-extension context alone is insufficient.
     let _custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
     trace_shutdown("start");
+    crate::builtins::exceptions::memory_error::begin_shutdown(_py);
     // Close process-service launch and prove every retained OS worker finished
     // before collection or callbacks can retire their task/stream owners.
     shutdown_started_runtime_workers(_py, state);
@@ -365,6 +366,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
             "retained PyThreadState survived the last live-runtime callback drain"
         );
     }
+    crate::builtins::exceptions::memory_error::finish_shutdown(_py);
     trace_shutdown("retire_runtime_class_identities");
     builtin_classes_retire_identities(_py, state, &retirement);
     trace_shutdown("clear_exception_type_cache");
@@ -469,6 +471,7 @@ fn clear_runtime_callback_roots(
     changed |= platform_clear_runtime_state(py, state);
     changed |= io_clear_runtime_state(py, state);
     changed |= codecs_clear_error_handlers(py, state);
+    changed |= crate::builtins::exceptions::memory_error::clear_shutdown_fields(py);
     changed |= exceptions_clear_runtime_state(py, state);
     changed |= drain_dynamic_exception_type_cache(py, state);
     changed |= types_clear_runtime_callbacks(py, state);
@@ -1006,8 +1009,9 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     };
     let pointers = {
         let mut guard = state.task_last_exceptions.lock().unwrap();
-        std::mem::take(&mut *guard)
-            .into_values()
+        guard
+            .values_mut()
+            .filter_map(Option::take)
             .map(|ptr| ptr.0)
             .collect::<Vec<_>>()
     };

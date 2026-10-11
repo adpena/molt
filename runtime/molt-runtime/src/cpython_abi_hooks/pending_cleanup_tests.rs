@@ -186,7 +186,10 @@ unsafe fn set_c_error(view: *mut PyObject) {
 fn assert_emergency_pending(py: &crate::PyToken<'_>) {
     assert!(crate::exception_pending(py));
     let mut raised = Some(take_raised(py));
-    assert!(matches!(raised, Some(RaisedSnapshot::Emergency(_))));
+    let Some(RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)) = raised else {
+        panic!("allocation failure must own a real raised exception");
+    };
+    assert!(crate::builtins::exceptions::exception_matches_builtin_name(py, bits, "MemoryError"));
     resolve_raised(py, &mut raised);
 }
 
@@ -764,10 +767,8 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
         assert_emergency_pending(py);
         let pending = take_native_pending_snapshot();
         assert!(pending.has_error());
-        assert!(matches!(
-            pending.runtime_error,
-            Some(RaisedSnapshot::Emergency(_))
-        ));
+        assert!(matches!(pending.runtime_error, Some(RaisedSnapshot::Thread(bits))
+            if crate::builtins::exceptions::exception_matches_builtin_name(py, bits, "MemoryError")));
         assert_eq!(pending.c_error.as_ref().unwrap().value, original_view);
         assert!(!crate::exception_pending(py));
         assert!(errors::take_current_error().is_none());
@@ -788,33 +789,26 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
 
 unsafe fn assert_c_emergency_is_observable_and_not_consumed(py: &crate::PyToken<'_>) {
     use molt_cpython_abi::abi_types::{PyExc_Exception, PyExc_MemoryError};
-    assert_eq!(
-        unsafe { errors::PyErr_Occurred() },
-        (&raw mut PyExc_MemoryError).cast()
-    );
-    assert_eq!(
-        unsafe { errors::PyErr_ExceptionMatches((&raw mut PyExc_Exception).cast()) },
-        1
-    );
-    let (mut kind, mut value, mut traceback) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
-    unsafe { errors::PyErr_Fetch(&raw mut kind, &raw mut value, &raw mut traceback) };
-    let kind_owner = unsafe { refcount::OwnedPyObject::from_owned(kind) };
-    let value_owner = unsafe { refcount::OwnedPyObject::from_owned(value) };
-    let traceback_owner = unsafe { refcount::OwnedPyObject::from_owned(traceback) };
-    assert!(kind.is_null() && value.is_null() && traceback.is_null());
-    drop(kind_owner);
-    drop(value_owner);
-    drop(traceback_owner);
+    unsafe {
+        assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_MemoryError).cast());
+        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut PyExc_Exception).cast()), 1);
+        let (mut kind, mut value, mut traceback) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+        errors::PyErr_Fetch(&raw mut kind, &raw mut value, &raw mut traceback);
+        let kind_owner = refcount::OwnedPyObject::from_owned(kind);
+        let value_owner = refcount::OwnedPyObject::from_owned(value);
+        let traceback_owner = refcount::OwnedPyObject::from_owned(traceback);
+        assert_eq!(kind, (&raw mut PyExc_MemoryError).cast());
+        assert!(!value.is_null(), "Fetch transfers the prepared reserved instance");
+        assert_eq!((*value).ob_type, &raw mut PyExc_MemoryError);
+        assert!(traceback.is_null());
+        assert!(errors::PyErr_Occurred().is_null());
+        errors::PyErr_Restore(kind_owner.into_ptr(), value_owner.into_ptr(), traceback_owner.into_ptr());
+        let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(raised.as_ptr(), value, "take/fetch round trip preserves exact identity");
+        errors::PyErr_SetRaisedException(raised.into_ptr());
+    }
+    crate::transfer_pending_cpython_exception(py);
     assert_emergency_pending(py);
-    let raised = unsafe { refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException()) };
-    assert!(raised.as_ptr().is_null());
-    drop(raised);
-    assert_emergency_pending(py);
-    assert!(errors::take_current_error().is_none());
-    assert_eq!(
-        unsafe { errors::PyErr_Occurred() },
-        (&raw mut PyExc_MemoryError).cast()
-    );
 }
 
 #[repr(C)]
