@@ -420,7 +420,7 @@ Key controls:
 - Share `CARGO_TARGET_DIR` and `MOLT_CACHE` only among builds of one checkout.
   Cargo judges a path package fresh by file times, and its unit hashes do not
   name the checkout, so a second checkout can reuse a build of different source
-  (HF-10). Give each checkout its own target or a pinned `MOLT_SESSION_ID`; use
+  (HF-45). Give each checkout its own target or a pinned `MOLT_SESSION_ID`; use
   the DX resolver's external root for maintainer/agent proof lanes when
   available on every platform. Lock/fingerprint
   state uses the [shared build-state projection](OPERATIONS.md#build-throughput-multi-agent),
