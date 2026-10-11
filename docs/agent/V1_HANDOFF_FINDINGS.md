@@ -173,26 +173,43 @@ preparation, permits already-sealed class consumption under an incoming error,
 and returns the raw ABI failure sentinel without bootstrapping a cold interpreter.
 Fixture migration covers exact error owners, real denied operations, fresh reserve
 capacity, native destructor error preservation and real worker cache references.
-The worker panic control requires its original payload. These repairs have parsed
-but remain integration blockers until executed; passing focused tests do not
-qualify the full runtime or any unexecuted target/profile.
+The worker panic control requires its original payload. The complete default
+optimized runtime at `d96391054` now records 1,832 parallel passes and four
+failures with complete result accounting; all ten separate lifecycle controls
+pass. All four remaining failures reproduce in fresh processes. Two fixtures
+restore independent C/runtime error owners in the wrong order, one checks the
+runtime channel after public transport has moved its owner to C, and scalar
+numeric retirement expects an ignored strict-subtype warning to succeed with
+an incoming error. CPython constructs the warning before selecting its filter.
+The reviewed test-only correction uses the existing pending-owner snapshot and
+a native result payload that owns the prior exception until its real destructor
+runs; it tests both ignored and error warnings with exact error identity. The
+corrected fixtures remain unexecuted and the gate remains failed. These
+bounded results do not qualify any unexecuted target/profile.
 
 The existing development probe observes Rust and ABI-platform C allocation and
-supports actual refusal. Both public allocation controls execute but fail their
-Rust allocator sensitivity assertions before reaching their semantic claims:
-the optimizer can eliminate a plain allocation/free pair. The source successor
-shares an opaque call to the actual global allocator with storage, counting and
-refusal witnesses. It does not substitute a test allocator. Direct extension
+supports actual refusal. Both public allocation controls at `da137646c` failed
+their sensitivity assertions because the optimizer can eliminate a plain
+allocation/free pair. At `d96391054`, both pass with an opaque call to the actual
+global allocator and storage, counting and refusal witnesses. It does not
+substitute a test allocator. Direct extension
 libc calls and variadic-shim scratch allocation remain outside the C observation
 boundary. All instrumentation is omitted from ordinary production binaries.
 
-A reviewed development-only task-admission control now calibrates real
-capacity-growing and non-growing constructor requests, refuses the exact final
-map-growth request, and checks prior rows, resource charges, argument/context
-owners, real public MemoryError transfer and a successful retry. It executes the
-FUTURE and anext-with-default producers; coroutine/generator refusal variants,
-WASM and performance remain unqualified. Tracking-disabled allocator paths keep
-their previous atomic-load cost. This source has not compiled or executed yet.
+The development-only task-admission control builds at `d96391054` but fails
+calibration before fault injection: a growing constructor makes four allocation
+requests versus two for a non-growing constructor. Actual task construction can
+also grow an address-sharded GC membership map before reserving the task error
+map. Therefore a unique extra global request is not a reliable target selector,
+and warming one GC shard cannot qualify a later object address. The reviewed
+source correction identifies the actual reservation through a test-only typed
+scope in the existing observer. It retains unrelated constructor requests and
+preserves prior rows, resource charges,
+argument/context owners, real public MemoryError transfer and successful retry
+witnesses for both FUTURE and anext-with-default producers. Source review passes;
+corrected execution is still required. Actual refusal,
+coroutine/generator variants, WASM and performance remain unqualified.
+Instrumentation must remain absent from ordinary production binaries.
 
 The allocation-observer policy in the existing runtime gate replaces the
 build-only lane. Cargo supplies image identity, target, features and
@@ -200,11 +217,46 @@ profile; libtest supplies the current inventory. Policy declares required semant
 controls and process isolation. Each control must produce a fresh source/image-bound
 passing receipt; timing probes and unrelated tests remain explicitly unrun. The
 same gate retains ordinary default-feature qualification. This development tooling
-migration passes its focused tooling checks; real Rust execution is pending.
+migration passes 311 focused tooling checks with one platform skip. Its first
+real optimized Linux/aarch64 execution at `d96391054` builds both Cargo images
+and passes eight of nine required controls, including both public allocation
+controls, direct-call cache, rejected decimal magnitude, GIL custody, reachable
+GC workspace, exact builtin unpack and core GIL entry. The task-map calibration
+failure above keeps the aggregate failed; independent controls still complete.
 No second runner or guest-side cost is introduced. Failed build/admission records remain distinct from semantic results.
 The next qualification must execute the composed corrections, updated standalone
 ABI66 consumers, default runtime gate and matched cost measurements before family
 or release closure.
+The ABI66 attempt at `d96391054` stops before tests because two new numeric
+fixture calls name `Py_NewRef` through the wrong Rust module. Both now use the
+existing object API; the source census finds no other calls with that incorrect
+namespace. This is a consumer compilation failure, not semantic evidence, and
+the complete ABI family still requires execution.
+
+Matched optimized Linux/aarch64 measurements at `d96391054` find a real
+performance blocker: median empty public async poll rises from 8.23 ns to
+11.72 ns (42.5%), and one-worker create/waiting-shutdown rises from 25.20 us to
+26.43 us (4.9%). Seven alternating process pairs retain all samples, with low
+variation and identical probes. These are diagnostic results from the failed
+semantic candidate, not release qualification. Compiled inspection shows the
+empty poll entering a 384-byte native-reaper frame and resolving runtime origin
+again before checking its pending flag. The source correction resolves one
+retained origin for GC and pool retirement, moves both empty checks ahead of
+their cold work, and migrates every internal caller. Existing pending state,
+callback ordering and bounded retirement budgets remain canonical. Independent
+review, corrected semantic execution and repeated measurements are required.
+
+Cache retention is also an open development-side ownership migration. The
+current generic pruner can select live native compilation scratch and lock files,
+and treats the complete frontend lowering cache as one eviction unit. Its
+preserved native entry/lock migration must be reconciled through all current
+producers, readers and cleanup consumers before automatic broad eviction is
+enabled. Immutable frontend leaves can be evicted independently because readers
+first hydrate private copies and treat missing shared entries as cache misses.
+Native daemon scratch requires its actual execution owner; a requesting guard
+may finish before that daemon does. Automatic retention must use one bounded,
+shared policy without scans on object publication or emitted-program work.
+V1-25 owns this incomplete migration and its concurrency, cleanup and cost proofs.
 
 The optimized runtime attempt at `67a216abe` stops at compilation with three
 integration errors: a reference helper imported from the wrong namespace, an

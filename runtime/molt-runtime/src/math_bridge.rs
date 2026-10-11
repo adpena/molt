@@ -933,7 +933,15 @@ mod numeric_protocol_tests {
     static FLOAT_CALLS: AtomicUsize = AtomicUsize::new(0);
     static INDEX_RESULT: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
     static RETIRING_FLOAT_TYPE: AtomicPtr<PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+    static RETIRING_FLOAT_INPUT_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
     static RETIRING_FLOAT_ERROR: AtomicPtr<PyObject> = AtomicPtr::new(ptr::null_mut());
+    static RETIRING_FLOAT_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[repr(C)]
+    struct RetiringFloat {
+        base: PyFloatObject,
+        saved_error: *mut PyObject,
+    }
 
     unsafe extern "C" fn retiring_float(_self: *mut PyObject) -> *mut PyObject {
         unsafe {
@@ -944,7 +952,13 @@ mod numeric_protocol_tests {
             }
             let result = typeobj::PyType_GenericAlloc(class, 0);
             if !result.is_null() {
-                (*result.cast::<PyFloatObject>()).ob_fval = 2.5;
+                let result = result.cast::<RetiringFloat>();
+                (*result).base.ob_fval = 2.5;
+                // A strict float result triggers warning construction, even
+                // under an ignore filter. Own the prior until RC-zero instead
+                // of entering that generic call with an exception selected.
+                (*result).saved_error = errors::PyErr_GetRaisedException();
+                RETIRING_FLOAT_INPUT_ERROR.store((*result).saved_error, Ordering::SeqCst);
             }
             result
         }
@@ -952,6 +966,18 @@ mod numeric_protocol_tests {
 
     unsafe extern "C" fn retiring_float_drop(value: *mut PyObject) {
         unsafe {
+            RETIRING_FLOAT_DROPS.fetch_add(1, Ordering::SeqCst);
+            let saved = std::mem::replace(
+                &mut (*value.cast::<RetiringFloat>()).saved_error,
+                ptr::null_mut(),
+            );
+            if errors::raised_error_pending() {
+                // Warning-as-error owns completion; retiring the saved prior
+                // must not replace that newly selected failure.
+                errors::with_preserved_error(|| molt_cpython_abi::api::refcount::Py_XDECREF(saved));
+            } else {
+                errors::PyErr_SetRaisedException(saved);
+            }
             let error = errors::PyErr_GetRaisedException();
             RETIRING_FLOAT_ERROR.store(error, Ordering::SeqCst);
             errors::PyErr_SetRaisedException(error);
@@ -1392,23 +1418,8 @@ mod numeric_protocol_tests {
             let py = &py;
             let _warning_policy = WarningPolicy;
             crate::molt_warnings_resetwarnings();
-            let ignore =
-                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, b"ignore").unwrap());
-            let configured = ExceptionValue::adopt(
-                py,
-                crate::molt_warnings_simplefilter(
-                    ignore.bits(),
-                    crate::builtins::exceptions::exception_type_bits_from_name(
-                        py,
-                        "DeprecationWarning",
-                    ),
-                    crate::MoltObject::from_int(0).bits(),
-                    crate::MoltObject::from_bool(false).bits(),
-                ),
-            );
-            assert!(!crate::exception_pending(py));
-            drop(configured);
             let mut result_type = NativeType::subtype(&raw mut PyFloat_Type, c"math.RetiringFloat");
+            result_type.tp_basicsize = std::mem::size_of::<RetiringFloat>() as Py_ssize_t;
             result_type.tp_dealloc = Some(retiring_float_drop);
             assert_eq!(result_type.ready(), 0);
             let mut slots: PyNumberMethods = std::mem::zeroed();
@@ -1436,31 +1447,71 @@ mod numeric_protocol_tests {
             );
             let _callbacks = CallbackState;
             RETIRING_FLOAT_TYPE.store(&raw mut *result_type, Ordering::SeqCst);
-            for runtime_prior in [false, true] {
-                RETIRING_FLOAT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
-                if runtime_prior {
-                    crate::record_exception(
-                        py,
-                        crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
-                    );
-                } else {
-                    errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
-                }
-                let mut value = 0.0;
-                assert_eq!(
-                    super::__molt_math_float_as_double(input_bits.bits(), &mut value),
-                    1
+            for warning_error in [false, true] {
+                crate::molt_warnings_resetwarnings();
+                let action: &[u8] = if warning_error { b"error" } else { b"ignore" };
+                let action = ExceptionValue::adopt(
+                    py,
+                    crate::attr_name_bits_from_bytes(py, action).unwrap(),
                 );
-                assert_eq!(value, 2.5);
-                assert_eq!(RETIRING_FLOAT_ERROR.load(Ordering::SeqCst), prior.as_ptr());
-                assert!(crate::exception_pending(py));
-                assert_eq!(
-                    crate::builtins::exceptions::thread_last_exception_bits_noinc(py),
-                    Some(prior_bits.bits())
+                let configured = ExceptionValue::adopt(
+                    py,
+                    crate::molt_warnings_simplefilter(
+                        action.bits(),
+                        crate::builtins::exceptions::exception_type_bits_from_name(
+                            py,
+                            "DeprecationWarning",
+                        ),
+                        crate::MoltObject::from_int(0).bits(),
+                        crate::MoltObject::from_bool(false).bits(),
+                    ),
                 );
-                let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
-                assert_eq!(selected.as_ptr(), prior.as_ptr());
                 assert!(!crate::exception_pending(py));
+                drop(configured);
+                for runtime_prior in [false, true] {
+                    RETIRING_FLOAT_INPUT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                    RETIRING_FLOAT_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+                    RETIRING_FLOAT_DROPS.store(0, Ordering::SeqCst);
+                    if runtime_prior {
+                        crate::record_exception(
+                            py,
+                            crate::obj_from_bits(prior_bits.bits()).as_ptr().unwrap(),
+                        );
+                    } else {
+                        errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
+                    }
+                    let mut value = 19.25;
+                    let status = super::__molt_math_float_as_double(input_bits.bits(), &mut value);
+                    assert_eq!(
+                        RETIRING_FLOAT_INPUT_ERROR.load(Ordering::SeqCst),
+                        prior.as_ptr(),
+                        "the real number slot takes the exact incoming owner"
+                    );
+                    assert_eq!(RETIRING_FLOAT_DROPS.load(Ordering::SeqCst), 1);
+                    assert!(crate::exception_pending(py));
+                    let retired = RETIRING_FLOAT_ERROR.load(Ordering::SeqCst);
+                    if warning_error {
+                        assert_eq!(status, -1);
+                        assert_eq!(value, 19.25, "failed extraction cannot publish output");
+                        assert!(!retired.is_null());
+                        assert_ne!(retired, prior.as_ptr());
+                    } else {
+                        assert_eq!(status, 1);
+                        assert_eq!(value, 2.5);
+                        assert_eq!(retired, prior.as_ptr());
+                        assert_eq!(
+                            crate::builtins::exceptions::thread_last_exception_bits_noinc(py),
+                            Some(prior_bits.bits())
+                        );
+                    }
+                    let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(selected.as_ptr(), retired, "retirement preserves exact identity");
+                    if warning_error {
+                        assert_eq!((*selected.as_ptr()).ob_type, &raw mut PyExc_DeprecationWarning);
+                    }
+                    assert!(!crate::exception_pending(py));
+                    assert!(!errors::raised_error_pending());
+                }
             }
         });
     }

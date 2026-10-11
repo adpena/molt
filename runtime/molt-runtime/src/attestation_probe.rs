@@ -49,9 +49,51 @@ pub enum AllocationOutcome {
     Failed,
 }
 
+/// The semantic operation owning a request, independent of its process ordinal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AllocationScope {
+    Unscoped,
+    TaskRaisedSlotReserve,
+}
+
+// This module itself is native, non-Miri and l7-attestation-probe-only. Scope
+// instrumentation is additionally confined to the runtime unit-test image.
+#[cfg(test)]
+thread_local! {
+    static REQUEST_SCOPE: std::cell::Cell<AllocationScope> = const {
+        std::cell::Cell::new(AllocationScope::Unscoped)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct AllocationScopeGuard {
+    previous: AllocationScope,
+    _same_thread: std::marker::PhantomData<*mut ()>,
+}
+
+#[cfg(test)]
+impl AllocationScopeGuard {
+    pub(crate) fn enter(scope: AllocationScope) -> Self {
+        let previous = REQUEST_SCOPE.with(|current| current.replace(scope));
+        Self {
+            previous,
+            _same_thread: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for AllocationScopeGuard {
+    fn drop(&mut self) {
+        REQUEST_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AllocationRequest {
+    /// Diagnostic position in the complete constructor trace, never a selector.
     pub ordinal: usize,
+    pub scope: AllocationScope,
     pub operation: AllocationOperation,
     pub size: usize,
     pub alignment: usize,
@@ -61,6 +103,7 @@ pub struct AllocationRequest {
 impl AllocationRequest {
     const EMPTY: Self = Self {
         ordinal: 0,
+        scope: AllocationScope::Unscoped,
         operation: AllocationOperation::Allocate,
         size: 0,
         alignment: 0,
@@ -68,7 +111,7 @@ impl AllocationRequest {
     };
 
     fn matches(&self, other: &Self) -> bool {
-        self.ordinal == other.ordinal
+        self.scope == other.scope
             && self.operation == other.operation
             && self.size == other.size
             && self.alignment == other.alignment
@@ -80,7 +123,7 @@ pub struct AllocationTrace {
     requests: [AllocationRequest; REQUEST_LIMIT],
     len: usize,
     pub overflowed: bool,
-    pub prefix_mismatch: bool,
+    pub selector_mismatch: bool,
 }
 
 impl AllocationTrace {
@@ -88,7 +131,7 @@ impl AllocationTrace {
         requests: [AllocationRequest::EMPTY; REQUEST_LIMIT],
         len: 0,
         overflowed: false,
-        prefix_mismatch: false,
+        selector_mismatch: false,
     };
 
     pub fn requests(&self) -> &[AllocationRequest] {
@@ -98,25 +141,26 @@ impl AllocationTrace {
 
 struct RequestState {
     actual: AllocationTrace,
-    expected: [AllocationRequest; REQUEST_LIMIT],
-    expected_len: usize,
+    expected: Option<AllocationRequest>,
+    denial_fired: bool,
 }
 
 impl RequestState {
     const EMPTY: Self = Self {
         actual: AllocationTrace::EMPTY,
-        expected: [AllocationRequest::EMPTY; REQUEST_LIMIT],
-        expected_len: 0,
+        expected: None,
+        denial_fired: false,
     };
 }
 
-/// Records real Rust allocator requests; optionally refuses only the final
-/// request of an exactly matching previously observed successful prefix. A
-/// changed prefix disables refusal, and makes the proof visibly fail instead
-/// of denying an unrelated infallible allocation. Own the process exclusively.
+/// Records the complete real Rust request stream. An optional selector refuses
+/// one request in its typed scope, calibrated from a successful real operation.
+/// Other scopes remain observable and cannot consume the selector. A changed
+/// scoped layout disables refusal and visibly fails the proof. Own the process
+/// exclusively; lexical scope ownership is thread-local.
 pub struct AllocationTraceGuard;
 
-pub fn trace_allocations(deny_prefix: Option<&[AllocationRequest]>) -> AllocationTraceGuard {
+pub fn trace_allocations(deny_request: Option<AllocationRequest>) -> AllocationTraceGuard {
     assert!(
         !TRACK.load(Ordering::Relaxed),
         "allocation probe already active"
@@ -129,16 +173,10 @@ pub fn trace_allocations(deny_prefix: Option<&[AllocationRequest]>) -> Allocatio
         !DENY_ALLOCATIONS.load(Ordering::Relaxed),
         "allocation denial already active"
     );
-    let prefix = deny_prefix.unwrap_or(&[]);
-    assert!(
-        prefix.len() <= REQUEST_LIMIT,
-        "request prefix exceeds bounded storage"
-    );
-    assert!(
-        prefix
-            .iter()
-            .all(|request| request.outcome == AllocationOutcome::Granted)
-    );
+    if let Some(request) = deny_request {
+        assert_ne!(request.scope, AllocationScope::Unscoped);
+        assert_eq!(request.outcome, AllocationOutcome::Granted);
+    }
     reset();
     DENIED_ALLOCATIONS.store(0, Ordering::Relaxed);
     {
@@ -146,8 +184,7 @@ pub fn trace_allocations(deny_prefix: Option<&[AllocationRequest]>) -> Allocatio
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *state = RequestState::EMPTY;
-        state.expected[..prefix.len()].copy_from_slice(prefix);
-        state.expected_len = prefix.len();
+        state.expected = deny_request;
     }
     TRACE_REQUESTS.store(true, Ordering::Relaxed);
     set_tracking(true);
@@ -186,18 +223,28 @@ fn request_allocation(
         if index == REQUEST_LIMIT {
             state.actual.overflowed = true;
         } else {
+            #[cfg(test)]
+            let scope = REQUEST_SCOPE.with(std::cell::Cell::get);
+            #[cfg(not(test))]
+            let scope = AllocationScope::Unscoped;
             let mut request = AllocationRequest {
                 ordinal: index + 1,
+                scope,
                 operation,
                 size,
                 alignment,
                 outcome: AllocationOutcome::Pending,
             };
-            if index < state.expected_len && !state.actual.prefix_mismatch {
-                if !request.matches(&state.expected[index]) {
-                    state.actual.prefix_mismatch = true;
-                } else if index + 1 == state.expected_len {
+            if let Some(expected) = state.expected
+                && request.scope == expected.scope
+                && !state.denial_fired
+                && !state.actual.selector_mismatch
+            {
+                if request.matches(&expected) {
                     denied = true;
+                    state.denial_fired = true;
+                } else {
+                    state.actual.selector_mismatch = true;
                 }
             }
             if denied {

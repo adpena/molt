@@ -60,8 +60,9 @@ fn cold_projection_preserves_independent_raised_channels() {
         let runtime = MoltObject::from_ptr(runtime_ptr).bits();
         // Restore already-owned independent channels without a new semantic
         // raise, which correctly replaces either previous indicator.
-        crate::test_support::restore_runtime_raised(&py, runtime);
-        errors::restore_current_error_exact(c_error);
+        crate::test_support::restore_pending_channels(&py, c_error, runtime);
+        assert_eq!(crate::exception_last_bits_noinc(&py), Some(runtime));
+        assert_eq!(errors::PyErr_Occurred(), c_type);
         let projected = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(runtime);
         assert!(
             !projected.is_null(),

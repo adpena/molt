@@ -1177,8 +1177,9 @@ mod tests {
                 .bits();
                 // Deliberately restore two saved owners. A semantic runtime
                 // raise would correctly replace the existing C indicator.
-                crate::test_support::restore_runtime_raised(py, runtime_error);
-                errors::restore_current_error_exact(c_error);
+                crate::test_support::restore_pending_channels(py, c_error, runtime_error);
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime_error));
+                assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_KeyError).cast());
                 let runtime_class = pending_exception_class(py);
                 assert!(is_real_subtype(py, class_bits, builtins.object));
                 assert!(is_real_instance(py, bits, builtins.object));

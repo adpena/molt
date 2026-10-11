@@ -214,79 +214,88 @@ impl Drop for StoppedPoolPoll<'_> {
     }
 }
 
-/// A FIFO round with at most eight native worker records and eight queued
-/// messages per hot poll. Cold create/shutdown budgets scale with worker count. Callback execution itself is not preempted. The
-/// empty path allocates nothing and reads one per-runtime pending flag; it is
-/// called at the existing eval-breaker and cold pool lifecycle operations,
-/// never at every ABI entry. Native completion is still proved by joining.
-pub(crate) fn concurrent_reap_stopped_pools(py: &PyToken<'_>) {
-    concurrent_reap_stopped_pools_budget(py, 8);
-}
-
-fn concurrent_reap_stopped_pools_budget(py: &PyToken<'_>, mut budget: usize) {
+/// A bounded FIFO retirement round. Hot safepoints use eight native-worker
+/// records and eight queued messages; cold create/shutdown budgets scale with
+/// worker count. Callback execution itself is not preempted. The caller holds
+/// execution custody for this exact runtime across any callback reentry.
+#[inline]
+pub(crate) fn concurrent_reap_stopped_pools(
+    py: &PyToken<'_>,
+    state: &ConcurrentRuntimeState,
+    budget: usize,
+) {
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        use crate::state::lifecycle::RuntimeServiceJoinStatus;
-        let state = concurrent_state(py);
-        if !state.stopped_pending.load(Ordering::Acquire) {
-            return;
-        }
-        while budget != 0 && state.stopped_pending.load(Ordering::Acquire) {
-            let quantum = budget.min(8);
-            let id = {
-                let mut stopped = state.stopped.lock().unwrap();
-                if stopped.reaping {
-                    return;
-                }
-                let Some(id) = stopped.ids.pop_front() else {
-                    state.stopped_pending.store(false, Ordering::Release);
-                    return;
-                };
-                stopped.reaping = true;
-                id
-            };
-            let mut poll = StoppedPoolPoll {
-                state,
-                id,
-                retry: true,
-            };
-            let pool = state.pools.lock().unwrap().get(&id).cloned();
-            let Some(pool) = pool else {
-                // Explicit waiting shutdown may have consumed this queued ID.
-                poll.retry = false;
-                budget -= 1;
-                continue;
-            };
-            // The empty fast path above avoids even error-custody TLS work.
-            // Actual queued-owner destruction must preserve an in-flight exception.
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                let (status, inspected) = pool.workers.reap_finished(quantum);
-                // Every turn costs at least one unit, including a stale/empty ID.
-                // Closed pools reserve the same quantum for queued-message cleanup.
-                budget -= if status == RuntimeServiceJoinStatus::Closed {
-                    quantum
-                } else {
-                    inspected.max(1)
-                };
-                match status {
-                    RuntimeServiceJoinStatus::Pending => {}
-                    RuntimeServiceJoinStatus::Failed => {
-                        // Preserve the original map owner/disposition, with no further
-                        // automatic attempts. Explicit shutdown still reports failure.
-                        poll.retry = false;
-                    }
-                    RuntimeServiceJoinStatus::Closed => {
-                        if release_stopped_pool_work_bounded(py, &pool, quantum) {
-                            state.pools.lock().unwrap().remove(&id);
-                            poll.retry = false;
-                        }
-                    }
-                }
-            });
-        }
+    if state.stopped_pending.load(Ordering::Acquire) {
+        reap_stopped_pools_pending(py, state, budget);
     }
     #[cfg(target_arch = "wasm32")]
-    let _ = (py, budget);
+    let _ = (py, state, budget);
+}
+
+// Keep the empty safepoint outside the callback/join frame. The same pending
+// flag and queue remain authoritative; no auxiliary readiness state is needed.
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn reap_stopped_pools_pending(
+    py: &PyToken<'_>,
+    state: &ConcurrentRuntimeState,
+    mut budget: usize,
+) {
+    use crate::state::lifecycle::RuntimeServiceJoinStatus;
+    while budget != 0 && state.stopped_pending.load(Ordering::Acquire) {
+        let quantum = budget.min(8);
+        let id = {
+            let mut stopped = state.stopped.lock().unwrap();
+            if stopped.reaping {
+                return;
+            }
+            let Some(id) = stopped.ids.pop_front() else {
+                state.stopped_pending.store(false, Ordering::Release);
+                return;
+            };
+            stopped.reaping = true;
+            id
+        };
+        let mut poll = StoppedPoolPoll {
+            state,
+            id,
+            retry: true,
+        };
+        let pool = state.pools.lock().unwrap().get(&id).cloned();
+        let Some(pool) = pool else {
+            // Explicit waiting shutdown may have consumed this queued ID.
+            poll.retry = false;
+            budget -= 1;
+            continue;
+        };
+        // The empty fast path above avoids even error-custody TLS work.
+        // Actual queued-owner destruction must preserve an in-flight exception.
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            let (status, inspected) = pool.workers.reap_finished(quantum);
+            // Every turn costs at least one unit, including a stale/empty ID.
+            // Closed pools reserve the same quantum for queued-message cleanup.
+            budget -= if status == RuntimeServiceJoinStatus::Closed {
+                quantum
+            } else {
+                inspected.max(1)
+            };
+            match status {
+                RuntimeServiceJoinStatus::Pending => {}
+                RuntimeServiceJoinStatus::Failed => {
+                    // Preserve the original map owner/disposition, with no further
+                    // automatic attempts. Explicit shutdown still reports failure.
+                    poll.retry = false;
+                }
+                RuntimeServiceJoinStatus::Closed => {
+                    if release_stopped_pool_work_bounded(py, &pool, quantum) {
+                        state.pools.lock().unwrap().remove(&id);
+                        poll.retry = false;
+                    }
+                }
+            }
+        });
+    }
 }
 
 pub(crate) fn concurrent_stop_runtime_workers(state: &crate::state::RuntimeState) -> bool {
@@ -486,7 +495,7 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
             let workers_capped = max_workers.min(512);
             // Pay existing FIFO retirement debt in proportion to this cold
             // operation's native-worker work, with a fixed hot safepoint cap.
-            concurrent_reap_stopped_pools_budget(_py, workers_capped * 2 + 8);
+            concurrent_reap_stopped_pools(_py, &state.concurrent, workers_capped * 2 + 8);
             let (sender, receiver) = unbounded::<Option<WorkItem>>();
             let pool = Arc::new(ThreadPoolState {
                 sender,
@@ -620,16 +629,17 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
         let cancel_futures = is_truthy(_py, obj_from_bits(cancel_futures_bits));
         let mut pending = HashMap::new();
+        let state = concurrent_state(_py);
 
         let pool = {
-            let pools = pool_registry(_py).lock().unwrap();
+            let pools = state.pools.lock().unwrap();
             let pool = pools.get(&pool_id).cloned();
             if let Some(pool) = &pool {
                 if cancel_futures {
                     pending = std::mem::take(&mut *pool.pending.lock().unwrap());
                 }
                 if pool.stop() {
-                    schedule_stopped_pool(concurrent_state(_py), pool_id);
+                    schedule_stopped_pool(state, pool_id);
                 }
             }
             pool
@@ -651,9 +661,9 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
                 );
             }
             release_stopped_pool_work(_py, &pool);
-            pool_registry(_py).lock().unwrap().remove(&pool_id);
+            state.pools.lock().unwrap().remove(&pool_id);
         }
-        concurrent_reap_stopped_pools_budget(_py, retirement_budget);
+        concurrent_reap_stopped_pools(_py, state, retirement_budget);
         MoltObject::none().bits()
     })
 }
