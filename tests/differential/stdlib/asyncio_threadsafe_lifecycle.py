@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Thread-safe submission returns the concurrent Future completion contract."""
 import asyncio
 import concurrent.futures

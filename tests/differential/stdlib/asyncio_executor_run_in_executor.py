@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.cpu_count,thread.spawn,thread.shared
 """Purpose: differential coverage for asyncio run_in_executor."""
 

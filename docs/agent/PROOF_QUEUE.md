@@ -42,6 +42,15 @@ Rust tool identity resolves the selected physical component before reuse. A chan
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
 physical Rust tools do not require a rustup proxy.
 
+Clippy commands additionally capture the selected `cargo-clippy` launcher and
+its sibling `clippy-driver`, including physical components behind Rustup proxies.
+Their versions must match the selected Rust compiler. Reuse and final receipt
+validation require this same component closure; ordinary Cargo commands perform
+no Clippy discovery. Unowned Clippy sysroot/config selectors are rejected before
+capture. The default root `clippy.toml` stops implicit ancestor lookup for the
+in-tree workspace without changing lint settings. Arbitrary external manifest
+roots are outside this demonstrated configuration boundary.
+
 ## Registered source-extension producers
 
 `source-extension-produce` submits one registered package/version/module-set and

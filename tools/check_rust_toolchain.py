@@ -26,7 +26,12 @@ if str(SRC) not in sys.path:
 
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.cargo_workspace import workspace_member_manifests  # noqa: E402
-from molt.rust_toolchain import rust_channel  # noqa: E402
+from molt.rust_toolchain import (  # noqa: E402
+    rust_channel,
+    rust_component_executables,
+    rust_component_version_arguments,
+    rust_component_version_matches,
+)
 
 RUST_EDITION = "2024"
 # rust-toolchain.toml is the one Rust version authority; every other pin
@@ -305,13 +310,9 @@ def check_installed_toolchain(plan: RustInstallationPlan | None = None) -> Check
             (*errors, "selected Rust sysroot is unavailable or mismatched")
         )
     tools = ["rustc", "cargo"]
-    for component, executables in (
-        ("rustfmt", ("rustfmt",)),
-        ("clippy", ("cargo-clippy", "clippy-driver")),
-        ("miri", ("cargo-miri", "miri")),
-    ):
+    for component in ("rustfmt", "clippy", "miri"):
         if component in plan.components:
-            tools.extend(executables)
+            tools.extend(rust_component_executables(component))
     for tool in tools:
         selected = _run(["rustup", "which", "--toolchain", plan.channel, tool])
         path = Path(selected.stdout.strip())
@@ -334,38 +335,9 @@ def check_installed_toolchain(plan: RustInstallationPlan | None = None) -> Check
         # not load the compiler driver, so admit each driver independently too.
         # rustup run supplies the selected sysroot's dynamic-library search path
         # (including DLL lookup on Windows) while retaining the admitted path.
-        arguments = {
-            "rustfmt": ["--version"],
-            "cargo-clippy": ["--version"],
-            "clippy-driver": ["--rustc", "--version", "--verbose"],
-            "cargo-miri": ["miri", "--version"],
-            "miri": ["--version", "--verbose"],
-        }[tool]
+        arguments = rust_component_version_arguments(tool)
         version = _run(["rustup", "run", plan.channel, str(path), *arguments])
-        if tool in {"clippy-driver", "miri"}:
-            driver_fields = dict(
-                line.split(": ", 1)
-                for line in version.stdout.splitlines()
-                if ": " in line
-            )
-            valid_version = all(
-                fields.get(key) and driver_fields.get(key) == fields[key]
-                for key in ("host", "release", "commit-hash")
-            )
-        else:
-            identity = {
-                "rustfmt": "rustfmt",
-                "cargo-clippy": "clippy",
-                "cargo-miri": "miri",
-            }[tool]
-            valid_version = (
-                re.fullmatch(
-                    rf"{identity} [0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"
-                    r"(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?",
-                    version.stdout.strip(),
-                )
-                is not None
-            )
+        valid_version = rust_component_version_matches(tool, version.stdout, fields)
         if version.returncode or not valid_version:
             errors.append(f"selected {tool} version probe failed")
     if "rust-src" in plan.components:

@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Purpose: preserve Future terminal error classes and stored object identity."""
 

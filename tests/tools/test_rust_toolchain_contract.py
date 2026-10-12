@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 import platform
+import tomllib
 
 import pytest
 from tests.process_guard_common import install_module_view
@@ -33,6 +34,15 @@ def test_repository_rust_toolchain_contract_is_canonical() -> None:
     report = tool.check_repository_contract()
 
     assert report.errors == ()
+
+
+def test_workspace_clippy_configuration_stops_at_tracked_default_root() -> None:
+    from molt.cargo_workspace import workspace_member_manifests
+
+    assert tomllib.loads((ROOT / "clippy.toml").read_text()) == {}
+    members = workspace_member_manifests(ROOT)
+    assert members
+    assert all(manifest.resolve().is_relative_to(ROOT) for manifest in members)
 
 
 def test_ci_gate_uses_repo_rust_toolchain_gate_without_compile_slot() -> None:

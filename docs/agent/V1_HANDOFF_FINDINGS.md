@@ -157,13 +157,33 @@ once. The VFS crate passes its all-feature unit and documentation checks. The
 first joined runtime build exposes a capability-name lifetime mismatch and three
 obsolete exception-helper references in new tests. The correction preserves
 static names from generated operations and selected mounts through the existing
-audit consumer, and uses the canonical exception module directly. A fresh runtime
-execution remains required; the earlier 1,852-case result does not qualify this
-changed runtime. Clippy also exposes missing selected-component capture in the
-development proof runner; its failed executable admission is not a VFS or memory
-failure. The selected public consumer rosters now
-include 38 native and 20 WASM programs, plus the direct WASM admission boundary.
-The native public lane has not passed and the WASM public lane remains unrun.
+audit consumer, and uses the canonical exception module directly. The corrected
+optimized runtime passes all 1,871 semantic tests with complete process custody;
+performance probes remain unrun. Clippy exposes missing selected-component capture
+in the development proof runner; its failed executable admission is not a VFS or
+memory failure. The correction captures the selected launcher and driver through
+the existing Rust tool authority, validates their compiler identity, and rejects
+unowned Clippy resource selectors. A default root configuration bounds implicit
+lookup for the in-tree workspace. Ordinary Cargo does no extra Clippy discovery;
+these development checks add no emitted-program work. Actual Clippy execution
+remains required. The complete capture and queue consumer modules pass 979 checks
+with 15 platform skips; all descendants close without infrastructure failure.
+
+The direct WASM boundary build exposes a missing `fspath_bits` transport in the
+reduced runtime profile. The correction delegates to the existing path conversion
+authority and preserves the full-profile FFI boundary. All 21 satellite-consumed
+bridge symbols are accounted for; new controls check identity, owned references,
+non-UTF8 bytes and exact type errors through direct, FFI and public transports.
+Successor native and reduced-WASM execution remains required.
+
+The selected public consumer rosters include 39 native and 20 WASM programs,
+plus the direct WASM admission boundary. Ten existing async/executor fixtures now
+require exact stderr; an independent negative control rejects shutdown exceptions
+even with matching stdout and exit status. Their CPython reference runs have empty
+stderr. The simple async shutdown program joins the canonical native lane, replacing
+an orphan duplicate compiled test; the existing host controls are preserved.
+The broader comparator-default obligation remains under V1-04. The native public
+lane has not passed and the WASM public lane remains unrun.
 This integration remains bounded to the complete runtime family and required
 consumer migration; other release findings retain their own acceptance work.
 
@@ -1825,7 +1845,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | V1-29 | `itertools.tee` attributes shared Python edges to the first owner, clears its iterator/buffer when that owner detaches, and only afterward removes that owner. The buffer is append-only. Its index follows a pointer at a pointer-sized offset, creating an unaligned i64 projection on wasm32. The existing independence case keeps both tees alive. | Reuse the runtime ownership/layout authorities under V1-05/V1-19: shared edges must survive any individual reader, collection must see complete reachability, buffered retention must follow reader lag, and physical projections must have one aligned extent authority. Prove first-reader deletion, peek, mixed reachability, reentry/failure, item retirement and wasm32 execution against the declared CPython references. Measure per-next latency, lockstep/lag memory and allocation density. The source mechanisms are confirmed; the predicted execution/GC consequences still require actual reproduction. |
 | V1-30 | Streaming compression creates fresh decoders for chunks, retains output as later input, and does not bound materialization by the requested output length. Compression handles are untyped raw pointer projections distinct from the existing typed native-handle owner. `wbits`, dictionaries, buffer inputs and LZMA memory limits have incomplete consumers; source-only export checks do not qualify these semantics. | Reconcile zlib/LZMA and dependent gzip/bz2/codec, intrinsic, ABI, resource and lifecycle consumers under existing V1-19/V1-18 owners. Use maintained streaming engines and typed ownership; preserve requested formats, bounded memory, errors, EOF/tails and cleanup. Run pinned CPython source tests and independent multichunk, length-limit, wrong-handle, buffer and allocation-denial controls across native/WASM. Measure throughput, allocations and peak live memory. Do not infer type-confusion reachability or target execution from a source read alone. |
 
-| V1-31 | The runtime VFS file adapter buffers independent file contents and publishes by path at close. Explicit flush does not publish to the VFS backend, `w` truncation is delayed, and `x` uses a separate stat before later creation. Concurrent append/exclusive-create and rename/unlink lifetime semantics therefore lack an admitted file-identity contract. The capability successor repairs selected-route admission and close error propagation, which do not qualify this separate ownership family. | Reconcile VFS open/read/write/append/flush/close and backend file identity as one protocol; prove visibility, atomic creation/append, quota and publication failure, rename/unlink lifetime, and binary/text wrappers against pinned CPython source and actual native/WASM execution. Do not close this row from admission-only tests. |
+| V1-33 | The runtime VFS file adapter buffers independent file contents and publishes by path at close. Explicit flush does not publish to the VFS backend, `w` truncation is delayed, and `x` uses a separate stat before later creation. Concurrent append/exclusive-create and rename/unlink lifetime semantics therefore lack an admitted file-identity contract. The capability successor repairs selected-route admission and close error propagation, which do not qualify this separate ownership family. | Reconcile VFS open/read/write/append/flush/close and backend file identity as one protocol; prove visibility, atomic creation/append, quota and publication failure, rename/unlink lifetime, and binary/text wrappers against pinned CPython source and actual native/WASM execution. Do not close this row from admission-only tests. |
 
 | V1-32 | Logging Filterer requires a `.filter` attribute and swallows filter exceptions; it does not implement callable filters or propagate a replacement LogRecord through handler/logger consumers. These semantics are separate from the corrected stream writer, whose tests intentionally use object filters. | Reconcile Filterer, Handler.handle and Logger.handle against the declared CPython-version matrix. Prove callable and object filters, exception propagation, replacement-record identity, false results and mutation/order across actual native/WASM execution. Stream/file admission controls do not qualify this row. |
 

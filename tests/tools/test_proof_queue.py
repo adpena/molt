@@ -17915,3 +17915,126 @@ def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
     assert seen == [(source, env, guest)]
     assert prefix == str(selected)
     assert resolved["PATH"].split(os.pathsep)[0] == str(selected / "bin")
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+@pytest.mark.parametrize("proxy", [False, True])
+def test_clippy_identity_capture_reuse_and_command_obligation(
+    tmp_path, monkeypatch, proxy
+):
+    from tests.tools.test_toolchain_capture import _clippy_component_fixture
+
+    tools, env, _version, calls = _clippy_component_fixture(
+        tmp_path, monkeypatch, proxy=proxy
+    )
+    command = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+    envelope = command_admission.envelope_for_command(command)
+    plan = proof_plan.ProofPlan.load()
+
+    def capture():
+        telemetry = []
+        identity = command_identity._tool_identity(
+            plan,
+            "rustc",
+            envelope,
+            command,
+            cwd=tmp_path,
+            env=env,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        command_identity._validate_toolchain_identity(
+            plan, "rustc", identity, envelope=envelope
+        )
+        return identity, telemetry
+
+    initial, cold = capture()
+    probe_count = sum(kind == "probe" for kind, _argv in calls)
+    warm, reused = capture()
+    assert warm == initial and reused[0]["state"] == "hit"
+    assert sum(kind == "probe" for kind, _argv in calls) == probe_count
+    missing = copy.deepcopy(initial)
+    del missing["clippy_selection"]
+    missing.pop("identity_sha256")
+    missing["identity_sha256"] = canonical_json_sha256(missing)
+    with pytest.raises(ValueError, match="missing its component closure"):
+        command_identity._validate_toolchain_identity(
+            plan, "rustc", missing, envelope=envelope
+        )
+    # Replay consumes the exact command envelope, independently of the producer.
+    summaries, reference, _ = toolchain_capture.publish_capture(
+        tmp_path / "clippy-cas", {"rustc": missing}
+    )
+    assert summaries["rustc"]["identity_sha256"] == missing["identity_sha256"]
+    with pytest.raises(ValueError, match="missing its component closure"):
+        toolchain_capture.load_capture(
+            reference, cas_root=tmp_path / "clippy-cas", envelope=envelope
+        )
+    tools["clippy-driver"].write_bytes(b"replacement driver")
+    changed, recaptured = capture()
+    assert recaptured[0]["state"] == "miss"
+    assert recaptured[0]["key_sha256"] != cold[0]["key_sha256"]
+    assert changed["identity_sha256"] != initial["identity_sha256"]
+    assert sum(kind == "probe" for kind, _argv in calls) > probe_count
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+def test_ordinary_cargo_never_selects_or_probes_clippy_components(
+    tmp_path, monkeypatch
+):
+    from tests.tools.test_toolchain_capture import _clippy_component_fixture
+
+    tools, env, _version, calls = _clippy_component_fixture(tmp_path, monkeypatch)
+    tools["cargo-clippy"].unlink()
+    tools["clippy-driver"].unlink()
+    command = ["cargo", "check"]
+    envelope = command_admission.envelope_for_command(command)
+    identity = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(),
+        "rustc",
+        envelope,
+        command,
+        cwd=tmp_path,
+        env=env,
+    )
+    assert "clippy_selection" not in identity
+    assert not any("clippy" in str(arg) for _kind, argv in calls for arg in argv)
+
+
+@pytest.mark.parametrize(
+    "key", ["SYSROOT", "CLIPPY_CONF_DIR", "CLIPPY_ARGS", "RUSTC_WORKSPACE_WRAPPER"]
+)
+@pytest.mark.parametrize("forced", [False, True])
+@pytest.mark.parametrize("inline", [False, True])
+def test_clippy_configured_selectors_require_bound_cargo_context(
+    tmp_path, key, forced, inline
+):
+    from tools.proof_queue_pkg import cargo_output_environment
+
+    config = tmp_path / "selected.toml"
+    value = (
+        f'env.{key} = {{ value = "external-selection", force = {str(forced).lower()} }}'
+    )
+    config.write_text(value)
+    command = ["cargo", "--config", value if inline else str(config), "clippy"]
+    envelope = command_admission.envelope_for_command(command)
+    kwargs = dict(
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope),
+        cwd=tmp_path,
+        env={"CARGO_HOME": str(tmp_path / "cargo-home")},
+    )
+    if forced or key in {"SYSROOT", "CLIPPY_CONF_DIR"}:
+        with pytest.raises(ValueError, match=f"defines env.{key}"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                envelope, **kwargs
+            )
+    else:
+        # The launcher has already supplied these values before nested Cargo.
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope, **kwargs
+        )
+    # This operation-scoped rule cannot disable existing ordinary Cargo inputs.
+    ordinary = command_admission.envelope_for_command([*command[:-1], "check"])
+    execution_environment._require_cargo_build_tool_environment_context(
+        ordinary, **kwargs
+    )
