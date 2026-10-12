@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -248,6 +249,115 @@ def test_molt_build_with_manifest():
         )
         assert run_result.returncode == 0, run_result.stderr
         assert run_result.stdout.strip() == "hello from molt"
+
+
+@pytest.mark.slow
+def test_native_warm_code_cache_keeps_current_capability_policy() -> None:
+    """Shared code must not carry the previous final binary's authority."""
+    with process_guard_common.guarded_temporary_directory(
+        prefix="molt-native-cache-policy-"
+    ) as tmpdir:
+        payload_path = tmpdir / "payload.txt"
+        payload_path.write_text("cache-policy-payload\n", encoding="utf-8")
+        source = tmpdir / "read_payload.py"
+        source.write_text(
+            "try:\n"
+            f"    with open({str(payload_path)!r}, 'r') as stream:\n"
+            "        print(stream.read(), end='')\n"
+            "except PermissionError:\n"
+            "    print('PermissionError')\n",
+            encoding="utf-8",
+        )
+        source_bytes = source.read_bytes()
+        manifest = tmpdir / "policy.toml"
+        cache_dir = tmpdir / "code-cache"
+        output_dir = tmpdir / "output"
+        empty_path = tmpdir / "no-python-on-path"
+        empty_path.mkdir()
+        observations = []
+        output = None
+        for index, allowed in enumerate((True, False, True)):
+            manifest.write_text(
+                '[manifest]\nversion = "2.0"\n[capabilities]\n'
+                + ('allow = ["fs.read"]\n' if allowed else "allow = []\n"),
+                encoding="utf-8",
+            )
+            started = time.monotonic()
+            built = run_native_test_process(
+                [
+                    sys.executable,
+                    "-m",
+                    "molt.cli",
+                    "build",
+                    "--profile",
+                    "dev",
+                    "--cache",
+                    "--cache-dir",
+                    str(cache_dir),
+                    "--capability-manifest",
+                    str(manifest),
+                    str(source),
+                    "--out-dir",
+                    str(output_dir),
+                    "--json",
+                ],
+                cwd=PROJECT_ROOT,
+                timeout=1200,
+            )
+            elapsed = time.monotonic() - started
+            assert built.returncode == 0, (
+                f"build {index}: stdout:\n{built.stdout}\nstderr:\n{built.stderr}"
+            )
+            data = json.loads(built.stdout)["data"]
+            current_output = Path(data["output"])
+            assert current_output.is_file()
+            if output is None:
+                output = current_output
+            assert current_output == output
+            assert source.read_bytes() == source_bytes
+            cache = data["cache"]
+            assert cache["enabled"] is True
+            assert isinstance(cache["key"], str) and cache["key"]
+            if observations:
+                assert cache["key"] == observations[0]["cache_key"]
+                assert cache["hit"] is True, data
+            assert data["capabilities"] == (["fs.read"] if allowed else [])
+            observation = {
+                "allow_fs_read": allowed,
+                "elapsed_seconds": elapsed,
+                "cache_key": cache["key"],
+                "cache_hit": cache["hit"],
+                "policy_digest": data["capability_policy_digest"],
+            }
+            observations.append(observation)
+            print(
+                "native-cache-policy-build " + json.dumps(observation, sort_keys=True)
+            )
+
+            # The emitted stub, not ambient grants or Python, owns this run.
+            # This is a checkout-built executable control, not installed-package
+            # or general standalone-distribution acceptance.
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            environment["PATH"] = str(empty_path)
+            environment["MOLT_CAPABILITY_TIER"] = "none" if allowed else "full"
+            environment["MOLT_CAPABILITIES"] = "" if allowed else "fs.read"
+            executed = run_native_test_process(
+                [str(current_output)],
+                cwd=tmpdir,
+                env=environment,
+                timeout=30,
+            )
+            assert executed.returncode == 0, (
+                f"run {index}: stdout:\n{executed.stdout}\nstderr:\n{executed.stderr}"
+            )
+            assert executed.stdout == (
+                "cache-policy-payload\n" if allowed else "PermissionError\n"
+            )
+            assert executed.stderr == ""
+            assert payload_path.read_text(encoding="utf-8") == "cache-policy-payload\n"
+        assert observations[0]["policy_digest"] != observations[1]["policy_digest"]
+        assert observations[0]["policy_digest"] == observations[2]["policy_digest"]
 
 
 # ---------------------------------------------------------------------------

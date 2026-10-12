@@ -18,6 +18,7 @@ from tools.proof_queue_pkg import pact
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = proof_plan.ProofPlan.load()
 PYTHON_LANE_IDS = (
+    "native.capability-cache-policy",
     "runtime.allocation-observer",
     "pact.witness.acceptance.native",
     "pact.witness.acceptance.wasm",
@@ -72,6 +73,7 @@ def test_runtime_and_reference_lanes_have_the_required_native_languages(
     # Native differential/Pact lanes cold-build the runtime, including mimalloc.
     # WASM-only and reference-only lanes must not acquire native C custody.
     native_runtime = lane_id in {
+        "native.capability-cache-policy",
         "runtime.abi-fixture-authorities",
         "runtime.allocation-observer",
         "pact.witness.acceptance.native",
