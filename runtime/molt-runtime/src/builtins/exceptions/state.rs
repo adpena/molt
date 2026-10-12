@@ -71,11 +71,6 @@ impl ThreadExceptionState {
         self.slot.get()
     }
 
-    pub(crate) fn set(&self, ptr: *mut u8) {
-        arm_thread_exception_release(ptr);
-        self.slot.set(ptr);
-    }
-
     pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
         arm_thread_exception_release(ptr);
         self.slot.replace(ptr)

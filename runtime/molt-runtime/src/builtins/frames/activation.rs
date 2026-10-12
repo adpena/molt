@@ -246,10 +246,10 @@ pub(super) enum LocalsProjectionError {
 
 impl LocalsProjectionError {
     pub(super) fn raise(self, py: &PyToken<'_>) {
-        if let Self::Layout(message) = self {
-            if !exception_pending(py) {
-                raise_exception::<u64>(py, "SystemError", message);
-            }
+        if let Self::Layout(message) = self
+            && !exception_pending(py)
+        {
+            raise_exception::<u64>(py, "SystemError", message);
         }
     }
 }

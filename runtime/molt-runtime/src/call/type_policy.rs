@@ -177,7 +177,12 @@ mod tests {
             let class_ptr = obj_from_bits(class_bits).as_ptr().unwrap();
             let dictionary_bits = crate::class_dict_bits(class_ptr);
             let dictionary_ptr = obj_from_bits(dictionary_bits).as_ptr().unwrap();
-            crate::dict_set_in_place(_py, dictionary_ptr, name_bits, function_bits);
+            assert!(crate::dict_set_in_place(
+                _py,
+                dictionary_ptr,
+                name_bits,
+                function_bits
+            ));
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, function_bits);
         }

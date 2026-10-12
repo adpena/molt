@@ -135,7 +135,7 @@ pub(crate) fn builtin_class_method_bits(
             return Ok(Some(bits));
         }
         let b = builtin_classes(py);
-        let extra = if class == b.int {
+        if class == b.int {
             super::numeric::int_class_method_bits(py, name)
         } else if class == b.float {
             super::numeric::float_class_method_bits(py, name)
@@ -162,8 +162,7 @@ pub(crate) fn builtin_class_method_bits(
             super::io::file_method_bits(py, class, name)
         } else {
             Ok(None)
-        };
-        extra
+        }
     }
 }
 

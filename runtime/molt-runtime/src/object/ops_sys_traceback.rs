@@ -44,10 +44,9 @@ fn traceback_attribute<'a, 'py>(
         .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
 }
 
-fn traceback_frame_info(
-    py: &PyToken<'_>,
-    frame: u64,
-) -> Result<Option<(Vec<u8>, i64, Vec<u8>)>, ()> {
+pub(crate) type TracebackFrameInfo = (Vec<u8>, i64, Vec<u8>);
+
+fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Result<Option<TracebackFrameInfo>, ()> {
     let interned = &runtime_state(py).interned;
     let code_name = intern_static_name(py, &interned.f_code_name, b"f_code");
     let line_name = intern_static_name(py, &interned.f_lineno_name, b"f_lineno");
@@ -85,7 +84,7 @@ pub(crate) fn traceback_frames(
     py: &PyToken<'_>,
     tb_bits: u64,
     limit: Option<usize>,
-) -> Vec<(Vec<u8>, i64, Vec<u8>)> {
+) -> Vec<TracebackFrameInfo> {
     let interned = &runtime_state(py).interned;
     let frame_name = intern_static_name(py, &interned.tb_frame_name, b"tb_frame");
     let line_name = intern_static_name(py, &interned.tb_lineno_name, b"tb_lineno");

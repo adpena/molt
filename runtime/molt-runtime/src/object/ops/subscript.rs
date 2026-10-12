@@ -107,14 +107,15 @@ pub(crate) fn index_impl(
                     // Classes also support __class_getitem__; ordinary values
                     // have exhausted their live protocol at this boundary.
                     if object_type_id(obj_ptr) != TYPE_ID_TYPE {
-                        return Err(raise_exception::<()>(
+                        raise_exception::<()>(
                             _py,
                             "TypeError",
                             &format!(
                                 "'{}' object is not subscriptable",
                                 type_name(_py, obj_from_bits(obj_bits))
                             ),
-                        ));
+                        );
+                        return Err(());
                     }
                 }
                 if builtin_only && crate::object::tuple_storage::native_tuple(obj_bits).is_some() {
@@ -133,7 +134,8 @@ pub(crate) fn index_impl(
                         }
                         return Ok(val);
                     }
-                    return Err(raise_key_error_with_key::<()>(_py, key_bits));
+                    raise_key_error_with_key::<()>(_py, key_bits);
+                    return Err(());
                 }
                 // list_int: flat i64 storage — delegate to specialized getitem
                 let tid = object_type_id(obj_ptr);
@@ -212,14 +214,12 @@ pub(crate) fn index_impl(
                         };
                     }
                     if memoryview_released(ptr) {
-                        return Err(raise_released_memoryview::<()>(_py));
+                        raise_released_memoryview::<()>(_py);
+                        return Err(());
                     }
                     if memoryview_data(ptr).is_null() {
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "BufferError",
-                            "invalid memoryview storage",
-                        ));
+                        raise_exception::<()>(_py, "BufferError", "invalid memoryview storage");
+                        return Err(());
                     }
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
@@ -246,11 +246,8 @@ pub(crate) fn index_impl(
                             let val = memoryview_read_item_at(_py, ptr, 0, &format);
                             return val.ok_or(());
                         }
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "TypeError",
-                            "invalid indexing of 0-dim memory",
-                        ));
+                        raise_exception::<()>(_py, "TypeError", "invalid indexing of 0-dim memory");
+                        return Err(());
                     }
                     if let Some(tup_ptr) = key.as_ptr()
                         && object_type_id(tup_ptr) == TYPE_ID_TUPLE
@@ -278,19 +275,21 @@ pub(crate) fn index_impl(
                         }
                         if has_slice {
                             if all_slice {
-                                return Err(CompatibilityError::MemoryviewSlice {
+                                CompatibilityError::MemoryviewSlice {
                                     rank: ndim,
                                     slices: elems.len(),
                                     tuple: true,
                                     assignment: false,
                                 }
-                                .raise::<()>(_py));
+                                .raise::<()>(_py);
+                                return Err(());
                             }
-                            return Err(raise_exception::<()>(
+                            raise_exception::<()>(
                                 _py,
                                 "TypeError",
                                 "memoryview: invalid slice key",
-                            ));
+                            );
+                            return Err(());
                         }
                         if !match elems.iter().try_fold(true, |valid, &key| {
                             if valid {
@@ -302,23 +301,25 @@ pub(crate) fn index_impl(
                             Ok(valid) => valid,
                             Err(()) => return Err(()),
                         } {
-                            return Err(raise_exception::<()>(
+                            raise_exception::<()>(
                                 _py,
                                 "TypeError",
                                 "memoryview: invalid slice key",
-                            ));
+                            );
+                            return Err(());
                         }
                         let Some(format) = memoryview_adjust_format(_py, ptr) else {
                             return Err(());
                         };
                         if elems.len() < ndim {
-                            return Err(CompatibilityError::MemoryviewSubView {
+                            CompatibilityError::MemoryviewSubView {
                                 rank: ndim,
                                 indices: elems.len(),
                                 tuple: true,
                                 assignment: false,
                             }
-                            .raise::<()>(_py));
+                            .raise::<()>(_py);
+                            return Err(());
                         }
                         if elems.len() > ndim {
                             let msg = format!(
@@ -326,14 +327,12 @@ pub(crate) fn index_impl(
                                 ndim,
                                 elems.len()
                             );
-                            return Err(raise_exception::<()>(_py, "TypeError", &msg));
+                            raise_exception::<()>(_py, "TypeError", &msg);
+                            return Err(());
                         }
                         if shape.len() != strides.len() {
-                            return Err(raise_exception::<()>(
-                                _py,
-                                "BufferError",
-                                "invalid memoryview strides",
-                            ));
+                            raise_exception::<()>(_py, "BufferError", "invalid memoryview strides");
+                            return Err(());
                         }
                         let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
@@ -352,16 +351,18 @@ pub(crate) fn index_impl(
                             }
                             if i < 0 || i >= dim_len_i64 {
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
-                                return Err(raise_exception::<()>(_py, "IndexError", &msg));
+                                raise_exception::<()>(_py, "IndexError", &msg);
+                                return Err(());
                             }
                             indices.push(i as isize);
                         }
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
-                            return Err(raise_exception::<()>(
+                            raise_exception::<()>(
                                 _py,
                                 "BufferError",
                                 "invalid memoryview index offset",
-                            ));
+                            );
+                            return Err(());
                         };
                         let val = memoryview_read_item_at(_py, ptr, pos, &format);
                         return val.ok_or(());
@@ -374,19 +375,21 @@ pub(crate) fn index_impl(
                         return Err(());
                     };
                     if memoryview_released(ptr) {
-                        return Err(raise_released_memoryview::<()>(_py));
+                        raise_released_memoryview::<()>(_py);
+                        return Err(());
                     }
                     let Some(format) = memoryview_adjust_format(_py, ptr) else {
                         return Err(());
                     };
                     if ndim > 1 {
-                        return Err(CompatibilityError::MemoryviewSubView {
+                        CompatibilityError::MemoryviewSubView {
                             rank: ndim,
                             indices: 1,
                             tuple: false,
                             assignment: false,
                         }
-                        .raise::<()>(_py));
+                        .raise::<()>(_py);
+                        return Err(());
                     }
                     let len = shape[0] as i64;
                     let mut i = idx;
@@ -394,18 +397,20 @@ pub(crate) fn index_impl(
                         i += len;
                     }
                     if i < 0 || i >= len {
-                        return Err(raise_exception::<()>(
+                        raise_exception::<()>(
                             _py,
                             "IndexError",
                             "index out of bounds on dimension 1",
-                        ));
+                        );
+                        return Err(());
                     }
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
-                        return Err(raise_exception::<()>(
+                        raise_exception::<()>(
                             _py,
                             "BufferError",
                             "invalid memoryview index offset",
-                        ));
+                        );
+                        return Err(());
                     };
                     let val = memoryview_read_item_at(_py, ptr, pos, &format);
                     return val.ok_or(());
@@ -526,18 +531,12 @@ pub(crate) fn index_impl(
                             i += len;
                         }
                         if i < 0 || i >= len {
-                            return Err(raise_exception::<()>(
-                                _py,
-                                "IndexError",
-                                "string index out of range",
-                            ));
+                            raise_exception::<()>(_py, "IndexError", "string index out of range");
+                            return Err(());
                         }
                         let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
-                            return Err(raise_exception::<()>(
-                                _py,
-                                "IndexError",
-                                "string index out of range",
-                            ));
+                            raise_exception::<()>(_py, "IndexError", "string index out of range");
+                            return Err(());
                         };
                         let mut out = Vec::with_capacity(4);
                         push_wtf8_codepoint(&mut out, code.to_u32());
@@ -555,17 +554,15 @@ pub(crate) fn index_impl(
                     }
                     if i < 0 || i >= len {
                         if type_id == TYPE_ID_BYTEARRAY {
-                            return Err(raise_exception::<()>(
+                            raise_exception::<()>(
                                 _py,
                                 "IndexError",
                                 "bytearray index out of range",
-                            ));
+                            );
+                            return Err(());
                         }
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "index out of range");
+                        return Err(());
                     }
                     return Ok(MoltObject::from_int(bytes[i as usize] as i64).bits());
                 }
@@ -642,19 +639,13 @@ pub(crate) fn index_impl(
                                 task, len, i
                             );
                         }
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "list index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "list index out of range");
+                        return Err(());
                     }
                     let Some(val_item) = crate::object::seq_access::pin_item(_py, ptr, i as usize)
                     else {
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "list index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "list index out of range");
+                        return Err(());
                     };
                     let val = val_item.bits();
                     if debug_index_list_enabled() {
@@ -738,18 +729,12 @@ pub(crate) fn index_impl(
                                 task, len, i
                             );
                         }
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "tuple index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "tuple index out of range");
+                        return Err(());
                     }
                     let Some(val) = crate::object::seq_access::item(ptr, i as usize) else {
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "tuple index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "tuple index out of range");
+                        return Err(());
                     };
                     inc_ref_bits(_py, val);
                     return Ok(val);
@@ -767,20 +752,22 @@ pub(crate) fn index_impl(
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
                             let adj = (idx_i64 as i128) + len;
                             if adj < 0 {
-                                return Err(raise_exception::<()>(
+                                raise_exception::<()>(
                                     _py,
                                     "IndexError",
                                     "range object index out of range",
-                                ));
+                                );
+                                return Err(());
                             }
                             idx_i64 = match i64::try_from(adj) {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    return Err(raise_exception::<()>(
+                                    raise_exception::<()>(
                                         _py,
                                         "IndexError",
                                         "range object index out of range",
-                                    ));
+                                    );
+                                    return Err(());
                                 }
                             };
                         }
@@ -796,11 +783,8 @@ pub(crate) fn index_impl(
                                 }
                             };
                         }
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "range object index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "range object index out of range");
+                        return Err(());
                     }
                     let Some(mut idx) = sequence_index_bigint(_py, key_bits, "range") else {
                         return Err(());
@@ -813,11 +797,8 @@ pub(crate) fn index_impl(
                         idx += &len;
                     }
                     if idx.is_negative() || idx >= len {
-                        return Err(raise_exception::<()>(
-                            _py,
-                            "IndexError",
-                            "range object index out of range",
-                        ));
+                        raise_exception::<()>(_py, "IndexError", "range object index out of range");
+                        return Err(());
                     }
                     let val = start + step * idx;
                     return {
@@ -846,29 +827,30 @@ pub(crate) fn index_impl(
                         }
                         return Ok(val);
                     }
-                    if !object_is_exact_builtin_dict(_py, ptr) {
-                        if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
+                    if !object_is_exact_builtin_dict(_py, ptr)
+                        && let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                             _py,
                             obj_bits,
                             b"__missing__",
                         ) {
                             Ok(value) => value,
                             Err(()) => return Err(()),
-                        } {
-                            exception_stack_push();
-                            let res = call_callable1(_py, call_bits, key_bits);
-                            let failed = exception_pending(_py);
-                            dec_ref_bits(_py, call_bits);
-                            if failed {
-                                dec_ref_bits(_py, res);
-                                exception_stack_pop(_py);
-                                return Err(());
-                            }
-                            exception_stack_pop(_py);
-                            return Ok(res);
                         }
+                    {
+                        exception_stack_push();
+                        let res = call_callable1(_py, call_bits, key_bits);
+                        let failed = exception_pending(_py);
+                        dec_ref_bits(_py, call_bits);
+                        if failed {
+                            dec_ref_bits(_py, res);
+                            exception_stack_pop(_py);
+                            return Err(());
+                        }
+                        exception_stack_pop(_py);
+                        return Ok(res);
                     }
-                    return Err(raise_key_error_with_key::<()>(_py, key_bits));
+                    raise_key_error_with_key::<()>(_py, key_bits);
+                    return Err(());
                 }
                 if type_id == TYPE_ID_DICT_KEYS_VIEW
                     || type_id == TYPE_ID_DICT_VALUES_VIEW
@@ -876,7 +858,8 @@ pub(crate) fn index_impl(
                 {
                     let view_name = type_name(_py, obj);
                     let msg = format!("'{}' object is not subscriptable", view_name);
-                    return Err(raise_exception::<()>(_py, "TypeError", &msg));
+                    raise_exception::<()>(_py, "TypeError", &msg);
+                    return Err(());
                 }
                 if type_id == TYPE_ID_TYPE {
                     // Try explicit __class_getitem__ first (handles custom
@@ -972,7 +955,8 @@ pub(crate) fn index_impl(
                 }
                 format!("'{}' object is not subscriptable", tn)
             };
-            return Err(raise_exception::<()>(_py, "TypeError", &msg));
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return Err(());
         }
         let obj_dbg = obj_from_bits(obj_bits);
         if debug_subscript_enabled() {
@@ -2087,29 +2071,28 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                 if !builtin_only
                     && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
                         || !crate::object::iterable::builtin_receiver(_py, ptr))
-                {
-                    if let Some(method) = match crate::builtins::attr::lookup_special_method(
+                    && let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         container_bits,
                         b"__contains__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    } {
-                        let result = call_callable1(_py, method, item_bits);
-                        dec_ref_bits(_py, method);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, result);
-                            return MoltObject::none().bits();
-                        }
-                        let truth = is_truthy(_py, obj_from_bits(result));
-                        dec_ref_bits(_py, result);
-                        return if exception_pending(_py) {
-                            MoltObject::none().bits()
-                        } else {
-                            MoltObject::from_bool(truth).bits()
-                        };
                     }
+                {
+                    let result = call_callable1(_py, method, item_bits);
+                    dec_ref_bits(_py, method);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, result);
+                        return MoltObject::none().bits();
+                    }
+                    let truth = is_truthy(_py, obj_from_bits(result));
+                    dec_ref_bits(_py, result);
+                    return if exception_pending(_py) {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_bool(truth).bits()
+                    };
                 }
                 let type_id = object_type_id(ptr);
                 if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {

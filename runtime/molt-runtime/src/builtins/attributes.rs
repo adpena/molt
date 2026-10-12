@@ -5,12 +5,15 @@ use std::sync::atomic::Ordering;
 
 use crate::async_rt::generators::generator_yieldfrom_bits;
 use crate::builtins::annotations::pep649_enabled;
+#[cfg(test)]
+use crate::builtins::attr::exception_is_attribute_error;
 use crate::builtins::attr::{
     attr_lookup_ptr_allow_missing, class_slots_info, clear_attribute_error_if_pending,
-    exception_is_attribute_error,
 };
 use crate::builtins::containers::tuple_method_bits;
-use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
+#[cfg(test)]
+use crate::builtins::exceptions::exception_matches_builtin_name;
+use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::frames::suspended_frame_bits;
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, generator_method_bits, object_method_bits,
@@ -38,9 +41,11 @@ pub(crate) use wrapper_attrs::{
 pub(crate) use class_lookup::{type_attr_lookup_ptr, type_attr_lookup_ptr_default};
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) use mutation::object_setattr_raw;
+#[cfg(test)]
+use mutation::type_mutate_attr_name;
 pub(crate) use mutation::{
     TypeMutation, explicit_object_mutation_admitted, explicit_type_mutate_attr_name,
-    generic_del_attr_name, generic_set_attr_name, mutate_attr_name, type_mutate_attr_name,
+    generic_del_attr_name, generic_set_attr_name, mutate_attr_name,
 };
 pub use mutation::{
     molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
@@ -2055,7 +2060,14 @@ mod tests {
             let dict_ptr = MoltObject::from_bits(dict_bits)
                 .as_ptr()
                 .expect("class namespace");
-            unsafe { crate::dict_set_in_place(_py, dict_ptr, name_key, shadow_name) };
+            unsafe {
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    dict_ptr,
+                    name_key,
+                    shadow_name
+                ))
+            };
 
             let resolved = super::molt_get_attr_name(class_bits, name_key);
             assert_eq!(

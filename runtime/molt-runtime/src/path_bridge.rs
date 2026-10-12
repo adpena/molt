@@ -653,7 +653,8 @@ mod path_transport_tests {
     fn fspath_transports_preserve_owned_identity_and_type_errors() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let transports: [(&str, fn(u64) -> u64); 3] = [
+            type FspathTransport = (&'static str, fn(u64) -> u64);
+            let transports: [FspathTransport; 3] = [
                 ("direct", crate::bridge::fspath_bits),
                 ("satellite", molt_runtime_path::bridge::fspath_bits),
                 ("public", |bits| {

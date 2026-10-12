@@ -374,14 +374,24 @@ mod tests {
             let custom_name = crate::attr_name_bits_from_bytes(py, b"custom_builtin").unwrap();
             let runtime_name = crate::attr_name_bits_from_bytes(py, b"molt_len").unwrap();
             unsafe {
-                crate::dict_set_in_place(py, captured_ptr, public_name, canonical);
-                crate::dict_set_in_place(py, captured_ptr, custom_name, canonical);
-                crate::dict_set_in_place(
+                assert!(crate::dict_set_in_place(
+                    py,
+                    captured_ptr,
+                    public_name,
+                    canonical
+                ));
+                assert!(crate::dict_set_in_place(
+                    py,
+                    captured_ptr,
+                    custom_name,
+                    canonical
+                ));
+                assert!(crate::dict_set_in_place(
                     py,
                     captured_ptr,
                     runtime_name,
                     MoltObject::from_int(37).bits(),
-                );
+                ));
             }
             crate::inc_ref_bits(py, globals);
             crate::inc_ref_bits(py, captured);

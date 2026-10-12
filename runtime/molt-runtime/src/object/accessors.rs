@@ -133,7 +133,6 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
 
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset`.
-#[must_use]
 pub(crate) unsafe fn object_field_set_ptr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -218,7 +217,6 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
 /// The slot must not own a mortal heap value or belong to an observed object.
 /// Fresh class fields contain the immortal missing singleton, never float zero.
 /// The field retains an incoming heap value just like ordinary assignment.
-#[must_use]
 pub(crate) unsafe fn object_field_init_ptr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,

@@ -199,8 +199,13 @@ mod tests {
                     crate::builtins::attr::attr_name_bits_from_bytes(py, b"_hidden").unwrap();
                 let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                 let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
-                dict_set_in_place(py, src_dict, getattr_name, callback);
-                dict_set_in_place(py, src_dict, hidden_name, MoltObject::from_int(11).bits());
+                assert!(dict_set_in_place(py, src_dict, getattr_name, callback));
+                assert!(dict_set_in_place(
+                    py,
+                    src_dict,
+                    hidden_name,
+                    MoltObject::from_int(11).bits()
+                ));
                 import_star(
                     py,
                     MoltObject::from_ptr(src).bits(),
@@ -337,8 +342,13 @@ mod tests {
                         intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
                     let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                     let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
-                    dict_set_in_place(py, src_dict, key, MoltObject::from_int(7).bits());
-                    dict_set_in_place(py, src_dict, all_key, names);
+                    assert!(dict_set_in_place(
+                        py,
+                        src_dict,
+                        key,
+                        MoltObject::from_int(7).bits()
+                    ));
+                    assert!(dict_set_in_place(py, src_dict, all_key, names));
                     let depth = crate::builtins::exceptions::exception_stack_depth();
                     import_star(
                         py,
@@ -396,8 +406,18 @@ mod tests {
                     intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
                 let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                 let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
-                dict_set_in_place(py, src_dict, key, MoltObject::from_int(7).bits());
-                dict_set_in_place(py, src_dict, all_key, MoltObject::from_ptr(names).bits());
+                assert!(dict_set_in_place(
+                    py,
+                    src_dict,
+                    key,
+                    MoltObject::from_int(7).bits()
+                ));
+                assert!(dict_set_in_place(
+                    py,
+                    src_dict,
+                    all_key,
+                    MoltObject::from_ptr(names).bits()
+                ));
                 import_star(
                     py,
                     MoltObject::from_ptr(src).bits(),

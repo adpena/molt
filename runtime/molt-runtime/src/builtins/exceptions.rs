@@ -4918,7 +4918,7 @@ mod tests {
 
             // Direct dictionary edits and public mutation share one Python
             // notes value. The reserved C metadata remains independently owned.
-            unsafe { crate::dict_set_in_place(_py, dictionary_ptr, name, none) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dictionary_ptr, name, none)) };
             let observed = crate::molt_get_attr_name(bits, name);
             assert_eq!(observed, none);
             assert!(!exception_pending(_py));
@@ -4945,7 +4945,7 @@ mod tests {
                 None
             );
             assert_eq!(unsafe { super::exception_notes_bits(exception) }, reserved);
-            unsafe { crate::dict_set_in_place(_py, dictionary_ptr, name, notes) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dictionary_ptr, name, notes)) };
             let result = super::molt_exception_add_note(bits, note);
             assert_eq!(result, none);
             assert!(!exception_pending(_py));
@@ -5039,7 +5039,7 @@ mod tests {
                     "identity lookup must not publish {}",
                     spec.name()
                 );
-                unsafe { crate::dict_set_in_place(_py, dict, key, canonical) };
+                unsafe { assert!(crate::dict_set_in_place(_py, dict, key, canonical)) };
                 assert!(!exception_pending(_py));
                 assert!(unsafe {
                     crate::object::ops::dict_del_in_place(_py, dict, key)
@@ -5096,7 +5096,7 @@ mod tests {
             assert!(!user.is_null());
             let user_bits = MoltObject::from_ptr(user).bits();
             crate::molt_class_set_base(user_bits, crate::builtin_classes(_py).exception);
-            unsafe { crate::dict_set_in_place(_py, dict, key, user_bits) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dict, key, user_bits)) };
 
             let canonical = super::exception_type_bits_from_name(_py, "SyntaxWarning");
             assert_ne!(
@@ -5118,7 +5118,7 @@ mod tests {
             assert!(!unsafe { crate::object::class_is_immutable(_py, user) });
 
             let replacement = MoltObject::from_int(37).bits();
-            unsafe { crate::dict_set_in_place(_py, dict, key, replacement) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dict, key, replacement)) };
             assert_eq!(
                 super::exception_type_bits_from_name(_py, "SyntaxWarning"),
                 canonical
@@ -5130,7 +5130,7 @@ mod tests {
                 Some(replacement)
             );
             let root_key = crate::attr_name_bits_from_bytes(_py, b"Exception").unwrap();
-            unsafe { crate::dict_set_in_place(_py, dict, root_key, replacement) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dict, root_key, replacement)) };
             assert_eq!(
                 super::exception_type_bits_from_name(_py, "Exception"),
                 crate::builtin_classes(_py).exception
@@ -5143,7 +5143,7 @@ mod tests {
                 Some(replacement)
             );
             let alias_key = crate::attr_name_bits_from_bytes(_py, b"IOError").unwrap();
-            unsafe { crate::dict_set_in_place(_py, dict, alias_key, user_bits) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dict, alias_key, user_bits)) };
             assert_eq!(
                 super::exception_type_bits_from_name(_py, "IOError"),
                 super::exception_type_bits_from_name(_py, "OSError")
@@ -5253,9 +5253,14 @@ mod tests {
                 .as_ptr()
                 .unwrap();
             unsafe {
-                crate::dict_set_in_place(_py, namespace, marker, MoltObject::from_int(91).bits())
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    namespace,
+                    marker,
+                    MoltObject::from_int(91).bits()
+                ))
             };
-            unsafe { crate::dict_set_in_place(_py, dict, key, user_bits) };
+            unsafe { assert!(crate::dict_set_in_place(_py, dict, key, user_bits)) };
             assert_eq!(
                 super::exception_type_bits_from_name(_py, "DynamicCacheProbe"),
                 user_bits

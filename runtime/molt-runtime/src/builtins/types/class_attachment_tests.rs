@@ -154,7 +154,7 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
 
         // A class-body assignment writes the namespace before sealing. It
         // does not assign the class object's own metaclass descriptor.
-        unsafe { dict_set_in_place(_py, namespace_ptr, class_name, property) };
+        unsafe { assert!(dict_set_in_place(_py, namespace_ptr, class_name, property)) };
         assert!(!exception_pending(_py));
         assert_eq!(
             unsafe {

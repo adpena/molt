@@ -1741,7 +1741,7 @@ mod tests {
                 let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
                 let _modules_owner = crate::PtrDropGuard::new(modules);
                 let child = crate::attr_name_bits_from_bytes(_py, b"g4_pkg.sub").unwrap();
-                unsafe { crate::dict_set_in_place(_py, modules, child, replacement) };
+                unsafe { assert!(crate::dict_set_in_place(_py, modules, child, replacement)) };
                 dec_ref_bits(_py, child);
             }
             dec_ref_bits(_py, bits);
@@ -2089,7 +2089,7 @@ mod tests {
                 .as_ptr()
                 .unwrap();
             let user_value = MoltObject::from_int(42).bits();
-            unsafe { crate::dict_set_in_place(py, dict, key, user_value) };
+            unsafe { assert!(crate::dict_set_in_place(py, dict, key, user_value)) };
             crate::builtins::modules::module_cache_publish(
                 name,
                 prior_cache,
@@ -2213,8 +2213,13 @@ mod tests {
                 );
                 crate::dict_del_in_place(py, dict, version_key).expect("operation succeeds");
                 crate::dict_del_in_place(py, dict, stdout_key).expect("operation succeeds");
-                crate::dict_set_in_place(py, dict, implementation_key, marker);
-                crate::dict_set_in_place(py, dict, path_key, marker);
+                assert!(crate::dict_set_in_place(
+                    py,
+                    dict,
+                    implementation_key,
+                    marker
+                ));
+                assert!(crate::dict_set_in_place(py, dict, path_key, marker));
             }
             assert!(!exception_pending(py));
 
@@ -2418,7 +2423,7 @@ mod tests {
             table.owners[id as usize]
                 .store(crate::concurrency::current_thread_id(), Ordering::Release);
             let replacement = MoltObject::from_int(42).bits();
-            unsafe { crate::dict_set_in_place(py, modules, name, replacement) };
+            unsafe { assert!(crate::dict_set_in_place(py, modules, name, replacement)) };
             assert!(
                 matches!(crate::builtins::modules::module_import_attempt(name),
                 Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) if bits == replacement)
@@ -2430,7 +2435,7 @@ mod tests {
             );
             table.owners[id as usize].store(0, Ordering::Release);
             table.states[id as usize].store(STATE_READY, Ordering::Release);
-            unsafe { crate::dict_set_in_place(py, modules, name, current) };
+            unsafe { assert!(crate::dict_set_in_place(py, modules, name, current)) };
 
             // Parent initialization may publish its child's public replacement
             // without invoking child ensure. The subsequent loop observes it.
@@ -2714,12 +2719,12 @@ mod tests {
                     // namespace and ordinary fallback lookup during bootstrap.
                     let override_bits = MoltObject::from_int(42).bits();
                     unsafe {
-                        crate::object::ops::dict_set_in_place(
+                        assert!(crate::object::ops::dict_set_in_place(
                             _py,
                             dict_ptr,
                             name_bits,
                             override_bits,
-                        )
+                        ))
                     };
                     let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                     assert_eq!(value, override_bits);
@@ -3008,7 +3013,14 @@ mod tests {
             let src_bits = module_ensure(_py, src_id);
             let replacement = module_ensure(_py, target_id);
             if let Some(modules) = modules {
-                unsafe { crate::dict_set_in_place(_py, modules, src_name, replacement) };
+                unsafe {
+                    assert!(crate::dict_set_in_place(
+                        _py,
+                        modules,
+                        src_name,
+                        replacement
+                    ))
+                };
             }
             module_table_view_replace(_py, src_id, replacement);
             let via_replace = module_ensure(_py, src_id);
@@ -3018,7 +3030,14 @@ mod tests {
             );
             dec_ref_bits(_py, via_replace);
             if let Some(modules) = modules {
-                unsafe { crate::dict_set_in_place(_py, modules, src_name, none_bits()) };
+                unsafe {
+                    assert!(crate::dict_set_in_place(
+                        _py,
+                        modules,
+                        src_name,
+                        none_bits()
+                    ))
+                };
             }
             module_table_view_replace(_py, src_id, none_bits());
             let halted = module_ensure(_py, src_id);

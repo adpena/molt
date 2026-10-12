@@ -170,9 +170,7 @@ pub extern "C" fn molt_importlib_compiled_loader_create_module(
 }
 
 fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
-    let Some(attr) = attr_name_bits_from_bytes(py, name) else {
-        return None;
-    };
+    let attr = attr_name_bits_from_bytes(py, name)?;
     let bits = molt_getattr_builtin(target, attr, MoltObject::none().bits());
     dec_ref_bits(py, attr);
     if exception_pending(py) {
@@ -186,9 +184,7 @@ fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
 }
 
 fn required_attr(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
-    let Some(attr) = attr_name_bits_from_bytes(py, name) else {
-        return None;
-    };
+    let attr = attr_name_bits_from_bytes(py, name)?;
     let bits = crate::molt_get_attr_name(target, attr);
     dec_ref_bits(py, attr);
     if exception_pending(py) {
@@ -255,13 +251,16 @@ impl<'a, 'py> DisplacedModule<'a, 'py> {
         };
         let saved = crate::molt_exception_last_pending();
         clear_exception(self.py);
-        if let Some(dict_ptr) = obj_from_bits(self.modules).as_ptr() {
-            let present = unsafe { dict_get_in_place(self.py, dict_ptr, self.name) };
-            if matches!(present, Ok(None)) {
-                unsafe { dict_set_in_place(self.py, dict_ptr, self.name, previous) };
+        let restored = if let Some(dict_ptr) = obj_from_bits(self.modules).as_ptr() {
+            match unsafe { dict_get_in_place(self.py, dict_ptr, self.name) } {
+                Ok(None) => unsafe { dict_set_in_place(self.py, dict_ptr, self.name, previous) },
+                Ok(Some(_)) => true,
+                Err(()) => false,
             }
-        }
-        if !exception_pending(self.py) && !obj_from_bits(saved).is_none() {
+        } else {
+            true
+        };
+        if restored && !exception_pending(self.py) && !obj_from_bits(saved).is_none() {
             let _ = crate::molt_exception_set_last(saved);
         }
         if !obj_from_bits(saved).is_none() {
@@ -688,7 +687,7 @@ mod tests {
             let stale_name = text(py, b"displaced_loader_stale");
             let stale = crate::molt_module_new(stale_name);
             assert!(!exception_pending(py));
-            unsafe { dict_set_in_place(py, modules_ptr, invalid_name, stale) };
+            unsafe { assert!(dict_set_in_place(py, modules_ptr, invalid_name, stale)) };
             assert!(!exception_pending(py));
             let failed = molt_importlib_compiled_loader_load_module(loader, invalid_name);
             assert!(obj_from_bits(failed).is_none());

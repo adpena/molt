@@ -130,7 +130,7 @@ fn call_bind_uses_replaced_keyword_value_at_binding_boundary() {
             let args = crate::call::bind::arguments::callargs_ptr(ptr_from_bits(builder));
             let dict = obj_from_bits((*args).keywords).as_ptr().unwrap();
             let expected = MoltObject::from_int(29).bits();
-            crate::dict_set_in_place(_py, dict, key_bits, expected);
+            assert!(crate::dict_set_in_place(_py, dict, key_bits, expected));
             assert_eq!(
                 crate::call::bind::molt_call_bind(func_bits, builder),
                 expected

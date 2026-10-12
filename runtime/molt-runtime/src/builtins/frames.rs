@@ -1591,13 +1591,13 @@ mod tests {
             let first_bits = MoltObject::from_ptr(first_ptr).bits();
             let second_bits = MoltObject::from_ptr(second_ptr).bits();
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            unsafe { dict_set_in_place(_py, globals_ptr, key_bits, first_bits) };
+            unsafe { assert!(dict_set_in_place(_py, globals_ptr, key_bits, first_bits)) };
             inc_ref_bits(_py, globals_bits);
             inc_ref_bits(_py, first_bits);
             frame_stack_push_owned(_py, 0, globals_bits, first_bits, 0);
             assert_eq!(frame_stack_active_builtins_bits(), first_bits);
 
-            unsafe { dict_set_in_place(_py, globals_ptr, key_bits, second_bits) };
+            unsafe { assert!(dict_set_in_place(_py, globals_ptr, key_bits, second_bits)) };
             assert_eq!(
                 frame_stack_active_builtins_bits(),
                 first_bits,

@@ -121,12 +121,12 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
                 } else {
                     molt_classmethod_new(function)
                 };
-                if !exception_pending(_py) {
-                    if !unsafe { dict_set_in_place(_py, dict_ptr, key_bits, descriptor) } {
-                        dec_ref_bits(_py, descriptor);
-                        dec_ref_bits(_py, key_bits);
-                        return false;
-                    }
+                if !exception_pending(_py)
+                    && !unsafe { dict_set_in_place(_py, dict_ptr, key_bits, descriptor) }
+                {
+                    dec_ref_bits(_py, descriptor);
+                    dec_ref_bits(_py, key_bits);
+                    return false;
                 }
                 dec_ref_bits(_py, descriptor);
             }
@@ -277,14 +277,20 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
             let dict_bits = class_dict_bits(ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                 let doc_key = alloc_string(_py, b"__doc__");
-                if !doc_key.is_null() {
-                    dict_set_in_place(
-                        _py,
-                        dict_ptr,
-                        MoltObject::from_ptr(doc_key).bits(),
-                        MoltObject::none().bits(),
-                    );
-                    dec_ref_bits(_py, MoltObject::from_ptr(doc_key).bits());
+                if doc_key.is_null() {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
+                }
+                let installed = dict_set_in_place(
+                    _py,
+                    dict_ptr,
+                    MoltObject::from_ptr(doc_key).bits(),
+                    MoltObject::none().bits(),
+                );
+                dec_ref_bits(_py, MoltObject::from_ptr(doc_key).bits());
+                if !installed {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
                 }
             }
         }

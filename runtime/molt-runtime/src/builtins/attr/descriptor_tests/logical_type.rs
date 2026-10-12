@@ -92,12 +92,12 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
             dec_ref_bits(py, method);
         }
         unsafe {
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 py,
                 obj_from_bits(dictionary).as_ptr().unwrap(),
                 await_name,
                 missing,
-            );
+            ));
             let result = object_attr_lookup_with_dict(py, future, await_name, dictionary, false)
                 .expect("operation succeeds");
             assert_eq!(
@@ -149,12 +149,12 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
         let dictionary = crate::molt_get_attr_name(receiver, dict_name);
         let expected = builtin_classes(py).int;
         unsafe {
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 py,
                 obj_from_bits(dictionary).as_ptr().unwrap(),
                 name,
                 expected,
-            )
+            ))
         };
         for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
             let result = reader(receiver, name);
@@ -288,12 +288,12 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             assert_eq!(own, receiver);
             dec_ref_bits(py, own);
             let dictionary = crate::molt_dict_new(0);
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 py,
                 obj_from_bits(dictionary).as_ptr().unwrap(),
                 name,
                 MoltObject::from_int(99).bits(),
-            );
+            ));
             let own = object_attr_lookup_with_dict(py, proxy, name, dictionary, false)
                 .expect("operation succeeds")
                 .unwrap();
@@ -465,12 +465,12 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
                 (b"cr_await".as_slice(), MoltObject::none().bits()),
             ] {
                 let name = string_bits(py, spelling);
-                dict_set_in_place(
+                assert!(dict_set_in_place(
                     py,
                     obj_from_bits(dictionary).as_ptr().unwrap(),
                     name,
                     MoltObject::from_int(99).bits(),
-                );
+                ));
                 for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
                     let result = reader(coroutine, name);
                     assert_eq!(result, expected);
@@ -649,7 +649,10 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
             dec_ref_bits(py, name);
 
             let dictionary = crate::molt_dict_new(0);
-            crate::object::field_storage::replace_dictionary(py, ptr, Some(dictionary));
+            assert!(
+                crate::object::field_storage::replace_dictionary(py, ptr, Some(dictionary))
+                    .is_err()
+            );
             assert!(crate::builtins::attr::clear_attribute_error_if_pending(py));
             dec_ref_bits(py, dictionary);
             crate::object::field_storage::reset(py, ptr);

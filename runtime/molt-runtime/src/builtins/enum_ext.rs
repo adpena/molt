@@ -366,13 +366,13 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         // Store __members__ on the class dict
         if let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") {
             let cls_dict_bits = unsafe { class_dict_bits(cls_ptr) };
-            if let Some(dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() {
-                if !unsafe { dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits) } {
-                    dec_ref_bits(_py, attr_key);
-                    dec_ref_bits(_py, members_dict_bits);
-                    dec_ref_bits(_py, cls_bits);
-                    return MoltObject::none().bits();
-                }
+            if let Some(dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr()
+                && !unsafe { dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits) }
+            {
+                dec_ref_bits(_py, attr_key);
+                dec_ref_bits(_py, members_dict_bits);
+                dec_ref_bits(_py, cls_bits);
+                return MoltObject::none().bits();
             }
             dec_ref_bits(_py, attr_key);
         }

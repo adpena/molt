@@ -494,14 +494,6 @@ impl MoltScheduler {
         }
     }
 
-    pub fn shutdown(&self) {
-        self.stop();
-        assert!(
-            self.join(),
-            "runtime scheduler worker failed; origin retained"
-        );
-    }
-
     pub(crate) fn clear_stopped_queue(&self) -> bool {
         assert!(!self.running.load(AtomicOrdering::Acquire));
         let deferred = std::mem::take(&mut *self.deferred.lock().unwrap());

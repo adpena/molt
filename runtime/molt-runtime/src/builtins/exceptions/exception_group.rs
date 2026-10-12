@@ -291,9 +291,7 @@ fn exception_group_admit<'a, 'py>(
     }
     // PySequence_Tuple: an exact tuple keeps its identity, an exact list is
     // copied, and every subtype iterates under the target's hint policy.
-    let Some(exceptions) = (unsafe { tuple_from_iter_bits(py, exceptions) }) else {
-        return None;
-    };
+    let exceptions = unsafe { tuple_from_iter_bits(py, exceptions) }?;
     let exceptions = Owned::adopt(py, exceptions);
     let Some(tuple) = obj_from_bits(exceptions.bits()).as_ptr() else {
         return fail(
@@ -674,9 +672,7 @@ unsafe fn exception_group_subset<'a, 'py>(
     if unsafe { crate::object::seq_access::len(excs_ptr) } == 0 {
         return Some(None);
     }
-    let Some(name) = attr_name_bits_from_bytes(py, b"derive") else {
-        return None;
-    };
+    let name = attr_name_bits_from_bytes(py, b"derive")?;
     let name = Owned::adopt(py, name);
     let derive = crate::molt_get_attr_name(orig, name.bits());
     if exception_pending(py) {
@@ -755,9 +751,7 @@ unsafe fn exception_group_copy_metadata(
     if crate::object::ops::sequence_check_bits(py, notes.bits()) != 1 {
         return (!exception_pending(py)).then_some(());
     }
-    let Some(copy) = (unsafe { crate::object::ops::list_from_iter_bits(py, notes.bits()) }) else {
-        return None;
-    };
+    let copy = unsafe { crate::object::ops::list_from_iter_bits(py, notes.bits()) }?;
     let copy = Owned::adopt(py, copy);
     drop(notes);
     crate::builtins::attributes::mutate_attr_name(

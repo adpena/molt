@@ -322,65 +322,37 @@ fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
     MoltObject::from_ptr(class_ptr).bits()
 }
 
-fn set_class_attr_string(_py: &PyToken<'_>, class_bits: u64, name: &[u8], value: &str) {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return;
+fn set_class_attr_text(
+    py: &PyToken<'_>,
+    class_bits: u64,
+    name: &[u8],
+    value: Option<&str>,
+) -> Option<()> {
+    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+    if unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return None;
+    }
+    let dict_ptr = obj_from_bits(unsafe { class_dict_bits(class_ptr) }).as_ptr()?;
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return None;
+    }
+    let name_bits = attr_name_bits_from_bytes(py, name)?;
+    let value_bits = if let Some(value) = value {
+        let ptr = alloc_string(py, value.as_bytes());
+        if ptr.is_null() {
+            dec_ref_bits(py, name_bits);
+            return None;
         }
-    }
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
+        MoltObject::from_ptr(ptr).bits()
+    } else {
+        MoltObject::none().bits()
     };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
-        }
+    let stored = unsafe { dict_set_in_place(py, dict_ptr, name_bits, value_bits) };
+    dec_ref_bits(py, name_bits);
+    if value.is_some() {
+        dec_ref_bits(py, value_bits);
     }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
-        return;
-    };
-    let value_ptr = alloc_string(_py, value.as_bytes());
-    if value_ptr.is_null() {
-        dec_ref_bits(_py, name_bits);
-        return;
-    }
-    let value_bits = MoltObject::from_ptr(value_ptr).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, name_bits, value_bits);
-    }
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, value_bits);
-}
-
-fn set_class_attr_none(_py: &PyToken<'_>, class_bits: u64, name: &[u8]) {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return;
-        }
-    }
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
-        }
-    }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
-        return;
-    };
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits());
-    }
-    dec_ref_bits(_py, name_bits);
+    stored.then_some(())
 }
 
 fn init_scalar_subclass_layout(
@@ -397,28 +369,23 @@ fn init_scalar_subclass_layout(
 
 /// A frame object keeps its binding source in a typed payload word ahead of
 /// its managed `__dict__` (`builtins/frames/locals_proxy.rs`).
-fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) {
-    let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(frame_ptr) != TYPE_ID_TYPE {
-            return;
-        }
+fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) -> Option<()> {
+    let frame_ptr = obj_from_bits(frame_bits).as_ptr()?;
+    if unsafe { object_type_id(frame_ptr) } != TYPE_ID_TYPE {
+        return None;
     }
-    let Some(dict_ptr) = obj_from_bits(unsafe { class_dict_bits(frame_ptr) }).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
-        }
+    let dict_ptr = obj_from_bits(unsafe { class_dict_bits(frame_ptr) }).as_ptr()?;
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return None;
     }
     let layout_name_bits = intern_static_name(
         _py,
         &runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
+    if layout_name_bits == 0 {
+        return None;
+    }
     unsafe {
         if !dict_set_in_place(
             _py,
@@ -426,7 +393,7 @@ fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) {
             layout_name_bits,
             MoltObject::from_int(16).bits(),
         ) {
-            return;
+            return None;
         }
         class_bump_layout_version(frame_ptr);
         let shaped = crate::object::class_set_instance_shape_id(
@@ -435,6 +402,7 @@ fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) {
         );
         assert!(shaped, "frame class shape selected twice");
     }
+    Some(())
 }
 
 fn union_type_class_name(_py: &PyToken<'_>) -> &'static str {
@@ -984,7 +952,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(method_wrapper, object);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
-    init_frame_layout(_py, frame);
+    if init_frame_layout(_py, frame).is_none() {
+        release_failed_builtin_classes(_py, &all_classes);
+        return None;
+    }
     let _ = molt_class_set_base(traceback, object);
     let _ = molt_class_set_base(module, object);
     let _ = molt_class_set_base(super_type, object);
@@ -1018,107 +989,6 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         .expect("validated ReferenceType class pointer");
     assert!(unsafe { crate::object::class_set_instance_type_id(reference_ptr, TYPE_ID_WEAKREF) });
 
-    for bits in [
-        object,
-        type_obj,
-        none_type,
-        not_implemented_type,
-        ellipsis_type,
-        base_exception,
-        exception,
-        base_exception_group,
-        exception_group,
-        int,
-        float,
-        complex,
-        bool,
-        str,
-        bytes,
-        bytearray,
-        list,
-        tuple,
-        dict,
-        dict_keys,
-        dict_items,
-        dict_values,
-        set,
-        frozenset,
-        range,
-        slice,
-        memoryview,
-        io_base,
-        raw_io_base,
-        buffered_io_base,
-        text_io_base,
-        file,
-        file_io,
-        buffered_reader,
-        buffered_writer,
-        buffered_random,
-        text_io_wrapper,
-        bytes_io,
-        string_io,
-        function,
-        coroutine,
-        coroutine_wrapper,
-        generator,
-        async_generator,
-        iterator,
-        callable_iterator,
-        enumerate,
-        reversed,
-        zip,
-        map,
-        filter,
-        builtin_function_or_method,
-        builtin_method,
-        method_descriptor,
-        wrapper_descriptor,
-        classmethod_descriptor,
-        method_wrapper,
-        code,
-        frame,
-        traceback,
-        module,
-        super_type,
-        classmethod,
-        staticmethod,
-        property,
-        generic_alias,
-        union_type,
-        reference_type,
-    ] {
-        set_class_attr_string(_py, bits, b"__module__", "builtins");
-        // Prevent inheriting `object.__text_signature__` across the builtins type graph.
-        // CPython generally defines `__text_signature__ = None` on builtin types unless
-        // a specific public signature is provided.
-        set_class_attr_none(_py, bits, b"__text_signature__");
-    }
-    set_class_attr_string(
-        _py,
-        property,
-        b"__text_signature__",
-        "(fget=None, fset=None, fdel=None, doc=None)",
-    );
-    // Signature metadata for builtin types used by `inspect.signature` (CPython parity).
-    // Keep these in sync with the 3.12+ union expectations in differential probes.
-    set_class_attr_string(_py, object, b"__text_signature__", "()");
-    set_class_attr_string(_py, memoryview, b"__text_signature__", "(object)");
-    set_class_attr_string(_py, enumerate, b"__text_signature__", "(iterable, start=0)");
-    set_class_attr_string(_py, reversed, b"__text_signature__", "(sequence, /)");
-    set_class_attr_string(_py, complex, b"__text_signature__", "(real=0, imag=0)");
-    set_class_attr_string(_py, float, b"__text_signature__", "(x=0, /)");
-    set_class_attr_string(_py, list, b"__text_signature__", "(iterable=(), /)");
-    set_class_attr_none(_py, list, b"__hash__");
-    set_class_attr_string(_py, tuple, b"__text_signature__", "(iterable=(), /)");
-    set_class_attr_string(_py, reference_type, b"__module__", "_weakref");
-    set_class_attr_string(
-        _py,
-        reference_type,
-        b"__text_signature__",
-        "(object, callback=None, /)",
-    );
-
     // CPython v3.12.0/v3.13.0/v3.14.0 native initializers and heap specs.
     // Cache/bank membership is custody, never semantic static/immutable policy.
     // Public io ABCs live in the lowered io module. The physical _io bases
@@ -1137,8 +1007,122 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         bytes_io,
         string_io,
     ];
-    for bits in immutable_heap {
-        set_class_attr_string(_py, bits, b"__module__", "_io");
+    let metadata_initialized = (|| {
+        for bits in [
+            object,
+            type_obj,
+            none_type,
+            not_implemented_type,
+            ellipsis_type,
+            base_exception,
+            exception,
+            base_exception_group,
+            exception_group,
+            int,
+            float,
+            complex,
+            bool,
+            str,
+            bytes,
+            bytearray,
+            list,
+            tuple,
+            dict,
+            dict_keys,
+            dict_items,
+            dict_values,
+            set,
+            frozenset,
+            range,
+            slice,
+            memoryview,
+            io_base,
+            raw_io_base,
+            buffered_io_base,
+            text_io_base,
+            file,
+            file_io,
+            buffered_reader,
+            buffered_writer,
+            buffered_random,
+            text_io_wrapper,
+            bytes_io,
+            string_io,
+            function,
+            coroutine,
+            coroutine_wrapper,
+            generator,
+            async_generator,
+            iterator,
+            callable_iterator,
+            enumerate,
+            reversed,
+            zip,
+            map,
+            filter,
+            builtin_function_or_method,
+            builtin_method,
+            method_descriptor,
+            wrapper_descriptor,
+            classmethod_descriptor,
+            method_wrapper,
+            code,
+            frame,
+            traceback,
+            module,
+            super_type,
+            classmethod,
+            staticmethod,
+            property,
+            generic_alias,
+            union_type,
+            reference_type,
+        ] {
+            set_class_attr_text(_py, bits, b"__module__", Some("builtins"))?;
+            // Prevent inheriting `object.__text_signature__` across the builtins type graph.
+            // CPython generally defines `__text_signature__ = None` on builtin types unless
+            // a specific public signature is provided.
+            set_class_attr_text(_py, bits, b"__text_signature__", None)?;
+        }
+        // Signature metadata for builtin types used by `inspect.signature` (CPython parity).
+        // Keep these in sync with the 3.12+ union expectations in differential probes.
+        let overrides: &[(u64, &[u8], Option<&str>)] = &[
+            (
+                property,
+                b"__text_signature__",
+                Some("(fget=None, fset=None, fdel=None, doc=None)"),
+            ),
+            (object, b"__text_signature__", Some("()")),
+            (memoryview, b"__text_signature__", Some("(object)")),
+            (
+                enumerate,
+                b"__text_signature__",
+                Some("(iterable, start=0)"),
+            ),
+            (reversed, b"__text_signature__", Some("(sequence, /)")),
+            (complex, b"__text_signature__", Some("(real=0, imag=0)")),
+            (float, b"__text_signature__", Some("(x=0, /)")),
+            (list, b"__text_signature__", Some("(iterable=(), /)")),
+            (list, b"__hash__", None),
+            (tuple, b"__text_signature__", Some("(iterable=(), /)")),
+            (reference_type, b"__module__", Some("_weakref")),
+            (
+                reference_type,
+                b"__text_signature__",
+                Some("(object, callback=None, /)"),
+            ),
+        ];
+        for &(bits, name, value) in overrides {
+            set_class_attr_text(_py, bits, name, value)?;
+        }
+        for bits in immutable_heap {
+            set_class_attr_text(_py, bits, b"__module__", Some("_io"))?;
+        }
+        Some(())
+    })();
+    if metadata_initialized.is_none() {
+        release_failed_builtin_classes(_py, &all_classes);
+        return None;
     }
     let exception_policies = [
         (base_exception, "BaseException"),
@@ -1655,6 +1639,85 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[test]
+    fn builtin_metadata_failure_preserves_namespace_and_owned_references() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let refs = |ptr| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+            // The name cache is warm, but these non-identifier strings are not
+            // immortal interned values: a leaked temporary name owner is visible.
+            let name = b"bootstrap metadata probe";
+            let key = attr_name_bits_from_bytes(py, name).unwrap();
+            let key_ptr = obj_from_bits(key).as_ptr().unwrap();
+            let _key_owner = PtrDropGuard::new(key_ptr);
+            for value in [Some("(runtime metadata)"), None] {
+                let class = super::make_builtin_class(py, "MetadataFailureProbe");
+                let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+                let class_owner = PtrDropGuard::new(class_ptr);
+                let dict = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
+                    .as_ptr()
+                    .unwrap();
+                let baseline = (refs(class_ptr), refs(dict), refs(key_ptr));
+                assert_eq!(unsafe { dict_len(dict) }, 0);
+                {
+                    let _restore = RestoreTracker;
+                    set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                        max_memory: Some(0),
+                        max_allocations: Some(0),
+                        ..Default::default()
+                    })));
+                    // Text needs its own allocation; None reaches the empty
+                    // dictionary's real backing reservation. No allocation count
+                    // or synthetic failure hook chooses either failure point.
+                    assert!(super::set_class_attr_text(py, class, name, value).is_none());
+                }
+                let error = exception_last_bits_noinc(py).expect("allocation failure");
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    "MemoryError",
+                ));
+                clear_exception(py);
+                assert_eq!(unsafe { dict_len(dict) }, 0);
+                assert_eq!(unsafe { dict_get_in_place(py, dict, key) }, Ok(None));
+                assert_eq!((refs(class_ptr), refs(dict), refs(key_ptr)), baseline);
+
+                // A prior error is not the status of this publication. The same
+                // operation succeeds after admission is restored and keeps it.
+                raise_exception::<()>(py, "ValueError", "preexisting metadata error");
+                let prior = exception_last_bits_noinc(py).unwrap();
+                assert!(super::set_class_attr_text(py, class, name, value).is_some());
+                assert_eq!(exception_last_bits_noinc(py), Some(prior));
+                clear_exception(py);
+                let stored = unsafe { dict_get_in_place(py, dict, key) }
+                    .unwrap()
+                    .unwrap();
+                if let Some(expected) = value {
+                    assert_eq!(
+                        string_obj_to_owned(obj_from_bits(stored)).as_deref(),
+                        Some(expected)
+                    );
+                } else {
+                    assert_eq!(stored, MoltObject::none().bits());
+                }
+                assert_eq!(refs(class_ptr), baseline.0);
+                assert_eq!(refs(dict), baseline.1);
+                assert_eq!(refs(key_ptr), baseline.2 + 1);
+                drop(class_owner);
+                assert_eq!(refs(key_ptr), baseline.2);
+            }
+        });
     }
 
     #[test]

@@ -509,10 +509,10 @@ unsafe fn mutate_class_physical_dictionary(
             obj_from_bits(dictionary).as_ptr().unwrap(),
             name,
         );
-        let applied = retired
-            .as_ref()
-            .map(|retired| retired.is_some())
-            .map_err(|()| ());
+        let applied = match &retired {
+            Ok(retired) => Ok(retired.is_some()),
+            Err(()) => Err(()),
+        };
         drop(retired);
         dec_ref_bits(py, dictionary);
         applied

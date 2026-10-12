@@ -1301,7 +1301,8 @@ mod encode_tests {
         // CPython Objects/unicodeobject.c unicode_encode_ucs1,
         // charmap_encoding_error, _PyUnicode_EncodeUTF16/32 and
         // Objects/stringlib/codecs.h utf8_encode: code-point offsets, not bytes.
-        let cases: &[(&[u32], &str, &str, usize, usize, &str)] = &[
+        type EncodingFailureCase<'a> = (&'a [u32], &'a str, &'a str, usize, usize, &'a str);
+        let cases: &[EncodingFailureCase<'_>] = &[
             (&[97, 0xe9, 0x20ac, 122], "ascii", "strict", 1, 3, "ascii"),
             (
                 &[0xe9, 97, 0x20ac, 0x10000, 122],

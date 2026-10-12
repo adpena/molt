@@ -224,7 +224,7 @@ mod tests {
     fn calibration_uses_shared_target_and_growth_policy() {
         let iterations = calibrate_timed_iterations(4, |count| count as u128 * 1_000_000);
         assert_eq!(iterations, 200);
-        assert!(CALIBRATION_TARGET_NS >= MINIMUM_SAMPLE_NS * 10);
+        const { assert!(CALIBRATION_TARGET_NS >= MINIMUM_SAMPLE_NS * 10) };
     }
 
     #[test]

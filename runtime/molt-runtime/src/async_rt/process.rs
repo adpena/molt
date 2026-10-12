@@ -1123,6 +1123,7 @@ fn process_teardown_duration(env_key: &str, default_ms: u64) -> Duration {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ProcessState {
+    #[cfg(test)]
     fn wait_for_exit(&self, timeout: Duration) -> bool {
         if !self.is_pending() {
             return true;
@@ -1715,7 +1716,7 @@ mod native_process_fixture {
                     unsafe {
                         libc::signal(
                             libc::SIGTERM,
-                            retain_group_parent_until_reaped as libc::sighandler_t,
+                            retain_group_parent_until_reaped as *const () as libc::sighandler_t,
                         )
                     },
                     libc::SIG_ERR

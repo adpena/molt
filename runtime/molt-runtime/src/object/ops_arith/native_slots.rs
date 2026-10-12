@@ -349,10 +349,10 @@ fn view_intersection(py: &PyToken<'_>, mut view: u64, mut other: u64) -> u64 {
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
-            if obj_from_bits(contains).as_bool() == Some(true) {
-                if !set_add_in_place(py, result_ptr, item.bits(), HashContext::SetElement) {
-                    return MoltObject::none().bits();
-                }
+            if obj_from_bits(contains).as_bool() == Some(true)
+                && !set_add_in_place(py, result_ptr, item.bits(), HashContext::SetElement)
+            {
+                return MoltObject::none().bits();
             }
         }
         result.into_bits()

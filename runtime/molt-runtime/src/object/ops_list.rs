@@ -1005,7 +1005,7 @@ pub extern "C" fn molt_list_index_range(
             .unwrap_or_default();
         dec_ref_bits(_py, repr_bits);
         let msg = format!("{rendered} is not in list");
-        return raise_exception::<_>(_py, "ValueError", &msg);
+        raise_exception::<_>(_py, "ValueError", &msg)
     })
 }
 

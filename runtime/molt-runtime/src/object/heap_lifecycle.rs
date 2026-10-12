@@ -1533,7 +1533,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
     let type_id = unsafe { object_type_id(ptr) };
     if type_id == crate::TYPE_ID_GENERATOR
         || (type_id == crate::TYPE_ID_OBJECT
-            && super::object_shape_is_task(unsafe { super::object_shape_id(ptr) }))
+            && super::object_shape_is_task(super::object_shape_id(ptr)))
     {
         crate::builtins::exceptions::task_raised_slot_forget(py, ptr);
     }

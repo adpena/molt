@@ -393,7 +393,7 @@ fn immutable_heap_evaluator_and_cache_follow_target_annotation_semantics() {
                     );
                     assert!(!function.is_null());
                     let function = MoltObject::from_ptr(function).bits();
-                    unsafe { dict_set_in_place(py, namespace, name, function) };
+                    unsafe { assert!(dict_set_in_place(py, namespace, name, function)) };
                     dec_ref_bits(py, function);
                     dec_ref_bits(py, name);
                     !exception_pending(py)

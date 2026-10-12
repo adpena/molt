@@ -28,12 +28,12 @@ fn descriptor_module_default_lookup_bypasses_module_getattr() {
         );
         let dict = unsafe { module_dict_bits(ptr) };
         unsafe {
-            dict_set_in_place(
+            assert!(dict_set_in_place(
                 py,
                 obj_from_bits(dict).as_ptr().unwrap(),
                 getter_name,
                 getter,
-            )
+            ))
         };
         let name = string_bits(py, b"absent");
         let normal = crate::molt_get_attr_name(module, name);

@@ -94,11 +94,11 @@ fn copy_kwds_mapping(_py: &PyToken<'_>, kwds_bits: u64) -> Option<u64> {
         return None;
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    if !obj_from_bits(kwds_bits).is_none() {
-        if !unsafe { dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwds_bits) } {
-            dec_ref_bits(_py, dict_bits);
-            return None;
-        }
+    if !obj_from_bits(kwds_bits).is_none()
+        && !unsafe { dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwds_bits) }
+    {
+        dec_ref_bits(_py, dict_bits);
+        return None;
     }
     Some(dict_bits)
 }

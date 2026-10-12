@@ -2116,7 +2116,7 @@ mod float_conversion_tests {
             let declaration = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
             unsafe {
                 let namespace = obj_from_bits(class_dict_bits(class_ptr)).as_ptr().unwrap();
-                dict_set_in_place(py, namespace, slots, declaration);
+                assert!(dict_set_in_place(py, namespace, slots, declaration));
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
                 assert_eq!(
                     crate::object::class_layout::field_at_offset(class_ptr, 0)

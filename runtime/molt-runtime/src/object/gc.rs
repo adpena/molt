@@ -4286,12 +4286,12 @@ mod tests {
                     }
                     4 => crate::object::ops::dict_clear_in_place(_py, mapping),
                     5 => {
-                        crate::object::ops_dict::dict_update_apply(
+                        assert!(crate::object::ops_dict::dict_update_apply(
                             _py,
                             bits,
                             crate::object::ops_dict::dict_update_set_in_place,
                             MoltObject::from_ptr(atomic_dict).bits(),
-                        );
+                        ));
                     }
                     _ => unreachable!(),
                 }

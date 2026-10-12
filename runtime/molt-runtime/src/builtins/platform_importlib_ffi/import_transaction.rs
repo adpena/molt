@@ -805,50 +805,48 @@ pub(super) fn importlib_transaction_package_from_globals(
     let package_name = intern_runtime_static_name(_py, b"__package__");
     if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) }
         .map_err(|()| MoltObject::none().bits())?
+        && !obj_from_bits(package_bits).is_none()
     {
-        if !obj_from_bits(package_bits).is_none() {
-            let Some(package) = string_obj_to_owned(obj_from_bits(package_bits)) else {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "package must be a string",
-                ));
-            };
-            if !package.is_empty() {
-                return Ok(Some(package));
-            }
-            return Ok(None);
+        let Some(package) = string_obj_to_owned(obj_from_bits(package_bits)) else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "package must be a string",
+            ));
+        };
+        if !package.is_empty() {
+            return Ok(Some(package));
         }
+        return Ok(None);
     }
 
     let spec_name = intern_runtime_static_name(_py, b"__spec__");
     if let Some(spec_bits) = unsafe { dict_get_in_place(_py, globals_ptr, spec_name) }
         .map_err(|()| MoltObject::none().bits())?
+        && !obj_from_bits(spec_bits).is_none()
     {
-        if !obj_from_bits(spec_bits).is_none() {
-            let parent_name = intern_runtime_static_name(_py, b"parent");
-            let parent_bits = crate::molt_object_getattribute(spec_bits, parent_name);
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
-            }
-            let Some(parent) = string_obj_to_owned(obj_from_bits(parent_bits)) else {
-                if !obj_from_bits(parent_bits).is_none() {
-                    dec_ref_bits(_py, parent_bits);
-                }
-                return Err(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "__spec__.parent must be a string",
-                ));
-            };
+        let parent_name = intern_runtime_static_name(_py, b"parent");
+        let parent_bits = crate::molt_object_getattribute(spec_bits, parent_name);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let Some(parent) = string_obj_to_owned(obj_from_bits(parent_bits)) else {
             if !obj_from_bits(parent_bits).is_none() {
                 dec_ref_bits(_py, parent_bits);
             }
-            if !parent.is_empty() {
-                return Ok(Some(parent));
-            }
-            return Ok(None);
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "__spec__.parent must be a string",
+            ));
+        };
+        if !obj_from_bits(parent_bits).is_none() {
+            dec_ref_bits(_py, parent_bits);
         }
+        if !parent.is_empty() {
+            return Ok(Some(parent));
+        }
+        return Ok(None);
     }
 
     let name_key = intern_runtime_static_name(_py, b"__name__");

@@ -313,6 +313,7 @@ impl SleepQueue {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn shutdown(&self, _py: &PyToken<'_>) {
         self.stop();
         assert!(self.join(), "runtime timer worker failed; origin retained");

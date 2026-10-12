@@ -1,7 +1,9 @@
+#[cfg(test)]
+use crate::exception_pending;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
-    dec_ref_bits, dict_len, dict_update_apply, dict_update_set_in_place, exception_pending,
-    obj_from_bits, object_type_id, raise_exception, usize_from_bits,
+    dec_ref_bits, dict_len, dict_update_apply, dict_update_set_in_place, obj_from_bits,
+    object_type_id, raise_exception, usize_from_bits,
 };
 
 #[unsafe(no_mangle)]

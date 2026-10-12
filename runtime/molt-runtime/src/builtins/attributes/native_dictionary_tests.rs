@@ -45,7 +45,7 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
                 let name = attr_name_bits_from_bytes(py, name).unwrap();
                 let function = alloc_function_obj(py, target, arity);
                 let function = MoltObject::from_ptr(function).bits();
-                dict_set_in_place(py, namespace, name, function);
+                assert!(dict_set_in_place(py, namespace, name, function));
                 dec_ref_bits(py, function);
                 dec_ref_bits(py, name);
             }
@@ -259,12 +259,12 @@ fn native_tuple_and_io_dictionaries_have_one_traversed_cleared_owner() {
                     before
                 );
                 if owner == io {
-                    dict_set_in_place(
+                    assert!(dict_set_in_place(
                         py,
                         dictionary_ptr,
                         closed_key,
                         MoltObject::from_int(99).bits(),
-                    );
+                    ));
                     assert_eq!(
                         molt_get_attr_name(owner, closed_key),
                         MoltObject::from_bool(false).bits()

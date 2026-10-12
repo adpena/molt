@@ -74,12 +74,12 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 let namespace = dict(py);
                 let namespace_ptr = obj_from_bits(namespace).as_ptr().unwrap();
                 unsafe {
-                    dict_set_in_place(
+                    assert!(dict_set_in_place(
                         py,
                         namespace_ptr,
                         key,
                         MoltObject::from_int(if module { 1 } else { 90 }).bits(),
-                    )
+                    ))
                 };
                 crate::molt_code_slots_init(1);
                 crate::molt_code_slot_set(0, code, namespace);
@@ -102,7 +102,12 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 let first = molt_locals_builtin();
                 if module {
                     unsafe {
-                        dict_set_in_place(py, namespace_ptr, key, MoltObject::from_int(2).bits())
+                        assert!(dict_set_in_place(
+                            py,
+                            namespace_ptr,
+                            key,
+                            MoltObject::from_int(2).bits()
+                        ))
                     };
                 } else {
                     // Replacing an immediate int needs no reference release.
@@ -392,7 +397,14 @@ fn function_type_code_slot_and_invocation_preserve_dict_subclass_identity() {
         let builtins = dict(py);
         let builtins_name = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
         let globals_storage = globals_namespace_storage_ptr(py, globals).unwrap().unwrap();
-        unsafe { dict_set_in_place(py, globals_storage, builtins_name, builtins) };
+        unsafe {
+            assert!(dict_set_in_place(
+                py,
+                globals_storage,
+                builtins_name,
+                builtins
+            ))
+        };
 
         let target = namespace_probe as *const () as usize as u64;
         bind_code_target(py, code, target);
@@ -453,7 +465,14 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
         for (captured_value, expected_error) in cases {
             let globals = dict(py);
             let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
-            unsafe { dict_set_in_place(py, globals_ptr, builtins_name, captured_value) };
+            unsafe {
+                assert!(dict_set_in_place(
+                    py,
+                    globals_ptr,
+                    builtins_name,
+                    captured_value
+                ))
+            };
             let captured = frame_effective_builtins_bits(py, globals)
                 .expect("builtins namespace lookup succeeds");
             assert_eq!(captured, captured_value);
@@ -512,7 +531,7 @@ fn captured_builtins_module_normalizes_to_its_namespace() {
         let module = crate::builtins::modules::molt_module_new(module_name);
         let module_ptr = obj_from_bits(module).as_ptr().expect("builtins module");
         let module_namespace = unsafe { module_dict_bits(module_ptr) };
-        unsafe { dict_set_in_place(py, globals_ptr, builtins_name, module) };
+        unsafe { assert!(dict_set_in_place(py, globals_ptr, builtins_name, module)) };
 
         assert_eq!(
             frame_effective_builtins_bits(py, globals).expect("builtins namespace lookup succeeds"),

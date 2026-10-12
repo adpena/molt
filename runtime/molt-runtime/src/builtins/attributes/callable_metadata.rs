@@ -173,12 +173,11 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[Field]) -> bool
                     deleter: MoltObject::none().bits(),
                 },
             );
-            if !exception_pending(py) {
-                dict_set_in_place(py, dictionary, name, descriptor);
-            }
+            let installed =
+                !exception_pending(py) && dict_set_in_place(py, dictionary, name, descriptor);
             dec_ref_bits(py, descriptor);
             dec_ref_bits(py, name);
-            if exception_pending(py) {
+            if !installed || exception_pending(py) {
                 return false;
             }
         }

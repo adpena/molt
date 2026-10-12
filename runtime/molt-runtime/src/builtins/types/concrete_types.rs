@@ -1161,11 +1161,11 @@ pub extern "C" fn molt_types_simplenamespace_init(
         let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
-                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    if !dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwargs_bits) {
-                        dec_ref_bits(_py, dict_bits);
-                        return MoltObject::none().bits();
-                    }
+                if object_type_id(kwargs_ptr) == TYPE_ID_DICT
+                    && !dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwargs_bits)
+                {
+                    dec_ref_bits(_py, dict_bits);
+                    return MoltObject::none().bits();
                 }
             }
         }

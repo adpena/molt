@@ -497,7 +497,7 @@ unsafe fn protocol_long(class: *mut PyTypeObject, huge: bool, negative: bool) ->
     if !value.is_null() {
         let integer = value.cast::<PyLongObject>();
         unsafe {
-            (*integer).long_value.lv_tag = ((count as usize) << 3) | usize::from(negative) * 2;
+            (*integer).long_value.lv_tag = ((count as usize) << 3) | (usize::from(negative) * 2);
             let digits = (&raw mut (*integer).long_value.ob_digit).cast::<u32>();
             for index in 0..count as usize {
                 digits
