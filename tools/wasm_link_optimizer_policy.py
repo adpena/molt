@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import sys
 from molt.temporary_artifacts import OwnedTemporaryDirectory
+from molt.dx import proof_scratch_root
 import time
 
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
@@ -595,7 +596,11 @@ def _optimize_split_app_module(
             optimizer_policy = wasm_link_policy(
                 optimize_level, preserve_debug=preserve_debug
             )
-            with OwnedTemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
+            scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+            scratch_root.mkdir(parents=True, exist_ok=True)
+            with OwnedTemporaryDirectory(
+                prefix="molt-split-app-opt-", dir=scratch_root
+            ) as tmp:
                 app_path = Path(tmp) / "app_split_preopt.wasm"
                 app_path.write_bytes(optimized)
                 active_attestation.update(

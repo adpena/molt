@@ -158,15 +158,16 @@ first joined runtime build exposes a capability-name lifetime mismatch and three
 obsolete exception-helper references in new tests. The correction preserves
 static names from generated operations and selected mounts through the existing
 audit consumer, and uses the canonical exception module directly. The corrected
-optimized runtime passes all 1,871 semantic tests with complete process custody;
+optimized runtime candidate `7f1e1ded3` passes all 1,872 semantic tests with complete process custody;
 performance probes remain unrun. Clippy exposes missing selected-component capture
 in the development proof runner; its failed executable admission is not a VFS or
 memory failure. The correction captures the selected launcher and driver through
 the existing Rust tool authority, validates their compiler identity, and rejects
 unowned Clippy resource selectors. A default root configuration bounds implicit
 lookup for the in-tree workspace. Ordinary Cargo does no extra Clippy discovery;
-these development checks add no emitted-program work. Actual Clippy execution
-remains required. The complete capture and queue consumer modules pass 979 checks
+these development checks add no emitted-program work. Actual VFS all-target,
+all-feature Clippy execution passes with complete process custody. The complete
+capture and queue consumer modules pass 979 checks
 with 15 platform skips; all descendants close without infrastructure failure.
 
 The direct WASM boundary build exposes a missing `fspath_bits` transport in the
@@ -174,7 +175,18 @@ reduced runtime profile. The correction delegates to the existing path conversio
 authority and preserves the full-profile FFI boundary. All 21 satellite-consumed
 bridge symbols are accounted for; new controls check identity, owned references,
 non-UTF8 bytes and exact type errors through direct, FFI and public transports.
-Successor native and reduced-WASM execution remains required.
+The new transport control passes in the full optimized runtime gate. The reduced
+WASM retry builds and executes the host-error program, which panics instead of
+reporting `AttributeError`. Its subsequent build exposes a scanner copy outside
+the queue's admitted scratch root. Neither result qualifies the WASM boundary.
+Both linker entry points and optimizer temporary storage now consume the
+existing scratch authority, with scanner byte custody unchanged. Their complete
+host consumer modules pass 326 checks with one skip and eight slow cases unrun.
+The final threadpool atomic call uses the pinned compiler's current `try_update`
+spelling; the deprecated spelling is a direct alias in pinned Rust source.
+Full stderr
+assertion diagnostics retain the next semantic failure; they do not weaken the
+expected error. Standalone native and corrected WASM execution remain required.
 
 The selected public consumer rosters include 39 native and 20 WASM programs,
 plus the direct WASM admission boundary. Ten existing async/executor fixtures now

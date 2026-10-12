@@ -461,11 +461,11 @@ def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
             out_dir, timeout=120, extra_env={"MOLT_GPU_BACKEND": backend}
         )
         assert refused.returncode != 0, refused.stdout + refused.stderr
-        assert "RuntimeError" in refused.stderr
+        assert "RuntimeError" in refused.stderr, refused.stderr
         assert (
             f"requested {backend.capitalize()} Python-kernel descriptor execution is unavailable"
             in refused.stderr
-        )
+        ), refused.stderr
         assert (
             refused.stdout.strip() == "GPU capability refused before kernel execution"
         )
@@ -552,7 +552,7 @@ def test_run_cmd_timeout_gracefully_collects_sigterm_output(tmp_path: Path) -> N
 
     assert res.timed_out is True
     assert res.returncode == 124
-    assert "TERM_CLEANUP" in res.stderr
+    assert "TERM_CLEANUP" in res.stderr, res.stderr
 
 
 def _sha256(path: Path) -> str:
@@ -1003,9 +1003,9 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     )
 
     assert run.returncode != 0, run.stdout
-    assert "AttributeError" in run.stderr
-    assert "None" in run.stderr
-    assert "foo" in run.stderr
+    assert "AttributeError" in run.stderr, run.stderr
+    assert "None" in run.stderr, run.stderr
+    assert "foo" in run.stderr, run.stderr
 
 
 @pytest.mark.slow
@@ -1422,7 +1422,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     )
 
     assert official_run.returncode != 0, official_run.stdout
-    assert "Index 46021 out of range" in official_run.stderr
+    assert "Index 46021 out of range" in official_run.stderr, official_run.stderr
 
 
 @pytest.mark.slow
@@ -1451,8 +1451,8 @@ def test_split_runtime_direct_indirect_call_uses_initialized_table_refs(
 
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "1152921504606846983"
-    assert "null function" not in run.stderr
-    assert "function signature mismatch" not in run.stderr
+    assert "null function" not in run.stderr, run.stderr
+    assert "function signature mismatch" not in run.stderr, run.stderr
 
 
 @pytest.mark.slow

@@ -40,7 +40,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
 )
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
-from molt.dx import configured_artifact_root  # noqa: E402
+from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 import wasm_link_command as _link_command  # noqa: E402
 import wasm_link_native_inputs as _native_inputs  # noqa: E402
 from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
@@ -311,7 +311,11 @@ def _run_wasm_ld(
             publication_outputs["timings"] = phase_timings_file
         validate_link_output_paths(publication_outputs, inputs=publication_inputs)
         output_paths_admitted = True
-        with OwnedTemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
+        scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        with OwnedTemporaryDirectory(
+            prefix="molt-wasm-link-custody-", dir=scratch_root
+        ) as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
             facts_provider = make_rust_wasm_facts_provider(
