@@ -194,16 +194,20 @@ fn emit_wasm_long_double_link_policy(target_arch: &str, out_dir: &Path) {
     // selection in the admitted C-ABI plan avoids a second SDK path authority;
     // a Cargo-wide link argument would also reach unrelated final artifacts.
     if target_os == "wasi" {
-        let name = member("crt_command")
+        let filename = member("crt_command")
             .file_name()
             .and_then(|name| name.to_str())
             .expect("WASI command CRT filename");
+        // Rust's raw WasmLd forwards native names as `-l NAME` and does not
+        // implement +verbatim. wasm-ld's colon syntax selects the exact object
+        // without library prefix/suffix expansion or copying it into an archive.
+        let name = format!(":{filename}");
         // #[link] requires a literal, so project the admitted filename through
         // the same build output mechanism used by the other Rust declarations.
         fs::write(
             out_dir.join("molt_wasi_test_startup.rs"),
             format!(
-                "#[link(name = {name:?}, kind = \"static\", modifiers = \"-bundle,+verbatim\")]\nunsafe extern \"C\" {{}}\n"
+                "#[link(name = {name:?}, kind = \"static\", modifiers = \"-bundle\")]\nunsafe extern \"C\" {{}}\n"
             ),
         )
         .expect("cannot write WASI test startup declaration");

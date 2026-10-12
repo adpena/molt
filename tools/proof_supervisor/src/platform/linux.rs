@@ -1158,6 +1158,26 @@ fn handle_trace_event(
         .and_then(|task| task.process)
         .is_none()
     {
+        if is_exit_stop(status) {
+            // A group exit can kill a newly cloned thread before its inherited
+            // initial SIGSTOP or the creator's CLONE notification is delivered.
+            // EXIT cannot enter user code. Bind only a kernel-proven thread of
+            // an existing process owner, then release its terminal transition.
+            let owner = thread_group_id(pid)
+                .filter(|owner| *owner != pid && trace.processes.contains_key(owner));
+            if let Some(owner) = owner {
+                trace
+                    .tasks
+                    .get_mut(&pid)
+                    .expect("waited task retained")
+                    .process = Some(owner);
+                trace.resume(pid, 0)?;
+                return Ok(());
+            }
+            return Err(format!(
+                "unadmitted process {pid} reached EXIT before its creation event"
+            ));
+        }
         // The child's initial stop may arrive before its parent's creation
         // event. Keep it stopped until that real event admits the process.
         if trace.terminating {
@@ -1173,7 +1193,9 @@ fn handle_trace_event(
     )?;
     match event as libc::c_int {
         libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE => {
-            let child = event_message(pid)?;
+            let Some(child) = retained_event_message(pid, event)? else {
+                return Ok(()); // The kernel's terminal observation is still pending.
+            };
             if child <= 0 {
                 return Err(format!(
                     "creation event returned invalid child id {child}: task {pid}, wait status {status:#x}, process owner {:?}",
@@ -1241,7 +1263,9 @@ fn handle_trace_event(
             }
         }
         libc::PTRACE_EVENT_EXEC => {
-            let former_tid = event_message(pid)?;
+            let Some(former_tid) = retained_event_message(pid, event)? else {
+                return Ok(());
+            };
             reconcile_exec_tid(&mut trace.tasks, former_tid, pid);
             let image = proc_image_identity(policy, pid, hash_cache)?;
             let process = trace
@@ -1335,6 +1359,44 @@ fn event_message(pid: libc::pid_t) -> Result<libc::pid_t, String> {
         return Err(os_error("ptrace(PTRACE_GETEVENTMSG)"));
     }
     libc::pid_t::try_from(value).map_err(|_| "ptrace event process id overflow".to_owned())
+}
+
+/// SIGKILL can replace a reported ptrace stop with EXIT before GETEVENTMSG.
+/// Check the kernel stop tag after reading the payload: without a tracer
+/// resume, a different creation/exec stop cannot intervene, but terminal
+/// progression can. An exit status must never become a child PID.
+fn retained_event_message(pid: libc::pid_t, event: u32) -> Result<Option<libc::pid_t>, String> {
+    let message = event_message(pid);
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+    if unsafe {
+        libc::ptrace(
+            libc::PTRACE_GETSIGINFO,
+            pid,
+            null_mut::<libc::c_void>(),
+            info.as_mut_ptr().cast::<libc::c_void>(),
+        )
+    } < 0
+    {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(None); // Await actual terminal custody, never synthesize exit.
+        }
+        return Err(format!(
+            "cannot bind event {event} to stopped task {pid}: {error}"
+        ));
+    }
+    let info = unsafe { info.assume_init() };
+    let observed = (info.si_code as u32) >> 8;
+    if info.si_signo == libc::SIGTRAP && observed == libc::PTRACE_EVENT_EXIT as u32 {
+        return Ok(None);
+    }
+    if info.si_signo != libc::SIGTRAP || observed != event {
+        return Err(format!(
+            "ptrace event {event} for task {pid} has mismatched stop signal {} and code {}",
+            info.si_signo, info.si_code
+        ));
+    }
+    message.map(Some)
 }
 
 fn ptrace_continue(pid: libc::pid_t, signal: libc::c_int) -> Result<(), String> {
@@ -2093,6 +2155,112 @@ mod tests {
             ));
             std::fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn killed_creation_reconciles_thread_exit_and_superseded_parent_event() {
+        let _serial = TEST_WAIT_CUSTODY.lock().unwrap();
+        let image = std::env::current_exe().unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "molt-kernel-cancelled-creation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let policy = crate::Policy {
+            schema: crate::POLICY_SCHEMA.to_owned(),
+            nonce: "b".repeat(32),
+            mode: ClosureMode::DeclaredTree,
+            cwd: std::env::current_dir().unwrap(),
+            command: vec![image.to_str().unwrap().to_owned()],
+            environment: super::super::required_environment(),
+            root_role: "root".to_owned(),
+            fixed_images: vec![crate::FixedImage {
+                role: "root".to_owned(),
+                sha256: crate::sha256_file(&image).unwrap(),
+                path: image,
+                root_exit_disposition: crate::RootExitDisposition::RequireExit,
+            }],
+            derived_roots: vec![],
+        }
+        .validate()
+        .unwrap();
+        let mut journal = EventJournal::create(
+            &directory.join("receipt.json"),
+            &policy,
+            &capability(policy.policy.mode),
+        )
+        .unwrap();
+        let mut fixture = KernelFixture::launch(KernelFixtureKind::LeaderExitWithLiveThread);
+        let (parent, creation) = fixture.trace.wait(fixture.root, false).unwrap().unwrap();
+        assert_eq!(creation as u32 >> 16, libc::PTRACE_EVENT_CLONE as u32);
+        let child = event_message(parent).unwrap();
+        let (_, initial) = fixture.trace.wait(child, false).unwrap().unwrap();
+        assert!(is_initial_stop(initial));
+        assert_eq!(fixture.trace.tasks[&child].process, None);
+        fixture.completion_is_pending();
+        // Both genuine stops are held. Fatal group termination replaces them;
+        // neither the creator nor the new thread is resumed into user code.
+        fixture.trace.processes[&parent]
+            .signal(libc::SIGKILL)
+            .unwrap();
+        let (_, child_exit) = fixture.trace.wait(child, false).unwrap().unwrap();
+        assert!(is_exit_stop(child_exit));
+        let mut generation = 1;
+        let mut cache = ImageHashCache::default();
+        handle_trace_event(
+            &policy,
+            &mut journal,
+            &mut fixture.trace,
+            child,
+            child_exit,
+            &mut generation,
+            &mut cache,
+        )
+        .unwrap();
+        // Independent kernel oracle: the production handler must release EXIT.
+        // The old unadmitted-task branch leaves GETSIGINFO available indefinitely.
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        assert_eq!(
+            unsafe {
+                libc::ptrace(
+                    libc::PTRACE_GETSIGINFO,
+                    child,
+                    null_mut::<libc::c_void>(),
+                    info.as_mut_ptr().cast::<libc::c_void>(),
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        let (_, parent_exit) = fixture.trace.wait(parent, false).unwrap().unwrap();
+        assert!(is_exit_stop(parent_exit));
+        assert_eq!(event_message(parent).unwrap(), libc::SIGKILL);
+        // Replay the retained, real creation notification after the kernel has
+        // superseded it. SIGKILL's numeric status must not become process PID 9.
+        handle_trace_event(
+            &policy,
+            &mut journal,
+            &mut fixture.trace,
+            parent,
+            creation,
+            &mut generation,
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(generation, 1);
+        assert_eq!(fixture.trace.processes.len(), 1);
+        assert_eq!(fixture.trace.tasks[&parent].stop, Some(parent_exit));
+        fixture.drain();
+        fixture.assert_completion(0);
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
