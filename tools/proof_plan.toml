@@ -471,6 +471,51 @@ setup_evidence = [
   "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain",
 ]
 
+# Differential subprocess and platform oracles consume these hosted POSIX
+# images. There is no portable version banner for sh/echo/true/uname: these
+# probes establish successful behavior, while captured file bytes own identity.
+# /bin/sh is the consumer-selected shell, independent of PATH or login shell.
+[[toolchain_policy]]
+name = "posix-sh"
+executable = "/bin/sh"
+version_args = ["-c", ":"]
+version_pattern = '^$'
+setup_value = "host POSIX shell"
+setup_evidence = ["src/molt/stdlib/subprocess.py::/bin/sh"]
+
+[[toolchain_policy]]
+name = "posix-echo"
+executable = "echo"
+version_args = ["molt-proof-probe"]
+version_pattern = '^molt-proof-probe$'
+setup_value = "host POSIX utility"
+setup_evidence = ["tests/differential/stdlib/subprocess_basic_run.py::subprocess.run"]
+
+[[toolchain_policy]]
+name = "posix-true"
+executable = "true"
+version_args = ["molt-proof-probe"]
+version_pattern = '^$'
+setup_value = "host POSIX utility"
+setup_evidence = ["tests/differential/stdlib/subprocess_basic_run.py::subprocess.check_call"]
+
+[[toolchain_policy]]
+name = "posix-uname"
+executable = "uname"
+version_args = ["-s"]
+version_pattern = '^.+$'
+setup_value = "host POSIX utility"
+setup_evidence = ["tests/differential/stdlib/platform_basic.py::platform.processor"]
+
+[[toolchain_policy]]
+name = "posix-file"
+executable = "file"
+version_args = ["--version"]
+version_pattern = '^file-[0-9]+\.'
+setup_value = "host file utility"
+# CPython platform.platform() queries executable architecture on macOS.
+setup_evidence = ["tests/differential/stdlib/platform_basic.py::platform.platform"]
+
 [[toolchain_policy]]
 name = "uv"
 executable = "uv"
@@ -4172,7 +4217,7 @@ timeout_seconds = 9000
 [[named_lane]]
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime ownership, mapping, numeric, path, encoding, stream and shared-call consumers against CPython 3.12 on native targets."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--no-retry-oom", "--json"]
 differential_cases = ["tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 cargo_native_units = { target = ["c", "c++"] }
@@ -4183,7 +4228,7 @@ timeout_seconds = 9000
 [[named_lane]]
 id = "runtime.public-consumers.wasm"
 description = "Compile and execute the shared mapping, numeric, serialization and error consumers against CPython 3.12 on WASM; native process and thread cells remain separate."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--fail-fast", "--no-retry-oom", "--json"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--no-retry-oom", "--json"]
 differential_cases = ["tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_native_units = { target = ["c", "c++"] }

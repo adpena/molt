@@ -1,3 +1,4 @@
+# MOLT_META: host_toolchains=macos:posix-file,posix:posix-uname
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.uname
 """Purpose: differential coverage for platform basic."""
 

@@ -95,7 +95,8 @@ IR/pass and WASM host authority group passes 2,327 cases across five executables
 with two intentional ignores, at the same source. These are native host tests,
 not WASM target execution. The ABI family passes 783 cases across 56 executables,
 with one intentional ignore. The latest supervisor correction passes its
-100-case applicable family; actual native compiler/linker consumers pass 72
+101-case Linux/aarch64 family at `cb95e5e49`, with one intentional ignore;
+actual native compiler/linker consumers pass 72
 checks with six platform skips. Candidate `39172765a` passes all five WASI
 micro-runtime lifecycle cases through the production host. Each result retains
 its own source, image, target, profile and exclusion scope below; unchanged
@@ -110,20 +111,39 @@ the verified process boundary. This is development-side cleanup work; it adds
 no emitted-program work or cross-platform execution claim.
 
 The remaining landing work is the affected compiled public native/WASM
-consumer group and actual warm-cache policy behavior. Changed mutation-result
-consumers now pass in both default and reduced runtime profiles.
-The warm-cache run built its first native binary but refused execution because
-the helper selected nested guard scratch outside the admitted proof root.
-Pytest and compiler-test helpers now share the existing proof-first scratch
-selection, including conformance, with queue and direct-guard cleanup ownership
-preserved. Ten focused placement controls pass. The next queued run reaches
-the executable-generation boundary: the supervisor's path-only registry rejects
-a second image produced at the same output pathname. Its shared ledger now
-retains each complete observed identity within the existing budgets, with a
-total order for deterministic replay; fixed inputs remain immutable. The
-supervisor's own small executable regression precedes another compiler run.
-Actual warm-cache execution remains unqualified; unchanged runtime evidence
-remains valid.
+consumer group. Changed mutation-result consumers pass in both default and
+reduced runtime profiles. Actual native warm-cache policy execution now passes
+at `cb95e5e49`: the same source and output path retain one compiled-code key
+across allow, deny and allow policies; both rebuilds hit the cache and all three
+binaries enforce the current embedded policy against opposite ambient grants.
+PATH is empty for execution; this remains a checkout-built consumer control,
+not installed standalone-without-Python qualification.
+
+The preceding runs exposed two development-side defects: helpers selected
+nested guard scratch outside the admitted output root, then the supervisor
+rejected a rebuilt image at the same pathname. Pytest and compiler-test helpers
+now share one scratch selector, including conformance. The supervisor retains
+complete observed image identities within existing budgets and deterministically
+replays multiple generations, while fixed inputs remain immutable. Ten focused
+placement controls and the actual repeated-path supervisor regression pass;
+unchanged runtime evidence remains valid. Neither repair adds emitted-program
+work.
+The next public-native attempt observed one passing case, then refused an
+undeclared shell image. Its incomplete process-custody receipt remains rejected.
+The complete selected-cohort dependency audit identified the POSIX shell,
+echo, true and uname, plus the CPython platform oracle's file utility on macOS.
+Those requirements now travel with the four consuming tests through existing
+test metadata. Default, explicitly selected and prepared named-lane admission
+combine only the host-applicable requirements with the existing tool policies;
+unrelated selections do not acquire POSIX requirements on Windows.
+The metadata owner passes 114 checks. The affected admission, receipt,
+source-binding and actual tkinter helper-placement consumers pass 101 checks.
+Empty-output probe controls pass; actual utility execution belongs to the
+remaining compiled consumer run. An AST census confirms all nine helper call
+sites use the canonical scratch selector after retiring the explicit-root lane.
+Native and WASM consumer cohorts now accumulate semantic failures while
+retaining immediate resource/custody refusal and disabling OOM retries.
+This prevents repeated first-failure runs without weakening acceptance.
 The earlier public native run stopped after six passes
 at the subprocess path-conversion fixture: its missing `process.exec` grant
 prevented the callback oracle from running. The five affected asyncio spawn
@@ -138,8 +158,10 @@ objects; every producer, record and consumer of that retired key input is
 migrated. Native final entrypoints/link identities, WASM deployments and complete
 wrapper binaries retain their current resolved policy. The focused cache and
 consumer controls pass 140 checks, with four additional WASM final-output
-controls passing. Actual warm compiled-code reuse with changed-policy execution
-and performance measurement remain unqualified. This removes compiler-side
+controls passing. The actual native cache execution above records a 120.87-second
+first build and 5.06/5.09-second warm rebuilds. These timings are observations,
+not a controlled performance comparison or release acceptance. Installed and
+matrix-wide performance qualification remains open. This removes compiler-side
 work and adds no emitted-program checks.
 
 Canonical Clippy submission exposed a missing output-placement classification.

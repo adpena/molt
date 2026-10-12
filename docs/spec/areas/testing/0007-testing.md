@@ -208,6 +208,15 @@ list to this harness and retains raw, resolved, and backend outcomes. Only the
 full source-bound CI receipt closure proves the subset; `check` validates policy
 and reports debt.
 
+Differential programs that launch host utilities declare `host_toolchains` in the
+same `MOLT_META` header, for example
+`host_toolchains=macos:posix-file,posix:posix-sh`. Entries are sorted, unique
+`platform:tool` pairs using the existing platform selectors and proof-plan tool
+policy names. The execution host selects its concrete platform plus `posix` where
+applicable; selected names are validated against the canonical proof policies.
+These dependencies travel with the captured test source. They neither grant guest
+capabilities nor establish support for an otherwise unqualified platform.
+
 ### 1.4 Differential coverage reporting
 Generate metadata coverage summaries from `# MOLT_META` headers:
 ```

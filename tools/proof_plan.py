@@ -3316,7 +3316,7 @@ def verify_receipts(
                         or not identity.get("path")
                         or not identity.get("launcher_path")
                         or not identity.get("content_path")
-                        or not identity.get("version")
+                        or not isinstance(identity.get("version"), str)
                         or not isinstance(identity.get("launcher_sha256"), str)
                         or len(identity["launcher_sha256"]) != 64
                         or any(

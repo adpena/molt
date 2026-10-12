@@ -53,6 +53,76 @@ def test_metadata_is_one_frozen_typed_value(tmp_path: Path) -> None:
         metadata.stdout_mode = "exact"  # type: ignore[misc]
 
 
+@pytest.mark.parametrize(
+    "platform, expected",
+    [
+        ("linux", ("posix-sh",)),
+        ("macos", ("posix-file", "posix-sh")),
+        ("freebsd", ("posix-sh",)),
+        ("windows", ("windows-tool",)),
+    ],
+)
+def test_host_toolchains_project_only_matching_host(
+    tmp_path: Path, platform: str, expected: tuple[str, ...]
+) -> None:
+    source = _source(
+        tmp_path,
+        "host_toolchains=linux:posix-sh,macos:posix-file,"
+        "posix:posix-sh,windows:windows-tool",
+    )
+    captured = source.read_bytes()
+    source.unlink()
+    metadata = test_policy.parse_metadata_bytes(source, captured)
+    assert metadata.host_toolchains == (
+        ("linux", "posix-sh"),
+        ("macos", "posix-file"),
+        ("posix", "posix-sh"),
+        ("windows", "windows-tool"),
+    )
+    assert metadata.as_record()["host_toolchains"] == [
+        "linux:posix-sh",
+        "macos:posix-file",
+        "posix:posix-sh",
+        "windows:windows-tool",
+    ]
+    assert metadata.required_host_toolchains(platform) == expected
+    assert test_policy.TestMetadata().required_host_toolchains(platform) == ()
+    with pytest.raises(FrozenInstanceError):
+        metadata.host_toolchains = ()  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("platform", ["posix", "unix", "darwin", ""])
+def test_host_toolchains_require_concrete_canonical_host(platform: str) -> None:
+    with pytest.raises(ValueError, match="unknown concrete platform"):
+        test_policy.TestMetadata().required_host_toolchains(platform)
+
+
+@pytest.mark.parametrize(
+    "name, linux, macos",
+    [
+        ("asyncio_subprocess_exec_shell", ("posix-sh",), ("posix-sh",)),
+        (
+            "subprocess_basic_run",
+            ("posix-echo", "posix-sh", "posix-true"),
+            ("posix-echo", "posix-sh", "posix-true"),
+        ),
+        ("subprocess_getstatusoutput_merge_order", ("posix-sh",), ("posix-sh",)),
+        ("platform_basic", ("posix-uname",), ("posix-file", "posix-uname")),
+    ],
+)
+def test_external_command_cases_declare_host_dependencies(
+    name: str, linux: tuple[str, ...], macos: tuple[str, ...]
+) -> None:
+    metadata = test_policy.parse_metadata(
+        ROOT / "tests/differential/stdlib" / f"{name}.py"
+    )
+    assert metadata.required_host_toolchains("linux") == linux
+    assert metadata.required_host_toolchains("macos") == macos
+    assert metadata.required_host_toolchains("windows") == ()
+    if name.startswith("subprocess_"):
+        assert metadata.stderr_mode == "exact"
+
+
 @pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize(
     "filename, minimum",
@@ -87,6 +157,16 @@ def test_version_projection_ignores_unselected_backend_coordinate() -> None:
 @pytest.mark.parametrize(
     "metadata, message",
     [
+        ("host_toolchains=posix:sh,posix:sh", "duplicate MOLT_META value"),
+        ("host_toolchains=posix:sh,macos:file", "values must be sorted and unique"),
+        ("host_toolchains=posix-sh", "platform:tool pairs"),
+        ("host_toolchains=posix:sh:extra", "platform:tool pairs"),
+        ("host_toolchains=unix:sh", "unknown platform"),
+        ("host_toolchains=:sh", "unknown platform"),
+        ("host_toolchains=posix:", "invalid tool name"),
+        ("host_toolchains=posix:/bin/sh", "invalid tool name"),
+        ("host_toolchains=posix:../sh", "invalid tool name"),
+        ("host_toolchains=posix:sh,", "empty MOLT_META value"),
         ("unknown=value", "unknown MOLT_META key"),
         ("bare", "malformed MOLT_META token"),
         ("min_py=", "empty MOLT_META value"),
@@ -572,14 +652,14 @@ def test_explicit_sources_capture_metadata_and_digest_from_same_bytes(
 ) -> None:
     source = _source(tmp_path, "backends=native")
     raw = source.read_bytes()
-    parse = test_policy._parse_metadata_bytes
+    parse = test_policy.parse_metadata_bytes
     parsed = []
 
     def observe_bytes(path, data):
         parsed.append(data)
         return parse(path, data)
 
-    monkeypatch.setattr(test_policy, "_parse_metadata_bytes", observe_bytes)
+    monkeypatch.setattr(test_policy, "parse_metadata_bytes", observe_bytes)
     row = test_policy.load_test_sources((source,), repo_root=tmp_path)[0]
     assert parsed == [raw]
     assert row.source_sha256 == hashlib.sha256(raw).hexdigest()

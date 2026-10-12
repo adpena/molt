@@ -142,6 +142,34 @@ def test_tests_consume_the_outer_guard_lease_under_the_session_root(
     assert test_guard_custody_roots.state_root.parent not in helper.parents
 
 
+def test_tkinter_compile_helper_uses_admitted_proof_scratch(monkeypatch, tmp_path):
+    import shutil
+    from tests import test_tkinter_ttk_compile as consumer
+
+    proof_root = tmp_path / "proof-scratch"
+    proof_root.mkdir()
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(proof_root))
+    install_module_view(
+        monkeypatch, "shutil", shutil, consumer, which=lambda name: sys.executable
+    )
+    monkeypatch.setattr(consumer, "_python_executable", lambda: sys.executable)
+
+    class CompilerDispatchReached(Exception):
+        pass
+
+    def inspect_dispatch(argv, **kwargs):
+        source = Path(argv[-1])
+        output = Path(argv[argv.index("--output") + 1])
+        assert source.parent.parent == proof_root
+        assert output.parent == source.parent
+        assert "import tkinter.ttk as ttk" in source.read_text()
+        raise CompilerDispatchReached
+
+    monkeypatch.setattr(consumer, "run_native_test_process", inspect_dispatch)
+    with pytest.raises(CompilerDispatchReached):
+        consumer.test_tkinter_ttk_script_compiles_via_cli_build()
+
+
 def _minimal_guard_environments(source: str) -> list[int]:
     """Lines where a test hands a guard a literal environment without custody."""
     import ast
