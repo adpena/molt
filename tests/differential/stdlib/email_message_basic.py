@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for email.message basics."""
 
 from email import message_from_bytes, policy

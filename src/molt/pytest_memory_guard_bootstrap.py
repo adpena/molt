@@ -13,7 +13,13 @@ import time
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
-from molt.dx import RunContext, checkout_component, control_state_dir
+from molt.dx import (
+    PROOF_SCRATCH_ROOT_ENV,
+    RunContext,
+    checkout_component,
+    control_state_dir,
+    proof_scratch_root,
+)
 from molt.source_root import compiler_source_root
 from molt.temporary_artifacts import guard_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
@@ -374,7 +380,14 @@ def _ensure_windows_readable_dir(path: Path) -> None:
 
 
 def guarded_pytest_temp_root() -> Path:
-    """Use the parent guard's short, terminal-owned scratch on every platform."""
+    """Publish compiled fixtures in proof custody, or the direct guard's scratch.
+
+    Queue execution admits derived images beneath its run-owned proof root.
+    A nested memory guard owns a different temporary root; selecting that root
+    for pytest fixtures would put their C/Rust executables outside admission.
+    """
+    if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
+        return proof_scratch_root(ROOT, os.environ)
     return guard_scratch(os.environ)
 
 

@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential sanity coverage for `_queue` import surface."""
 
 import _queue

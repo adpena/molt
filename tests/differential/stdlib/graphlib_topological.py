@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 from graphlib import TopologicalSorter
 
 # Simple DAG

@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for functools.singledispatch."""
 
 from functools import singledispatch

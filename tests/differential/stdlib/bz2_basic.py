@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for bz2 basic compress/decompress."""
 
 import bz2

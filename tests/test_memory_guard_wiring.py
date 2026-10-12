@@ -1318,6 +1318,8 @@ def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None
 
 @pytest.fixture
 def scratch_lease(monkeypatch, tmp_path):
+    # These existing controls model direct guard ownership, not a queue run.
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     token = "a" * 32
     root = tmp_path / "artifact-root"
     state = root / "tmp" / "memory_guard"
@@ -1376,6 +1378,45 @@ def test_pytest_temp_root_reuses_short_parent_owned_allocation(
         assert len(path.name) <= 16
 
 
+@pytest.mark.parametrize("windows", [False, True])
+def test_pytest_fixture_outputs_share_proof_scratch_across_nested_guards(
+    monkeypatch, tmp_path, request, scratch_lease, windows
+) -> None:
+    import _pytest.tmpdir as pytest_tmpdir
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: windows
+    )
+    proof_root = tmp_path / "proof-output" / "scratch"
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(proof_root))
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
+    assert pytest_memory_guard_bootstrap.install_pytest_custody_roots()
+    assert Path(os.environ["PYTEST_DEBUG_TEMPROOT"]) == proof_root
+    assert proof_root.is_dir()
+    assert proof_root != scratch_lease.target
+
+    factory = pytest_tmpdir.TempPathFactory(
+        given_basetemp=None,
+        retention_count=0,
+        retention_policy="all",
+        trace=lambda *args: None,
+        _ispytest=True,
+    )
+    # Exercise the actual session factory and the implementation used by the
+    # function-scoped tmp_path fixture, not a mirrored path calculation.
+    for output in (
+        factory.mktemp("runtime-build-python"),
+        pytest_tmpdir._mk_tmp(request, factory),
+    ):
+        assert output.is_relative_to(proof_root)
+        assert not output.is_relative_to(scratch_lease.target)
+    nested_guard_root = tmp_path / "nested-guard-scratch"
+    monkeypatch.setenv(temporary_artifacts.SCRATCH_ENV, str(nested_guard_root))
+    assert pytest_memory_guard_bootstrap.guarded_pytest_temp_root() == proof_root
+    assert not pytest_memory_guard_bootstrap.install_pytest_custody_roots()
+    assert Path(os.environ["PYTEST_DEBUG_TEMPROOT"]) == proof_root
+
+
 def test_windows_native_proof_scratch_layout_retains_linker_path_budget() -> None:
     from pathlib import PureWindowsPath
 
@@ -1414,10 +1455,14 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
     explicit = tmp_path / "explicit-temproot"
+    proof_root = tmp_path / "proof-scratch"
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(proof_root))
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(explicit))
 
     assert not pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     assert os.environ["PYTEST_DEBUG_TEMPROOT"] == str(explicit)
+    assert not explicit.is_relative_to(proof_root)
+    assert not proof_root.exists()
     assert explicit.is_dir()
     assert any(explicit.iterdir())
     assert (

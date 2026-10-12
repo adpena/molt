@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,thread.spawn,thread.shared
 """Purpose: differential coverage for urllib request basic."""
 

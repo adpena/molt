@@ -209,13 +209,38 @@ early-refusal regression: a shared-isolate borrower refusal retains a newly
 attached C thread record, then native thread exit aborts. The reviewed correction
 makes the shutdown token own only its new attachment, revokes that attachment
 on unwind without destroying the record, and removes duplicate raw preattachments.
-The four new ownership controls and the existing failed-isolate reproducer remain
-to be executed. The ignored actual WASI lifecycle consumer also lacked artifact
+Candidate `b38bf66a3` executes 1,879 passing runtime cases, including the original
+failed-isolate reproducer and the DBM and SSL resource controls. Its sole failure
+is the new unwind test expecting the unchecked current-state accessor to expose
+a detached record. The corrected oracle separately proves retained ownership
+and attached visibility, preserving exact dictionary and pending-error identity;
+the corrected test still requires execution. The ignored actual WASI lifecycle
+consumer also lacked artifact
 production and handoff; its owning runtime gate now builds and binds the WASI
 libtest, native integration driver and production host together. The gate reuses
 the existing artifact decoder, allocation-feature check and test runner; its
 five-case semantic roster remains owned by the Rust consumer. Compiled
 qualification remains outstanding.
+
+Both actual WASM host-boundary programs pass on `b38bf66a3` with complete
+process custody. The host-error program preserves `AttributeError`; the file
+program exercises all four grant masks, reports complete missing-grant sets and
+independently verifies non-mutation. The native compiled-tooling row instead
+exposes a shared fixture-output ownership mismatch and an incomplete LLVM SDK.
+Queued pytest fixtures now reuse the canonical admitted proof scratch root;
+direct guards and explicit caller roots retain their existing semantics.
+Six focused controls and independent review pass. Actual compiled consumers
+remain required after the complete authenticated SDK is available.
+
+Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
+classes; all exact-source CPython reference executions pass with empty stderr.
+The remaining SemLock contract belongs to V1-34. The expanded fixture uses
+public SQLite, DBM, codecs, HTML, hashing and compression interfaces, including
+closed owners retained through module retirement. SSL evidence must bind the
+certificate actually selected from the pinned CPython source inputs. The
+subprocess pipe fixture deliberately launches a development CPython child and
+therefore does not qualify standalone execution; existing native-child fixtures
+and runtime self-image controls provide separate evidence under V1-01.
 
 The native public run on candidate `85423eba8` passes three cases, then fails
 the executor case because `threading.Event.__del__` looks up a cleanup function

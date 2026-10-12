@@ -1,3 +1,5 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,process.exec
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for subprocess communicate with pipes."""
 
 import subprocess
