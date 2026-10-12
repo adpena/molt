@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for select backend object surface/failures."""
 
 from __future__ import annotations

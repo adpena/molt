@@ -691,11 +691,14 @@ fn shutdown_owner_unwind_preserves_record_and_releases_only_new_attachment() {
             object::runtime_retained_thread_state_count(),
             retained + usize::from(mode == 0)
         );
+        assert!(object::current_thread_has_retained_runtime_state());
         let registration = object::retained_thread_state_identity_for_test(record.get());
         assert_eq!(registration.map(|value| value.0), Some(identity));
+        // The public unchecked accessor exposes only attached state. Retention
+        // after a failed shutdown does not recreate an execution attachment.
         assert_eq!(
             unsafe { object::_PyThreadState_UncheckedGet() }.addr(),
-            record.get()
+            if mode == 2 { record.get() } else { 0 }
         );
         // A failed owner neither drains nor drops managed C edges. Reenter the
         // same actual record to observe their identity, then retire normally.

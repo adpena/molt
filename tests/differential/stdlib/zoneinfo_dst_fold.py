@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for PEP 615 DST fold handling."""
 
 from datetime import datetime

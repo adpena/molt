@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 # MOLT_ENV: MOLT_CAPABILITIES=net.outbound
 """Purpose: differential coverage for ssl context basic."""
 

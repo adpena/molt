@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for collections module — namedtuple, OrderedDict, defaultdict, Counter, deque."""
 
 from collections import Counter, OrderedDict, defaultdict, deque, namedtuple

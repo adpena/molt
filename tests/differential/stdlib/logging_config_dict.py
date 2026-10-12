@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.getpid
 """Purpose: differential coverage for logging config dict."""
 
