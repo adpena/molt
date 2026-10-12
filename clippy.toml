@@ -1,0 +1,3 @@
+# Keep Clippy defaults while terminating parent-directory configuration lookup
+# inside the tracked Molt workspace. More-specific in-tree configurations retain
+# their normal precedence; no lint settings are overridden here.

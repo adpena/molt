@@ -456,3 +456,59 @@ def test_codegen_key_alias_normalization_preserves_value_bytes(value, expected):
         "-C",
         expected,
     )
+
+
+@pytest.mark.parametrize("home_in_path", [False, True])
+def test_cargo_plugin_lookup_preserves_home_bin_precedence(tmp_path, home_in_path):
+    from molt.rust_toolchain import cargo_external_subcommand_path
+
+    home, path_bin = tmp_path / "home", tmp_path / "physical"
+    home_bin = home / "bin"
+    for directory in (home_bin, path_bin):
+        directory.mkdir(parents=True)
+        tool = directory / ("cargo-clippy.exe" if os.name == "nt" else "cargo-clippy")
+        tool.write_bytes(b"distinct candidate " + str(directory).encode())
+        tool.chmod(0o755)
+    env = {"CARGO_HOME": str(home), "PATH": str(path_bin)}
+    if home_in_path:
+        env["PATH"] += os.pathsep + str(home_bin)
+    selected = cargo_external_subcommand_path("clippy", cwd=tmp_path, env=env)
+    assert selected.parent == (path_bin if home_in_path else home_bin)
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_cargo_plugin_lookup_distinguishes_absent_and_empty_path(tmp_path, present):
+    tool = tmp_path / ("cargo-clippy.exe" if os.name == "nt" else "cargo-clippy")
+    tool.write_bytes(b"current directory plugin")
+    tool.chmod(0o755)
+    env = {"CARGO_HOME": str(tmp_path / "absent-home")}
+    if present:
+        env["PATH"] = ""
+        assert (
+            rust_toolchain.cargo_external_subcommand_path(
+                "clippy", cwd=tmp_path, env=env
+            )
+            == tool
+        )
+    else:
+        with pytest.raises(ValueError, match="available cargo-clippy"):
+            rust_toolchain.cargo_external_subcommand_path(
+                "clippy", cwd=tmp_path, env=env
+            )
+
+
+def test_cargo_plugin_lookup_windows_path_quotes_and_environment_spelling(
+    tmp_path, monkeypatch
+):
+    install_module_view(monkeypatch, "os", os, rust_toolchain, name="nt")
+    # Keep host Path objects: this exercises captured Windows selector semantics
+    # without asking the host to instantiate a foreign Windows filesystem.
+    directory = tmp_path / "quoted;tools"
+    directory.mkdir()
+    tool = directory / "cargo-clippy.exe"
+    tool.write_bytes(b"selected Windows plugin")
+    env = {"Cargo_Home": str(tmp_path / "missing"), "Path": f'"{directory}"'}
+    assert (
+        rust_toolchain.cargo_external_subcommand_path("clippy", cwd=tmp_path, env=env)
+        == tool
+    )

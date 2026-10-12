@@ -1,5 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=os.cpu_count,thread.spawn,thread.shared
-# MOLT_META: backends=llvm,native
+# MOLT_META: backends=llvm,native stderr=exact
 """Cross-thread publications end an idle loop's wait at once.
 
 Every case parks behind a far timer, so a lost wake stalls until that timer

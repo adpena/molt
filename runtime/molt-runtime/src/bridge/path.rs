@@ -23,6 +23,16 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<PathBuf, u64> {
     crate::with_gil_entry_nopanic!(py, { crate::path_from_bits(py, bits) })
 }
 
+/// Return the canonical owned Python path without converting its str/bytes type.
+pub fn fspath_bits(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::io_path_utils::fspath_bits_with_flavor(py, bits) {
+            Ok((path, _)) => path,
+            Err(error) => error,
+        }
+    })
+}
+
 pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
     crate::with_gil_entry_nopanic!(py, { crate::type_name(py, obj).into_owned() })
 }

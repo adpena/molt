@@ -33,7 +33,13 @@ from molt.rust_toolchain import (
     RustToolSearch,
     RustupProxyUnavailable,
     cargo_config_arguments,
+    cargo_external_subcommand_path,
+    rust_component_executables,
+    rust_component_version_arguments,
+    rust_component_version_matches,
+    rust_toolchain_library_environment,
     resolve_rustup_proxy,
+    rustup_proxy_entrypoint,
     relative_rustc_tool_paths,
     rustc_host,
     rustc_printed_sysroot,
@@ -180,6 +186,196 @@ def _run_rust_link_probe(
         returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
     )
     return result
+
+
+def command_requires_clippy(envelope: Mapping[str, object]) -> bool:
+    from tools.proof_queue_pkg import command_admission
+
+    if "cargo" not in envelope.get("toolchains", []):
+        return False
+    invocation = command_admission.cargo_invocation_for_envelope(envelope)
+    return invocation is not None and invocation.subcommand == "clippy"
+
+
+def select_clippy_component_paths(
+    *, cwd: Path, env: Mapping[str, str]
+) -> dict[str, str]:
+    """Resolve exactly the Cargo plugin and the driver its current_exe selects."""
+    plugin, driver = rust_component_executables("clippy")
+    launcher = custody_path(cargo_external_subcommand_path("clippy", cwd=cwd, env=env))
+    component = custody_path(
+        resolve_rustup_proxy(launcher, role=plugin, root=cwd, env=env)
+    )
+    content = component.resolve(strict=True)
+    driver_path = component.with_name(driver + (".exe" if os.name == "nt" else ""))
+    for path in (content, driver_path):
+        require_custody_coordinate(path)
+        if (
+            not path.is_file()
+            or not path.stat().st_size
+            or not os.access(path, os.X_OK)
+        ):
+            raise ValueError(
+                f"Clippy requires an available component executable: {path}"
+            )
+    content_driver = content.with_name(driver + (".exe" if os.name == "nt" else ""))
+    if not content_driver.is_file() or content_driver.resolve(
+        strict=True
+    ) != driver_path.resolve(strict=True):
+        raise ValueError(
+            "Clippy invoked and content paths select different sibling drivers"
+        )
+    paths = {
+        "clippy-launcher": str(launcher),
+        "cargo-clippy": str(component),
+        "clippy-driver": str(driver_path),
+    }
+    with rustup_proxy_entrypoint(launcher) as resolver:
+        if resolver is not None:
+            paths["clippy-rustup"] = str(resolver)
+    return paths
+
+
+def clippy_component_images(paths: Mapping[str, str]) -> list[dict[str, object]]:
+    return canonical_images(
+        [
+            capture_image(role, Path(path), preserve_path=True)
+            for role, path in paths.items()
+        ]
+        + [capture_image(role, Path(path)) for role, path in paths.items()]
+    )
+
+
+def capture_clippy_selection(
+    paths: Mapping[str, str],
+    *,
+    compiler_version: str,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, object]:
+    fields = dict(
+        line.split(": ", 1) for line in compiler_version.splitlines() if ": " in line
+    )
+    selected_env = dict(env)
+    selected_env.update(
+        rust_toolchain_library_environment(Path(paths["cargo-clippy"]), env)
+    )
+    versions: dict[str, str] = {}
+    probes: list[dict[str, object]] = []
+    for role in rust_component_executables("clippy"):
+        arguments = [paths[role], *rust_component_version_arguments(role)]
+        component = Path(paths["cargo-clippy"]).resolve(strict=True)
+        resolver = paths.get("clippy-rustup")
+        if resolver is not None:
+            # A content-proven Rustup proxy selected this component. Preserve
+            # its loader setup for both wrapper and independent driver probes.
+            arguments = [resolver, "run", str(component.parent.parent), *arguments]
+        result = _run_rust_link_probe(
+            arguments,
+            phase="component-version",
+            unit="clippy",
+            cwd=cwd,
+            compiler_cwd=cwd,
+            env=selected_env,
+            timeout=30.0,
+            probes=probes,
+        )
+        if result.returncode or not rust_component_version_matches(
+            role, result.stdout, fields
+        ):
+            raise ValueError(
+                f"selected {role} version probe conflicts with selected compiler"
+            )
+        versions[role] = result.stdout.strip()
+    return {
+        "schema": "molt.proof-clippy-selection.v1",
+        "paths": dict(paths),
+        "versions": versions,
+    }
+
+
+def validate_clippy_selection(
+    identity: Mapping[str, object],
+    *,
+    required: bool | None = None,
+    expected_paths: Mapping[str, str] | None = None,
+) -> None:
+    selection = identity.get("clippy_selection")
+    if selection is None:
+        if required:
+            raise ValueError("Clippy command is missing its component closure")
+        return
+    if required is False:
+        raise ValueError("non-Clippy command has unexpected Clippy component closure")
+    if (
+        not isinstance(selection, Mapping)
+        or set(selection) != {"schema", "paths", "versions"}
+        or selection.get("schema") != "molt.proof-clippy-selection.v1"
+    ):
+        raise ValueError("Clippy component selection is malformed")
+    paths, versions = selection["paths"], selection["versions"]
+    roles = rust_component_executables("clippy")
+    if (
+        not isinstance(paths, Mapping)
+        or set(paths)
+        not in (
+            {"clippy-launcher", *roles},
+            {"clippy-launcher", "clippy-rustup", *roles},
+        )
+        or not isinstance(versions, Mapping)
+        or set(versions) != set(roles)
+    ):
+        raise ValueError("Clippy component family is incomplete")
+    if expected_paths is not None and dict(paths) != dict(expected_paths):
+        raise ValueError("Clippy component selection changed")
+    images = identity.get("process_images")
+    if not isinstance(images, list):
+        raise ValueError("Clippy components have no process images")
+    captured = {(row["role"], row["path"]) for row in canonical_images(images)}
+    for role, raw in paths.items():
+        if not isinstance(raw, str) or not Path(raw).is_absolute():
+            raise ValueError("Clippy component path is malformed")
+        path = Path(raw)
+        require_custody_coordinate(path)
+        if (role, str(custody_path(path))) not in captured or (
+            role,
+            str(path.resolve(strict=True)),
+        ) not in captured:
+            raise ValueError(f"Clippy component image closure is incomplete: {role}")
+    launcher = Path(str(paths["clippy-launcher"]))
+    content = Path(str(paths["cargo-clippy"]))
+    if (launcher.resolve(strict=True) != content.resolve(strict=True)) != (
+        "clippy-rustup" in paths
+    ):
+        raise ValueError("Clippy proxy resolver closure is incomplete")
+    if "clippy-rustup" in paths:
+        resolver = Path(str(paths["clippy-rustup"]))
+        if resolver.name != ("rustup.exe" if os.name == "nt" else "rustup"):
+            raise ValueError("Clippy resolver must preserve the Rustup CLI entrypoint")
+        by_edge = {(row["role"], row["path"]): row["sha256"] for row in images}
+        if (
+            by_edge[("clippy-rustup", str(resolver))]
+            != by_edge[("clippy-launcher", str(launcher))]
+        ):
+            raise ValueError("Clippy Rustup resolver differs from selected proxy")
+    driver = content.with_name("clippy-driver" + (".exe" if os.name == "nt" else ""))
+    content_driver = content.resolve(strict=True).with_name(driver.name)
+    if str(driver) != paths["clippy-driver"] or content_driver.resolve(
+        strict=True
+    ) != driver.resolve(strict=True):
+        raise ValueError("Clippy driver is not the selected plugin sibling")
+    compiler_version = identity.get("version")
+    if not isinstance(compiler_version, str):
+        raise ValueError("Clippy selection has no compiler version")
+    fields = dict(
+        line.split(": ", 1) for line in compiler_version.splitlines() if ": " in line
+    )
+    for role in roles:
+        version = versions[role]
+        if not isinstance(version, str) or not rust_component_version_matches(
+            role, version, fields
+        ):
+            raise ValueError(f"Clippy {role} identity conflicts with selected compiler")
 
 
 def select_cargo_build_tool_environment(
@@ -3549,6 +3745,7 @@ def _validate_captured_toolchains(toolchains: Mapping[str, object]) -> None:
         policy = policies.get(name)
         if name == "rustc":
             validate_rust_link_selection(raw, full_capture=True)
+            validate_clippy_selection(raw)
         if policy is not None and policy.data.get("node_package") is not None:
             from tools.proof_queue_pkg.command_identity import (
                 _validate_node_package_identity,
@@ -3677,7 +3874,10 @@ def publish_capture(
 
 
 def load_capture(
-    reference: Mapping[str, object], *, cas_root: Path
+    reference: Mapping[str, object],
+    *,
+    cas_root: Path,
+    envelope: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     payload = custody_cas.read_ref(reference, expected_root=cas_root)
     if payload.get("kind") != CAPTURE_SCHEMA:
@@ -3687,6 +3887,10 @@ def load_capture(
     if not isinstance(toolchains, dict) or not isinstance(files, list):
         raise ValueError("proof toolchain capture artifact is incomplete")
     expanded = _load_sdk_resources(cas_root, toolchains)
+    if envelope is not None and "rustc" in expanded:
+        validate_clippy_selection(
+            expanded["rustc"], required=command_requires_clippy(envelope)
+        )
     if files != [row.as_dict() for row in frozen_files(expanded)]:
         raise ValueError("proof toolchain frozen files differ from its full capture")
     payload["toolchains"] = expanded

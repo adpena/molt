@@ -650,6 +650,66 @@ mod path_transport_tests {
     }
 
     #[test]
+    fn fspath_transports_preserve_owned_identity_and_type_errors() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let transports: [(&str, fn(u64) -> u64); 3] = [
+                ("direct", crate::bridge::fspath_bits),
+                ("satellite", molt_runtime_path::bridge::fspath_bits),
+                ("public", |bits| {
+                    molt_runtime_path::os_ext::molt_os_fspath(bits)
+                }),
+            ];
+            for (name, transport) in transports {
+                for pointer in [
+                    alloc_string(py, b"molt-fspath-owned-text"),
+                    alloc_bytes(py, b"molt-fspath-owned-\xff"),
+                ] {
+                    assert!(!pointer.is_null());
+                    let _input_owner = crate::PtrDropGuard::new(pointer);
+                    let bits = MoltObject::from_ptr(pointer).bits();
+                    let references =
+                        || unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+                    let before = references();
+                    let result = transport(bits);
+                    assert!(!exception_pending(py), "{name}");
+                    assert_eq!(result, bits, "{name}: preserve str/bytes identity");
+                    assert_eq!(references(), before + 1, "{name}: return an owned result");
+                    dec_ref_bits(py, result);
+                    assert_eq!(references(), before, "{name}: release exactly one result");
+                }
+                let result = transport(MoltObject::from_int(42).bits());
+                assert_eq!(result, MoltObject::none().bits(), "{name}");
+                assert!(exception_pending(py), "{name}");
+                let exception = crate::molt_exception_last_pending();
+                let _exception_owner = unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        exception,
+                    )
+                };
+                assert!(
+                    crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "TypeError"
+                    ),
+                    "{name}"
+                );
+                crate::molt_exception_clear();
+                assert_eq!(
+                    crate::builtins::exceptions::format_exception_message(
+                        py,
+                        obj_from_bits(exception).as_ptr().unwrap()
+                    ),
+                    "expected str, bytes or os.PathLike object, not int",
+                    "{name}",
+                );
+            }
+        });
+    }
+
+    #[test]
     fn path_bridge_preserves_bytes_and_does_not_publish_failure_output() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {

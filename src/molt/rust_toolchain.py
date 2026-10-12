@@ -7,13 +7,14 @@ Keep this lookup separate from PATH discovery and preserve its provenance.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Iterator, Mapping, Sequence
+from typing import Generator, Iterator, Mapping, Sequence
 
 from molt.default_paths import executable_environment_value
 from molt.exact_json import string_keyed_mapping
@@ -83,10 +84,9 @@ class RustupProxyUnavailable(ValueError):
         self.diagnostic = diagnostic
 
 
-def resolve_rustup_proxy(
-    path: Path, *, role: str, root: Path, env: Mapping[str, str]
-) -> Path:
-    """Resolve a content-proven rustup proxy, preserving custom tool binaries."""
+@contextmanager
+def rustup_proxy_entrypoint(path: Path) -> Generator[Path | None, None, None]:
+    """Yield the named Rustup CLI only while its bytes match the selected proxy."""
     name = "rustup.exe" if os.name == "nt" else "rustup"
     candidates = tuple(
         candidate
@@ -95,59 +95,59 @@ def resolve_rustup_proxy(
         )
         if candidate.is_file()
     )
-    if not candidates:
-        return path
-    with stable_executable_probe(path, label=f"Rust {role} selection") as (
-        _,
-        selected,
-    ):
-        for rustup in candidates:
-            with stable_executable_probe(rustup, label="rustup selection") as (
-                entrypoint,
-                proxy,
-            ):
-                if selected.sha256 != proxy.sha256:
-                    continue
-                from molt import process_guard
-
-                result = process_guard.run_completed_command(
-                    [os.fspath(entrypoint), "which", role],
-                    cwd=root,
-                    env=dict(env),
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    timeout=30,
-                    memory_guard_prefix=None,
-                )
-                if result.returncode != 0:
-                    raise RustupProxyUnavailable(
-                        role,
-                        {
-                            "phase": "rustup-component-selection",
-                            "unit": role,
-                            "argv": [os.fspath(entrypoint), "which", role],
-                            "cwd": os.fspath(root),
-                            "returncode": result.returncode,
-                            "stdout": result.stdout,
-                            "stderr": result.stderr,
-                        },
-                    )
-                value = result.stdout.strip()
-                if (
-                    not value
-                    or "\n" in value
-                    or "\r" in value
-                    or not Path(value).is_absolute()
+    if candidates:
+        with stable_executable_probe(path, label="Rust proxy selection") as (
+            _,
+            selected,
+        ):
+            for rustup in candidates:
+                with stable_executable_probe(rustup, label="rustup selection") as (
+                    entrypoint,
+                    proxy,
                 ):
-                    raise ValueError(
-                        f"rustup {role} selector must print one absolute path"
-                    )
-                return resolve_executable(
-                    value, environment=env, label=f"selected Rust {role}"
-                )
-    return path
+                    if selected.sha256 == proxy.sha256:
+                        yield entrypoint
+                        return
+    yield None
+
+
+def resolve_rustup_proxy(
+    path: Path, *, role: str, root: Path, env: Mapping[str, str]
+) -> Path:
+    """Resolve a content-proven rustup proxy, preserving custom tool binaries."""
+    with rustup_proxy_entrypoint(path) as entrypoint:
+        if entrypoint is None:
+            return path
+        from molt import process_guard
+
+        result = process_guard.run_completed_command(
+            [os.fspath(entrypoint), "which", role],
+            cwd=root,
+            env=dict(env),
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            memory_guard_prefix=None,
+        )
+        if result.returncode != 0:
+            raise RustupProxyUnavailable(
+                role,
+                {
+                    "phase": "rustup-component-selection",
+                    "unit": role,
+                    "argv": [os.fspath(entrypoint), "which", role],
+                    "cwd": os.fspath(root),
+                    "returncode": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                },
+            )
+        value = result.stdout.strip()
+        if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
+            raise ValueError(f"rustup {role} selector must print one absolute path")
+        return resolve_executable(value, environment=env, label=f"selected Rust {role}")
 
 
 # dyld's search list when DYLD_FALLBACK_LIBRARY_PATH is unset.
@@ -227,22 +227,112 @@ def cargo_config_arguments(command: Sequence[str], *, cwd: Path) -> list[str]:
     return result
 
 
+def cargo_home_path(root: Path, env: Mapping[str, str]) -> Path:
+    """Cargo home selection shared by config and external-subcommand lookup."""
+    home_value = executable_environment_value(
+        env, "CARGO_HOME", windows=os.name == "nt"
+    )
+    if home_value:
+        home = Path(home_value)
+    else:
+        profile = executable_environment_value(
+            env, "USERPROFILE" if os.name == "nt" else "HOME", windows=os.name == "nt"
+        )
+        home = (Path(profile) if profile else Path.home()) / ".cargo"
+    return home if home.is_absolute() else root / home
+
+
+def cargo_external_subcommand_path(
+    command: str, *, cwd: Path, env: Mapping[str, str]
+) -> Path:
+    """Cargo 1.99 search_directories: home/bin first unless already on PATH.
+
+    Keep lexical PATH order, including a deliberately lower-priority Cargo home;
+    resolving aliases before the membership check changes Cargo's selection.
+    """
+    path_value = executable_environment_value(env, "PATH", windows=os.name == "nt")
+    directories: list[Path] = []
+    if any(
+        (name.casefold() == "path" if os.name == "nt" else name == "PATH")
+        for name in env
+    ):
+        # Rust's Windows split_paths ignores quotes and splits semicolons only
+        # outside them. Cargo adds no implicit cwd beyond an empty PATH entry.
+        if os.name == "nt":
+            chunks, current, quoted = [], [], False
+            for char in path_value:
+                if char == '"':
+                    quoted = not quoted
+                elif char == ";" and not quoted:
+                    chunks.append("".join(current))
+                    current = []
+                else:
+                    current.append(char)
+            chunks.append("".join(current))
+        else:
+            chunks = path_value.split(":")
+        directories = [Path(value) for value in chunks]
+    home_bin = cargo_home_path(cwd, env) / "bin"
+    if str(home_bin) not in {str(directory) for directory in directories}:
+        directories.insert(0, home_bin)
+    name = f"cargo-{command}" + (".exe" if os.name == "nt" else "")
+    for directory in directories:
+        candidate = directory / name
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            return candidate
+    raise ValueError(f"Cargo requires an available {name} executable before capture")
+
+
+def rust_component_executables(component: str) -> tuple[str, ...]:
+    """Installed component executable closure, not just its version wrapper."""
+    return {
+        "rustfmt": ("rustfmt",),
+        "clippy": ("cargo-clippy", "clippy-driver"),
+        "miri": ("cargo-miri", "miri"),
+    }[component]
+
+
+def rust_component_version_arguments(tool: str) -> tuple[str, ...]:
+    return {
+        "rustfmt": ("--version",),
+        "cargo-clippy": ("--version",),
+        "clippy-driver": ("--rustc", "--version", "--verbose"),
+        "cargo-miri": ("miri", "--version"),
+        "miri": ("--version", "--verbose"),
+    }[tool]
+
+
+def rust_component_version_matches(
+    tool: str, output: str, compiler_fields: Mapping[str, str]
+) -> bool:
+    if tool in {"clippy-driver", "miri"}:
+        fields = dict(
+            line.split(": ", 1) for line in output.splitlines() if ": " in line
+        )
+        return all(
+            compiler_fields.get(key) and fields.get(key) == compiler_fields[key]
+            for key in ("host", "release", "commit-hash")
+        )
+    name = {"rustfmt": "rustfmt", "cargo-clippy": "clippy", "cargo-miri": "miri"}[tool]
+    return (
+        re.fullmatch(
+            rf"{name} [0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"
+            r"(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?",
+            output.strip(),
+        )
+        is not None
+    )
+
+
 def cargo_configuration_paths(root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
     """Cargo's conventional configuration files, in low-to-high priority order.
 
     Explicit --config files are separate invocation inputs. An empty CARGO_HOME
     selects the default home, and Cargo does not expand a literal tilde.
     """
-    home_value = executable_environment_value(env, "CARGO_HOME")
-    if home_value:
-        home = Path(home_value)
-    else:
-        profile = executable_environment_value(
-            env, "USERPROFILE" if os.name == "nt" else "HOME"
-        )
-        home = (Path(profile) if profile else Path.home()) / ".cargo"
-    if not home.is_absolute():
-        home = root / home
+    home = cargo_home_path(root, env)
     locations = (home, *(path / ".cargo" for path in reversed((root, *root.parents))))
     paths: list[Path] = []
     seen: set[Path] = set()

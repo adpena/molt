@@ -5259,6 +5259,47 @@ def test_native_build_envelope_cannot_mutate_cached_plan_authority(kind):
     )
 
 
+def test_runtime_public_consumers_rejects_async_shutdown_stderr() -> None:
+    from tools.compat import comparison, test_policy
+
+    lane = PLAN.named_lane("runtime.public-consumers.native")
+    shutdown_case = "tests/differential/stdlib/asyncio_task_basic.py"
+    assert shutdown_case in lane.differential_cases
+    assert shutdown_case in lane.argv
+    # These existing async/executor acceptance cases must reject an unraisable
+    # finalizer error even when stdout and the exit status remain correct.
+    cases = (
+        "concurrent_futures_threadpool_basic",
+        "concurrent_futures_threadpool_surface",
+        "concurrent_futures_cancel",
+        "concurrent_futures_terminal_identity",
+        "asyncio_executor_run_in_executor",
+        "asyncio_to_thread_propagation",
+        "asyncio_threadsafe_lifecycle",
+        "asyncio_idle_wait_threadsafe_wakeups",
+        "asyncio_set_default_executor_invalid",
+        "asyncio_task_basic",
+    )
+    root = Path(__file__).resolve().parents[1]
+    for name in cases:
+        metadata = test_policy.parse_metadata(
+            root / "tests/differential/stdlib" / f"{name}.py"
+        )
+        assert metadata.stderr_mode == "exact", name
+        verdict = comparison.compare_outputs(
+            comparison.Outputs("completed\n", "", 0),
+            comparison.Outputs(
+                "completed\n",
+                "Exception ignored in: <function Future.__del__>\n"
+                "NameError: name '_molt_asyncio_future_drop' is not defined\n",
+                0,
+            ),
+            stderr_mode=metadata.stderr_mode,
+        )
+        assert verdict.stdout_ok and verdict.exit_ok, name
+        assert not verdict.stderr_ok and not verdict.equal, name
+
+
 def test_runtime_public_consumers_lane_uses_canonical_diff_outputs() -> None:
     lane = PLAN.named_lane("runtime.public-consumers.native")
     # File outputs inherit the queue-issued differential root. JSON stdout uses

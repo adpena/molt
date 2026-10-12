@@ -466,7 +466,9 @@ def _validated_execution_context(
         raise ValueError("guarded receipt toolchain closure is not stable")
     cas_root = execution_path.parent / "custody-cas"
     custody_cas.verify_ref(artifact, expected_root=cas_root)
-    capture_payload = toolchain_capture.load_capture(artifact, cas_root=cas_root)
+    capture_payload = toolchain_capture.load_capture(
+        artifact, cas_root=cas_root, envelope=envelope
+    )
     full_toolchains = capture_payload.get("toolchains")
     if (
         not _is_receipt_object(full_toolchains)

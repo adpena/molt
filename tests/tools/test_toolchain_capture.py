@@ -3896,3 +3896,184 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
         )["cargo_native_units"],
     )
     assert calls == before
+
+
+def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
+    from molt import process_guard
+    from tools.proof_queue_pkg import command_identity
+
+    suffix = ".exe" if os.name == "nt" else ""
+    home_bin = tmp_path / "cargo-home" / "bin"
+    home_bin.mkdir(parents=True)
+    tools = {}
+    for name in ("cargo", "rustc", "cargo-clippy", "clippy-driver", "linker"):
+        path = tmp_path / (name + suffix)
+        path.write_bytes(("selected " + name).encode())
+        path.chmod(0o755)
+        tools[name] = path
+    if proxy:
+        for name in ("rustup", "cargo-clippy"):
+            path = home_bin / (name + suffix)
+            path.write_bytes(b"identical rustup proxy")
+            path.chmod(0o755)
+        path_value = str(home_bin)
+    else:
+        # Including Cargo home after the physical directory preserves PATH
+        # precedence; omitting it would make Cargo prepend home/bin instead.
+        path_value = os.pathsep.join((str(tmp_path), str(home_bin)))
+    env = {
+        "PATH": path_value,
+        "CARGO_HOME": str(home_bin.parent),
+        "CARGO": str(tools["cargo"]),
+        "RUSTC": str(tools["rustc"]),
+    }
+    version = (
+        "rustc 1.99.0 (123456789 2026-09-28)\n"
+        "host: x86_64-unknown-linux-gnu\nrelease: 1.99.0\n"
+        + "commit-hash: "
+        + "1" * 40
+        + "\n"
+    )
+    calls = []
+
+    def resolve(argv, **_kwargs):
+        assert argv == [
+            custody_spelling(home_bin / ("rustup" + suffix)),
+            "which",
+            "cargo-clippy",
+        ]
+        calls.append(("resolve", tuple(argv)))
+        return subprocess.CompletedProcess(
+            argv, 0, str(tools["cargo-clippy"]) + "\n", ""
+        )
+
+    def probe(argv, **_kwargs):
+        calls.append(("probe", tuple(argv)))
+        if proxy and argv[0] == str(home_bin / ("rustup" + suffix)):
+            assert argv[1:3] == ["run", str(tmp_path.parent)]
+            argv = argv[3:]
+        if argv[0] == str(tools["cargo-clippy"]):
+            assert list(argv[1:]) == ["--version"]
+            output = "clippy 0.1.99 (123456789 2026-09-28)\n"
+        elif argv[0] == str(tools["clippy-driver"]):
+            assert list(argv[1:]) == ["--rustc", "--version", "--verbose"]
+            output = version
+        elif argv[0] == str(tools["rustc"]) and list(argv[1:]) == [
+            "--version",
+            "--verbose",
+        ]:
+            output = version
+        else:
+            metadata = _rust_metadata_probe(argv, tmp_path)
+            if metadata is not None:
+                return metadata
+            output = (
+                ""
+                if "--profile" in argv and argv[argv.index("--profile") + 1] == "check"
+                else json.dumps(str(tools["linker"])) + "\n"
+            )
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    monkeypatch.setattr(process_guard, "run_completed_command", resolve)
+    monkeypatch.setattr(command_identity, "_run_captured", probe)
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=probe))
+    return tools, env, version, calls
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
+    tmp_path, monkeypatch, proxy
+):
+    tools, env, version, _calls = _clippy_component_fixture(
+        tmp_path, monkeypatch, proxy=proxy
+    )
+    paths = toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
+    identity = {
+        "version": version,
+        "clippy_selection": toolchain_capture.capture_clippy_selection(
+            paths, compiler_version=version, cwd=tmp_path, env=env
+        ),
+        "process_images": toolchain_capture.clippy_component_images(paths),
+    }
+    toolchain_capture.validate_clippy_selection(
+        identity, required=True, expected_paths=paths
+    )
+    captured = {(row["role"], row["path"]) for row in identity["process_images"]}
+    assert ("cargo-clippy", str(tools["cargo-clippy"])) in captured
+    assert ("clippy-driver", str(tools["clippy-driver"])) in captured
+    assert paths["clippy-launcher"] == str(
+        tools["cargo-clippy"]
+        if not proxy
+        else tmp_path / "cargo-home" / "bin" / tools["cargo-clippy"].name
+    )
+    # Omission cannot be repaired by resealing the surrounding identity.
+    for role in (
+        *("clippy-launcher", "cargo-clippy", "clippy-driver"),
+        *(("clippy-rustup",) if proxy else ()),
+    ):
+        broken = dict(
+            identity,
+            process_images=[
+                row for row in identity["process_images"] if row["role"] != role
+            ],
+        )
+        with pytest.raises(ValueError, match="image closure is incomplete"):
+            toolchain_capture.validate_clippy_selection(broken, required=True)
+    with pytest.raises(ValueError, match="missing its component closure"):
+        toolchain_capture.validate_clippy_selection({"version": version}, required=True)
+    with pytest.raises(ValueError, match="unexpected Clippy"):
+        toolchain_capture.validate_clippy_selection(identity, required=False)
+    tools["clippy-driver"].write_bytes(b"changed after capture")
+    with pytest.raises(ValueError, match="process image changed"):
+        process_image_capture.revalidate_images(identity["process_images"])
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing-driver", "empty-driver", "foreign-driver"]
+)
+def test_clippy_refuses_missing_or_foreign_driver_before_admission(
+    tmp_path, monkeypatch, failure
+):
+    tools, env, version, calls = _clippy_component_fixture(tmp_path, monkeypatch)
+    if failure != "foreign-driver":
+        if failure == "missing-driver":
+            tools["clippy-driver"].unlink()
+        else:
+            tools["clippy-driver"].write_bytes(b"")
+        with pytest.raises(ValueError, match="available component executable"):
+            toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
+        assert calls == []
+    else:
+        paths = toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
+        with pytest.raises(ValueError, match="conflicts with selected compiler"):
+            toolchain_capture.capture_clippy_selection(
+                paths,
+                compiler_version=version.replace("1" * 40, "2" * 40),
+                cwd=tmp_path,
+                env=env,
+            )
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_clippy_alias_requires_one_cross_platform_sibling_driver(
+    tmp_path, monkeypatch, matching
+):
+    tools, env, _version, _calls = _clippy_component_fixture(tmp_path, monkeypatch)
+    aliases = tmp_path / "aliases"
+    aliases.mkdir()
+    plugin = aliases / tools["cargo-clippy"].name
+    plugin.symlink_to(tools["cargo-clippy"])
+    driver = aliases / tools["clippy-driver"].name
+    if matching:
+        driver.symlink_to(tools["clippy-driver"])
+    else:
+        driver.write_bytes(b"foreign sibling")
+        driver.chmod(0o755)
+    env["PATH"] = os.pathsep.join((str(aliases), env["PATH"]))
+    if matching:
+        paths = toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
+        assert paths["cargo-clippy"] == str(plugin)
+        assert paths["clippy-driver"] == str(driver)
+    else:
+        with pytest.raises(ValueError, match="different sibling drivers"):
+            toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)

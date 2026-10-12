@@ -397,6 +397,14 @@ def _require_cargo_build_tool_environment_context(
             else set()
         ),
     }
+    if invocation is not None and invocation.subcommand == "clippy":
+        # cargo-clippy supplies these two values to nested Cargo. Its [env]
+        # defaults cannot replace them, but force=true reaches compiler children.
+        # SYSROOT and CLIPPY_CONF_DIR have no admitted external resource owner.
+        protected_environment.update(
+            {"SYSROOT", "CLIPPY_CONF_DIR", "CLIPPY_ARGS", "RUSTC_WORKSPACE_WRAPPER"}
+        )
+        inherited_keys.update({"CLIPPY_ARGS", "RUSTC_WORKSPACE_WRAPPER"})
     for origin, payload in definitions:
         build = payload.get("build") if isinstance(payload, Mapping) else None
         if (
@@ -862,7 +870,9 @@ def _locate_toolchain_watch_roots(
             identity_without_digest = dict(identity)
             identity_without_digest.pop("identity_sha256", None)
             identity["identity_sha256"] = canonical_json_sha256(identity_without_digest)
-        command_identity._validate_toolchain_identity(plan, name, identity)
+        command_identity._validate_toolchain_identity(
+            plan, name, identity, envelope=envelope
+        )
         policy_identities[name] = identity
         roots.extend(_broad_toolchain_roots({name: identity}))
     roots = list(dict.fromkeys(roots))

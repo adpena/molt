@@ -750,7 +750,7 @@ def execute_guarded_request(request_path: Path) -> int:
         for name, identity in toolchains_full.items():
             assert isinstance(identity, Mapping)
             command_identity._validate_toolchain_identity(
-                plan, name, identity, full_capture=True
+                plan, name, identity, full_capture=True, envelope=envelope
             )
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full

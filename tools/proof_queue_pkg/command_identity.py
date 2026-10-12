@@ -1169,6 +1169,7 @@ _REUSABLE_IDENTITY_FIELDS = frozenset(
         "content_resolver",
         "process_images",
         "link_selection",
+        "clippy_selection",
         "wasi_sdk",
         "identity_sha256",
     }
@@ -1313,6 +1314,7 @@ def _reused_identity_is_current(
     env: Mapping[str, str],
     command_argv: Sequence[str],
     native_units: Mapping[str, Sequence[str]] | None = None,
+    clippy_paths: Mapping[str, str] | None = None,
 ) -> bool:
     """Re-prove a stored identity from file bytes before it is reused.
 
@@ -1338,6 +1340,9 @@ def _reused_identity_is_current(
         _validate_wasi_sdk_policy(policy, identity)
         process_image_capture.toolchain_images(policy.name, identity)
         if policy.name == "rustc":
+            toolchain_capture.validate_clippy_selection(
+                identity, required=clippy_paths is not None, expected_paths=clippy_paths
+            )
             selection = toolchain_capture.validate_rust_link_selection(
                 identity, required_native_units=native_units, command_argv=command_argv
             )
@@ -1495,6 +1500,17 @@ def _tool_identity(
             path_dependency_images = process_image_capture.canonical_images(
                 path_dependency_images
             )
+    clippy_paths = None
+    if name == "rustc" and toolchain_capture.command_requires_clippy(envelope):
+        clippy_paths = toolchain_capture.select_clippy_component_paths(
+            cwd=probe_cwd, env=env
+        )
+        path_dependency_images.extend(
+            toolchain_capture.clippy_component_images(clippy_paths)
+        )
+        path_dependency_images = process_image_capture.canonical_images(
+            path_dependency_images
+        )
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -1536,6 +1552,7 @@ def _tool_identity(
                 env=env,
                 command_argv=command_argv,
                 native_units=envelope.get("cargo_native_units", {}),
+                clippy_paths=clippy_paths,
             ):
                 if reuse_telemetry is not None:
                     reuse_telemetry.append(
@@ -1574,6 +1591,14 @@ def _tool_identity(
         cwd=cwd,
         env=env,
     )
+    if clippy_paths is not None:
+        material["clippy_selection"] = toolchain_capture.capture_clippy_selection(
+            clippy_paths,
+            compiler_version=str(material["version"]),
+            cwd=probe_cwd,
+            env=env,
+        )
+        process_image_capture.revalidate_images(path_dependency_images)
     if path_dependency_images:
         material["process_images"] = process_image_capture.canonical_images(
             [*material["process_images"], *path_dependency_images]
@@ -1811,6 +1836,7 @@ def _validate_toolchain_identity(
     identity: Mapping[str, object],
     *,
     full_capture: bool = False,
+    envelope: Mapping[str, object] | None = None,
 ) -> None:
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     try:
@@ -1892,6 +1918,12 @@ def _validate_toolchain_identity(
     _validate_wasi_sdk_policy(policy, identity, full_capture=full_capture)
     _validate_node_package_identity(policy, identity, full_capture=full_capture)
     if name == "rustc":
+        toolchain_capture.validate_clippy_selection(
+            identity,
+            required=toolchain_capture.command_requires_clippy(envelope)
+            if envelope is not None
+            else None,
+        )
         toolchain_capture.validate_rust_link_selection(
             identity, full_capture=full_capture
         )
