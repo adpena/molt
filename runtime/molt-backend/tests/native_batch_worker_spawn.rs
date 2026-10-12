@@ -46,7 +46,7 @@ mod cargo_test_artifacts {
     ));
 }
 
-fn assert_linked_frame_slot(application: &Path, stdlib: &Path, expected: u64) {
+fn assert_linked_program_slots(application: &Path, stdlib: &Path, expected: u64) {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("shared-object-slot-binding")
         .expect("retain linked observer under actual Cargo image custody");
     let app = artifacts.path().join("app.a");
@@ -54,7 +54,15 @@ fn assert_linked_frame_slot(application: &Path, stdlib: &Path, expected: u64) {
     std::fs::copy(application, &app).unwrap();
     std::fs::copy(stdlib, &shared).unwrap();
     let source = artifacts.path().join("slot_observer.rs");
-    let binding = molt_ir::code_slots::code_slot_symbol("molt_init_sys");
+    let binding = molt_ir::code_slots::program_slot_symbol(
+        molt_ir::code_slots::ProgramSlotKind::Code,
+        "molt_init_sys",
+    );
+    let module_binding = molt_ir::code_slots::program_slot_symbol(
+        molt_ir::code_slots::ProgramSlotKind::Module,
+        "sys",
+    );
+    let expected_module = molt_codegen_abi::box_int_bits(expected as i64) as u64;
     std::fs::write(
         &source,
         format!(
@@ -78,11 +86,16 @@ static PENDING: u8 = 0;
 #[unsafe(no_mangle)] pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
-    fn molt_init_sys();
+    fn molt_init_sys() -> u64;
     #[link_name = "{binding}"] static BINDING: u64;
+    #[link_name = "{module_binding}"] static MODULE_BINDING: u64;
 }}
 fn main() {{
-    unsafe {{ assert_eq!(BINDING, {expected}); molt_init_sys(); }}
+    unsafe {{
+        assert_eq!(BINDING, {expected});
+        assert_eq!(MODULE_BINDING, {expected});
+        assert_eq!(molt_init_sys(), {expected_module}u64);
+    }}
     assert_eq!(OBSERVED.load(Ordering::SeqCst), {expected});
     assert_eq!(EXITS.load(Ordering::SeqCst), 1);
 }}
@@ -119,7 +132,7 @@ fn main() {{
         .expect("execute linked slot observer");
     assert!(
         observed.status.success(),
-        "actual frame used wrong program binding: {}",
+        "actual frame or module value used wrong program binding: {}",
         String::from_utf8_lossy(&observed.stderr)
     );
 }
@@ -254,6 +267,11 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         &ir_path,
         r#"{
   "code_slots": {"molt_init_sys": 0},
+  "module_registry": {
+    "schema": 2, "registry_digest": "fixture", "blob": [0],
+    "relocs": [], "init_symbols": [],
+    "rows": [{"name": "sys", "init_symbol": null}]
+  },
   "functions": [
     {"return_abi": "void",
       "name": "molt_main",
@@ -319,15 +337,17 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {"return_abi": "void",
+    {"return_abi": "value",
       "name": "molt_init_sys",
       "params": [],
       "execution_context": "local",
       "ops": [
         {"kind": "trace_enter_slot", "s_value": "molt_init_sys"},
         {"kind": "call_internal", "s_value": "sys__helper", "passes_execution_context": true},
+        {"kind": "module_slot", "s_value": "sys", "out": "module_id"},
+        {"kind": "box", "args": ["module_id"], "out": "module_value"},
         {"kind": "trace_exit"},
-        {"kind": "ret_void"}
+        {"kind": "ret", "args": ["module_value"]}
       ],
       "param_types": null,
       "source_file": null,
@@ -547,11 +567,16 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             .exists()
     );
 
-    // Adding an application body shifts the dense program assignment, but
-    // unchanged stdlib objects must remain reusable and bind to the new ID.
+    // Adding an application body and module shifts both dense assignments.
+    // Unchanged stdlib objects must reuse their exact bytes and observe the
+    // new frame ID and boxed module ID through the final program's bindings.
     let original_input = std::fs::read(&ir_path).unwrap();
     let mut shifted: serde_json::Value = serde_json::from_slice(&original_input).unwrap();
     shifted["code_slots"] = serde_json::json!({"app_extra": 0, "molt_init_sys": 1});
+    shifted["module_registry"]["rows"] = serde_json::json!([
+        {"name": "added", "init_symbol": null},
+        {"name": "sys", "init_symbol": null}
+    ]);
     shifted["functions"][0]["ops"]
         .as_array_mut()
         .unwrap()
@@ -585,8 +610,8 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         std::fs::read(&shifted_stdlib_path).unwrap(),
         original_archive
     );
-    assert_linked_frame_slot(&output_path, &stdlib_path, 0);
-    assert_linked_frame_slot(&shifted_output_path, &shifted_stdlib_path, 1);
+    assert_linked_program_slots(&output_path, &stdlib_path, 0);
+    assert_linked_program_slots(&shifted_output_path, &shifted_stdlib_path, 1);
     std::fs::write(&ir_path, original_input).unwrap();
 
     // This switch was absent from the old CLI digest. Keep the same manifest

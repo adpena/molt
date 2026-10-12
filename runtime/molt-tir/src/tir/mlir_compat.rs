@@ -315,6 +315,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::TryEnd => "try_end",
         OpCode::StateBlockStart => "state_block_start",
         OpCode::StateBlockEnd => "state_block_end",
+        OpCode::ModuleSlot => "module_slot",
         OpCode::ConstInt => "const_int",
         OpCode::ConstBigInt => "const_bigint",
         OpCode::ConstFloat => "const_float",

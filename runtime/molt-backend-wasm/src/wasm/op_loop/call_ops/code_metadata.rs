@@ -11,6 +11,22 @@ pub(super) fn emit_code_metadata_call_op(
     op: &OpIR,
 ) -> CallOpEmission {
     match op.kind.as_str() {
+        "module_slot" => {
+            let slot = call_ctx
+                .module_registry
+                .expect("admitted module registry")
+                .resolve_module_slot(op.s_value.as_deref().expect("admitted module_slot owner"))
+                .expect("admitted module slot binding");
+            // The generic WASM value lane stores boxed Python integers.
+            func.instruction(&Instruction::I64Const(molt_codegen_abi::box_int_bits(
+                slot as i64,
+            )));
+            let out = call_ctx
+                .locals
+                .bound_op_result_slot(op)
+                .expect("admitted module_slot result");
+            func.instruction(&Instruction::LocalSet(out));
+        }
         "code_new" => emit_code_new(call_ctx, func, op),
         "code_slot_set" => {
             emit_value_then_two_locals_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)

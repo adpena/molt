@@ -10,6 +10,7 @@ use molt_artifact_publish::write_text_atomically;
 pub(super) fn emit_luau_target(
     ir: &mut SimpleIR,
     code_slots: molt_ir::code_slots::CodeSlotBindings,
+    module_registry: Option<molt_ir::ModuleRegistryIR>,
     output_file: &str,
     use_ir_pipeline: bool,
 ) -> io::Result<()> {
@@ -25,7 +26,9 @@ pub(super) fn emit_luau_target(
         &molt_backend::tir::target_info::TargetInfo::luau_release_fast(),
     );
 
-    let mut backend = LuauBackend::new().with_code_slots(code_slots);
+    let mut backend = LuauBackend::new()
+        .with_code_slots(code_slots)
+        .with_module_registry(module_registry);
     let source = if use_ir_pipeline {
         backend.compile_via_ir(ir)
     } else {

@@ -159,7 +159,7 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
         profile: None,
     };
 
-    let err = rust_source_for_ir(&ir, Default::default())
+    let err = rust_source_for_ir(&ir, Default::default(), None)
         .expect_err("Rust target must reject unknown operations");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(
@@ -209,7 +209,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
         profile: None,
     };
 
-    let source = rust_source_for_ir(&ir, Default::default())
+    let source = rust_source_for_ir(&ir, Default::default(), None)
         .expect("dead stubs must be pruned before Rust emit");
     assert!(source.contains("fn molt_main("));
     assert!(!source.contains("dead_stdlib_helper"));

@@ -170,6 +170,7 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "build_tuple": "BuildTuple",
 }
 _VALUE_RANGE_TRANSFER_RULES = {
+    "module_slot": "ModuleSlot",
     "add": "Add",
     "sub": "Sub",
     "mul": "Mul",

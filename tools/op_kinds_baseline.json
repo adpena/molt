@@ -45,7 +45,6 @@
       "load_const",
       "module_get_name",
       "not_in",
-      "release",
       "set_attr",
       "shl",
       "shr",

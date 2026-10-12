@@ -41,6 +41,7 @@ enum AliasBinding {
 /// Transpiles Molt `SimpleIR` into Rust source text.
 pub struct RustBackend {
     code_slots: molt_ir::code_slots::CodeSlotBindings,
+    module_registry: Option<molt_ir::ModuleRegistryIR>,
     output: String,
     indent: usize,
     hoisted_vars: BTreeSet<String>,
@@ -72,6 +73,14 @@ impl Default for RustBackend {
 }
 
 impl RustBackend {
+    pub fn with_module_registry(
+        mut self,
+        module_registry: Option<molt_ir::ModuleRegistryIR>,
+    ) -> Self {
+        self.module_registry = module_registry;
+        self
+    }
+
     pub fn with_code_slots(mut self, code_slots: molt_ir::code_slots::CodeSlotBindings) -> Self {
         self.code_slots = code_slots;
         self
@@ -80,6 +89,7 @@ impl RustBackend {
     pub fn new() -> Self {
         Self {
             code_slots: molt_ir::code_slots::CodeSlotBindings::default(),
+            module_registry: None,
             output: String::with_capacity(8192),
             indent: 0,
             hoisted_vars: BTreeSet::new(),
@@ -149,6 +159,8 @@ impl RustBackend {
         let admitted = admit_target_program(ir, &TargetInfo::rust_release_fast())?;
         self.code_slots
             .validate_functions(&ir.functions)
+            .map_err(|error| error.to_string())?;
+        molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)
             .map_err(|error| error.to_string())?;
         let source = self.emit_source(&admitted);
         if !self.unsupported_ops.is_empty() {

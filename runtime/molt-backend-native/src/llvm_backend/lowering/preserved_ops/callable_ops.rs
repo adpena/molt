@@ -27,23 +27,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
 ];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    fn code_slot_id(&self, op: &TirOp) -> inkwell::values::IntValue<'ctx> {
-        let owner = match op.attrs.get("s_value") {
-            Some(AttrValue::Str(owner)) => owner.as_str(),
-            _ => panic!("admitted code-slot owner"),
-        };
-        let binding = self.backend.code_slot_binding(owner);
-        self.backend
-            .builder
-            .build_load(
-                self.backend.context.i64_type(),
-                binding.as_pointer_value(),
-                "code_slot",
-            )
-            .expect("load immutable code-slot binding")
-            .into_int_value()
-    }
-
     /// The code slots this function addresses in its frame's homes: one past
     /// its largest slot, or `None` when it touches none.
     fn frame_home_slot_count(&self) -> Option<u64> {
@@ -597,7 +580,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "code_slot_set" => {
-                let code_id = self.code_slot_id(op);
+                let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
                 // The slot ID is a raw ABI word; the code object and globals
                 // are borrowed. Only the exception state reports failure.
@@ -637,7 +620,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "trace_enter_slot" => {
-                let code_id = self.code_slot_id(op);
+                let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
                     .backend

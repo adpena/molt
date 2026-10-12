@@ -27,6 +27,7 @@ impl WasmBody {
             WasmBodyOp::Instruction(_)
             | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_))
             | WasmBodyOp::ConstMaterialization(_)
+            | WasmBodyOp::ProgramSlot(_, _)
             | WasmBodyOp::DataPtrI32(_) => None,
         })
     }
@@ -41,7 +42,7 @@ impl WasmBody {
             WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_)) => {
                 None
             }
-            WasmBodyOp::DataPtrI32(_) => None,
+            WasmBodyOp::DataPtrI32(_) | WasmBodyOp::ProgramSlot(_, _) => None,
         })
     }
 }

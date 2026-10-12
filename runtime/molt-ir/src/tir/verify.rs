@@ -190,7 +190,7 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 Some(AttrValue::Str(symbol)) => Some(symbol.as_str()),
                 _ => None,
             };
-            if let Err(error) = crate::ir_schema::validate_code_slot_symbol(kind, symbol) {
+            if let Err(error) = crate::ir_schema::validate_program_slot_symbol(kind, symbol) {
                 errors.push(VerifyError::op(*bid, op_index, error.to_string()));
                 continue;
             }

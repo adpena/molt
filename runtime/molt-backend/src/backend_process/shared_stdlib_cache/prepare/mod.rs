@@ -20,6 +20,8 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         .code_slots
         .validate_functions(&ir.functions)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    molt_ir::ir::validate_module_slots(request.module_registry.as_ref(), &ir.functions)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     request
         .native_output_kind
         .validate_shared_stdlib(request.stdlib_archive_path.is_some())

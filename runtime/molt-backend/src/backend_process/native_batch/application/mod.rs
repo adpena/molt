@@ -33,6 +33,13 @@ pub(crate) fn compile_native_application_artifact_to_path(
         ));
     }
 
+    options
+        .code_slots
+        .validate_functions(&ir.functions)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    molt_ir::ir::validate_module_slots(options.module_registry.as_ref(), &ir.functions)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+
     ir::prepare_native_application_ir(&mut ir, &options);
     let stats = ir::native_application_stats(&ir);
     let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);

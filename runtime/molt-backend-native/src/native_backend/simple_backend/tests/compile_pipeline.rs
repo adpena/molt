@@ -2212,8 +2212,8 @@ fn runtime_builtin_callable_admits_exact_manifest_contracts() {
 }
 
 #[test]
-fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values() {
-    use molt_ir::code_slots::{CodeSlotBindings, code_slot_symbol};
+fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values() {
+    use molt_ir::code_slots::{CodeSlotBindings, ProgramSlotKind, program_slot_symbol};
     use molt_ir::ir_schema::OpShapeViolation;
     use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
@@ -2225,7 +2225,8 @@ fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values()
         #[cfg(feature = "llvm")]
         NativeCodegenBackend::Llvm => backend.compile_llvm_checked(ir),
     };
-    let symbol = code_slot_symbol("molt_main");
+    let symbol = program_slot_symbol(ProgramSlotKind::Code, "molt_main");
+    let module_symbol = program_slot_symbol(ProgramSlotKind::Module, "molt_main");
     for kind in [
         NativeCodegenBackend::Cranelift,
         #[cfg(feature = "llvm")]
@@ -2284,17 +2285,47 @@ fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values()
             assert_eq!(error.shape.violation, violation);
         }
 
+        let mut module_ir = trace_probe_ir(crate::ir::ExecutionContextPolicy::None);
+        module_ir.functions[0].return_abi = molt_ir::FunctionReturnAbi::Value;
+        module_ir.functions[0].ops = vec![
+            OpIR {
+                kind: "module_slot".into(),
+                s_value: Some("molt_main".into()),
+                out: Some("slot".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "box".into(),
+                args: Some(vec!["slot".into()]),
+                out: Some("boxed".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["boxed".into()]),
+                ..Default::default()
+            },
+        ];
+        // An ordinary direct application API never treats missing registry
+        // metadata as permission to leave a module binding unresolved.
+        let Err(error) = compile(SimpleBackend::new(), module_ir.clone(), kind) else {
+            panic!("a final application requires module bindings");
+        };
+        assert_eq!(error.shape.violation, OpShapeViolation::UnboundModuleSlot);
+
         // This reusable object has no final program binding values.
         let mut common_backend = SimpleBackend::new();
         common_backend.emit_app_callable_resolver = false;
         assert!(common_backend.code_slots.is_none());
-        let common_bytes = compile(
-            common_backend,
-            trace_probe_ir(crate::ir::ExecutionContextPolicy::Local),
-            kind,
-        )
-        .expect("reusable objects import their program-owned bindings")
-        .bytes;
+        let mut common_ir = trace_probe_ir(crate::ir::ExecutionContextPolicy::Local);
+        common_ir.functions[0].return_abi = molt_ir::FunctionReturnAbi::Value;
+        common_ir.functions[0].ops.pop();
+        common_ir.functions[0]
+            .ops
+            .extend(module_ir.functions[0].ops.clone());
+        let common_bytes = compile(common_backend, common_ir, kind)
+            .expect("reusable objects import their program-owned bindings")
+            .bytes;
         let common = object::File::parse(common_bytes.as_slice()).unwrap();
         let linker_symbol = if common.format() == BinaryFormat::MachO {
             format!("_{symbol}")
@@ -2311,6 +2342,19 @@ fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values()
                 matches!(relocation.target(), RelocationTarget::Symbol(index) if index == imported.index())
             })
         }), "frame entry must reference the imported binding");
+        let module_linker_symbol = if common.format() == BinaryFormat::MachO {
+            format!("_{module_symbol}")
+        } else {
+            module_symbol.clone()
+        };
+        let imported_module = common
+            .symbols()
+            .find(|entry| entry.name().ok() == Some(module_linker_symbol.as_str()))
+            .expect("module access imports its distinct stable binding symbol");
+        assert!(imported_module.is_undefined() && !imported_module.is_weak());
+        assert!(common.sections().any(|section| section.relocations().any(|(_, relocation)| {
+            matches!(relocation.target(), RelocationTarget::Symbol(index) if index == imported_module.index())
+        })));
 
         // Independent object decoding observes a changed dense assignment in
         // the application metadata while the common object remains reusable.
@@ -2322,6 +2366,19 @@ fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values()
             .unwrap();
             let mut application = SimpleBackend::new();
             application.code_slots = Some(bindings);
+            let mut names = vec!["molt_main", if slot == 0 { "z_added" } else { "a_added" }];
+            names.sort();
+            application.module_registry = Some(molt_ir::ModuleRegistryIR {
+                blob: vec![0],
+                rows: names
+                    .into_iter()
+                    .map(|name| molt_ir::ModuleRegistryRowIR {
+                        name: name.into(),
+                        init_symbol: None,
+                    })
+                    .collect(),
+                ..Default::default()
+            });
             let bytes = compile(
                 application,
                 trace_probe_ir(crate::ir::ExecutionContextPolicy::default()),
@@ -2330,33 +2387,35 @@ fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values()
             .expect("complete program bindings emit their immutable data")
             .bytes;
             let object = object::File::parse(bytes.as_slice()).unwrap();
-            let definitions: Vec<_> = object
-                .symbols()
-                .filter(|entry| entry.name().ok() == Some(linker_symbol.as_str()))
-                .collect();
-            assert_eq!(
-                definitions.len(),
-                1,
-                "one binding definition per application"
-            );
-            let defined = &definitions[0];
-            assert!(defined.is_definition() && defined.is_global() && !defined.is_weak());
-            let section = object
-                .section_by_index(defined.section_index().unwrap())
-                .unwrap();
-            assert_eq!(section.kind(), object::SectionKind::ReadOnlyData);
-            let data: [u8; 8] = section
-                .data_range(defined.address(), 8)
-                .unwrap()
-                .unwrap()
-                .try_into()
-                .unwrap();
-            let decoded = if object.is_little_endian() {
-                u64::from_le_bytes(data)
-            } else {
-                u64::from_be_bytes(data)
-            };
-            assert_eq!(decoded, slot);
+            for binding_symbol in [&linker_symbol, &module_linker_symbol] {
+                let definitions: Vec<_> = object
+                    .symbols()
+                    .filter(|entry| entry.name().ok() == Some(binding_symbol.as_str()))
+                    .collect();
+                assert_eq!(
+                    definitions.len(),
+                    1,
+                    "one binding definition per application"
+                );
+                let defined = &definitions[0];
+                assert!(defined.is_definition() && defined.is_global() && !defined.is_weak());
+                let section = object
+                    .section_by_index(defined.section_index().unwrap())
+                    .unwrap();
+                assert_eq!(section.kind(), object::SectionKind::ReadOnlyData);
+                let data: [u8; 8] = section
+                    .data_range(defined.address(), 8)
+                    .unwrap()
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                let decoded = if object.is_little_endian() {
+                    u64::from_le_bytes(data)
+                } else {
+                    u64::from_be_bytes(data)
+                };
+                assert_eq!(decoded, slot);
+            }
         }
     }
 }

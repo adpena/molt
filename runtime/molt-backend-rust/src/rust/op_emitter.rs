@@ -45,6 +45,7 @@ impl RustBackend {
             return;
         }
         match op.kind.as_str() {
+            "module_slot" => self.emit_op_module_slot(op),
             "const_not_implemented" => self.emit_op_const_not_implemented(op),
             "const_ellipsis" => self.emit_op_const_ellipsis(op),
             "missing" => self.emit_op_missing(op),

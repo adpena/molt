@@ -35,8 +35,8 @@ pub mod tir;
 pub use crate::call_argument_form::CallArgumentForm;
 pub use crate::ir::{
     BackendIrDocument, ExecutionContextPolicy, ExternFunctionSignature, FunctionIR,
-    FunctionReturnAbi, ModuleRegistryIR, OpIR, ParameterCustody, PgoProfileIR, SimpleIR,
-    validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
+    FunctionReturnAbi, ModuleRegistryIR, ModuleRegistryRowIR, OpIR, ParameterCustody, PgoProfileIR,
+    SimpleIR, validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
 };
 pub use crate::repr::Repr;
 pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, verify_simple_ir};

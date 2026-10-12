@@ -27,6 +27,7 @@ impl WasmBody {
                     WasmBodyOp::Instruction(instruction) => Some(instruction.clone()),
                     WasmBodyOp::Call(_)
                     | WasmBodyOp::ConstMaterialization(_)
+                    | WasmBodyOp::ProgramSlot(_, _)
                     | WasmBodyOp::DataPtrI32(_) => None,
                 })
                 .collect(),
@@ -37,6 +38,7 @@ impl WasmBody {
                     WasmBodyOp::DataPtrI32(bytes) => Some(bytes.to_vec()),
                     WasmBodyOp::Instruction(_)
                     | WasmBodyOp::Call(_)
+                    | WasmBodyOp::ProgramSlot(_, _)
                     | WasmBodyOp::ConstMaterialization(_) => None,
                 })
                 .collect(),

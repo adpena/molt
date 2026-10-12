@@ -215,6 +215,7 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     assert magic == authority.MODULE_REGISTRY_MAGIC
     assert schema == authority.MODULE_REGISTRY_SCHEMA_VERSION
     assert count == len(registry.rows)
+    assert len(payload["rows"]) == count
     (names_len,) = struct.unpack_from("<Q", blob, 32)
     (origins_len,) = struct.unpack_from("<Q", blob, 40)
     rows_end = (
@@ -225,8 +226,25 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     # Name table is the sorted id-order concatenation (binary-search contract).
     names = blob[rows_end : rows_end + names_len].decode("utf-8")
     offset = 0
-    for row in registry.rows:
+    for index, row in enumerate(registry.rows):
+        assert row.id == index
+        assert payload["rows"][index] == {
+            "name": row.name,
+            "init_symbol": row.init_symbol or None,
+        }
         assert names[offset : offset + len(row.name)] == row.name
+        name_offset, name_length = struct.unpack_from(
+            "<II",
+            blob,
+            authority.MODULE_REGISTRY_HEADER_BYTES
+            + index * authority.MODULE_REGISTRY_ROW_BYTES,
+        )
+        assert (
+            blob[rows_end + name_offset : rows_end + name_offset + name_length].decode(
+                "utf-8"
+            )
+            == row.name
+        )
         offset += len(row.name)
     origins = blob[rows_end + names_len :].decode("utf-8")
     offset = 0
@@ -381,23 +399,23 @@ def _prepare_binary_ir(
     return cli, prepared
 
 
-def _ensure_call_module_id(ops: list, ensure_call: dict) -> int | None:
-    """Trace an ensure call's boxed-int argument back to its const module id
-    (`const → box → call molt_module_ensure`, the literal-site ABI shape)."""
+def _ensure_call_module_name(ops: list, ensure_call: dict) -> str | None:
+    """Trace the actual ensure ABI argument to its symbolic module owner."""
     box_by_out = {
         op.get("out"): op
         for op in ops
         if isinstance(op, dict) and op.get("kind") == "box"
     }
-    const_by_out = {
-        op.get("out"): op.get("value")
+    slot_by_out = {
+        op.get("out"): op.get("s_value")
         for op in ops
-        if isinstance(op, dict) and op.get("kind") == "const"
+        if isinstance(op, dict) and op.get("kind") == "module_slot"
     }
+    assert all("value" not in op for op in ops if op.get("kind") == "module_slot")
     box_op = box_by_out.get(ensure_call["args"][0])
     if box_op is None:
         return None
-    return const_by_out.get(box_op["args"][0])
+    return slot_by_out.get(box_op["args"][0])
 
 
 def test_init_reachable_only_via_table(tmp_path: Path) -> None:
@@ -420,7 +438,7 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
         f"(invariant I5); found direct call edges: {direct_init_calls}"
     )
 
-    # The entry dispatch is ensure(const ModuleId).
+    # The entry dispatch resolves the __main__ symbolic row at final emission.
     molt_main_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
     )
@@ -434,8 +452,8 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     assert registry is not None
     main_id = registry.id_of("__main__")
     assert main_id is not None
-    assert main_id in {
-        _ensure_call_module_id(molt_main_ops, op) for op in ensure_calls
+    assert "__main__" in {
+        _ensure_call_module_name(molt_main_ops, op) for op in ensure_calls
     }, "molt_main must ensure the __main__ registry row"
 
     # The IR document projection carries the digest (G7 cross-check shape).
@@ -487,7 +505,7 @@ def test_runtime_builtin_initializers_do_not_require_explicit_import_roots(
         symbol = cli.SimpleTIRGenerator.module_init_symbol(name)
         assert row.init_symbol == symbol
         assert symbol in payload["init_symbols"]
-        assert [row.id, symbol] in payload["init_rows"]
+        assert payload["rows"][row.id] == {"name": row.name, "init_symbol": symbol}
         assert symbol in {reloc[1] for reloc in payload["relocs"]}
     unrelated = registry.row_of("unrelated")
     assert unrelated is not None and unrelated.kind == "source"
@@ -548,13 +566,78 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
     ]
     assert len(ensure_calls) == 1
     assert ensure_calls[0]["out"] == "v1"
-    assert _ensure_call_module_id(ops, ensure_calls[0]) == registry.id_of("pkg.sub")
+    assert _ensure_call_module_name(ops, ensure_calls[0]) == "pkg.sub"
     # Registry misses keep the dynamic module_import lane.
     remaining_imports = [op for op in ops if op.get("kind") == "module_import"]
     assert len(remaining_imports) == 1
     assert remaining_imports[0]["args"] == ["v2"]
     # The pre-existing exception edge is preserved.
     assert {"kind": "check_exception", "value": 1} in ops
+
+
+def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
+    from copy import deepcopy
+    from molt.cli import backend_ir
+
+    entries = [
+        ModuleRegistryEntry(name="pkg", kind="source", init_symbol="molt_init_pkg"),
+        ModuleRegistryEntry(
+            name="pkg.sub", kind="source", init_symbol="molt_init_pkg_sub"
+        ),
+        ModuleRegistryEntry(name="alias", kind="alias", alias_of="pkg.sub"),
+        ModuleRegistryEntry(
+            name="__main__", kind="source", init_symbol="molt_init_entry"
+        ),
+        ModuleRegistryEntry(name="entry", kind="source", init_symbol="molt_init_entry"),
+    ]
+    original = [
+        {
+            "name": "consumer",
+            "params": [],
+            "ops": [
+                {"kind": "const_str", "s_value": "alias", "out": "v0"},
+                {"kind": "module_import", "args": ["v0"], "out": "v1"},
+                {"kind": "call", "s_value": "molt_init_entry", "args": [], "out": "v2"},
+                {"kind": "const_none", "out": "v3"},
+                {
+                    "kind": "builtin_func",
+                    "s_value": "molt_importlib_import_transaction",
+                    "out": "v4",
+                },
+                {"kind": "const_str", "s_value": "pkg.sub", "out": "v5"},
+                {"kind": "tuple_new", "args": [], "out": "v6"},
+                {"kind": "const", "value": 0, "out": "v7"},
+                {
+                    "kind": "call_func",
+                    "args": ["v4", "v5", "v3", "v3", "v6", "v7"],
+                    "out": "v8",
+                },
+                {"kind": "ret_void"},
+            ],
+        }
+    ]
+    snapshots = []
+    bindings = []
+    for additional in [
+        [],
+        [ModuleRegistryEntry(name="aaa", kind="source", init_symbol="molt_init_aaa")],
+    ]:
+        registry = build_module_registry(entries + additional)
+        functions = deepcopy(original)
+        assert backend_ir._rewrite_native_import_lanes(functions, registry) is None
+        snapshots.append(functions)
+        bindings.append(registry.id_of("alias"))
+        assert registry.id_of("alias") != registry.id_of("pkg.sub")
+        ops = functions[0]["ops"]
+        calls = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
+        assert [_ensure_call_module_name(ops, op) for op in calls] == [
+            "alias",
+            "__main__",
+            "pkg.sub",
+            "pkg",
+        ]
+    assert bindings[0] != bindings[1]
+    assert snapshots[0] == snapshots[1]
 
 
 # ─── Ensure is the only state-transition owner (structural gate) ────────────

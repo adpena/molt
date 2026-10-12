@@ -73,6 +73,7 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                 emit_luau_target(
                     &mut ir,
                     request.code_slots,
+                    request.module_registry,
                     output_file,
                     request.use_ir_pipeline,
                 )?;
@@ -90,7 +91,12 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
         BackendOutputKind::Rust => {
             #[cfg(feature = "rust-backend")]
             {
-                emit_rust_target(&request.ir, request.code_slots, output_file)?;
+                emit_rust_target(
+                    &request.ir,
+                    request.code_slots,
+                    request.module_registry,
+                    output_file,
+                )?;
                 Ok(())
             }
             #[cfg(not(feature = "rust-backend"))]

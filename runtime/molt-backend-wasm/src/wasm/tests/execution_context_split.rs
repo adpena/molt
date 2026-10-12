@@ -855,3 +855,80 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
         }
     }
 }
+
+#[test]
+fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
+    for name in ["module_slot_probe", "demo____molt_globals_builtin__"] {
+        let function = wasm_test_function(
+            name,
+            vec![],
+            None,
+            vec![
+                OpIR {
+                    s_value: Some("sys".into()),
+                    ..wasm_test_op("module_slot", Some("slot"), vec![])
+                },
+                wasm_test_op("ret", None, vec!["slot"]),
+            ],
+        );
+        let main = wasm_test_function(
+            "molt_main",
+            vec![],
+            None,
+            vec![wasm_test_op("ret_void", None, vec![])],
+        );
+        let ir = SimpleIR {
+            functions: vec![main, function],
+            profile: None,
+        };
+        let error = WasmBackend::new().compile_checked(ir.clone()).unwrap_err();
+        assert_eq!(
+            error.shape.violation,
+            molt_ir::ir_schema::OpShapeViolation::UnboundModuleSlot
+        );
+        let plans =
+            crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
+                &ir,
+                &Default::default(),
+            );
+        let lir = name.contains("____molt_globals_builtin__");
+        if lir {
+            assert!(
+                plans[name].lir_fast_body().is_some(),
+                "module binding must remain on the LIR path"
+            );
+        }
+        for (names, expected) in [(vec!["sys"], 0), (vec!["added", "sys"], 1)] {
+            let registry = molt_ir::ModuleRegistryIR {
+                blob: vec![0],
+                // The real catalog root keeps the inspected body independently
+                // of inlining and ordinary call-graph reachability.
+                init_symbols: vec![name.into()],
+                rows: names
+                    .into_iter()
+                    .map(|module| molt_ir::ModuleRegistryRowIR {
+                        name: module.into(),
+                        init_symbol: (module == "sys").then(|| name.into()),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let wasm = WasmBackend::new()
+                .with_module_registry(Some(registry))
+                .compile_checked(ir.clone())
+                .unwrap()
+                .wasm;
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let operators = wasm_operator_debug_for_export(&wasm, name);
+            let value = if lir {
+                expected
+            } else {
+                molt_codegen_abi::box_int_bits(expected)
+            };
+            assert!(
+                operators.contains(&format!("I64Const {{ value: {value} }}")),
+                "{name}: {operators:?}"
+            );
+        }
+    }
+}

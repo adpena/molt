@@ -1020,17 +1020,18 @@ pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
     done
 }
 
-/// Load the immutable dense index bound to this stable code owner at link time.
+/// Load an immutable dense index through its typed stable program identity.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_code_slot_id(
+pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(
+    kind: molt_ir::code_slots::ProgramSlotKind,
     owner: &str,
     module: &mut ObjectModule,
     builder: &mut FunctionBuilder<'_>,
 ) -> Value {
-    let symbol = molt_ir::code_slots::code_slot_symbol(owner);
+    let symbol = molt_ir::code_slots::program_slot_symbol(kind, owner);
     let data = module
         .declare_data(&symbol, Linkage::Import, false, false)
-        .unwrap_or_else(|error| panic!("failed to import code-slot binding {symbol}: {error}"));
+        .unwrap_or_else(|error| panic!("failed to import program-slot binding {symbol}: {error}"));
     let reference = module.declare_data_in_func(data, builder.func);
     let pointer = builder
         .ins()
@@ -1052,7 +1053,12 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
 ) {
-    let code_id_val = emit_code_slot_id(code_owner, module, builder);
+    let code_id_val = emit_program_slot_id(
+        molt_ir::code_slots::ProgramSlotKind::Code,
+        code_owner,
+        module,
+        builder,
+    );
     let callee = SimpleBackend::import_func_id_split(
         module,
         import_ids,

@@ -499,7 +499,11 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
                 previous = inventories[-1]
                 assert all(entries.get(key) == value for key, value in previous.items())
                 assert len(entries.keys() - previous.keys()) == misses
-                assert hits > 0 and reused_bytes > 0
+                assert hits == len(previous), (
+                    "adding shlex must reuse every existing stdlib object; "
+                    f"observed {hits} hits for {len(previous)} unchanged units"
+                )
+                assert reused_bytes > 0
             else:
                 assert hits == 0 and reused_bytes == 0
                 assert len(entries) == misses

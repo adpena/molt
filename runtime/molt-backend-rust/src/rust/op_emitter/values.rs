@@ -1,6 +1,16 @@
 use super::*;
 
 impl RustBackend {
+    pub(super) fn emit_op_module_slot(&mut self, op: &OpIR) {
+        let slot = self
+            .module_registry
+            .as_ref()
+            .expect("admitted module registry")
+            .resolve_module_slot(op.s_value.as_deref().expect("admitted module_slot owner"))
+            .expect("admitted module slot binding");
+        self.emit_literal_value(op, &format!("MoltValue::Int({slot}i64)"));
+    }
+
     pub(super) fn emit_op_runtime_value_call(&mut self, op: &OpIR) {
         let Some(call) = runtime_value_call_for_kind(op.kind.as_str()) else {
             self.emit_op_other(op);

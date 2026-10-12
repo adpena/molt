@@ -558,7 +558,7 @@ simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 # Canonical shaped kinds whose args are their sole input carrier. Aliases
 # inherit this field role; return-family roles remain owned by return_shape.
 simpleir_var_forbidden_kinds = [
-    "box", "unbox", "type_guard", "pos", "warn_stderr", "guard_tag", "guard_type",
+    "box", "unbox", "type_guard", "pos", "warn_stderr", "guard_tag", "guard_type", "module_slot",
 ]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
@@ -1645,6 +1645,7 @@ sccp_constant_eval_rules = [
 ]
 
 value_range_transfer_rules = [
+    { opcode = "ModuleSlot", rule = "module_slot" },
     { opcode = "Add", rule = "add" },
     { opcode = "Sub", rule = "sub" },
     { opcode = "Mul", rule = "mul" },
@@ -1809,6 +1810,7 @@ exception_region_nesting_roles = [
 ]
 
 alias_memory_inert_opcodes = [
+    "ModuleSlot",
     "Add",
     "And",
     "BitAnd",
@@ -2064,6 +2066,12 @@ kind = "frame_home_clear"
 family = "execution_frame"
 operands = 0
 value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "module_slot"
+family = "module_registry"
+operands = 0
+value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
 kind = "code_new"
@@ -3896,6 +3904,19 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "ModuleSlot"
+may_call_python = false
+operand_arity = 0
+frontend_intrinsic_scalar_arity = 1
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_types = ["i64"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "ConstInt"
 may_call_python = false
 operand_arity = 0
@@ -4641,6 +4662,11 @@ mapper_opcode = "StateBlockStart"
 canonical = "state_block_end"
 aliases = []
 mapper_opcode = "StateBlockEnd"
+
+[[kind]]
+canonical = "module_slot"
+aliases = []
+mapper_opcode = "ModuleSlot"
 
 [[kind]]
 canonical = "const"

@@ -82,6 +82,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
     match op.opcode {
         // Constants.
+        OpCode::ModuleSlot => Some(OpIR {
+            kind: "module_slot".to_string(),
+            s_value: attr_str(&op.attrs, "s_value"),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::ConstInt => Some(OpIR {
             kind: "const".to_string(),
             value: attr_int(&op.attrs, "value"),

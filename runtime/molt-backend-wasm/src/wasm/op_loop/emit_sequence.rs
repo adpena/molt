@@ -132,6 +132,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
             let mut call_op_context = CallOpContext {
                 code_slots: &backend.code_slots,
+                module_registry: backend.module_registry.as_ref(),
                 func_ir,
                 call_site_abi,
                 import_ids,

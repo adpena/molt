@@ -174,6 +174,36 @@ fn native_object_refuses_split_graph_before_emission() {
     );
 }
 
+#[test]
+fn native_application_refuses_unbound_program_slots_before_batching() {
+    let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE"]);
+    unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1") };
+    let directory = native_artifact_test_directory("unbound-program-slots");
+    for kind in ["module_slot", "trace_enter_slot"] {
+        let mut ir = native_artifact_test_ir();
+        ir.functions[1].ops.insert(
+            0,
+            OpIR {
+                kind: kind.into(),
+                s_value: Some("helper".into()),
+                out: (kind == "module_slot").then(|| "slot".into()),
+                ..Default::default()
+            },
+        );
+        let output = directory.join(format!("{kind}.a"));
+        let error = compile_native_application_artifact_to_path(
+            ir,
+            &output,
+            native_artifact_test_options(NativeArtifactKind::Archive),
+        )
+        .expect_err("a later batch must not bypass full-program admission");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(kind), "{error}");
+        assert!(!output.exists());
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn native_artifact_test_options(
     kind: NativeArtifactKind,
 ) -> NativeApplicationArtifactOptions<'static> {

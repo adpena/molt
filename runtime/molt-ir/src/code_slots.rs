@@ -111,11 +111,21 @@ impl CodeSlotBindings {
     }
 }
 
-/// Collision-free, target-independent data-symbol spelling. Encode bytes rather
-/// than hashing or replacing punctuation, so distinct owners cannot alias.
-pub fn code_slot_symbol(owner: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramSlotKind {
+    Code,
+    Module,
+}
+
+/// Collision-free, target-independent immutable binding symbols. Domains and
+/// UTF-8 owners remain distinct; no hash or punctuation replacement can alias.
+pub fn program_slot_symbol(kind: ProgramSlotKind, owner: &str) -> String {
+    let domain = match kind {
+        ProgramSlotKind::Code => "code",
+        ProgramSlotKind::Module => "module",
+    };
     format!(
-        "__molt_code_slot_{}",
+        "__molt_{domain}_slot_{}",
         crate::content_digest::bytes_to_lower_hex(owner.as_bytes())
     )
 }
@@ -196,8 +206,21 @@ mod tests {
 
     #[test]
     fn linkage_names_preserve_distinct_owner_bytes() {
-        assert_ne!(code_slot_symbol("a.b"), code_slot_symbol("a_b"));
-        assert_ne!(code_slot_symbol("é"), code_slot_symbol("e"));
-        assert_eq!(code_slot_symbol("a.b"), "__molt_code_slot_612e62");
+        assert_ne!(
+            program_slot_symbol(ProgramSlotKind::Code, "pkg"),
+            program_slot_symbol(ProgramSlotKind::Module, "pkg")
+        );
+        assert_ne!(
+            program_slot_symbol(ProgramSlotKind::Code, "a.b"),
+            program_slot_symbol(ProgramSlotKind::Code, "a_b")
+        );
+        assert_ne!(
+            program_slot_symbol(ProgramSlotKind::Code, "é"),
+            program_slot_symbol(ProgramSlotKind::Code, "e")
+        );
+        assert_eq!(
+            program_slot_symbol(ProgramSlotKind::Code, "a.b"),
+            "__molt_code_slot_612e62"
+        );
     }
 }

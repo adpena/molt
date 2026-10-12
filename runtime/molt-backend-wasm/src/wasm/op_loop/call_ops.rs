@@ -29,6 +29,7 @@ pub(super) enum CallOpEmission {
 
 pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) code_slots: &'a molt_ir::code_slots::CodeSlotBindings,
+    pub(super) module_registry: Option<&'a molt_ir::ModuleRegistryIR>,
     pub(super) func_ir: &'a FunctionIR,
     pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,

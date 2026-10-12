@@ -3902,7 +3902,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
 
     registry = prepared.module_registry
     assert registry is not None
-    init_rows = dict(prepared.ir["module_registry"]["init_rows"])
+    rows = prepared.ir["module_registry"]["rows"]
     for module_name, init_symbol in (
         ("nativepkg", root_init),
         ("nativepkg.ndimage", public_init),
@@ -3911,13 +3911,13 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     ):
         row = registry.row_of(module_name)
         assert row is not None
-        assert init_rows[row.id] == init_symbol
+        assert rows[row.id] == {"name": module_name, "init_symbol": init_symbol}
     alias_row = registry.row_of("nativepkg.legacy._nd_image")
     target_row = registry.row_of("nativepkg.ndimage._nd_image")
     assert alias_row is not None and target_row is not None
     assert alias_row.init_symbol == ""
     assert alias_row.alias_target == target_row.id
-    assert alias_row.id not in init_rows
+    assert rows[alias_row.id] == {"name": alias_row.name, "init_symbol": None}
 
     extension_ops = functions[extension_init]
     invoke_ops = [op for op in extension_ops if op.get("kind") == "invoke_ffi"]

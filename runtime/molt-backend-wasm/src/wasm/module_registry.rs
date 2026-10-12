@@ -29,7 +29,7 @@ impl WasmBackend {
         let Some(registry) = self.module_registry.as_ref() else {
             return;
         };
-        let init_rows = registry.init_rows.clone();
+        let init_rows: Vec<_> = registry.init_rows().collect();
         let func_index = self.func_count;
         // Static type 2 is (i64) -> i64, matching the runtime env import.
         self.funcs.function(2);

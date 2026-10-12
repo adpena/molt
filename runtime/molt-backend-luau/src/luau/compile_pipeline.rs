@@ -113,6 +113,8 @@ impl LuauBackend {
         self.code_slots
             .validate_functions(&ir.functions)
             .map_err(|error| error.to_string())?;
+        molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)
+            .map_err(|error| error.to_string())?;
         runtime_prelude::validate_ir_adapters(ir)?;
         let source = self.emit_source(ir);
         // Dispatch failures emit no source and this Result boundary never

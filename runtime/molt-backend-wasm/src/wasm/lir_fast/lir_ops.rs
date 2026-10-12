@@ -44,6 +44,17 @@ pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
 fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
     let tir_op = &op.tir_op;
     match tir_op.opcode {
+        OpCode::ModuleSlot => {
+            let owner = match tir_op.attrs.get("s_value") {
+                Some(AttrValue::Str(owner)) => owner.clone(),
+                _ => panic!("admitted module_slot owner"),
+            };
+            if let Some(result) = op.result_values.first() {
+                ctx.instructions
+                    .push_program_slot(molt_ir::code_slots::ProgramSlotKind::Module, owner);
+                ctx.emit_set(result.id);
+            }
+        }
         OpCode::ConstInt
         | OpCode::ConstFloat
         | OpCode::ConstBool

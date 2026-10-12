@@ -34,6 +34,7 @@ pub(crate) enum WasmBodyOp {
     Call(WasmCallTarget),
     ConstMaterialization(WasmConstMaterialization),
     DataPtrI32(Arc<[u8]>),
+    ProgramSlot(molt_ir::code_slots::ProgramSlotKind, String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -65,6 +66,14 @@ impl WasmBodyOps {
         self.ops.push(WasmBodyOp::DataPtrI32(bytes));
     }
 
+    pub(crate) fn push_program_slot(
+        &mut self,
+        kind: molt_ir::code_slots::ProgramSlotKind,
+        owner: String,
+    ) {
+        self.ops.push(WasmBodyOp::ProgramSlot(kind, owner));
+    }
+
     pub(crate) fn into_vec(self) -> Vec<WasmBodyOp> {
         self.ops
     }
@@ -87,6 +96,7 @@ impl WasmBodyOps {
                 WasmBodyOp::Instruction(instruction) => instruction,
                 WasmBodyOp::Call(_)
                 | WasmBodyOp::ConstMaterialization(_)
+                | WasmBodyOp::ProgramSlot(_, _)
                 | WasmBodyOp::DataPtrI32(_) => {
                     panic!("peephole instruction test unexpectedly produced a typed body op")
                 }
