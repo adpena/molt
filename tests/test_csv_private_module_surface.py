@@ -25,7 +25,8 @@ class Error(Exception):
 
 
 _fake_csv = types.ModuleType("csv")
-_fake_csv.Dialect = Dialect
+_fake_csv._Dialect = Dialect
+_fake_csv.Dialect = object()
 _fake_csv.Error = Error
 _fake_csv.QUOTE_ALL = 1
 _fake_csv.QUOTE_MINIMAL = 0
@@ -66,6 +67,7 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "dialect_owner": _private.Dialect is _fake_csv._Dialect,
     "behavior": (
         _private.QUOTE_ALL == 1
         and _private.field_size_limit() == 131072
@@ -118,4 +120,4 @@ def test__csv_public_surface_matches_expected_shape() -> None:
         ("unregister_dialect", "function", "True"),
         ("writer", "function", "True"),
     ]
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "dialect_owner": "True"}

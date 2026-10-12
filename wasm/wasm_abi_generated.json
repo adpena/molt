@@ -3191,7 +3191,6 @@
     "defaultdict_drop": "molt_defaultdict_drop",
     "defaultdict_factory": "molt_defaultdict_factory",
     "defaultdict_missing": "molt_defaultdict_missing",
-    "defaultdict_missing_method": "molt_defaultdict_missing_method",
     "defaultdict_new": "molt_defaultdict_new",
     "deflate_raw": "molt_deflate_raw",
     "del_attr_generic": "molt_del_attr_generic",

@@ -12137,12 +12137,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_defaultdict_missing_method",
-        symbol: "molt_defaultdict_missing_method",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_defaultdict_new",
         symbol: "molt_defaultdict_new",
         arity: 1,
@@ -13807,7 +13801,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_csv_validate_dialect",
         symbol: "molt_csv_validate_dialect",
-        arity: 5,
+        arity: 10,
         defaults: &[],
     },
     IntrinsicSpec {

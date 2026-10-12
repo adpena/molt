@@ -74,7 +74,7 @@ _MOLT_DEQUE_SETITEM = _require_intrinsic("molt_deque_setitem")
 # --- defaultdict intrinsics ---
 _MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop")
 _MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory")
-_MOLT_DEFAULTDICT_MISSING_METHOD = _require_intrinsic("molt_defaultdict_missing_method")
+_MOLT_DEFAULTDICT_MISSING = _require_intrinsic("molt_defaultdict_missing")
 _MOLT_DEFAULTDICT_NEW = _require_intrinsic("molt_defaultdict_new")
 
 
@@ -940,7 +940,10 @@ class defaultdict(dict):
         except Exception:
             pass
 
-    __missing__ = _MOLT_DEFAULTDICT_MISSING_METHOD
+    def __missing__(self, key, /):
+        value = _MOLT_DEFAULTDICT_MISSING(self._dd_handle, key)
+        self[key] = value
+        return value
 
     def copy(self) -> "defaultdict":
         factory = self.default_factory

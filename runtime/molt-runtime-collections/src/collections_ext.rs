@@ -18,10 +18,9 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, compare_eq,
-    dec_ref_bits, dict_like_bits_from_ptr, dict_set_in_place, dict_snapshot, exception_pending,
-    inc_ref_bits, index_i64_with_overflow, is_truthy, object_type_id, raise_exception,
-    raise_key_error_with_key, seq_snapshot, string_obj_to_owned, to_i64, type_name,
+    call_callable0, compare_eq, dec_ref_bits, dict_snapshot, exception_pending, inc_ref_bits,
+    index_i64_with_overflow, is_truthy, object_type_id, raise_exception, raise_key_error_with_key,
+    seq_snapshot, string_obj_to_owned, to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -1718,10 +1717,13 @@ fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64
         .lock()
         .unwrap()
         .get(&id)
-        .map(|s| s.factory_bits);
-    let Some(factory_bits) = factory else {
+        .map(|s| OwnedRuntimeValue::retain(_py, s.factory_bits));
+    let Some(factory) = factory else {
         return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
     };
+    // A factory may replace its own handle while running. Pin it before
+    // releasing the registry lock and keep that owner through the callback.
+    let factory_bits = factory.bits();
     let factory_obj = obj_from_bits(factory_bits);
     if factory_obj.is_none() {
         return raise_key_error_with_key::<u64>(_py, key_bits);
@@ -1760,62 +1762,6 @@ pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
 pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         defaultdict_missing_value(_py, handle_bits, key_bits)
-    })
-}
-
-/// Native `defaultdict.__missing__(self, key)` method.
-/// Reads the intrinsic state handle from the instance slot, computes the
-/// default value or raises KeyError, and inserts factory-produced values into
-/// the dict-subclass backing store before returning them.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "defaultdict.__missing__ expects self");
-        };
-        let Some(handle_name_bits) = attr_name_bits_from_bytes(_py, b"_dd_handle") else {
-            return MoltObject::none().bits();
-        };
-        let handle_bits = unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, handle_name_bits) };
-        dec_ref_bits(_py, handle_name_bits);
-        let handle_bits = match handle_bits {
-            Ok(handle) => handle,
-            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
-        };
-        let Some(handle_bits) = handle_bits else {
-            return raise_exception::<_>(_py, "RuntimeError", "defaultdict handle is missing");
-        };
-        let val = defaultdict_missing_value(_py, handle_bits, key_bits);
-        dec_ref_bits(_py, handle_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let Some(dict_bits) = (unsafe {
-            match dict_like_bits_from_ptr(_py, self_ptr) {
-                Ok(storage) => storage,
-                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
-            }
-        }) else {
-            return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
-        };
-        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
-        };
-        unsafe {
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "defaultdict storage is unavailable",
-                );
-            }
-        }
-        if !unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val) } {
-            dec_ref_bits(_py, val);
-            return MoltObject::none().bits();
-        }
-        val
     })
 }
 

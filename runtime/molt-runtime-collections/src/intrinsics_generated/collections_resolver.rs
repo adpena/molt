@@ -86,10 +86,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_collections::collections_ext::molt_defaultdict_missing",
             crate::collections_ext::molt_defaultdict_missing as *const (),
         )),
-        "molt_defaultdict_missing_method" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_defaultdict_missing_method",
-            crate::collections_ext::molt_defaultdict_missing_method as *const (),
-        )),
         "molt_defaultdict_new" => Some(runtime_fn_addr(
             "molt_runtime_collections::collections_ext::molt_defaultdict_new",
             crate::collections_ext::molt_defaultdict_new as *const (),

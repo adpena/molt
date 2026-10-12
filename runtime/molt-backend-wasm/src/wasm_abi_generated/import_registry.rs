@@ -12570,11 +12570,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DefaultdictMissingMethod,
-        name: "defaultdict_missing_method",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictNew,
         name: "defaultdict_new",
         type_idx: 2,
@@ -13922,7 +13917,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvValidateDialect,
         name: "csv_validate_dialect",
-        type_idx: 12,
+        type_idx: 32,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvValidateFmtparams,
@@ -19740,8 +19735,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_defaultdict_factory" => Some(WasmRuntimeImport::DefaultdictFactory),
         "defaultdict_missing" => Some(WasmRuntimeImport::DefaultdictMissing),
         "molt_defaultdict_missing" => Some(WasmRuntimeImport::DefaultdictMissing),
-        "defaultdict_missing_method" => Some(WasmRuntimeImport::DefaultdictMissingMethod),
-        "molt_defaultdict_missing_method" => Some(WasmRuntimeImport::DefaultdictMissingMethod),
         "defaultdict_new" => Some(WasmRuntimeImport::DefaultdictNew),
         "molt_defaultdict_new" => Some(WasmRuntimeImport::DefaultdictNew),
         "deque_append" => Some(WasmRuntimeImport::DequeAppend),

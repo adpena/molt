@@ -138,6 +138,66 @@ dd_int.default_factory = float
 dd_int["c"]
 print("dd changed factory", dd_int["c"])
 
+# Bound and unbound entry share factory identity and ordinary mapping insertion.
+dd_direct = defaultdict(list)
+bound_value = dd_direct.__missing__("bound")
+unbound_value = defaultdict.__missing__(dd_direct, "unbound")
+print(
+    "dd missing binding",
+    bound_value is dd_direct["bound"],
+    unbound_value is dd_direct["unbound"],
+)
+
+dd_events = []
+
+
+class RecordingDefaultDict(defaultdict):
+    def __setitem__(self, key, value):
+        dd_events.append(("insert", key, value))
+        super().__setitem__(key, value)
+
+
+def replacement_factory():
+    dd_events.append("replacement")
+    return 23
+
+
+def replacing_factory():
+    dd_events.append("original")
+    dd_reentrant.default_factory = replacement_factory
+    dd_reentrant["side"] = 7
+    return 19
+
+
+dd_reentrant = RecordingDefaultDict(replacing_factory)
+print("dd reentrant", dd_reentrant["first"], dd_reentrant["second"], dd_events)
+print("dd factory replacement", dd_reentrant.default_factory is replacement_factory)
+
+dd_failure = ValueError("defaultdict callback sentinel")
+
+
+class RejectingDefaultDict(defaultdict):
+    def __setitem__(self, key, value):
+        raise dd_failure
+
+
+dd_rejecting = RejectingDefaultDict(list)
+try:
+    dd_rejecting["missing"]
+except ValueError as error:
+    print("dd insertion failure", error is dd_failure, len(dd_rejecting))
+
+
+def broken_factory():
+    raise dd_failure
+
+
+dd_broken = defaultdict(broken_factory)
+try:
+    defaultdict.__missing__(dd_broken, "missing")
+except ValueError as error:
+    print("dd factory failure", error is dd_failure, len(dd_broken))
+
 # ========== Counter ==========
 
 cnt = Counter("abracadabra")
