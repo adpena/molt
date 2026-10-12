@@ -4190,8 +4190,8 @@ gates = [
 
 [[named_lane]]
 id = "native.capability-cache-policy"
-description = "Build the same native source/output with allow, deny and allow policies; require shared backend cache hits and current embedded grants against opposite ambient authority."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-vv", "-s", "tests/test_manifest_pipeline_e2e.py::test_native_warm_code_cache_keeps_current_capability_policy"]
+description = "Exercise native shared-code reuse across embedded capability policies and different application code-slot layouts, with actual compiled output and constituent-cache observations."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-vv", "-s", "tests/test_manifest_pipeline_e2e.py::test_native_warm_code_cache_keeps_current_capability_policy", "tests/test_manifest_pipeline_e2e.py::test_native_stdlib_objects_reuse_across_code_slot_layouts"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
