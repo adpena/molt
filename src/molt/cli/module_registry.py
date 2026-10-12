@@ -247,8 +247,9 @@ class ModuleRegistry:
             "blob": list(blob),
             "relocs": [[offset, symbol] for offset, symbol in relocs],
             "init_symbols": list(self.init_symbols()),
-            "init_rows": [
-                [row.id, row.init_symbol] for row in self.rows if row.init_symbol
+            "rows": [
+                {"name": row.name, "init_symbol": row.init_symbol or None}
+                for row in self.rows
             ],
         }
 
@@ -360,6 +361,8 @@ def build_module_registry(
             f"{existing} vs {entry}"
         )
     ordered_names = sorted(by_name)
+    if len(ordered_names) > NO_MODULE_ID:
+        raise ValueError("module registry row count exceeds the u32 ModuleId domain")
     id_by_name = {name: idx for idx, name in enumerate(ordered_names)}
 
     # Alias targets must exist and terminate (no alias-of-alias cycles).

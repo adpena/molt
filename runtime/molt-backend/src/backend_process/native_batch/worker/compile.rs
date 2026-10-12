@@ -9,10 +9,12 @@ fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,
     output_path: &Path,
 ) -> io::Result<()> {
-    if job.emit_app_callable_resolver != job.code_slots.is_some() {
+    if job.emit_app_callable_resolver != job.code_slots.is_some()
+        || (!job.emit_app_callable_resolver && job.module_registry.is_some())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "native batch code-slot bindings must belong exactly to the app metadata owner",
+            "native batch program-slot bindings must belong exactly to the app metadata owner",
         ));
     }
     job.codegen_environment.validate_current()?;

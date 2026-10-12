@@ -493,6 +493,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "frame_home_take": 0,
         "frame_home_clear": 0,
         "code_new": 9,
+        "module_slot": 0,
         "code_slot_set": 2,
         "code_slots_init": 0,
         "trace_enter_slot": 0,
@@ -511,7 +512,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     )
     for kind in ("code_slots_init", *homes):
         assert shapes[kind]["value_rule"] == "nonnegative"
-    for kind in ("code_slot_set", "trace_enter_slot"):
+    for kind in ("code_slot_set", "trace_enter_slot", "module_slot"):
         assert shapes[kind]["value_rule"] == "unconstrained"
     # A home store adopts its only operand and leaves a non-owning view; a
     # load is a view; a take and locals() own their results. None is inert:
@@ -543,7 +544,8 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
     schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
     assert "RANGE_FILL_OP_SCHEMAS" not in schema
-    assert "MissingResult" not in schema
+    # SimpleIR may diagnose a missing required module-slot result; result
+    # cardinality remains declared by the opcode table, not this shape table.
     assert "simpleir_op_shape(kind)" in schema
     for field, value in [
         ("operands", -1),
@@ -631,6 +633,7 @@ def test_representation_var_roles_reject_conflicting_alias_roles(spelling) -> No
         "warn_stderr",
         "guard_tag",
         "guard_type",
+        "module_slot",
     ]
     data["simpleir_var_result_kinds"].append(spelling)
     with pytest.raises(gen.OpKindTableError, match="appears in both"):
@@ -1235,6 +1238,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     }
 
     expected_fixed_or_variable = {
+        "ModuleSlot": "one",
         "ConstInt": "one",
         "Add": "one",
         "InplaceAdd": "one",
@@ -1727,6 +1731,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
 
     expected = {
         "Pow": "dynbox",
+        "ModuleSlot": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
         "ConstFloat": "f64",
@@ -2216,6 +2221,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     value_range = _read_rs_module_cluster(tir_path("passes/value_range.rs"))
 
     expected_transfer_rows = {
+        "ModuleSlot": "module_slot",
         "Add": "add",
         "Sub": "sub",
         "Mul": "mul",
@@ -2262,6 +2268,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     } == expected_container_length_rows
 
     variant = {
+        "module_slot": "ModuleSlot",
         "add": "Add",
         "sub": "Sub",
         "mul": "Mul",
@@ -4387,6 +4394,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     alias_regions = (alias_root.parent / "regions.rs").read_text(encoding="utf-8")
 
     expected_scalar = {
+        "ModuleSlot",
         "Add",
         "And",
         "BitAnd",

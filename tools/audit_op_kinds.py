@@ -7,8 +7,8 @@ string is the wire contract between the Python frontend and the Rust backend.
 Five independent components must agree on that vocabulary, but each keeps its own
 copy of the table:
 
-  1. the frontend ``map_ops_to_json`` dispatcher and extracted serialization
-     handlers (the EMITTER — authoritative wire vocabulary),
+  1. the frontend ``map_ops_to_json`` dispatcher, extracted serialization
+     handlers and CLI-generated backend IR (the EMITTER — wire vocabulary),
   2. the TIR SSA mapper ``kind_to_opcode`` (string -> ``OpCode``; ``ssa.rs``) —
      any kind it does not recognize is silently lifted to ``OpCode::Copy`` with
      the spelling stashed in ``_original_kind`` (the ``_ => OpCode::Copy`` arm),
@@ -54,7 +54,7 @@ THE AUTHORITATIVE LAYER. The ``MoltOp.kind`` vocabulary (~1777 uppercase
 ``MoltOp(kind=...)`` construction sites in the visitors) is an INTERNAL frontend
 detail fully consumed by ``map_ops_to_json``; the audit's source of truth for the
 cross-component contract is therefore the JSON ``"kind"`` STRING that
-``map_ops_to_json`` and its handler modules emit (lowercase), because that is
+``map_ops_to_json``, its handlers and CLI preparation emit (lowercase), because that is
 exactly what every backend component keys on. Phase 2's table is keyed by the
 emitted JSON kind.
 """
@@ -88,6 +88,7 @@ SERIALIZATION_MODULES = (
     SERIALIZATION_DIR / "serialization_function_ops.py",
     SERIALIZATION_DIR / "serialization_loop_string_async_ops.py",
     SERIALIZATION_DIR / "serialization_object_attr_ops.py",
+    ROOT / "src/molt/cli/backend_ir.py",
 )
 SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
 LLVM_PRESERVED_OPS_RS = (
@@ -528,6 +529,40 @@ def _resolve_name_assignment(
                         for v in val.value.values
                         if isinstance(v, ast.Constant) and isinstance(v.value, str)
                     }
+                return None
+    # CLI metadata emission forwards a literal kind through a private helper
+    # method. Resolve its class-local calls, refusing even one dynamic or
+    # missing argument rather than treating a partial set as exhaustive.
+    owner = getattr(func, "_parent", None)
+    if (
+        isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and isinstance(owner, ast.ClassDef)
+        and func.name.startswith("_")
+    ):
+        params = [arg.arg for arg in (*func.args.posonlyargs, *func.args.args)]
+        if name not in params[1:]:
+            return None
+        argument_index = params.index(name) - 1
+        kinds: set[str] = set()
+        for call in ast.walk(owner):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == params[0]
+                and call.func.attr == func.name
+            ):
+                continue
+            argument = (
+                call.args[argument_index]
+                if len(call.args) > argument_index
+                else next((kw.value for kw in call.keywords if kw.arg == name), None)
+            )
+            resolved = _static_kind_strings(argument) if argument is not None else None
+            if resolved is None:
+                return None
+            kinds.update(resolved)
+        return kinds or None
     return None
 
 

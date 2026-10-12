@@ -88,7 +88,10 @@ mod tests {
             blob: vec![0],
             relocs: Vec::new(),
             init_symbols: vec![symbol.to_string()],
-            init_rows: vec![(0, symbol.to_string())],
+            rows: vec![molt_ir::ModuleRegistryRowIR {
+                name: "demo".into(),
+                init_symbol: Some(symbol.to_string()),
+            }],
         }
     }
 

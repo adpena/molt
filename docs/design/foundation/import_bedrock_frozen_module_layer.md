@@ -40,7 +40,7 @@ runtime object:
    first-init-wins patch.
 3. **`molt_module_ensure(ModuleId)`** — the only function in the process that
    transitions module state. Compiled `import x` lowers to
-   `ensure(const ID)`: two L1 loads and a predictable branch on the hot path,
+   `ensure(ID)`: two L1 loads and a predictable branch on the hot path,
    zero allocation, zero string traffic. Dynamic imports (importlib, C
    extensions via `PyImport_*`, isolate hosts) resolve string→id **once** via a
    generated perfect-hash table and enter the same `ensure`.
@@ -328,7 +328,22 @@ chosen for O(1) worst case and zero comparisons on miss-by-hash). Used by:
 
 Compiled *literal* import sites skip it entirely: the frontend already proves
 literal absolute names (import_system_contract.md §3.3); lowering emits
-`ensure(const ID)`. **There is no if/else chain anywhere.**
+`module_slot(canonical_name) → box → ensure(ID)`. Reusable function IR carries
+the canonical name, so adding a module earlier in registry order does not
+invalidate unrelated objects. Final native/LLVM application emission defines
+immutable code-owner and module-slot binding cells in distinct symbol domains;
+reusable objects import those cells. Whole-program WASM emission resolves the
+same module slots to immediate IDs. The runtime still receives a boxed dense
+integer and performs no additional name lookup.
+
+The Python `ModuleRegistry` remains the sole ID and blob producer. Its backend
+projection includes every canonical name in ModuleId order and an optional
+initializer per row; aliases retain their distinct row indices. Shared IR
+admission checks row order, uniqueness, the u32 count bound, initializer roots
+and symbolic references. The serialized blob and typed rows share the existing
+trusted-producer boundary: backends do not parse the blob to reconstruct a
+second registry, and arbitrary conflicting blob/row payloads are not claimed
+to be independently cross-validated there.
 
 ### 4.3 `molt_module_ensure(id)` — the only state-transition owner
 
@@ -638,7 +653,7 @@ name literals at call sites, and trace scaffolding all net-delete.
 
 | # | Incident (2026-07-02 corpus) | Why it cannot recur |
 |---|---|---|
-| 1 | `TypeError: module name must be str` on plain `import guardpkg` | Compiled import sites carry `const ModuleId: u32` — there is no string argument to corrupt. The *only* string-accepting surfaces are the CPython-parity API boundaries, which validate with CPython's exact error (§5.9) before converting to id. The `trace_bad_module_name_arg` debug lattice is deleted. |
+| 1 | `TypeError: module name must be str` on plain `import guardpkg` | Compiled import sites bind symbolic module slots to final `ModuleId: u32` — there is no string argument to corrupt. The *only* string-accepting surfaces are the CPython-parity API boundaries, which validate with CPython's exact error (§5.9) before converting to id. The `trace_bad_module_name_arg` debug lattice is deleted. |
 | 2 | Static-native init re-ran via alias bypass ("cannot load module more than once") | Aliases have no init of their own — `kind=Alias{target}` resolves inside `ensure`; init-exactly-once is the CAS `Uninit→Initializing` in one function. Per-init preambles no longer exist to be bypassed. Extension re-init is additionally impossible via the `ext_dict_copy` snapshot path (§5.8): PyInit has exactly one call site, guarded by the CAS. |
 | 3 | Two stores + sync/replay/first-init-wins | There is one store. `sys.modules` is a view of it; Python-side mutations are table transitions by construction. `molt_module_cache_set/get`, the replay loop, and first-init-wins are deleted (first-init-wins existed to mask duplicate init emission, which the init table makes unemittable). |
 | 4 | `molt_sys_modules()` bootstrap-empty dict | Nothing read the intrinsic, and HF-110 deleted it (2026-10-09). `sys.modules` is the singleton table view, created during sys's own `ensure`, which precedes every other module by a registry dependency edge. An "empty sys.modules while modules exist" state is unrepresentable. |

@@ -241,6 +241,9 @@ pub enum OpCode {
     StateBlockStart,
     StateBlockEnd,
     // Constants
+    /// Final-application ModuleRegistry row for canonical name in `s_value`.
+    /// The result is a bounded u32 integer; reusable code never embeds its ID.
+    ModuleSlot,
     ConstInt,
     /// Arbitrary-precision integer constant whose value does not fit the
     /// raw i64 fast-path window. The minimal signed big-endian bytes live in the `bytes`

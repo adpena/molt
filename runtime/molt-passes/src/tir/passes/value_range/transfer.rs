@@ -28,6 +28,11 @@ pub(super) fn transfer_op_range(
     };
     let c = |i: usize| -> Option<i64> { op.operands.get(i).and_then(|&v| result.const_int_of(v)) };
     match opcode_value_range_transfer_rule_table(op.opcode) {
+        // ModuleRegistry admission bounds the dense row count to u32. The
+        // actual final-application ID remains unknown to reusable functions.
+        ValueRangeTransferRule::ModuleSlot if op.operands.is_empty() => {
+            Some(IntRange::new(0, i64::from(u32::MAX)))
+        }
         ValueRangeTransferRule::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
         ValueRangeTransferRule::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),
         ValueRangeTransferRule::Mul if op.operands.len() == 2 => {

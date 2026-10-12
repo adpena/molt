@@ -8,6 +8,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "func_new",
     "func_new_closure",
     "code_new",
+    "module_slot",
     "code_slot_set",
     "stateful_locals_register",
     "code_slots_init",
@@ -719,6 +720,23 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
+        "module_slot" => {
+            let owner = op.s_value.as_deref().expect("admitted module_slot owner");
+            let raw = emit_program_slot_id(
+                molt_ir::code_slots::ProgramSlotKind::Module,
+                owner,
+                module,
+                builder,
+            );
+            let out = simple_ir_out_result(op).expect("admitted module_slot result");
+            // ModuleId is a dense u32, so its boxed representation is always inline.
+            let value = if representation_plan.is_raw_int_carrier_name(out) {
+                raw
+            } else {
+                box_int_value(builder, raw, nbc)
+            };
+            def_var_named(builder, vars, out, value);
+        }
         "code_slot_set" => {
             let args = op.args.as_ref().expect("admitted code_slot_set operands");
             let code_bits = var_get_boxed_overflow_safe(
@@ -744,7 +762,12 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             )
             .expect("code globals not found");
             let code_owner = op.s_value.as_deref().expect("admitted code_slot_set owner");
-            let code_id_val = emit_code_slot_id(code_owner, module, builder);
+            let code_id_val = emit_program_slot_id(
+                molt_ir::code_slots::ProgramSlotKind::Code,
+                code_owner,
+                module,
+                builder,
+            );
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,

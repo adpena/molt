@@ -1,6 +1,97 @@
 use super::*;
 
 #[test]
+fn module_slots_survive_ssa_sccp_gvn_and_have_bounded_raw_carriers() {
+    let mut function = FunctionIR {
+        name: "import_owner".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                kind: "module_slot".into(),
+                s_value: Some("pkg.sub".into()),
+                out: Some("v0".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "box".into(),
+                args: Some(vec!["v0".into()]),
+                out: Some("v1".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_slot".into(),
+                s_value: Some("pkg.other".into()),
+                out: Some("v2".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "box".into(),
+                args: Some(vec!["v2".into()]),
+                out: Some("v3".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "tuple_new".into(),
+                args: Some(vec!["v1".into(), "v3".into()]),
+                out: Some("v4".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["v4".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    for _ in 0..2 {
+        let mut tir = lower_to_tir(&function);
+        crate::tir::passes::sccp::run(&mut tir);
+        crate::tir::passes::gvn::run(&mut tir, &mut crate::tir::analysis::AnalysisManager::new());
+        let slots: Vec<_> = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .filter(|op| op.opcode == OpCode::ModuleSlot)
+            .collect();
+        assert_eq!(slots.len(), 2, "distinct module names must not merge");
+        let ranges = crate::representation_facts::value_range_for(&tir);
+        for slot in slots {
+            let result = slot.results[0];
+            assert_eq!(
+                ranges.range_at(tir.entry_block, result),
+                crate::tir::numeric_facts::IntRange::new(0, i64::from(u32::MAX))
+            );
+            assert!(ranges.fits_inline_int47(result));
+            assert!(
+                crate::representation_facts::raw_i64_safe_values_for(&tir, &ranges)
+                    .contains(&result)
+            );
+            assert_eq!(
+                ranges.const_int_of(result),
+                None,
+                "symbolic binding must not fold to an ID"
+            );
+        }
+        function.ops = lower_to_simple_ir(&tir);
+        let slots: Vec<_> = function
+            .ops
+            .iter()
+            .filter(|op| op.kind == "module_slot")
+            .collect();
+        assert_eq!(
+            slots
+                .iter()
+                .map(|op| op.s_value.as_deref().unwrap())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["pkg.sub", "pkg.other"])
+        );
+        assert!(slots.iter().all(|op| op.value.is_none()));
+        assert!(function.ops.iter().any(|op| op.kind == "box"));
+    }
+}
+
+#[test]
 fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
     let byte_cases = [
         ("const_str", vec![]),

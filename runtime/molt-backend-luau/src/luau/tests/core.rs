@@ -2,6 +2,54 @@ use super::exceptions::luau_tir_roundtrip_function;
 use super::*;
 
 #[test]
+fn symbolic_module_slots_resolve_from_the_program_registry() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![
+                OpIR {
+                    kind: "module_slot".into(),
+                    s_value: Some("sys".into()),
+                    out: Some("module_id".into()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["module_id".into()]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        profile: None,
+    };
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+    assert!(error.contains("program registry binding"), "{error}");
+    for (names, expected) in [(vec!["sys"], 0), (vec!["added", "sys"], 1)] {
+        let registry = molt_ir::ModuleRegistryIR {
+            blob: vec![0],
+            rows: names
+                .into_iter()
+                .map(|name| molt_ir::ModuleRegistryRowIR {
+                    name: name.into(),
+                    init_symbol: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let source = LuauBackend::new()
+            .with_module_registry(Some(registry))
+            .compile_checked(&ir)
+            .unwrap();
+        assert!(
+            source.contains(&format!("module_id = {expected}")),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn cold_module_chunk_identity_uses_semantic_provenance() {
     let mut function = FunctionIR {
         name: "comprehension_fail__molt_module_chunk_1".into(),

@@ -267,9 +267,23 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
         blob: vec![1, 2, 3, 4],
         relocs: vec![],
         init_symbols: vec!["molt_init_alpha".to_string(), "molt_init_gamma".to_string()],
-        init_rows: vec![
-            (1, "molt_init_alpha".to_string()),
-            (3, "molt_init_gamma".to_string()),
+        rows: vec![
+            molt_ir::ModuleRegistryRowIR {
+                name: "__main__".into(),
+                init_symbol: None,
+            },
+            molt_ir::ModuleRegistryRowIR {
+                name: "alpha".into(),
+                init_symbol: Some("molt_init_alpha".into()),
+            },
+            molt_ir::ModuleRegistryRowIR {
+                name: "beta".into(),
+                init_symbol: None,
+            },
+            molt_ir::ModuleRegistryRowIR {
+                name: "gamma".into(),
+                init_symbol: Some("molt_init_gamma".into()),
+            },
         ],
     };
     let wasm = WasmBackend::new()

@@ -3,6 +3,16 @@ use super::*;
 impl LuauBackend {
     pub(super) fn emit_runtime_surface_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
+            "module_slot" => {
+                let slot = self
+                    .module_registry
+                    .as_ref()
+                    .expect("admitted module registry")
+                    .resolve_module_slot(op.s_value.as_deref().expect("admitted module_slot owner"))
+                    .expect("admitted module slot binding");
+                let out = sanitize_ident(op.out.as_deref().expect("admitted module_slot result"));
+                self.emit_line(&format!("local {out} = {slot}"));
+            }
             "context_null" | "context_enter" | "context_exit" | "context_closing"
             | "context_unwind" | "context_unwind_to" => {
                 self.emit_unsupported_op(op);

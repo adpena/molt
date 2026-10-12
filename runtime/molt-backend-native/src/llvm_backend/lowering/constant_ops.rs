@@ -2,6 +2,13 @@ use super::*;
 use molt_ir::literal_payload::required_tir_literal_bytes;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    pub(super) fn emit_module_slot(&mut self, op: &TirOp) {
+        let slot = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Module, op);
+        let result = op.results[0];
+        self.values.insert(result, slot.into());
+        self.value_types.insert(result, TirType::I64);
+    }
+
     pub(super) fn emit_const_int(&mut self, op: &TirOp) {
         let val = match op.attrs.get("value") {
             Some(AttrValue::Int(v)) => *v,

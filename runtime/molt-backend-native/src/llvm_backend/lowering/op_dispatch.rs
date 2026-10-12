@@ -5,6 +5,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         match op.opcode {
             // -- Constants --
             OpCode::ConstInt => self.emit_const_int(op),
+            OpCode::ModuleSlot => self.emit_module_slot(op),
             OpCode::ConstFloat => self.emit_const_float(op),
             OpCode::ConstBool => self.emit_const_bool(op),
             OpCode::ConstNone => self.emit_const_none(op),

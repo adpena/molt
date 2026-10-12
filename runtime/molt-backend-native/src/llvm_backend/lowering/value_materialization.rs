@@ -61,6 +61,27 @@ impl BorrowedOperands<'_> {
 }
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    pub(super) fn program_slot_id(
+        &self,
+        kind: molt_ir::code_slots::ProgramSlotKind,
+        op: &TirOp,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let owner = match op.attrs.get("s_value") {
+            Some(AttrValue::Str(owner)) => owner.as_str(),
+            _ => panic!("admitted program-slot owner"),
+        };
+        let binding = self.backend.program_slot_binding(kind, owner);
+        self.backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                binding.as_pointer_value(),
+                "program_slot",
+            )
+            .expect("load immutable program-slot binding")
+            .into_int_value()
+    }
+
     fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
         self.backend
             .context

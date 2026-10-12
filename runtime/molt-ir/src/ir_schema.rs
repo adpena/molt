@@ -110,7 +110,7 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
     UnregisteredKind,
     BackendPrivate {
@@ -120,6 +120,12 @@ pub enum OpShapeViolation {
     ForbiddenValue,
     CodeSlotSymbol,
     UnboundCodeSlot,
+    ModuleSlotSymbol,
+    UnboundModuleSlot,
+    MissingResult,
+    InvalidModuleRegistry {
+        reason: String,
+    },
     CodeSlotCount {
         expected: usize,
         actual: Option<i64>,
@@ -145,7 +151,7 @@ pub struct OpShapeDiagnostic {
 
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.violation {
+        match &self.violation {
             OpShapeViolation::Retired { reason } => {
                 return write!(f, "retired compiler operation `{}`: {reason}", self.kind);
             }
@@ -162,15 +168,12 @@ impl std::fmt::Display for OpShapeDiagnostic {
             _ => {}
         }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
-        match self.violation {
+        match &self.violation {
             OpShapeViolation::ForbiddenVar => {
                 write!(f, "forbids `var`; `args` is the sole input carrier")
             }
             OpShapeViolation::ForbiddenValue => {
-                write!(
-                    f,
-                    "forbids numeric `value`; executable identity is symbolic"
-                )
+                write!(f, "forbids numeric `value`; program identity is symbolic")
             }
             OpShapeViolation::CodeSlotSymbol => {
                 write!(f, "requires a nonempty code-owner symbol in `s_value`")
@@ -181,6 +184,19 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     "references a code-owner symbol without a program binding"
                 )
             }
+            OpShapeViolation::ModuleSlotSymbol => {
+                write!(f, "requires a nonempty canonical module name in `s_value`")
+            }
+            OpShapeViolation::UnboundModuleSlot => {
+                write!(
+                    f,
+                    "references a module name without a program registry binding"
+                )
+            }
+            OpShapeViolation::InvalidModuleRegistry { reason } => {
+                write!(f, "has invalid program registry: {reason}")
+            }
+            OpShapeViolation::MissingResult => write!(f, "requires a nonempty result in `out`"),
             OpShapeViolation::CodeSlotCount { expected, actual } => {
                 write!(
                     f,
@@ -256,11 +272,15 @@ pub fn validate_op_shape(
     validate_op_not_retired(kind)?;
     if matches!(
         kind,
-        "call" | "call_internal" | "code_slot_set" | "trace_enter_slot"
+        "call" | "call_internal" | "code_slot_set" | "trace_enter_slot" | "module_slot"
     ) && value.is_some()
     {
         return Err(OpShapeDiagnostic {
-            family: "code_metadata",
+            family: if kind == "module_slot" {
+                "module_registry"
+            } else {
+                "code_metadata"
+            },
             kind: kind.into(),
             violation: OpShapeViolation::ForbiddenValue,
         });
@@ -302,7 +322,7 @@ pub(crate) fn validate_registered_op_kind(kind: &str) -> Result<(), OpShapeDiagn
     Ok(())
 }
 
-pub fn validate_code_slot_symbol(
+pub fn validate_program_slot_symbol(
     kind: &str,
     symbol: Option<&str>,
 ) -> Result<(), OpShapeDiagnostic> {
@@ -313,13 +333,32 @@ pub fn validate_code_slot_symbol(
             violation: OpShapeViolation::CodeSlotSymbol,
         });
     }
+    if kind == "module_slot" && symbol.is_none_or(str::is_empty) {
+        return Err(OpShapeDiagnostic {
+            family: "module_registry",
+            kind: kind.into(),
+            violation: OpShapeViolation::ModuleSlotSymbol,
+        });
+    }
     Ok(())
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     validate_registered_op_kind(&op.kind)?;
     validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
-    validate_code_slot_symbol(&op.kind, op.s_value.as_deref())?;
+    validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
+    if op.kind == "module_slot"
+        && op
+            .out
+            .as_deref()
+            .is_none_or(|out| out.is_empty() || out == "none")
+    {
+        return Err(OpShapeDiagnostic {
+            family: "module_registry",
+            kind: op.kind.clone(),
+            violation: OpShapeViolation::MissingResult,
+        });
+    }
     if let Some(shape) = simpleir_op_shape(&op.kind)
         && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
         && op.var.is_some()
@@ -859,6 +898,7 @@ mod op_shape_tests {
             ("call_internal", 0),
             ("code_slot_set", 2),
             ("trace_enter_slot", 0),
+            ("module_slot", 0),
         ] {
             assert!(validate_op_shape(kind, Some(operands), None).is_ok());
             for value in [i64::MIN, -1, 0, 1, i64::MAX] {
@@ -870,16 +910,35 @@ mod op_shape_tests {
         for kind in ["code_slot_set", "trace_enter_slot"] {
             for symbol in [None, Some("")] {
                 assert_eq!(
-                    validate_code_slot_symbol(kind, symbol)
+                    validate_program_slot_symbol(kind, symbol)
                         .unwrap_err()
                         .violation,
                     OpShapeViolation::CodeSlotSymbol
                 );
             }
-            assert!(validate_code_slot_symbol(kind, Some("module.function")).is_ok());
+            assert!(validate_program_slot_symbol(kind, Some("module.function")).is_ok());
         }
         assert!(validate_op_shape("call_func", Some(1), Some(7)).is_ok());
         assert!(validate_op_shape("code_slots_init", None, Some(7)).is_ok());
+        for symbol in [None, Some("")] {
+            assert_eq!(
+                validate_program_slot_symbol("module_slot", symbol)
+                    .unwrap_err()
+                    .violation,
+                OpShapeViolation::ModuleSlotSymbol
+            );
+        }
+        let mut slot = OpIR {
+            kind: "module_slot".into(),
+            s_value: Some("pkg.sub".into()),
+            ..OpIR::default()
+        };
+        assert_eq!(
+            validate_simple_op_shape(&slot).unwrap_err().violation,
+            OpShapeViolation::MissingResult
+        );
+        slot.out = Some("v0".into());
+        assert!(validate_simple_op_shape(&slot).is_ok());
     }
 
     #[test]

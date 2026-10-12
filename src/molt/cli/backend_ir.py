@@ -576,23 +576,23 @@ def _build_module_registry(
 
 
 def _module_ensure_call_ops(
-    module_id: int,
+    module_name: str,
     *,
     id_var: str,
     boxed_var: str,
     out_var: str,
 ) -> list[dict[str, Any]]:
-    """`ensure(const ModuleId)` — the compiled literal import site shape.
+    """Resolve a symbolic module slot at final emission, then ensure its ModuleId.
 
     Runtime-call arguments are NaN-boxed values (the same convention every
-    other `call` op uses, e.g. ``molt_sys_set_version_info``), so the constant
+    other `call` op uses, e.g. ``molt_sys_set_version_info``), so the resolved
     module id is boxed explicitly; ``molt_module_ensure`` decodes the boxed
     int at the ABI boundary.  Both vars MUST be canonical fresh ``v<N>``
     names: the TIR round-trip numbers values from the numeric suffix, so a
     non-numeric name silently aliases a neighbor.
     """
     return [
-        {"kind": "const", "value": module_id, "out": id_var},
+        {"kind": "module_slot", "s_value": module_name, "out": id_var},
         {"kind": "box", "args": [id_var], "out": boxed_var},
         {
             "kind": "call",
@@ -603,29 +603,29 @@ def _module_ensure_call_ops(
     ]
 
 
-def _registry_init_symbol_rewrite_map(registry: ModuleRegistry) -> dict[str, int]:
+def _registry_init_symbol_rewrite_map(registry: ModuleRegistry) -> dict[str, str]:
     """Map generated init symbols to the registry row an ensure call targets.
 
     The entry module and ``__main__`` share one init body; direct calls to
     either symbol mean "run the program entry", so the ``__main__`` row wins
     ties deterministically.
     """
-    rewrite: dict[str, int] = {}
+    rewrite: dict[str, str] = {}
     for row in registry.rows:
         if not row.init_symbol:
             continue
         existing = rewrite.get(row.init_symbol)
         if existing is None or row.name == "__main__":
-            if existing is not None and registry.rows[existing].name == "__main__":
+            if existing == "__main__":
                 continue
-            rewrite[row.init_symbol] = row.id
+            rewrite[row.init_symbol] = row.name
     main_id = registry.id_of("__main__")
     if main_id is not None:
         # molt_main / molt_host_init / the spawn override call the entry via
         # the __main__ init symbol; on the registry lane that symbol may have
         # no function of its own (the trampoline is deleted), so alias it to
         # the __main__ row explicitly.
-        rewrite[SimpleTIRGenerator.module_init_symbol("__main__")] = main_id
+        rewrite[SimpleTIRGenerator.module_init_symbol("__main__")] = "__main__"
     return rewrite
 
 
@@ -673,7 +673,7 @@ def _rewrite_native_import_lanes(
     functions: Sequence[dict[str, Any]],
     registry: ModuleRegistry,
 ) -> str | None:
-    """Lower literal import sites onto `molt_module_ensure(const ModuleId)`.
+    """Lower literal import sites onto symbolic module slots and module ensure.
 
     Rewrites, in every prepared backend-IR function:
 
@@ -687,9 +687,8 @@ def _rewrite_native_import_lanes(
       fromlist, level 0, literal absolute name with a registry init lane)
       into ``ensure(full_id)`` followed by ``ensure(top_id)`` (the import
       statement binds the top-level module).  This is design §4.2/§10.1
-      verbatim: compiled literal import sites carry ``const ModuleId`` and
-      never route a string argument through the dynamic call lane, which is
-      the incident-1 corruption surface.
+      with a symbolic module name in reusable IR. Final emission supplies its
+      dense ModuleId; the runtime call still receives only a boxed integer.
 
     Names without a registry init lane keep their dynamic ops so the
     importlib fallback ladder (runtime-root spec imports, extension loaders)
@@ -733,8 +732,8 @@ def _rewrite_native_import_lanes(
             if kind == "call":
                 symbol = op.get("s_value")
                 if isinstance(symbol, str) and symbol.startswith("molt_init_"):
-                    module_id = rewrite_map.get(symbol)
-                    if module_id is None:
+                    module_name = rewrite_map.get(symbol)
+                    if module_name is None:
                         return (
                             "direct module-init call targets a symbol outside "
                             f"the module registry: {symbol} in "
@@ -750,7 +749,7 @@ def _rewrite_native_import_lanes(
                         next_var += 1
                     new_ops.extend(
                         _module_ensure_call_ops(
-                            module_id,
+                            module_name,
                             id_var=id_var,
                             boxed_var=boxed_var,
                             out_var=out_name,
@@ -778,7 +777,7 @@ def _rewrite_native_import_lanes(
                         next_var += 1
                     new_ops.extend(
                         _module_ensure_call_ops(
-                            module_id,
+                            registry.rows[module_id].name,
                             id_var=id_var,
                             boxed_var=boxed_var,
                             out_var=out_name,
@@ -814,7 +813,7 @@ def _rewrite_native_import_lanes(
                         next_var += 2
                         new_ops.extend(
                             _module_ensure_call_ops(
-                                full_id,
+                                registry.rows[full_id].name,
                                 id_var=id_var,
                                 boxed_var=boxed_var,
                                 out_var=out_name,
@@ -834,7 +833,7 @@ def _rewrite_native_import_lanes(
                         next_var += 5
                         new_ops.extend(
                             _module_ensure_call_ops(
-                                full_id,
+                                registry.rows[full_id].name,
                                 id_var=full_id_var,
                                 boxed_var=full_boxed_var,
                                 out_var=full_out_var,
@@ -842,7 +841,7 @@ def _rewrite_native_import_lanes(
                         )
                         new_ops.extend(
                             _module_ensure_call_ops(
-                                top_id,
+                                registry.rows[top_id].name,
                                 id_var=top_id_var,
                                 boxed_var=top_boxed_var,
                                 out_var=out_name,
@@ -2236,7 +2235,7 @@ def _prepare_backend_ir(
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
         # molt_isolate_import string_eq dispatch chain.  Cold dispatch is the
         # MODULE_INIT_TABLE relocation column of the registry blob; literal
-        # import sites lower onto molt_module_ensure(const ModuleId).
+        # import sites retain symbolic module_slot owners until final emission.
         try:
             module_registry = _build_module_registry(
                 entry_module=entry_module,

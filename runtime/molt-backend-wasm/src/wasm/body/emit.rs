@@ -52,6 +52,20 @@ impl WasmBody {
                     let data = backend.add_data_segment(reloc_enabled, bytes.as_ref());
                     backend.emit_data_ptr_i32(reloc_enabled, func_index, func, data);
                 }
+                WasmBodyOp::ProgramSlot(kind, owner) => {
+                    let slot = match kind {
+                        molt_ir::code_slots::ProgramSlotKind::Code => {
+                            backend.code_slots.resolve(owner)
+                        }
+                        molt_ir::code_slots::ProgramSlotKind::Module => backend
+                            .module_registry
+                            .as_ref()
+                            .expect("admitted module registry")
+                            .resolve_module_slot(owner),
+                    }
+                    .expect("admitted program slot binding");
+                    func.instruction(&wasm_encoder::Instruction::I64Const(slot as i64));
+                }
                 WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => {
                     panic!(
                         "LIR fast body for '{func_name}' reached a generic-path bail marker during emission: {}",

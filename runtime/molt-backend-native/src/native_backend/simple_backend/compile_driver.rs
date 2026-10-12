@@ -66,6 +66,12 @@ impl SimpleBackend {
         if let Some(bindings) = self.code_slots.as_ref() {
             bindings.validate_functions(&ir.functions)?;
         }
+        if self.emit_app_callable_resolver
+            || self.code_slots.is_some()
+            || self.module_registry.is_some()
+        {
+            molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)?;
+        }
         Ok(self.compile_selected(ir, backend))
     }
 
@@ -85,8 +91,8 @@ impl SimpleBackend {
         let native_target_info = prepared.native_target_info;
         let emit_resolver_here = prepared.emit_resolver_here;
         assert!(
-            self.code_slots.is_none() || emit_resolver_here,
-            "code-slot definitions require the application metadata owner"
+            (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,
+            "program-slot definitions require the application metadata owner"
         );
         let app_callable_manifest = prepared.app_callable_manifest;
         let source_callables = prepared.source_callables;
@@ -325,8 +331,11 @@ impl SimpleBackend {
             if emit_resolver_here && let Some(registry) = self.module_registry.as_ref() {
                 llvm.emit_module_registry_blob(registry);
             }
-            if emit_resolver_here && let Some(bindings) = self.code_slots.as_ref() {
-                llvm.emit_code_slot_bindings(bindings);
+            if emit_resolver_here {
+                llvm.emit_program_slot_bindings(
+                    self.code_slots.as_ref(),
+                    self.module_registry.as_ref(),
+                );
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
@@ -588,11 +597,13 @@ impl SimpleBackend {
         // same exactly-one-object custody as the app callable resolver: the
         // main stub references `molt_module_registry_blob` and installs it
         // with the runtime before `molt_runtime_init`.
-        if emit_resolver_here && let Some(registry) = self.module_registry.take() {
-            self.emit_module_registry_blob(&registry);
-        }
-        if emit_resolver_here && let Some(bindings) = self.code_slots.take() {
-            self.emit_code_slot_bindings(&bindings);
+        if emit_resolver_here {
+            let registry = self.module_registry.take();
+            let bindings = self.code_slots.take();
+            if let Some(registry) = registry.as_ref() {
+                self.emit_module_registry_blob(registry);
+            }
+            self.emit_program_slot_bindings(bindings.as_ref(), registry.as_ref());
         }
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site
