@@ -1788,6 +1788,7 @@ mod tests {
         HANDLER_DEFAULT_INT, HANDLER_SIG_DFL, HANDLER_SIG_IGN, SignalRuntimeState,
         is_callable_handler_bits, is_python_handler_bits,
     };
+    use crate::libc_compat as libc;
     use crate::{MoltObject, alloc_string, dec_ref_bits};
     use std::sync::atomic::Ordering as AtomicOrdering;
 

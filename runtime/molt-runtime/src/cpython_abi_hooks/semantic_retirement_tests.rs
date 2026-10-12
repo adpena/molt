@@ -106,7 +106,12 @@ fn ordinary_runtime_and_http_owners_expose_and_complete_native_error() {
             kind.tp_iter = Some(native_iter);
             kind.tp_iternext = Some(native_next);
             assert_eq!(kind.ready(), 0);
-            for mode in 0..3 {
+            for mode in [
+                0,
+                #[cfg(feature = "stdlib_http")]
+                1,
+                2,
+            ] {
                 let value = native_value(py, &mut kind);
                 let iterator = (mode == 2).then(|| {
                     crate::object::iterable::OwnedIterator::new(py, value.bits()).unwrap()
@@ -125,6 +130,7 @@ fn ordinary_runtime_and_http_owners_expose_and_complete_native_error() {
                         py.core_token(),
                         RETURN_VALUE.with(|slot| slot.replace(0)),
                     )),
+                    #[cfg(feature = "stdlib_http")]
                     1 => crate::http_bridge::__molt_http_dec_ref_bits(
                         RETURN_VALUE.with(|slot| slot.replace(0)),
                     ),
