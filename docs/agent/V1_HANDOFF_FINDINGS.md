@@ -234,8 +234,10 @@ constant references absent from WASI libc. The HTTP case now follows its real
 feature, retaining the ordinary owner and iterator checks in the micro profile;
 signal tests use the existing target-selected constants. These corrections
 compile on WASI. Final executable linking then exposes a missing startup object
-under the non-self-contained SDK link plan; the lifecycle cases remain unrun
-until the executable startup contract is repaired.
+under the non-self-contained SDK link plan. The runtime's test-only support now
+links the command CRT selected by the existing authenticated C-ABI projection;
+production libraries do not receive a startup declaration. Actual linking and
+the five lifecycle cases remain unverified for this successor.
 
 Both actual WASM host-boundary programs pass on `b38bf66a3` with complete
 process custody. The host-error program preserves `AttributeError`; the file
@@ -253,7 +255,13 @@ receivers validate the complete executable set and both SDK/C final-link phases;
 ordinary compiler policies retain their existing scope. The affected proof rows,
 selected cross-format linkers, fingerprints and generated projections migrate
 together. Independent adversarial review and focused host controls pass; actual
-compiler-consumer execution remains required.
+compiler-consumer execution remains required. The next Linux/aarch64 run reaches
+the real cross-format linkers but fails after a COFF-link timeout and a native
+supervisor creation event whose reported child ID is zero. The supervisor
+retains an incomplete journal and closes all observed native custody; this is
+not a compiler-consumer pass. Creation-event refusal now retains the task ID,
+wait status and admitted process owner needed to distinguish the failing
+transition. Its cause remains open; no timeout or admission rule is weakened.
 
 Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
 classes; all exact-source CPython reference executions pass with empty stderr.

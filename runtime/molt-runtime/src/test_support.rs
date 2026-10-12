@@ -11,6 +11,19 @@ use std::sync::{Mutex, MutexGuard, Once};
 
 use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_TIER;
 
+// The library's libtest image is a WASI command. The selected SDK owns its
+// startup object; Rust's bundled CRT is disabled by the common C-ABI plan.
+// This module is cfg(test), so rlib/staticlib/cdylib consumers acquire no entry
+// point. -bundle passes the original object to wasm-ld; +verbatim preserves
+// the plan's exact filename in the already authenticated native search path.
+#[cfg(target_os = "wasi")]
+#[link(
+    name = env!("MOLT_WASI_TEST_COMMAND_CRT"),
+    kind = "static",
+    modifiers = "-bundle,+verbatim"
+)]
+unsafe extern "C" {}
+
 #[allow(dead_code)]
 mod cargo_test_artifacts {
     include!(concat!(
