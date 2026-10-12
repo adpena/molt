@@ -100,7 +100,7 @@ pub struct ValidatedPolicy {
     path_namespace: PolicyPathNamespace,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageClass {
     Fixed,
@@ -120,7 +120,7 @@ pub enum SupervisorState {
     Incomplete,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileIdentity {
     pub path: PathBuf,

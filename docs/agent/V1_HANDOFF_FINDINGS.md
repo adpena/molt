@@ -116,8 +116,14 @@ The warm-cache run built its first native binary but refused execution because
 the helper selected nested guard scratch outside the admitted proof root.
 Pytest and compiler-test helpers now share the existing proof-first scratch
 selection, including conformance, with queue and direct-guard cleanup ownership
-preserved. Focused placement tests and actual queued execution must qualify
-this development-only correction; unchanged Rust evidence remains valid.
+preserved. Ten focused placement controls pass. The next queued run reaches
+the executable-generation boundary: the supervisor's path-only registry rejects
+a second image produced at the same output pathname. Its shared ledger now
+retains each complete observed identity within the existing budgets, with a
+total order for deterministic replay; fixed inputs remain immutable. The
+supervisor's own small executable regression precedes another compiler run.
+Actual warm-cache execution remains unqualified; unchanged runtime evidence
+remains valid.
 The earlier public native run stopped after six passes
 at the subprocess path-conversion fixture: its missing `process.exec` grant
 prevented the callback oracle from running. The five affected asyncio spawn
