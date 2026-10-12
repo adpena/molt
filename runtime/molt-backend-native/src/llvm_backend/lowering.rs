@@ -928,7 +928,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             self.func.name
                         )
                     });
-                let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb);
+                let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb, None);
                 let value =
                     self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
                 self.values.insert(arg.id, value);

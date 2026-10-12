@@ -34,14 +34,25 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
     ]);
     assert!(raw_plan.is_full_deopt_int_name("source"));
     assert!(!raw_plan.is_inline_safe_int_name("source"));
+    let inline_plan = representation_plan_for_ops(&[OpIR {
+        kind: "module_slot".into(),
+        s_value: Some("sys".into()),
+        out: Some("source".into()),
+        ..OpIR::default()
+    }]);
+    assert!(inline_plan.is_inline_safe_int_name("source"));
     let boxed_plan = ScalarRepresentationPlan::default();
     for authority in [
         NativeRcAuthority::NativeValueTracking,
         NativeRcAuthority::TirDropInsertion,
     ] {
-        for (kind, raw) in [("box", true), ("box", false), ("unbox", false)] {
+        for (kind, plan, raw, heap_box) in [
+            ("box", &raw_plan, true, true),
+            ("box", &inline_plan, true, false),
+            ("box", &boxed_plan, false, false),
+            ("unbox", &boxed_plan, false, false),
+        ] {
             for out in [None, Some("none"), Some("kept")] {
-                let plan = if raw { &raw_plan } else { &boxed_plan };
                 let mut backend = SimpleBackend::new();
                 let mut sig = Signature::new(CallConv::SystemV);
                 sig.params.push(AbiParam::new(types::I64));
@@ -124,7 +135,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                 assert_eq!(
                     refs.get("molt_int_from_i64")
                         .map_or(0, |&callee| calls(callee)),
-                    usize::from(raw)
+                    usize::from(heap_box)
                 );
                 assert_eq!(
                     calls(retain),
@@ -133,7 +144,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                 );
                 assert_eq!(
                     calls(release),
-                    usize::from(raw && !bound),
+                    usize::from(heap_box && !bound),
                     "{kind} {out:?} {authority:?}"
                 );
             }
@@ -144,7 +155,59 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
 #[test]
 fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
     use MergeRebindStorageKind::{BoxedI64, RawBool, RawF64, RawI64};
-    for source_storage in [RawI64, RawF64, RawBool, BoxedI64] {
+    for (source_storage, capture) in [
+        (RawI64, "value"),
+        (RawI64, "inline_name"),
+        (RawI64, "inline_local"),
+        (RawI64, "joined_name"),
+        (RawI64, "joined_local"),
+        (RawF64, "value"),
+        (RawBool, "value"),
+        (BoxedI64, "value"),
+    ] {
+        let inline = capture.starts_with("inline");
+        let mut ops = vec![
+            OpIR {
+                kind: "module_slot".into(),
+                s_value: Some("sys".into()),
+                out: Some("slot".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("source".into()),
+                args: Some(vec!["slot".into()]),
+                ..OpIR::default()
+            },
+        ];
+        if capture.starts_with("joined") {
+            ops.extend([
+                OpIR {
+                    kind: "const_int".into(),
+                    out: Some("seed".into()),
+                    value: Some(1_i64 << 31),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "checked_mul".into(),
+                    var: Some("wide".into()),
+                    out: Some("overflow".into()),
+                    args: Some(vec!["seed".into(), "seed".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("source".into()),
+                    args: Some(vec!["wide".into()]),
+                    ..OpIR::default()
+                },
+            ]);
+        }
+        let plan = representation_plan_for_ops(&ops);
+        if capture != "value" {
+            assert_eq!(plan.is_inline_safe_int_name("source"), inline, "{capture}");
+            assert_eq!(plan.is_full_deopt_int_name("source"), !inline, "{capture}");
+        }
         for homes in [
             [source_storage, source_storage],
             [source_storage, BoxedI64],
@@ -172,13 +235,68 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                         types::I64,
                         if source_storage == RawBool {
                             1
+                        } else if inline {
+                            i64::from(u32::MAX)
                         } else {
                             1_i64 << 62
                         },
                     )
                 };
-                let mut incoming = CapturedScalarTransport::new(original, source_storage);
                 let mut sealed = BTreeSet::from([entry]);
+                let mut incoming = if capture == "value" {
+                    CapturedScalarTransport::new(original, source_storage)
+                } else {
+                    let vars = BTreeMap::from([("source".into(), builder.declare_var(types::I64))]);
+                    builder.def_var(vars["source"], original);
+                    let slot =
+                        builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                    builder.ins().stack_store(original, slot, 0);
+                    let incoming = if capture.ends_with("local") {
+                        CapturedScalarTransport::read_local(
+                            &mut builder,
+                            &vars,
+                            &plan,
+                            &BTreeMap::from([("source".into(), slot)]),
+                            &BTreeSet::from(["source".into()]),
+                            "source",
+                        )
+                    } else {
+                        CapturedScalarTransport::read_named(&mut builder, &vars, &plan, "source")
+                    };
+                    // Captured bits and range proof must survive both variable
+                    // and stack-home rebinding before boxed materialization.
+                    let replacement = builder.ins().iconst(types::I64, 7);
+                    builder.def_var(vars["source"], replacement);
+                    builder.ins().stack_store(replacement, slot, 0);
+                    incoming
+                };
+                let original = if capture.ends_with("local") {
+                    let value = incoming.value_for_storage(
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        &mut builder,
+                        &mut refs,
+                        &mut sealed,
+                        &crate::NanBoxConsts::new(),
+                        RawI64,
+                    );
+                    let cranelift_codegen::ir::ValueDef::Result(inst, _) =
+                        builder.func.dfg.value_def(value)
+                    else {
+                        panic!("captured local must be a stack load");
+                    };
+                    assert!(matches!(
+                        builder.func.dfg.insts[inst],
+                        cranelift_codegen::ir::InstructionData::StackLoad { .. }
+                    ));
+                    value
+                } else {
+                    original
+                };
                 let values = homes.map(|home| {
                     incoming.value_for_storage(
                         &mut backend.module,
@@ -215,6 +333,18 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                 builder.finalize();
             }
             verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
+            if inline {
+                assert!(
+                    func.layout
+                        .blocks()
+                        .flat_map(|block| func.layout.block_insts(block))
+                        .all(|inst| !matches!(
+                            func.dfg.insts[inst],
+                            cranelift_codegen::ir::InstructionData::Brif { .. }
+                        )),
+                    "a captured u32 must not need a boxing range branch"
+                );
+            }
             let box_calls = refs.get("molt_int_from_i64").map_or(0, |box_fn| {
                 func.layout.blocks().flat_map(|block| func.layout.block_insts(block)).filter(|inst| {
                     matches!(func.dfg.insts[*inst], cranelift_codegen::ir::InstructionData::Call { func_ref, .. } if func_ref == *box_fn)
@@ -222,7 +352,8 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
             });
             assert_eq!(
                 box_calls,
-                usize::from(source_storage == RawI64 && homes.contains(&BoxedI64))
+                usize::from(source_storage == RawI64 && !inline && homes.contains(&BoxedI64)),
+                "{capture} {homes:?}"
             );
         }
     }

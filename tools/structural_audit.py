@@ -70,6 +70,7 @@ from molt.rust_source_scan import (  # noqa: E402
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
 from tools import compatibility_error_protocol as compatibility_errors  # noqa: E402
 from tools.structural_audit_rust_admission import (  # noqa: E402
+    RUST_CHECKED_ADMISSION_PREFIX,
     proven_admitted_wire_domain,
 )
 from tools.structural_audit_rust_domains import (  # noqa: E402
@@ -1869,7 +1870,11 @@ def _rust_refusal_protocol_proven(
     )
     if not emission or not guard or emission.start() >= guard.start():
         return False
-    if re.search(r"\b(?:return|self)\b", consumer[: emission.start()]):
+    prefix = consumer[: emission.start()]
+    if (
+        re.search(r"\b(?:return|self)\b", prefix)
+        and re.sub(_RUST_WS, "", prefix) != RUST_CHECKED_ADMISSION_PREFIX
+    ):
         return False
     depth = 1
     end = None

@@ -34,8 +34,12 @@ fn operation_shape_fixture(
             kind: shape.kind.into(),
             args: Some(params.clone()),
             value,
-            s_value: matches!(shape.kind, "code_slot_set" | "trace_enter_slot")
-                .then(|| "operation_shape_fixture".into()),
+            s_value: match shape.kind {
+                "code_slot_set" | "trace_enter_slot" => Some("operation_shape_fixture".into()),
+                "module_slot" => Some("fixture.module".into()),
+                _ => None,
+            },
+            out: (shape.kind == "module_slot").then(|| "module_id".into()),
             ..OpIR::default()
         }],
     );
@@ -61,6 +65,8 @@ fn operation_shape_fixture(
 #[test]
 fn generated_operation_shapes_agree_across_all_transport_boundaries() {
     use molt_ir::tir::op_kinds_generated::{SIMPLEIR_OP_SHAPES, SimpleIrOpValueRule};
+    // SimpleIR transports function fragments; BackendIrDocument owns program
+    // binding admission, exercised by its program-slot transport regression.
     for shape in SIMPLEIR_OP_SHAPES {
         let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
         let mut cases = vec![

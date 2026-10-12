@@ -364,7 +364,7 @@ def test_native_warm_code_cache_keeps_current_capability_policy() -> None:
 
 @pytest.mark.slow
 def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
-    """A new program's dense frame IDs must not invalidate shared machine code."""
+    """New dense frame and module IDs must not invalidate shared machine code."""
     from molt.backend_environment import environment_keys
     from molt.cli.native_symbol_inspection import _native_archive_global_symbol_facts
     from molt.memory_guard_paths import harness_guard_artifact_dir
@@ -397,6 +397,7 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
     application_keys: list[str] = []
     archive_keys: list[str] = []
     layouts: list[dict[str, int]] = []
+    module_layouts: list[dict[str, int]] = []
     members: list[dict[str, frozenset[str]]] = []
     inventories: list[dict[str, dict[str, object]]] = []
 
@@ -463,6 +464,12 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
             application_keys.append(cache_lines[0].split("(", 1)[1].split(")", 1)[0])
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
             layouts.append(ir["code_slots"])
+            module_layouts.append(
+                {
+                    row["name"]: slot
+                    for slot, row in enumerate(ir["module_registry"]["rows"])
+                }
+            )
             # Preserve full compiler output without keeping an uncompressed IR
             # duplicate. No compiler dump/verification switch disables reuse.
             with (
@@ -556,6 +563,12 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
         assert moved, (
             "the second application must change actual dense owner assignments"
         )
+        moved_modules = {
+            name
+            for name in module_layouts[0].keys() & module_layouts[1].keys()
+            if module_layouts[0][name] != module_layouts[1][name]
+        }
+        assert moved_modules, "the added module must change existing dense module IDs"
         reused_members = members[0].keys() & members[1].keys()
         reused_moved = sorted(
             moved & set().union(*(members[1][key] for key in reused_members))
@@ -567,6 +580,7 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
         assert application_keys[0] != application_keys[1]
         print(
             f"native-stdlib-reuse-members count={len(reused_members)} "
+            f"moved_module_count={len(moved_modules)} "
             f"moved_owner_count={len(reused_moved)} representative={reused_moved[0]}",
             flush=True,
         )

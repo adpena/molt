@@ -194,13 +194,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     operand.0,
                     custody.label
                 );
-                let value = self.resolve(operand);
-                let ty = self
-                    .value_types
-                    .get(&operand)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
-                self.materialize_dynbox_bits(value, &ty)
+                self.materialize_dynbox_bits(operand)
             }
         };
         custody.words.insert(operand, word);
@@ -566,8 +560,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .get_insert_block()
                     .expect("return must be lowered inside a basic block");
-                let ret_val =
-                    self.coerce_to_tir_type(ret_val, &TirType::DynBox, &return_type, current_bb);
+                let ret_val = self.coerce_to_tir_type(
+                    ret_val,
+                    &TirType::DynBox,
+                    &return_type,
+                    current_bb,
+                    None,
+                );
                 let ret_val = self.coerce_to_type(
                     ret_val,
                     lower_type(self.backend.context, &return_type),
@@ -596,13 +595,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         operand: ValueId,
         retain_name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let value = self.resolve(operand);
         let ty = self
             .value_types
             .get(&operand)
             .cloned()
             .unwrap_or(TirType::DynBox);
-        let word = self.materialize_dynbox_bits(value, &ty);
+        let word = self.materialize_dynbox_bits(operand);
         if Self::tir_type_is_dynbox_like(&ty) {
             let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
             self.backend
@@ -622,13 +620,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         operand: ValueId,
     ) -> inkwell::values::IntValue<'ctx> {
-        let value = self.resolve(operand);
-        let ty = self
-            .value_types
-            .get(&operand)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        self.materialize_dynbox_bits(value, &ty)
+        self.materialize_dynbox_bits(operand)
     }
 
     /// Commit one reference per adopted position while preserving one boxed
@@ -868,18 +860,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// authority: borrowing consumers go through operation-local custody
     /// (`borrowed_operand`) and storing or returning consumers through
     /// `owned_operand_word`.
-    fn materialize_dynbox_bits(
-        &self,
-        operand: BasicValueEnum<'ctx>,
-        operand_ty: &TirType,
-    ) -> inkwell::values::IntValue<'ctx> {
+    fn materialize_dynbox_bits(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
+        let value = self.resolve(operand);
+        let ty = self.value_types.get(&operand).unwrap_or(&TirType::DynBox);
+        if *ty == TirType::I64 && self.repr_facts.is_inline_safe_int(operand) {
+            return inline_int_box_with_builder(
+                &self.backend.builder,
+                self.backend.context,
+                self.ensure_i64(value),
+            );
+        }
         materialize_dynbox_bits_with_builder(
             &self.backend.builder,
             self.backend.context,
             &self.backend.module,
             self.llvm_fn,
-            operand,
-            operand_ty,
+            value,
+            ty,
         )
     }
 
@@ -938,18 +935,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_box(&mut self, op: &crate::tir::ops::TirOp) {
         let operand_id = op.operands[0];
-        let operand = self.resolve(operand_id);
-        let operand_ty = self
-            .value_types
-            .get(&operand_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-
         let Some(&result_id) = op.results.first() else {
-            if operand_ty == TirType::I64 {
+            if self.materialization_mints_owner(operand_id) {
                 // Boxing can allocate even without a result binding. Preserve
                 // that failure, then retire only the newly materialized owner.
-                let boxed = self.materialize_dynbox_bits(operand, &operand_ty);
+                let boxed = self.materialize_dynbox_bits(operand_id);
                 let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
                 self.backend
                     .builder
@@ -1277,7 +1267,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_tir_type(val, &val_ty, return_type, current_bb);
+                    let ret_val = self.coerce_to_tir_type(
+                        val,
+                        &val_ty,
+                        return_type,
+                        current_bb,
+                        Some(values[0]),
+                    );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 } else {
@@ -1301,7 +1297,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_tir_type(val, &val_ty, return_type, current_bb);
+                    let ret_val = self.coerce_to_tir_type(
+                        val,
+                        &val_ty,
+                        return_type,
+                        current_bb,
+                        Some(values[0]),
+                    );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 }
@@ -1387,8 +1389,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get(&val_id)
                     .cloned()
                     .unwrap_or(TirType::DynBox);
-                let coerced =
-                    self.coerce_to_tir_type(val, &source_tir_ty, &phi_tir_ty, edge.source_bb);
+                let coerced = self.coerce_to_tir_type(
+                    val,
+                    &source_tir_ty,
+                    &phi_tir_ty,
+                    edge.source_bb,
+                    Some(val_id),
+                );
                 let coerced = self.coerce_to_type(coerced, *phi_ty, edge.source_bb);
                 phi.add_incoming(&[(&coerced, edge.source_bb)]);
             }
@@ -1412,8 +1419,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                                 self.func.name, arg_index
                             )
                         });
-                    let coerced =
-                        self.coerce_to_tir_type(param, &source_tir_ty, &phi_tir_ty, trampoline_bb);
+                    let coerced = self.coerce_to_tir_type(
+                        param,
+                        &source_tir_ty,
+                        &phi_tir_ty,
+                        trampoline_bb,
+                        None,
+                    );
                     let coerced = self.coerce_to_type(coerced, *phi_ty, trampoline_bb);
                     phi.add_incoming(&[(&coerced, trampoline_bb)]);
                 } else {
@@ -1643,6 +1655,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         source_tir_ty: &TirType,
         target_tir_ty: &TirType,
         in_block: BasicBlock<'ctx>,
+        source_id: Option<ValueId>,
     ) -> BasicValueEnum<'ctx> {
         if source_tir_ty == target_tir_ty {
             return val;
@@ -1666,15 +1679,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // overflow-safe integer box that adds a fits-inline branch would
             // split `in_block`, leaving the boxed value in a new merge block
             // that does not dominate the phi user. We therefore box integers
-            // here with the branchless runtime call, which yields one SSA value
-            // and never alters control flow. (`molt_int_from_i64` returns the
+            // here with inline mask/or when the source proof permits it, or a
+            // branchless runtime call otherwise. Both yield one SSA value
+            // without changing control flow. (`molt_int_from_i64` returns the
             // inline box for small values and a heap BigInt otherwise — the
             // same value the branch form produces.)
             if matches!(source_tir_ty, TirType::I64) {
                 let raw = self.ensure_i64(val);
-                self.box_i64_branchless(raw).into()
+                if source_id.is_some_and(|id| self.repr_facts.is_inline_safe_int(id)) {
+                    inline_int_box_with_builder(&self.backend.builder, self.backend.context, raw)
+                        .into()
+                } else {
+                    self.box_i64_branchless(raw).into()
+                }
             } else {
-                self.materialize_dynbox_bits(val, source_tir_ty).into()
+                materialize_dynbox_bits_with_builder(
+                    &self.backend.builder,
+                    self.backend.context,
+                    &self.backend.module,
+                    self.llvm_fn,
+                    val,
+                    source_tir_ty,
+                )
+                .into()
             }
         } else if !Self::tir_type_is_dynbox_like(target_tir_ty)
             && Self::tir_type_is_dynbox_like(source_tir_ty)

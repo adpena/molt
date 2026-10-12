@@ -443,9 +443,9 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
     # Bind its current producer too: accepting only the call spelling would
     # conceal a producer changed to admit every kind or discard its error.
     registered = _bool_table(generated, "simpleir_kind_is_registered")
-    if registered is None or _compact(
-        _body(schema, "validate_registered_op_kind") or ""
-    ) != _compact("""
+    if registered is None or not _same(
+        _body(schema, "validate_registered_op_kind"),
+        """
         validate_op_not_retired(kind)?;
         if !simpleir_kind_is_registered(kind) {
             return Err(OpShapeDiagnostic {
@@ -454,10 +454,24 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
             });
         }
         Ok(())
-    """):
+    """,
+    ):
         return None
-    if _compact(_body(schema, "validate_op_shape") or "") != _compact("""
+    if not _same(
+        _body(schema, "validate_op_shape"),
+        """
         validate_op_not_retired(kind)?;
+        if matches!(
+            kind,
+            "call" | "call_internal" | "code_slot_set" | "trace_enter_slot" | "module_slot"
+        ) && value.is_some()
+        {
+            return Err(OpShapeDiagnostic {
+                family: if kind == "module_slot" { "module_registry" } else { "code_metadata" },
+                kind: kind.into(),
+                violation: OpShapeViolation::ForbiddenValue,
+            });
+        }
         let Some(shape) = simpleir_op_shape(kind) else { return Ok(()); };
         let violation = if operands.unwrap_or(0) != shape.operands {
             Some(OpShapeViolation::OperandCount { expected: shape.operands, actual: operands, })
@@ -469,15 +483,29 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
             Some(violation) => Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation, }),
             None => Ok(()),
         }
-    """) or _compact(_body(schema, "validate_simple_op_shape") or "") != _compact("""
+    """,
+    ) or not _same(
+        _body(schema, "validate_simple_op_shape"),
+        """
         validate_registered_op_kind(&op.kind)?;
         validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+        validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
+        if op.kind == "module_slot"
+            && op.out.as_deref().is_none_or(|out| out.is_empty() || out == "none")
+        {
+            return Err(OpShapeDiagnostic {
+                family: "module_registry",
+                kind: op.kind.clone(),
+                violation: OpShapeViolation::MissingResult,
+            });
+        }
         if let Some(shape) = simpleir_op_shape(&op.kind)
             && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
             && op.var.is_some()
         { return Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation: OpShapeViolation::ForbiddenVar, }); }
         Ok(())
-    """):
+    """,
+    ):
         return None
     prefix = _locate(generated, "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[")
     if prefix is None:

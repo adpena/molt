@@ -135,10 +135,10 @@ pub(in crate::native_backend::function_compiler) fn bool_raw_value(
 }
 
 /// Produce a correctly NaN-boxed value for a variable in `representation_plan`
-/// whose raw i64 may exceed the 47-bit inline range.
+/// using its canonical range proof. Proven inline integers use mask/or only.
 ///
-/// Deferred overflow guard emitted at boxing escape points (return, call
-/// args, heap stores) to compensate for the branchless iadd optimisation
+/// For full-width carriers, a deferred overflow guard is emitted at boxing
+/// escape points (return, call args, heap stores) to compensate for the branchless iadd optimisation
 /// that skips per-op overflow checks. On the fast path (fits inline) emits
 /// a compare + branch into local-constant `box_int_value`; on the cold path calls
 /// `molt_int_from_i64` to allocate a BigInt.
@@ -158,14 +158,18 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
 ) -> Value {
     let raw_val = int_raw_value(builder, vars, representation_plan, name);
     if let Some(raw_val) = raw_val {
-        let boxed = box_raw_i64_value_overflow_safe(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            raw_val,
-        );
+        let boxed = if representation_plan.is_inline_safe_int_name(name) {
+            box_int_value(builder, raw_val, &crate::NanBoxConsts::new())
+        } else {
+            box_raw_i64_value_overflow_safe(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                raw_val,
+            )
+        };
         if let Some(&var) = vars.get(name) {
             builder.def_var(var, raw_val);
         }
@@ -558,6 +562,8 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_default_value(
 pub(in crate::native_backend::function_compiler) struct CapturedScalarTransport {
     value: Value,
     storage: MergeRebindStorageKind,
+    // This proof belongs to the captured value, not a subsequently rebound name.
+    inline_safe_int: bool,
     boxed: Option<Value>,
     boxed_owner_available: bool,
 }
@@ -568,6 +574,7 @@ impl CapturedScalarTransport {
         Self {
             value,
             storage,
+            inline_safe_int: false,
             boxed: (storage == MergeRebindStorageKind::BoxedI64).then_some(value),
             boxed_owner_available: storage != MergeRebindStorageKind::BoxedI64,
         }
@@ -581,7 +588,10 @@ impl CapturedScalarTransport {
     ) -> Self {
         let storage = merge_rebind_storage_for_name(name, representation_plan);
         let value = *var_get(builder, vars, name).expect("scalar transport source not found");
-        Self::new(value, storage)
+        Self {
+            inline_safe_int: representation_plan.is_inline_safe_int_name(name),
+            ..Self::new(value, storage)
+        }
     }
 
     pub(super) fn read_local(
@@ -601,7 +611,11 @@ impl CapturedScalarTransport {
             let value = builder
                 .ins()
                 .stack_load(merge_rebind_storage_clif_type(storage), slot, 0);
-            Self::new(value, storage)
+            Self {
+                inline_safe_int: storage == MergeRebindStorageKind::RawI64
+                    && representation_plan.is_inline_safe_int_name(name),
+                ..Self::new(value, storage)
+            }
         } else {
             Self::read_named(builder, vars, representation_plan, name)
         }
@@ -687,6 +701,9 @@ impl CapturedScalarTransport {
             boxed
         } else {
             let boxed = match self.storage {
+                MergeRebindStorageKind::RawI64 if self.inline_safe_int => {
+                    box_int_value(builder, self.value, nbc)
+                }
                 MergeRebindStorageKind::RawI64 => box_raw_i64_value_overflow_safe(
                     module,
                     import_ids,

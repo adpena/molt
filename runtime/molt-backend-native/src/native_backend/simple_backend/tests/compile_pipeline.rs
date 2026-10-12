@@ -2327,6 +2327,13 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
             .expect("reusable objects import their program-owned bindings")
             .bytes;
         let common = object::File::parse(common_bytes.as_slice()).unwrap();
+        assert!(
+            !common.symbols().any(|entry| entry.is_undefined()
+                && entry
+                    .name()
+                    .is_ok_and(|name| name.trim_start_matches('_') == "molt_int_from_i64")),
+            "{kind:?}: a proven u32 module slot must not require heap integer boxing"
+        );
         let linker_symbol = if common.format() == BinaryFormat::MachO {
             format!("_{symbol}")
         } else {

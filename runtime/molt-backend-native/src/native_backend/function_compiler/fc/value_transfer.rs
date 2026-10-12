@@ -331,13 +331,11 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     local_inc_ref_obj,
                     nbc,
                 );
-            } else if op.kind == "box"
-                && merge_rebind_storage_for_name(src_name, representation_plan)
-                    == MergeRebindStorageKind::RawI64
-            {
-                // Dropping the binding does not drop BoxVal's allocation/failure
-                // effect. The captured transport owns this physical box, not
-                // the borrowed raw source or an absent SSA result.
+            } else if op.kind == "box" && representation_plan.is_full_deopt_int_name(src_name) {
+                // Only full-width carriers have a BoxVal allocation/failure
+                // effect to preserve when the result is discarded. The captured
+                // transport owns this box, not the borrowed raw source or an
+                // absent SSA result.
                 let mut incoming = CapturedScalarTransport::read_named(
                     builder,
                     vars,

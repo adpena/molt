@@ -33,6 +33,19 @@ def _compact(text: str) -> str:
     return re.sub(r"[\s\u200e\u200f]+", "", mask_rust_comments_and_strings(text))
 
 
+# Both domain admission and refusal publication consume this exact current
+# prefix. Binding validation reads separate state and propagates every error
+# before private emission; unknown work cannot inherit that proof.
+RUST_CHECKED_ADMISSION_PREFIX = _compact("""
+    let admitted = admit_target_program(ir, &TargetInfo::rust_release_fast())?;
+    self.code_slots
+        .validate_functions(&ir.functions)
+        .map_err(|error| error.to_string())?;
+    molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)
+        .map_err(|error| error.to_string())?;
+""")
+
+
 def _body(text: str, name: str) -> str | None:
     code = mask_rust_comments_and_strings(mask_rust_test_items(text))
     matches = list(re.finditer(rf"\bfn\s+{re.escape(name)}\b", code))
@@ -115,8 +128,7 @@ def proven_admitted_wire_domain(
     """
     consumer = _compact(compile_body)
     if not consumer.startswith(
-        "letadmitted=admit_target_program(ir,&TargetInfo::rust_release_fast())?;"
-        "letsource=self.emit_source(&admitted);"
+        RUST_CHECKED_ADMISSION_PREFIX + "letsource=self.emit_source(&admitted);"
     ):
         return None
     try:

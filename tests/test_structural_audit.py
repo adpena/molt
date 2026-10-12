@@ -2042,12 +2042,23 @@ def test_shared_rust_admission_proof_requires_dominating_validation(tmp_path):
     assert denied is not None
     assert {"class_new", "module_import", "const_bytes", "int"} <= denied
     assert "const_str" not in denied
-    assert (
-        proven_rejected_kinds(
-            ROOT, consumer.replace("let admitted =", "let bypassed =", 1)
-        )
-        is None
-    )
+    code_validation = """self.code_slots
+            .validate_functions(&ir.functions)
+            .map_err(|error| error.to_string())?;"""
+    module_validation = """molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)
+            .map_err(|error| error.to_string())?;"""
+    for before, after in (
+        ("let admitted =", "let bypassed ="),
+        (code_validation, "let _ = self.code_slots.validate_functions(&ir.functions);"),
+        (".validate_functions(&ir.functions)", ".validate_functions(&[])"),
+        (
+            module_validation,
+            "let _ = molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions);",
+        ),
+        ("self.module_registry.as_ref()", "None"),
+    ):
+        assert consumer.count(before) == 1
+        assert proven_rejected_kinds(ROOT, consumer.replace(before, after, 1)) is None
     for relative in (
         "runtime/molt-tir/src/target_admission.rs",
         "runtime/molt-tir/src/target_admission/runtime.rs",
@@ -2144,6 +2155,8 @@ def test_live_rust_operand_projection_uses_registered_current_validators():
     # an invented wire spelling must not acquire a shape from the recognizer.
     assert shapes["warn_stderr"] == 1
     assert shapes["type_guard"] == 1
+    assert shapes["module_slot"] == 0
+    assert shapes["code_slot_set"] == 2
     assert "__unregistered_wire" not in shapes
 
 
@@ -2179,6 +2192,26 @@ def test_live_rust_operand_projection_uses_registered_current_validators():
             "validate_simple_op_shape",
             "op.var.is_some()",
             "op.var.is_none()",
+        ),
+        (
+            "validate_simple_op_shape",
+            "validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;",
+            "let _ = validate_program_slot_symbol(&op.kind, op.s_value.as_deref());",
+        ),
+        (
+            "validate_simple_op_shape",
+            'op.kind == "module_slot"',
+            'op.kind == "different_module_slot"',
+        ),
+        (
+            "validate_simple_op_shape",
+            'out == "none"',
+            'out == "n one"',
+        ),
+        (
+            "validate_op_shape",
+            "value.is_some()",
+            "value.is_none()",
         ),
         (
             "validate_op_shape",
