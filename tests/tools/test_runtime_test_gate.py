@@ -1007,3 +1007,282 @@ def test_feature_only_performance_probes_are_unrun_without_changing_default_poli
         )
         == "performance probe"
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "missing",
+        "duplicate",
+        "foreign",
+        "wrong_target",
+        "not_test",
+        "not_wasm",
+        "producer_failure",
+        "changed_before",
+        "changed_after",
+        "source",
+        "ignored",
+        "zero",
+        "wrong_case",
+        "wrong_required",
+        "child_failure",
+        "host_missing",
+        "host_duplicate",
+        "host_foreign",
+        "host_wrong_kind",
+        "host_changed_before",
+        "host_changed_after",
+        "instrumented_abi",
+    ],
+)
+def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
+    monkeypatch, tmp_path, mutation
+):
+    import json
+    from types import SimpleNamespace
+    from molt.cli import runtime_cargo_plan
+
+    wasm = tmp_path / "molt_runtime.wasm"
+    wasm.write_bytes(b"\x00asm\x01\x00\x00\x00fixture")
+    native = support.make_image(tmp_path / "host")
+    production_host = support.make_image(tmp_path / "molt-wasm-host")
+    host = "aarch64-unknown-linux-gnu"
+    metadata, abi_artifact = abi_compiler_fixture(gate.ROOT, ["l7-attestation-core"])
+    metadata["packages"].extend(
+        [
+            {
+                "id": name,
+                "name": name,
+                "version": "0.1.0",
+                "source": None,
+                "manifest_path": str(gate.ROOT / "runtime" / name / "Cargo.toml"),
+            }
+            for name in ("molt-runtime", "molt-wasm-host")
+        ]
+    )
+    records = {}
+    for package, name, kind, image in (
+        ("molt-runtime", "molt_runtime", "rlib", wasm),
+        ("molt-wasm-host", "wasi_runtime_lifecycle", "test", native),
+    ):
+        records[package] = [
+            {
+                "reason": "compiler-artifact",
+                "package_id": package,
+                "target": {"name": name, "kind": [kind]},
+                "profile": {"test": True, "debug_assertions": True, "opt_level": "0"},
+                "features": ["stdlib_micro"] if package == "molt-runtime" else [],
+                "executable": str(image),
+            }
+        ]
+    host_record = {
+        "reason": "compiler-artifact",
+        "package_id": "molt-wasm-host",
+        "target": {"name": "molt-wasm-host", "kind": ["bin"]},
+        "profile": {"test": False, "debug_assertions": True, "opt_level": "0"},
+        "features": [],
+        "executable": str(production_host),
+    }
+    if mutation != "host_missing":
+        records["molt-wasm-host"].append(host_record)
+    if mutation == "host_duplicate":
+        records["molt-wasm-host"].append(deepcopy(host_record))
+    elif mutation == "host_foreign":
+        host_record["package_id"] = "molt-runtime"
+    elif mutation == "host_wrong_kind":
+        host_record["target"]["kind"] = ["rlib"]
+    emitted = records["molt-runtime"]
+    if mutation == "missing":
+        emitted.clear()
+    elif mutation == "duplicate":
+        emitted.append(deepcopy(emitted[0]))
+    elif mutation == "foreign":
+        emitted[0]["package_id"] = "molt-wasm-host"
+    elif mutation == "wrong_target":
+        emitted[0]["target"]["kind"] = ["bin"]
+    elif mutation == "not_test":
+        emitted[0]["profile"]["test"] = False
+    elif mutation == "not_wasm":
+        wasm.write_bytes(b"native executable")
+    if mutation == "instrumented_abi":
+        abi_artifact["features"].append("allocation-observer")
+    emitted.append(abi_artifact)
+    original_sha = support.sha256(wasm.read_bytes())
+    original_host_sha = support.sha256(production_host.read_bytes())
+    monkeypatch.setattr(gate.truth, "host_target", lambda: host)
+    source_reads = 0
+
+    def source_identity():
+        nonlocal source_reads
+        source_reads += 1
+        if mutation == "host_changed_before" and source_reads == 2:
+            production_host.write_bytes(b"changed")
+        return (
+            dict(support.SOURCE, head="changed")
+            if mutation == "source" and source_reads > 1
+            else support.SOURCE
+        )
+
+    monkeypatch.setattr(gate.truth, "git_source_identity", source_identity)
+    monkeypatch.setattr(
+        gate.runner,
+        "listed_tests",
+        lambda *a, **kw: pytest.fail(
+            "WASI policy must not execute native inventory on the module"
+        ),
+    )
+    resolved = []
+
+    def plan(
+        root, *, env, cargo_command, requested_target, host_target, rustflags_transform
+    ):
+        assert (
+            root == gate.ROOT
+            and requested_target == "wasm32-wasip1"
+            and host_target == host
+        )
+        # Real flag selection is separately owned; this boundary must preserve
+        # already selected SDK/linker flags while adding table export only here.
+        flags = (
+            "-C",
+            "linker=/selected/sdk/wasm-ld",
+            "-C",
+            "target-feature=-reference-types",
+        )
+        transformed = rustflags_transform(flags)
+        assert transformed == (*flags, "-C", "link-arg=--export-table")
+        resolved.append(cargo_command)
+        return SimpleNamespace(
+            command=cargo_command,
+            environment=dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(transformed)),
+            rustflags=transformed,
+            verify=lambda: None,
+        )
+
+    monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", plan)
+    builds, children = [], []
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            result = SimpleNamespace(stdout="", stderr="", returncode=0)
+            if argv[:2] == ["cargo", "metadata"]:
+                result.stdout = json.dumps(metadata)
+            elif argv[:2] == ["cargo", "test"]:
+                package = argv[argv.index("-p") + 1]
+                builds.append((argv, kwargs["env"]))
+                result.stdout = "\n".join(json.dumps(item) for item in records[package])
+                if mutation == "producer_failure" and package == "molt-runtime":
+                    result.returncode = 9
+                if mutation == "changed_before" and package == "molt-wasm-host":
+                    wasm.write_bytes(b"changed")
+            else:
+                children.append(argv)
+                assert kwargs["env"]["MOLT_WASI_LIBTEST_ARTIFACT"] == str(wasm)
+                assert kwargs["env"]["MOLT_WASI_LIBTEST_SHA256"] == original_sha
+                split = argv.index("--")
+                assert argv[split + 1] == str(native)
+                args = argv[split + 2 :]
+                assert args == [
+                    "--exact",
+                    gate.WASI_CONSUMER,
+                    "--ignored",
+                    "--test-threads=1",
+                    "--nocapture",
+                ]
+                assert (
+                    argv[argv.index("--require-passed-test") + 1] == gate.WASI_CONSUMER
+                )
+                directory = Path(argv[argv.index("--receipt-dir") + 1])
+                names = (
+                    []
+                    if mutation == "zero"
+                    else ["different"]
+                    if mutation == "wrong_case"
+                    else [gate.WASI_CONSUMER]
+                )
+                receipt = support.binary_receipt(
+                    directory,
+                    native,
+                    names,
+                    [],
+                    args=args,
+                    run_id=argv[argv.index("--run-id") + 1],
+                    invocation="wasi-consumer",
+                    statuses={gate.WASI_CONSUMER: "ignored"}
+                    if mutation == "ignored"
+                    else None,
+                )
+                receipt["required_passed_tests"] = (
+                    [] if mutation == "wrong_required" else [gate.WASI_CONSUMER]
+                )
+                gate.runner.write_receipt(directory / "receipt.json", receipt)
+                if mutation == "changed_after":
+                    wasm.write_bytes(b"changed")
+                if mutation == "host_changed_after":
+                    production_host.write_bytes(b"changed")
+                if mutation == "child_failure":
+                    result.returncode = 1
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    root = tmp_path / "receipts"
+    code = gate.main(
+        [
+            "--policy",
+            "wasi-lifecycle",
+            "--profile",
+            "dev-fast",
+            "--receipt-root",
+            str(root),
+        ]
+    )
+    aggregate = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    assert len(resolved) == 1
+    assert "--lib" in builds[0][0] and "--no-default-features" in builds[0][0]
+    assert builds[0][0][builds[0][0].index("--features") + 1] == "stdlib_micro"
+    if len(builds) == 2:
+        assert builds[1][0][builds[1][0].index("--target") + 1] == host
+        assert "link-arg=--export-table" not in builds[1][1].get(
+            "CARGO_ENCODED_RUSTFLAGS", ""
+        )
+    if mutation:
+        assert code == 1 and aggregate["status"] == "failed"
+        assert "passed_test_count" not in aggregate
+        if mutation in {
+            "missing",
+            "duplicate",
+            "foreign",
+            "wrong_target",
+            "not_test",
+            "not_wasm",
+            "producer_failure",
+            "changed_before",
+            "source",
+            "host_missing",
+            "host_duplicate",
+            "host_foreign",
+            "host_wrong_kind",
+            "host_changed_before",
+            "instrumented_abi",
+        }:
+            assert not children
+    else:
+        assert code == 0 and aggregate["status"] == "success"
+        assert len(builds) == 2 and len(children) == 1
+        assert aggregate["passed_test_count"] == 1
+        assert aggregate["wasi_handoff"]["MOLT_WASI_LIBTEST_SHA256"] == original_sha
+        assert (
+            aggregate["images"]["molt_runtime"]["build"]["executable_sha256"]
+            == original_sha
+        )
+        captured_host = aggregate["images"]["wasi_runtime_lifecycle"]["production_host"]
+        assert captured_host["executable_sha256"] == original_host_sha
+        assert captured_host["artifact"]["executable"] == str(production_host)
+        assert aggregate["abi_dependency"]["features"] == ["l7-attestation-core"]
+    if mutation == "instrumented_abi":
+        assert len(builds) == 1
+        assert (
+            "ABI allocation features contradict semantic policy" in aggregate["error"]
+        )

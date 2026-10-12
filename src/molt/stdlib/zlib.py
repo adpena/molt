@@ -202,13 +202,15 @@ class Compress:
             self._flushed = True
         return result
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_ZLIB_COMPRESSOBJ_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_ZLIB_COMPRESSOBJ_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class Decompress:
@@ -274,13 +276,15 @@ class Decompress:
         """
         return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNUSED_DATA(self._handle))
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_ZLIB_DECOMPRESSOBJ_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_ZLIB_DECOMPRESSOBJ_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 __all__ = [

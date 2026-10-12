@@ -415,11 +415,21 @@ class socket:
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
 
+    def _release_handle(
+        self, _close=_molt_socket_close, _drop=_molt_socket_drop,
+        _require=_require_socket_intrinsic,
+    ) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _require(_close, "close")(handle)
+        finally:
+            _require(_drop, "drop")(handle)
+
     def close(self) -> None:
-        if getattr(self, "_handle", None) is not None:
-            _require_socket_intrinsic(_molt_socket_close, "close")(self._handle)
-            _require_socket_intrinsic(_molt_socket_drop, "drop")(self._handle)
-            self._handle = None
+        self._release_handle()
 
     def __del__(self) -> None:
         try:

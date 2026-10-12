@@ -140,9 +140,13 @@ class IPv4Address:
             return NotImplemented
         return int(self) < int(other)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_ipaddress_drop) -> None:
         try:
-            _molt_ipaddress_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 
@@ -213,9 +217,13 @@ class IPv6Address:
             return NotImplemented
         return int(self) < int(other)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_ipaddress_v6_drop) -> None:
         try:
-            _molt_ipaddress_v6_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 
@@ -276,9 +284,13 @@ class IPv4Network:
     def __hash__(self) -> int:
         return hash(str(self))
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_ipaddress_v4_network_drop) -> None:
         try:
-            _molt_ipaddress_v4_network_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 

@@ -80,7 +80,7 @@ install_registry({{
     "molt_ssl_socket_cipher": lambda _handle: ("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256),
     "molt_ssl_socket_version": lambda _handle: "TLSv1.3",
     "molt_ssl_socket_getpeercert": lambda _handle, binary_form: b"cert" if binary_form else {{"subject": ((("commonName", "stub"),),)}},
-    "molt_ssl_socket_unwrap": lambda _handle: "raw-socket",
+    "molt_ssl_socket_unwrap": lambda _handle: None,
     "molt_ssl_socket_close": lambda _handle: None,
     "molt_ssl_socket_drop": lambda _handle: None,
 }})

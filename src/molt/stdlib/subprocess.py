@@ -637,24 +637,62 @@ class Popen:
         self.wait()
         return None
 
-    def __del__(self) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
+    def __del__(
+        self, _stream_drop=_MOLT_STREAM_DROP,
+        _reader_drop=_MOLT_STREAM_READER_DROP, _process_drop=_MOLT_PROCESS_DROP,
+    ) -> None:
+        handle5 = getattr(self, "_handle", None)
         try:
-            if getattr(self, "_stdin_stream", None) is not None:
-                _MOLT_STREAM_DROP(self._stdin_stream)
-            if getattr(self, "_stdout_stream", None) is not None:
-                _MOLT_STREAM_DROP(self._stdout_stream)
-            if getattr(self, "_stderr_stream", None) is not None:
-                _MOLT_STREAM_DROP(self._stderr_stream)
-            if getattr(self, "_stdout_reader", None) is not None:
-                _MOLT_STREAM_READER_DROP(self._stdout_reader)
-            if getattr(self, "_stderr_reader", None) is not None:
-                _MOLT_STREAM_READER_DROP(self._stderr_reader)
-            _MOLT_PROCESS_DROP(handle)
+            handle0 = getattr(self, "_stdin_stream", None)
+            handle1 = getattr(self, "_stdout_stream", None)
+            handle2 = getattr(self, "_stderr_stream", None)
+            handle3 = getattr(self, "_stdout_reader", None)
+            handle4 = getattr(self, "_stderr_reader", None)
         except Exception:
-            pass
+            return
+        # Detach every owner before any release can reenter.
+        if handle0 is not None:
+            object.__setattr__(self, "_stdin_stream", None)
+        if handle1 is not None:
+            object.__setattr__(self, "_stdout_stream", None)
+        if handle2 is not None:
+            object.__setattr__(self, "_stderr_stream", None)
+        if handle3 is not None:
+            object.__setattr__(self, "_stdout_reader", None)
+        if handle4 is not None:
+            object.__setattr__(self, "_stderr_reader", None)
+        if handle5 is not None:
+            object.__setattr__(self, "_handle", None)
+        if handle0 is not None:
+            try:
+                _stream_drop(handle0)
+            except Exception:
+                pass
+        if handle1 is not None:
+            try:
+                _stream_drop(handle1)
+            except Exception:
+                pass
+        if handle2 is not None:
+            try:
+                _stream_drop(handle2)
+            except Exception:
+                pass
+        if handle3 is not None:
+            try:
+                _reader_drop(handle3)
+            except Exception:
+                pass
+        if handle4 is not None:
+            try:
+                _reader_drop(handle4)
+            except Exception:
+                pass
+        if handle5 is not None:
+            try:
+                _process_drop(handle5)
+            except Exception:
+                pass
 
 
 def _run_needs_popen(

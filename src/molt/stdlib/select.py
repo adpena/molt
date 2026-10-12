@@ -248,16 +248,18 @@ class _SelectorBackend:
     def closed(self) -> bool:
         return self._closed
 
-    def _release_handle(self) -> None:
-        handle = self._handle
-        if self._closed or handle is None:
+    def _release_handle(
+        self, _close=_MOLT_SELECTOR_CLOSE, _drop=_MOLT_SELECTOR_DROP
+    ) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return None
-        self._closed = True
-        self._handle = None
+        object.__setattr__(self, "_closed", True)
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_SELECTOR_CLOSE(handle)
+            _close(handle)
         finally:
-            _MOLT_SELECTOR_DROP(handle)
+            _drop(handle)
 
     def close(self) -> None:
         self._release_handle()
@@ -295,16 +297,18 @@ class _PollObject:
             raise ValueError("I/O operation on closed selector")
         return handle
 
-    def _release_handle(self) -> None:
-        handle = self._handle
-        if self._closed or handle is None:
+    def _release_handle(
+        self, _close=_MOLT_SELECTOR_CLOSE, _drop=_MOLT_SELECTOR_DROP
+    ) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return None
-        self._closed = True
-        self._handle = None
+        object.__setattr__(self, "_closed", True)
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_SELECTOR_CLOSE(handle)
+            _close(handle)
         finally:
-            _MOLT_SELECTOR_DROP(handle)
+            _drop(handle)
 
     def __del__(self) -> None:
         try:

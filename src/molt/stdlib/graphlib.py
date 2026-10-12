@@ -73,15 +73,15 @@ class TopologicalSorter:
 
         return _iter()
 
-    def __del__(self):
+    def __del__(self, _drop=_MOLT_GRAPHLIB_DROP) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_GRAPHLIB_DROP(handle)
+            _drop(handle)
         except Exception:
-            return
+            pass
 
     @classmethod
     def __class_getitem__(cls, item):

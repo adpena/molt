@@ -302,13 +302,15 @@ class deque:
     def __hash__(self):
         raise TypeError("unhashable type: 'deque'")
 
-    def __del__(self):
+    def __del__(self, _drop=_MOLT_DEQUE_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_DEQUE_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -949,13 +951,15 @@ class defaultdict(dict):
     def __repr__(self) -> str:
         return f"defaultdict({self.default_factory!r}, {dict(self)!r})"
 
-    def __del__(self):
+    def __del__(self, _drop=_MOLT_DEFAULTDICT_DROP) -> None:
         handle = getattr(self, "_dd_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_DEFAULTDICT_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_dd_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

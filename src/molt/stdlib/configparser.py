@@ -289,13 +289,15 @@ class RawConfigParser:
         self._interpolation = interpolation
         self._handle = _molt_configparser_new(defaults, "none")
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_configparser_drop) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _molt_configparser_drop(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
     def read_string(self, string: str, source: str = "<string>") -> None:
         _molt_configparser_read_string(self._handle, str(string))

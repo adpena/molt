@@ -73,9 +73,13 @@ class SimpleQueue:
     def get_nowait(self) -> _Any:
         return self.get(block=False)
 
-    def __del__(self, _queue_drop=_MOLT_QUEUE_DROP) -> None:
+    def __del__(self, _drop=_MOLT_QUEUE_DROP) -> None:
         try:
-            _queue_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             return
 

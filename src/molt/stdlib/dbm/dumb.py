@@ -61,8 +61,7 @@ class _Database:
         self.close()
 
     def __del__(self) -> None:
-        if not self._closed:
-            self.close()
+        self.close()
 
     def keys(self) -> list[bytes]:
         if self._closed:
@@ -80,11 +79,16 @@ class _Database:
             raise error("DBM object has already been closed")
         _MOLT_DBM_DUMB_SYNC(self._handle)
 
-    def close(self) -> None:
-        if self._closed:
+    def _release_handle(self, _close=_MOLT_DBM_DUMB_CLOSE) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        self._closed = True
-        _MOLT_DBM_DUMB_CLOSE(self._handle)
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
+        _close(handle)
+
+    def close(self) -> None:
+        self._release_handle()
 
 
 def open(file: str, flag: str = "c", mode: int = 0o666) -> _Database:

@@ -99,13 +99,15 @@ class LZMACompressor:
         self._flushed = True
         return bytes(_MOLT_LZMA_COMPRESSOR_FLUSH(self._handle))
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_LZMA_COMPRESSOR_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_LZMA_COMPRESSOR_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class LZMADecompressor:
@@ -137,13 +139,15 @@ class LZMADecompressor:
     def unused_data(self) -> bytes:
         return bytes(_MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA(self._handle))
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_LZMA_DECOMPRESSOR_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_LZMA_DECOMPRESSOR_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class LZMAFile:
@@ -193,13 +197,19 @@ class LZMAFile:
     def seekable(self) -> bool:
         return False
 
-    def close(self) -> None:
-        if self._closed:
+    def _release_handle(self, _close=_MOLT_LZMA_FILE_CLOSE, _drop=_MOLT_LZMA_FILE_DROP) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _MOLT_LZMA_FILE_CLOSE(self._handle)
-        _MOLT_LZMA_FILE_DROP(self._handle)
-        self._handle = None
-        self._closed = True
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
+        try:
+            _close(handle)
+        finally:
+            _drop(handle)
+
+    def close(self) -> None:
+        self._release_handle()
 
     @property
     def closed(self) -> bool:

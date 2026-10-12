@@ -137,9 +137,13 @@ class Queue:
     def shutdown(self, immediate: bool = False) -> None:
         _queue_shutdown(self._handle, immediate)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_QUEUE_DROP) -> None:
         try:
-            _MOLT_QUEUE_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             return
 

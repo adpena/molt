@@ -253,13 +253,15 @@ class Fraction:
     def __bool__(self):
         return _MOLT_FRACTION_NUMERATOR(self._handle) != 0
 
-    def __del__(self):
+    def __del__(self, _drop=_MOLT_FRACTION_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_FRACTION_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 __all__ = ["Fraction"]

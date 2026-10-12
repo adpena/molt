@@ -1656,11 +1656,6 @@ fn runtime_exit(code_bits: u64) -> u64 {
             }
         };
         if let Some(ptr) = ptr {
-            molt_cpython_abi::api::object::attach_runtime_execution_thread(
-                runtime_state_for_gil()
-                    .expect("live runtime execution owner")
-                    .identity(),
-            );
             let state = unsafe { &*ptr };
             let py = gil.token();
             runtime_teardown_for_process_exit(&py, state);
@@ -1939,17 +1934,10 @@ fn runtime_shutdown() -> u64 {
     lifecycle.changed.notify_all();
     drop(phase);
 
-    {
-        // Preserve the existing embedding record for the one final drain.
-        // No callback-capable destruction may run while the lifecycle phase
-        // mutex is held or after the builtin class authority is dismantled.
-        touch_tls_guard();
-        molt_cpython_abi::api::object::attach_runtime_execution_thread(
-            runtime_state_for_gil()
-                .expect("live runtime execution owner")
-                .identity(),
-        );
-    }
+    // The shared teardown transaction owns any new C attachment from the
+    // first callback through success or unwind. Prepare TLS lifetime here;
+    // preserve an existing caller-owned attachment for that caller to revoke.
+    touch_tls_guard();
 
     let state = unsafe { &*ptr };
     let py = gil.token();

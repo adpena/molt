@@ -1076,8 +1076,9 @@ tiers = ["pre-push", "pr", "main"]
 required = true
 # Full parallel runtime plus every gate-declared fresh-process witness is mandatory.
 # The full resource-serialized DAG, including the focused extension witness,
-# has a separate operational allowance inside the job backstop.
-timeout_minutes = 254
+# includes the actual WASI lifecycle producer/consumer and has a separate
+# operational allowance inside the job backstop.
+timeout_minutes = 284
 # Observed setup/post-proof total 218s, rounded up to whole minutes.
 job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
@@ -2737,7 +2738,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py", "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py", "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
@@ -2927,6 +2928,24 @@ dependencies = []
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "rust.test.wasi-runtime-lifecycle"
+cargo_native_units = { target = ["c"] }
+family = "rust"
+cell = "linux-x86_64-rust-wasi-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+# Reuse the aggregate-suite budget; each producer keeps the existing cold
+# build bound and the production-host consumer has a separate child guard.
+timeout_budget = "suite"
+cache_domain = "cargo-workspace"
+dependencies = []
+# The reduced WASI runtime libtest and native production host share one source
+# identity. The existing host integration test owns its exact semantic roster;
+# the gate binds the guest artifact, native driver and production host images.
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "wasi-lifecycle", "--profile", "dev-fast", "--build-timeout-seconds", "1200", "--child-timeout-seconds", "600"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasi-clang", "wasm-ld"]
 
 [[command]]
 id = "rust.test.runtime-extension-admission"

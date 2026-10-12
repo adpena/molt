@@ -739,9 +739,13 @@ class Context:
         for code in _SIGNAL_MAP.values():
             _MOLT_DECIMAL_CONTEXT_SET_TRAP(self._handle, code, False)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_DECIMAL_CONTEXT_DROP) -> None:
         try:
-            _MOLT_DECIMAL_CONTEXT_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 
@@ -1207,9 +1211,13 @@ class Decimal:
     def _is_special(self) -> bool:
         return self.is_nan() or self.is_infinite()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_DECIMAL_DROP) -> None:
         try:
-            _MOLT_DECIMAL_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 

@@ -263,9 +263,13 @@ class AsyncExitStack:
     def __init__(self) -> None:
         self._molt_state = _MOLT_CONTEXTLIB_EXITSTACK_NEW()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_CONTEXTLIB_EXITSTACK_DROP) -> None:
         try:
-            _MOLT_CONTEXTLIB_EXITSTACK_DROP(self._molt_state)
+            handle = getattr(self, '_molt_state', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_molt_state', None)
+            _drop(handle)
         except Exception:
             pass
 
@@ -308,9 +312,13 @@ class ExitStack(ContextDecorator):
     def __init__(self) -> None:
         self._molt_state = _MOLT_CONTEXTLIB_EXITSTACK_NEW()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_CONTEXTLIB_EXITSTACK_DROP) -> None:
         try:
-            _MOLT_CONTEXTLIB_EXITSTACK_DROP(self._molt_state)
+            handle = getattr(self, '_molt_state', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_molt_state', None)
+            _drop(handle)
         except Exception:
             pass
 

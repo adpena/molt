@@ -259,18 +259,23 @@ class _IntrinsicSelectorImpl(_BaseSelectorImpl):
             ready.append((key, events & key.events))
         return ready
 
-    def close(self):
-        handle = self._selector_handle
-        self._selector_closed = True
-        self._selector_handle = None
+    def _release_handle(
+        self, _close=_MOLT_SELECTOR_CLOSE, _drop=_MOLT_SELECTOR_DROP
+    ):
+        handle = getattr(self, "_selector_handle", None)
+        object.__setattr__(self, "_selector_closed", True)
+        object.__setattr__(self, "_selector_handle", None)
         try:
             if handle is not None:
                 try:
-                    _MOLT_SELECTOR_CLOSE(handle)
+                    _close(handle)
                 finally:
-                    _MOLT_SELECTOR_DROP(handle)
+                    _drop(handle)
         finally:
             super().close()
+
+    def close(self):
+        self._release_handle()
 
     def __del__(self):
         try:

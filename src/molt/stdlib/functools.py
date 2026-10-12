@@ -210,13 +210,15 @@ class singledispatch:
         """Read-only mapping of registered types to implementations."""
         return _MOLT_SD_REGISTRY(self._handle)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_SD_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_SD_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 def _sd_extract_type(func: Callable[..., Any]) -> type:

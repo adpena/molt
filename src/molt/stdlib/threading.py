@@ -366,11 +366,12 @@ class Condition:
 
     notifyAll = notify_all
 
-    def _drop(self) -> None:
-        if self._handle is None:
+    def _drop(self, _drop=_condition_drop) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _condition_drop(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:
@@ -403,11 +404,12 @@ class Event:
 
     isSet = is_set
 
-    def _drop(self) -> None:
-        if self._handle is None:
+    def _drop(self, _drop=_event_drop) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _event_drop(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:
@@ -450,11 +452,12 @@ class Semaphore:
         self.release()
         return False
 
-    def _drop(self) -> None:
-        if self._handle is None:
+    def _drop(self, _drop=_semaphore_drop) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _semaphore_drop(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:
@@ -528,11 +531,12 @@ class Barrier:
                 raise
         return index
 
-    def _drop(self) -> None:
-        if self._handle is None:
+    def _drop(self, _drop=_barrier_drop) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _barrier_drop(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:
@@ -573,12 +577,15 @@ class local:
             raise AttributeError(name)
         del data[name]
 
-    def _drop(self) -> None:
-        handle = object.__getattribute__(self, "_handle")
+    def _drop(self, _drop=_local_drop) -> None:
+        try:
+            handle = object.__getattribute__(self, "_handle")
+        except AttributeError:
+            return
         if handle is None:
             return
-        _local_drop(handle)
         object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __del__(self) -> None:
         try:
@@ -724,14 +731,18 @@ class Thread:
         finally:
             self._synthetic_alive = False
 
-    def _drop(self) -> None:
-        if self._handle is None:
-            self._synthetic_alive = False
+    def _drop(
+        self, _forget=_thread_registry_forget, _drop=_thread_drop
+    ) -> None:
+        handle = getattr(self, "_handle", None)
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_synthetic_alive", False)
+        if handle is None:
             return
-        _thread_registry_forget(self._handle)
-        _thread_drop(self._handle)
-        self._handle = None
-        self._synthetic_alive = False
+        try:
+            _forget(handle)
+        finally:
+            _drop(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:

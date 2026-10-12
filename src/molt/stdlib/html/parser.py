@@ -48,13 +48,15 @@ class HTMLParser:
         events = _molt_html_parser_close(self._handle)
         self._dispatch_events(events)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_html_parser_drop) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _molt_html_parser_drop(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
     def _dispatch_events(self, events: Any) -> None:
         if events is None:

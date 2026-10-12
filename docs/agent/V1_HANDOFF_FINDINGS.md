@@ -204,7 +204,18 @@ every acquired reference. Optional C-API exports no longer select a consuming
 or leaking diagnostic path. ABI retention, tree shaking and generated browser
 assets migrate with these consumers. Joined host checks pass 527 cases with
 one skip and ten compiled cases unrun; 64 capability controls also pass.
-Actual compiled qualification of this successor remains outstanding.
+Actual native runtime qualification of candidate `568b7e9a2` exposes one
+early-refusal regression: a shared-isolate borrower refusal retains a newly
+attached C thread record, then native thread exit aborts. The reviewed correction
+makes the shutdown token own only its new attachment, revokes that attachment
+on unwind without destroying the record, and removes duplicate raw preattachments.
+The four new ownership controls and the existing failed-isolate reproducer remain
+to be executed. The ignored actual WASI lifecycle consumer also lacked artifact
+production and handoff; its owning runtime gate now builds and binds the WASI
+libtest, native integration driver and production host together. The gate reuses
+the existing artifact decoder, allocation-feature check and test runner; its
+five-case semantic roster remains owned by the Rust consumer. Compiled
+qualification remains outstanding.
 
 The native public run on candidate `85423eba8` passes three cases, then fails
 the executor case because `threading.Event.__del__` looks up a cleanup function
@@ -214,6 +225,20 @@ The remaining 35 selected programs are not reached. Process custody is complete;
 the evidence is retained and canonical retirement reclaims 1.28 GB of sealed
 build output. The repair must cover the sibling native resource finalizers,
 their constructor and reentrant cleanup paths, and actual compiled shutdown.
+
+The resulting ownership map covers 64 opaque-resource classes. Cleanup callbacks
+must survive module namespace retirement; each instance must detach its exact
+owner before a callback can reenter. Logical close and registry retirement remain
+distinct where the producer requires both, including already-closed SQLite
+cursors. DBM close must retire its registry owner even when final synchronization
+fails, while explicit sync retains it. SSL unwrap must release the native duplicate
+descriptor while preserving the original Python transport. That ownership repair
+does not qualify TLS shutdown: close-notify, readiness and timeout progression
+remain part of the complete maintained-provider migration under V1-10.
+Named Tcl font deletion, user-visible file/shelf flush and Windows pipe ownership
+use different protocols and require their own qualification; this census does
+not establish that every finalizer is correct. Host behavior controls and source
+review are development evidence; compiled owner consumers remain required.
 
 The selected public consumer rosters include 39 native and 20 WASM programs,
 plus the direct WASM admission boundary. Ten existing async/executor fixtures now
@@ -1887,6 +1912,8 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | V1-33 | The runtime VFS file adapter buffers independent file contents and publishes by path at close. Explicit flush does not publish to the VFS backend, `w` truncation is delayed, and `x` uses a separate stat before later creation. Concurrent append/exclusive-create and rename/unlink lifetime semantics therefore lack an admitted file-identity contract. The capability successor repairs selected-route admission and close error propagation, which do not qualify this separate ownership family. | Reconcile VFS open/read/write/append/flush/close and backend file identity as one protocol; prove visibility, atomic creation/append, quota and publication failure, rename/unlink lifetime, and binary/text wrappers against pinned CPython source and actual native/WASM execution. Do not close this row from admission-only tests. |
 
 | V1-32 | Logging Filterer requires a `.filter` attribute and swallows filter exceptions; it does not implement callable filters or propagate a replacement LogRecord through handler/logger consumers. These semantics are separate from the corrected stream writer, whose tests intentionally use object filters. | Reconcile Filterer, Handler.handle and Logger.handle against the declared CPython-version matrix. Prove callable and object filters, exception propagation, replacement-record identity, false results and mutation/order across actual native/WASM execution. Stream/file admission controls do not qualify this row. |
+
+| V1-34 | Opaque-resource facades can look up native cleanup functions after module namespaces retire, leak registry owners after logical close, or detach owners before partial-construction cleanup has finished acquiring its inputs. Native execution reproduces unraisable Event finalizer errors; source review also finds closed SQLite cursor retention, DBM retention on close failure and the discarded SSL unwrap descriptor. `_multiprocessing.SemLock` exposes a value-only constructor where CPython requires the five-argument constructor protocol. | Complete the existing constructor/close/drop/finalizer family, preserving borrowed owners, reentrancy, failure identity and each original suppression boundary. The successor changes 64 owner classes; an automatic development-side census also covers already-correct siblings and ties discovered opaque cleanup owners to behavioral controls. Host controls do not qualify compiled shutdown or native registry retirement. Execute the actual native/WASM consumer matrix and real OS-resource controls. Reconcile the SemLock constructor and its callers against CPython before claiming its private-module surface; public multiprocessing programs that do not use SemLock are not evidence for that surface. Named Tcl deletion and user-visible flush/writeback are distinct ownership protocols, not covered by the opaque-handle claim. SSL graceful shutdown remains under V1-10. |
 
 ## Open: correctness and release blockers
 

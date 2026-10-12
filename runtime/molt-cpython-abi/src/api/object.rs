@@ -5081,6 +5081,7 @@ pub fn retained_thread_state_identity_for_test(address: usize) -> Option<(usize,
 pub struct RuntimeShutdownThreadState {
     runtime_owner: usize,
     id: u64,
+    owns_attachment: bool,
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -5099,11 +5100,14 @@ impl RuntimeShutdownThreadState {
         // decref. The lifecycle detaches it before the managed-edge drain.
         assert_runtime_initialized("runtime shutdown C owner");
         assert_ne!(unsafe { (hooks_or_stubs().gil_check)() }, 0);
+        let was_attached = runtime_execution_thread_is_attached();
         attach_runtime_execution_thread(runtime_owner);
+        let owns_attachment = !was_attached && runtime_execution_thread_is_attached();
         let id = MOLT_THREAD_STATE.with(|slot| slot.borrow().as_deref().unwrap().id);
         Self {
             runtime_owner,
             id,
+            owns_attachment,
             _not_send_sync: std::marker::PhantomData,
         }
     }
@@ -5157,6 +5161,34 @@ impl RuntimeShutdownThreadState {
             "shutdown C owner refilled after its final drain"
         );
         retire_empty_current_thread_state();
+    }
+}
+
+impl Drop for RuntimeShutdownThreadState {
+    fn drop(&mut self) {
+        if !self.owns_attachment || !runtime_execution_thread_is_attached() {
+            return;
+        }
+        // An early teardown refusal still owns its exact record and managed
+        // edges. Revoke only this transaction's attachment; its caller retains
+        // the record for normal TLS retirement or terminal-runtime quarantine.
+        // Never panic while unwinding, steal a caller's PyGILState attachment,
+        // or mutate a replaced/borrowed record after reentrant cleanup failed.
+        let exact_owner = MOLT_THREAD_STATE
+            .try_with(|slot| {
+                slot.try_borrow_mut().is_ok_and(|slot| {
+                    slot.as_deref().is_some_and(|record| {
+                        record.runtime_owner == self.runtime_owner && record.id == self.id
+                    })
+                })
+            })
+            .unwrap_or(false);
+        let no_gilstate_owner = GILSTATE_ATTACHMENT
+            .try_with(|state| state.get().0 == 0)
+            .unwrap_or(false);
+        if exact_owner && no_gilstate_owner {
+            detach_runtime_execution_thread();
+        }
     }
 }
 

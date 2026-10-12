@@ -171,13 +171,15 @@ class OrderedDict:
         for key, value in kwargs.items():
             _MOLT_ORDEREDDICT_SETITEM(self._handle, key, value)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_ORDEREDDICT_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _MOLT_ORDEREDDICT_DROP(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 globals().pop("_require_intrinsic", None)

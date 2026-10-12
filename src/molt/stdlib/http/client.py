@@ -298,15 +298,15 @@ class HTTPMessage:
             raise KeyError(name)
         return str(value)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_HTTP_MESSAGE_DROP) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_HTTP_MESSAGE_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
-        self._handle = None
 
 
 def parse_headers(fp, _class=HTTPMessage):
@@ -380,16 +380,16 @@ class HTTPResponse(metaclass=_ABCMeta):
             _MOLT_HTTP_RESP_CLOSE(self._handle)
             self.closed = True
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_HTTP_RESP_DROP) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_HTTP_RESP_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
-        self._msg = None
-        self._handle = None
+        object.__setattr__(self, "_msg", None)
 
     def getheader(self, name: str, default: _Any = None) -> _Any:
         return _MOLT_HTTP_RESP_GETHEADER(self._handle, str(name), default)
@@ -540,15 +540,15 @@ class HTTPConnection:
             self._response = None
         _MOLT_HTTP_CONN_CLOSE(self._conn_handle)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_HTTP_CONN_DROP) -> None:
         handle = getattr(self, "_conn_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_conn_handle", None)
         try:
-            _MOLT_HTTP_CONN_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
-        self._conn_handle = None
 
 
 class HTTPSConnection(HTTPConnection):

@@ -160,12 +160,14 @@ class SSLSocket:
         return _MOLT_SSL_SOCKET_GETPEERCERT(self._handle, binary_form)
 
     def unwrap(self) -> object:
-        # Returns the raw fd of the underlying socket; matches the Rust
-        # intrinsic contract. CPython returns the unwrapped socket object,
-        # but our SSL layer dup'd the fd, so we hand back the original
-        # transport socket which still owns the original fd.
-        _MOLT_SSL_SOCKET_UNWRAP(self._handle)
-        self._closed = True
+        handle = getattr(self, "_handle", None)
+        if handle is None or self._closed:
+            raise ValueError("No SSL wrapper around socket")
+        # Shutdown retires the runtime's duplicated transport. The retained
+        # Python socket remains the owner returned to the caller.
+        _MOLT_SSL_SOCKET_UNWRAP(handle)
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
         return self._sock
 
     def fileno(self) -> int:
@@ -206,10 +208,17 @@ class SSLSocket:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_SSL_SOCKET_DROP) -> None:
         try:
-            if not self._closed:
-                _MOLT_SSL_SOCKET_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            closed = getattr(self, '_closed', False)
+            object.__setattr__(self, '_handle', None)
+            object.__setattr__(self, '_closed', True)
+            if handle is not None and (not closed):
+                try:
+                    _drop(handle)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -304,9 +313,13 @@ class SSLContext:
             "ssl.SSLContext.wrap_bio is not yet supported on the Molt rustls backend"
         )
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_SSL_CONTEXT_DROP) -> None:
         try:
-            _MOLT_SSL_CONTEXT_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 

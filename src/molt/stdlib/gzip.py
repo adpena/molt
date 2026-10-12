@@ -20,6 +20,15 @@ class BadGzipFile(OSError):
     pass
 
 
+def _compress_payload(
+    data, compresslevel, mtime, _compress=_MOLT_GZIP_COMPRESS, _error=BadGzipFile
+):
+    try:
+        return bytes(_compress(data, compresslevel, mtime))
+    except Exception as exc:
+        raise _error(str(exc)) from exc
+
+
 class GzipFile:
     """Gzip file object backed entirely by Rust intrinsics."""
 
@@ -91,20 +100,28 @@ class GzipFile:
     def closed(self) -> bool:
         return self._closed
 
-    def close(self) -> None:
-        if self._closed:
+    def _release_handle(
+        self, _close=_MOLT_GZIP_CLOSE, _drop=_MOLT_GZIP_DROP,
+        _compress=_compress_payload,
+    ) -> None:
+        if getattr(self, "_closed", False):
             return
-        if self._fileobj is not None and self._write_buf:
+        handle = getattr(self, "_handle", None)
+        fileobj = getattr(self, "_fileobj", None)
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
+        if fileobj is not None and self._write_buf:
             mtime = self._mtime if self._mtime is not None else 0
-            compressed = compress(
-                bytes(self._write_buf), self._compresslevel, mtime=mtime
-            )
-            self._fileobj.write(compressed)
-        if self._handle is not None:
-            _MOLT_GZIP_CLOSE(self._handle)
-            _MOLT_GZIP_DROP(self._handle)
-            self._handle = None
-        self._closed = True
+            compressed = _compress(bytes(self._write_buf), self._compresslevel, mtime)
+            fileobj.write(compressed)
+        if handle is not None:
+            try:
+                _close(handle)
+            finally:
+                _drop(handle)
+
+    def close(self) -> None:
+        self._release_handle()
 
     def __enter__(self) -> "GzipFile":
         return self
@@ -124,10 +141,7 @@ def compress(
 ) -> bytes:
     """Compress *data* in one shot, returning the gzip-compressed bytes."""
     effective_mtime = mtime if mtime is not None else 0
-    try:
-        return bytes(_MOLT_GZIP_COMPRESS(data, compresslevel, effective_mtime))
-    except Exception as exc:
-        raise BadGzipFile(str(exc)) from exc
+    return _compress_payload(data, compresslevel, effective_mtime)
 
 
 def decompress(data: bytes) -> bytes:

@@ -502,21 +502,112 @@ pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
         };
 
-        let result: Result<(), String> = DBM_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(state) = borrow.get_mut(&id)
-                && state.modified
-                && !state.is_readonly()
-            {
-                sync_state(state)?;
-            }
-            borrow.remove(&id);
-            Ok(())
-        });
+        // Close consumes the registry owner even when final synchronization
+        // fails. Explicit sync retains it; Python close has already detached
+        // its handle and cannot retry. No registry borrow spans filesystem I/O
+        // or exception construction.
+        let state = DBM_HANDLES.with(|map| map.borrow_mut().remove(&id));
+        let result = match state {
+            Some(mut state) if state.modified && !state.is_readonly() => sync_state(&mut state),
+            _ => Ok(()),
+        };
 
         match result {
             Ok(()) => MoltObject::none().bits(),
             Err(msg) => raise_exception::<u64>(_py, "OSError", &msg),
         }
     })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::builtins::exceptions::{
+        exception_matches_builtin_name, format_exception_message, molt_exception_clear,
+        molt_exception_last_pending,
+    };
+
+    fn open_modified(py: &PyToken<'_>, path: &std::path::Path) -> u64 {
+        let inputs = [path.to_str().unwrap(), "n", "key", "value"]
+            .map(|text| MoltObject::from_ptr(crate::alloc_string(py, text.as_bytes())).bits());
+        let handle = molt_dbm_dumb_open(inputs[0], inputs[1], MoltObject::from_int(0o600).bits());
+        assert!(!crate::exception_pending(py));
+        molt_dbm_dumb_setitem(handle, inputs[2], inputs[3]);
+        for bits in inputs {
+            crate::dec_ref_bits(py, bits);
+        }
+        assert!(!crate::exception_pending(py));
+        handle
+    }
+
+    fn take_os_error(py: &PyToken<'_>) -> String {
+        assert!(crate::exception_pending(py));
+        let error = molt_exception_last_pending();
+        assert!(exception_matches_builtin_name(py, error, "OSError"));
+        let message = format_exception_message(py, obj_from_bits(error).as_ptr().unwrap());
+        molt_exception_clear();
+        crate::dec_ref_bits(py, error);
+        message
+    }
+
+    #[test]
+    fn close_retires_handle_after_sync_failure_while_explicit_sync_keeps_it() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        let directory = tempfile::tempdir().unwrap();
+        crate::concurrency::gil::with_gil(|py| {
+            let py = &py;
+            let path = directory.path().join("database");
+            let handle = open_modified(py, &path);
+            let id = to_i64(obj_from_bits(handle)).unwrap();
+            let index = path.with_extension("dir");
+            // A directory at the exact publication target fails on every host,
+            // including privileged test users; no permission-bit mock is used.
+            fs::remove_file(&index).unwrap();
+            fs::create_dir(&index).unwrap();
+            molt_dbm_dumb_sync(handle);
+            let sync_error = take_os_error(py);
+            assert!(sync_error.starts_with(&format!("cannot write {}:", index.display())));
+            DBM_HANDLES.with(|map| assert!(map.borrow().get(&id).unwrap().modified));
+            molt_dbm_dumb_close(handle);
+            assert_eq!(take_os_error(py), sync_error);
+            DBM_HANDLES.with(|map| assert!(!map.borrow().contains_key(&id)));
+            assert_eq!(fs::read(path.with_extension("dat")).unwrap(), b"value");
+            assert!(index.is_dir());
+            // Repeated close consumes no second owner and does not retry I/O.
+            molt_dbm_dumb_close(handle);
+            assert!(!crate::exception_pending(py));
+            assert!(index.is_dir());
+        });
+    }
+
+    #[test]
+    fn successful_sync_preserves_live_handle_and_close_publishes_remaining_changes() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        let directory = tempfile::tempdir().unwrap();
+        crate::concurrency::gil::with_gil(|py| {
+            let py = &py;
+            let path = directory.path().join("database");
+            let handle = open_modified(py, &path);
+            let id = to_i64(obj_from_bits(handle)).unwrap();
+            molt_dbm_dumb_sync(handle);
+            assert!(!crate::exception_pending(py));
+            DBM_HANDLES.with(|map| assert!(!map.borrow().get(&id).unwrap().modified));
+            assert_eq!(
+                fs::read_to_string(path.with_extension("dir")).unwrap(),
+                "'key', (0, 5)\n"
+            );
+            let key = MoltObject::from_ptr(crate::alloc_string(py, b"key")).bits();
+            molt_dbm_dumb_delitem(handle, key);
+            crate::dec_ref_bits(py, key);
+            assert!(!crate::exception_pending(py));
+            molt_dbm_dumb_close(handle);
+            assert!(!crate::exception_pending(py));
+            DBM_HANDLES.with(|map| assert!(!map.borrow().contains_key(&id)));
+            assert_eq!(fs::read(path.with_extension("dir")).unwrap(), b"");
+            assert_eq!(
+                fs::read(path.with_extension("bak")).unwrap(),
+                b"'key', (0, 5)\n"
+            );
+        });
+    }
 }
