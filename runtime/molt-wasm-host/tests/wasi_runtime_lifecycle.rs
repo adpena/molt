@@ -19,7 +19,9 @@ use support::host;
 const CASES: [&str; 5] = [
     "concurrency::execution::tests::wasm_shutdown_custody_owns_c_state_without_an_execution_frame",
     "concurrency::execution::tests::wasm_logical_gil_and_execution_nesting_are_distinct",
-    "concurrency::execution::tests::scoped_detach_panic_revokes_c_extension_execution_capability",
+    // wasm32-wasip1 uses panic=abort. C-state cleanup is observable here;
+    // catch_unwind recovery belongs to the native unwind test lane.
+    "concurrency::execution::tests::cleanup_owned_entry_destroys_retained_c_thread_state",
     "concurrency::execution::tests::ordinary_scoped_entries_preserve_the_c_error_indicator",
     "cpython_abi_hooks::native_deallocation_tests::shutdown_record_survives_post_drain_native_deallocation_and_republished_c_owners",
 ];

@@ -7165,6 +7165,24 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_WASI_LIBTEST_ARTIFACT",
+      "owner": "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs",
+      "summary": "The runtime test gate passes the exact Cargo-produced WASI libtest image to the native lifecycle integration consumer; its paired SHA-256 is verified before production-host compilation and execution.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_WASI_LIBTEST_SHA256",
+      "owner": "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs",
+      "summary": "Binds the WASI libtest artifact bytes selected by the runtime test gate before the lifecycle integration consumer invokes the production host.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "path",
