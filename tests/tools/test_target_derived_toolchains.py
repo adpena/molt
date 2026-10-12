@@ -574,13 +574,22 @@ def test_changed_executable_rejected_even_with_resealed_outer_digest(
     )
 
 
-@pytest.mark.parametrize("target", ["native", "wasm-freestanding"])
+@pytest.mark.parametrize(
+    "target,foreign",
+    [
+        ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
+        ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"),
+        ("wasm-freestanding", "aarch64-unknown-linux-gnu"),
+    ],
+)
 @pytest.mark.parametrize("role", ["c", "cpp"])
 def test_resealed_foreign_compiler_target_is_rejected(
-    tmp_path, monkeypatch, target, role
+    tmp_path, monkeypatch, target, foreign, role
 ):
-    identity = _capture(monkeypatch, _resolved(tmp_path, target))
-    identity["commands"][role].append("--target=aarch64-unknown-linux-gnu")
+    resolved = _resolved(tmp_path, target)
+    assert foreign != resolved.target_plan.target_triple
+    identity = _capture(monkeypatch, resolved)
+    identity["commands"][role].append("--target=" + foreign)
     _reseal_command_change(identity, role)
     with pytest.raises(ValueError, match="target conflicts"):
         provider.validate_identity(_policy(), identity)
