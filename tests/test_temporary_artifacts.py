@@ -865,6 +865,20 @@ def test_helper_subdirectories_are_owned_by_terminal_guard_not_context_age(tmp_p
     assert not first.exists() and not second.exists()
 
 
+def test_proof_helpers_survive_nested_guard_retirement(tmp_path):
+    lease, env = _lease(tmp_path)
+    proof_root = tmp_path / "proof-output" / "scratch"
+    proof_root.mkdir(parents=True)
+    env["MOLT_PROOF_SCRATCH_ROOT"] = str(proof_root)
+    helper = scratch.new_guarded_directory(env, prefix="compile-")
+    payload = helper / "compiled-image"
+    payload.write_bytes(b"retained for the queue owner")
+    assert helper.parent == proof_root
+    _finish(lease)
+    assert not lease.target.exists()
+    assert payload.read_bytes() == b"retained for the queue owner"
+
+
 @pytest.mark.parametrize("count,bytes_", [(-1, 1), (1, -1), (True, 0), (1, 1.5)])
 def test_retention_limits_are_exact_nonnegative_integers(count, bytes_):
     with pytest.raises(ValueError):

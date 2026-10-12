@@ -434,6 +434,20 @@ def test_compile_file_restarts_batch_server_after_timeout(tmp_path: Path):
 
 
 def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatch):
+    proof_root = tmp_path / "proof-output" / "scratch"
+    monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(proof_root))
+    outputs = []
+
+    def compile_in_admitted_root(compiler, src, out):
+        assert out.is_relative_to(proof_root)
+        out.write_bytes(b"compiled fixture")
+        outputs.append(out)
+        return run_molt_conformance.CompileResult(True)
+
+    def run_compiled_fixture(binary):
+        assert binary.read_bytes() == b"compiled fixture"
+        return (0, "", "")
+
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
     test_file = corpus_dir / "alpha.py"
@@ -454,9 +468,9 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     monkeypatch.setattr(
         run_molt_conformance,
         "compile_file",
-        lambda compiler, src, out: run_molt_conformance.CompileResult(True),
+        compile_in_admitted_root,
     )
-    monkeypatch.setattr(run_molt_conformance, "run_binary", lambda binary: (0, "", ""))
+    monkeypatch.setattr(run_molt_conformance, "run_binary", run_compiled_fixture)
     monkeypatch.setattr(
         run_molt_conformance, "parse_expectation", lambda filepath: ("success", "")
     )
@@ -466,6 +480,7 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     )
 
     assert rc == 0
+    assert outputs and all(path.parent.is_dir() for path in outputs)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["suite"] == "smoke"
     assert summary["manifest_path"] == smoke_manifest.as_posix()

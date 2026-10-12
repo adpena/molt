@@ -17,6 +17,7 @@ from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
 from tests.process_guard_common import (
+    guarded_temporary_directory,
     install_module_os_view,
     install_module_view,
     run_guarded_test_process,
@@ -123,7 +124,7 @@ def test_session_children_recognize_the_outer_guard_by_its_marker(
 
 
 def test_tests_consume_the_outer_guard_lease_under_the_session_root(
-    test_guard_custody_roots,
+    test_guard_custody_roots, monkeypatch,
 ) -> None:
     """The CI failure of HF-163: a test allocates helper scratch in process.
 
@@ -133,6 +134,7 @@ def test_tests_consume_the_outer_guard_lease_under_the_session_root(
     """
     from tests.process_guard_common import guarded_temporary_directory
 
+    monkeypatch.delenv(dx.PROOF_SCRATCH_ROOT_ENV, raising=False)
     lease_target = Path(os.environ[temporary_artifacts.SCRATCH_ENV]).resolve()
     with guarded_temporary_directory(prefix="hf163-") as helper:
         assert helper.parent == lease_target
@@ -1413,6 +1415,10 @@ def test_pytest_fixture_outputs_share_proof_scratch_across_nested_guards(
     nested_guard_root = tmp_path / "nested-guard-scratch"
     monkeypatch.setenv(temporary_artifacts.SCRATCH_ENV, str(nested_guard_root))
     assert pytest_memory_guard_bootstrap.guarded_pytest_temp_root() == proof_root
+    helper = temporary_artifacts.new_guarded_directory(os.environ, prefix="compile-")
+    with guarded_temporary_directory(prefix="compiled-test-") as scoped:
+        assert helper.parent == scoped.parent == proof_root
+    assert helper.is_dir() and scoped.is_dir()
     assert not pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     assert Path(os.environ["PYTEST_DEBUG_TEMPROOT"]) == proof_root
 

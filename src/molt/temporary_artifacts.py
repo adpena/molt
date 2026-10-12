@@ -47,7 +47,7 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.disk_capacity import require_scratch_capacity
-from molt.dx import scratch_dir
+from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root, scratch_dir
 from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
 
 
@@ -1108,11 +1108,23 @@ def reclaim_terminal_scratch(
     }
 
 
+def execution_scratch(environ: Mapping[str, str]) -> Path:
+    """Select queue-admitted output scratch, or the direct guard's allocation.
+
+    Nested guards may replace their own temporary root. Compiled fixtures must
+    remain under the queue's derived-image root when one is published; its
+    terminal retirement, rather than the nested guard, owns those outputs.
+    """
+    if environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
+        return proof_scratch_root(Path(__file__).resolve().parents[2], environ)
+    return guard_scratch(environ)
+
+
 def new_guarded_directory(environ: Mapping[str, str], *, prefix: str) -> Path:
-    """Allocate a helper subtree; the outer guard owns its terminal cleanup."""
+    """Allocate a helper subtree owned by queue or guard terminal cleanup."""
     if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", prefix) is None:
         raise ValueError("scratch prefix must be a short basename")
-    root = guard_scratch(environ)
+    root = execution_scratch(environ)
     path = new_temporary_directory(root, prefix=prefix)
     if resolve_owned_path(path).parent != root:
         raise ValueError("scratch helper escaped its owning allocation")
