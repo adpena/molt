@@ -31,6 +31,7 @@ pub(crate) fn compile_daemon_job_output(
     let molt_backend::BackendIrDocument {
         ir,
         module_registry,
+        code_slots,
     } = document;
 
     if job.is_wasm {
@@ -52,7 +53,9 @@ pub(crate) fn compile_daemon_job_output(
             if let Some(split_runtime_app_table_base) = job.wasm_split_runtime_app_table_base {
                 options.split_runtime_app_table_base = Some(split_runtime_app_table_base);
             }
-            let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
+            let backend = WasmBackend::with_options(options)
+                .with_module_registry(module_registry)
+                .with_code_slots(code_slots);
             Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))
         }
         #[cfg(not(feature = "wasm-backend"))]
@@ -87,6 +90,7 @@ pub(crate) fn compile_daemon_job_output(
                     explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
                     log_prefix: "MOLT_BACKEND(daemon)",
                     module_registry,
+                    code_slots,
                 },
             )
             .map_err(|err| err.to_string())?;

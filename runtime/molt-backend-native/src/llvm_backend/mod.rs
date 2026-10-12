@@ -6,6 +6,7 @@
 //! slower compilation. Use Cranelift backend for development iteration.
 
 mod app_resolver;
+mod code_slots;
 pub mod lowering;
 mod module_registry;
 pub mod pgo;

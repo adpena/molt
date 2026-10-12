@@ -961,7 +961,7 @@ fn checked_local_split_fixture(returns_value: bool) -> FunctionIR {
     let mut ops = vec![
         OpIR {
             kind: "trace_enter_slot".to_string(),
-            value: Some(17),
+            s_value: Some("framed_large".into()),
             ..OpIR::default()
         },
         OpIR {

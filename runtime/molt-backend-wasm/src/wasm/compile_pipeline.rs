@@ -86,6 +86,7 @@ impl WasmBackend {
         ir: SimpleIR,
     ) -> Result<WasmCompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
         molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
+        self.code_slots.validate_functions(&ir.functions)?;
         Ok(self.compile_admitted(ir))
     }
 

@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4f1d33d49d62f0a4a3ff8fc402fd59d1895c7c3d15904657480db62211f79ff8",
+  "authority_sha256": "720eccbbf718e0356b7bb628d8efe4273c0b38fc9c34ba4b840fca44cf988239",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6103,6 +6103,8 @@
         "generated_object_abi_link",
         "--test",
         "native_artifact_facts",
+        "--test",
+        "native_batch_worker_spawn",
         "-p",
         "molt-artifact-publish",
         "-p",
@@ -6510,7 +6512,8 @@
         "llvm_backend::lowering",
         "llvm_backend::runtime_imports",
         "direct_checked_backends_share_generated_shape_rejection",
-        "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"
+        "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries",
+        "code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values"
       ],
       "cache_domain": "llvm-cargo",
       "cargo_native_units": {

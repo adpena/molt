@@ -43,7 +43,11 @@ fn exception_elision_requires_clean_fallthrough_and_generated_nothrow_facts() {
         "state_label",
         "unknown_operation",
     ] {
-        let mut func = manifest_func(vec![check(), make_op(kind), make_op("const_none"), check()]);
+        let mut candidate = make_op(kind);
+        if kind == "trace_enter_slot" {
+            candidate.s_value = Some("m".into());
+        }
+        let mut func = manifest_func(vec![check(), candidate, make_op("const_none"), check()]);
         elide_safe_exception_checks(&mut func);
         assert_eq!(
             func.ops

@@ -22,15 +22,18 @@ fn compile_field_op(kind: &str) -> Vec<u8> {
     } else {
         wasm_test_op("ret_void", None, vec![])
     };
-    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-        functions: vec![wasm_test_function(
-            "molt_main",
-            params,
-            None,
-            vec![field, ret],
-        )],
-        profile: None,
-    })
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+        SimpleIR {
+            functions: vec![wasm_test_function(
+                "molt_main",
+                params,
+                None,
+                vec![field, ret],
+            )],
+            profile: None,
+        },
+        Default::default(),
+    )
     .wasm
 }
 

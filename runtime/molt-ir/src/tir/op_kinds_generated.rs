@@ -1220,7 +1220,7 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         kind: "code_slot_set",
         family: "code_metadata",
         operands: 2,
-        value_rule: SimpleIrOpValueRule::NonNegative,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
         kind: "code_slots_init",
@@ -1232,7 +1232,7 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         kind: "trace_enter_slot",
         family: "code_metadata",
         operands: 0,
-        value_rule: SimpleIrOpValueRule::NonNegative,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
         kind: "bytearray_fill_range",

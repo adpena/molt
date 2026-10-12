@@ -513,6 +513,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn descriptor_schema_uses_executable_body_identity_without_numeric_slots() {
+        let mut input = serde_json::json!({
+            "schema_version": 4,
+            "kind": "molt_gpu_kernel",
+            "name": "kernel",
+            "params": [],
+            "ops": [],
+            "query_bindings": [],
+            "requirements": [],
+            "numeric": {"kind": "strict_integral_i32"},
+            "python_bodies": {
+                "buffer_get": {"symbol": "canonical_buffer_get", "arity": 2, "defaults": []}
+            }
+        });
+        let parsed = crate::parse_kernel_descriptor_json(&input.to_string()).unwrap();
+        assert_eq!(
+            parsed.python_bodies["buffer_get"].symbol,
+            "canonical_buffer_get"
+        );
+        assert_eq!(parsed.python_bodies["buffer_get"].arity, 2);
+        input["schema_version"] = serde_json::json!(3);
+        input["code_slot"] = serde_json::json!(7);
+        input["python_bodies"]["buffer_get"]["code_slot"] = serde_json::json!(8);
+        assert!(
+            crate::parse_kernel_descriptor_json(&input.to_string())
+                .err()
+                .expect("old schema must be refused")
+                .contains("unsupported kernel descriptor schema")
+        );
+        input["schema_version"] = serde_json::json!(4);
+        input["python_bodies"]["buffer_get"]
+            .as_object_mut()
+            .unwrap()
+            .remove("symbol");
+        assert!(
+            crate::parse_kernel_descriptor_json(&input.to_string())
+                .err()
+                .expect("executable identity remains required")
+                .contains("executable symbol")
+        );
+    }
+
     fn fixture() -> (RuntimeKernelDescriptor, KernelStoragePlan) {
         let descriptor = RuntimeKernelDescriptor {
             name: "guarded".into(),
@@ -527,7 +570,6 @@ mod tests {
                 op("store_index", &["x", "tid", "old"], None, None),
                 op("end_if", &[], None, None),
             ],
-            code_slot: 0,
             query_bindings: vec![],
             requirements: vec![],
             python_bodies: BTreeMap::new(),

@@ -509,8 +509,10 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "frame_home_take",
         "frame_home_clear",
     )
-    for kind in ("code_slot_set", "code_slots_init", "trace_enter_slot", *homes):
+    for kind in ("code_slots_init", *homes):
         assert shapes[kind]["value_rule"] == "nonnegative"
+    for kind in ("code_slot_set", "trace_enter_slot"):
+        assert shapes[kind]["value_rule"] == "unconstrained"
     # A home store adopts its only operand and leaves a non-owning view; a
     # load is a view; a take and locals() own their results. None is inert:
     # a store or clear releases the binding it displaces.

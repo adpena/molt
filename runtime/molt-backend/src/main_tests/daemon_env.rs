@@ -60,7 +60,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "function_cache_key": "function",
             "ir": {
                 "functions": [
-                    {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
+                    {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module"}]},
                     {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
                     {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
                     {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
@@ -99,7 +99,6 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 ops: vec![OpIR {
                     kind: "call".to_string(),
                     s_value: Some("demo__module".to_string()),
-                    value: Some(0),
                     ..OpIR::default()
                 }],
                 param_types: None,

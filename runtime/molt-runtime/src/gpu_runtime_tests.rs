@@ -941,7 +941,6 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
                 .as_ptr()
                 .expect("code");
-            crate::object::layout::code_set_frame_slot_id(code, 7);
             let descriptor = alloc_string(py, b"compiler-owned descriptor");
             let replacement = alloc_string(py, b"forged mutable descriptor");
             assert!(!descriptor.is_null() && !replacement.is_null());
@@ -962,12 +961,18 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             assert_eq!(crate::object::layout::code_gpu_descriptor_bits(code), 0);
             crate::gpu_bridge::molt_gpu_kernel_descriptor_set(callable, descriptor_bits);
             assert!(!crate::exception_pending(py));
+            // A published descriptor alone does not admit unregistered code.
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 7),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
+                0
+            );
+            crate::object::layout::code_set_frame_slot_id(code, 7);
+            assert_eq!(
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
                 1
             );
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 8),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, replacement_bits),
                 0
             );
 
@@ -986,19 +991,25 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             // The transport reports mutation completion independently of an
             // admitted incoming error; it must not turn success into failure.
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
-                py, "LookupError", "GPU metadata transport prior",
+                py,
+                "LookupError",
+                "GPU metadata transport prior",
             );
             assert!(!prior_ptr.is_null());
             let prior = crate::builtins::exceptions::ExceptionValue::adopt(
-                py, MoltObject::from_ptr(prior_ptr).bits(),
+                py,
+                MoltObject::from_ptr(prior_ptr).bits(),
             );
-            let prior_view = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .handle_to_borrowed_pyobj(prior.bits());
+            let prior_view =
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
             assert!(!prior_view.is_null());
             crate::record_exception(py, prior_ptr);
             let transport_status = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
-                function, name, b"__molt_gpu_descriptor__".as_ptr(),
-                b"__molt_gpu_descriptor__".len(), replacement_bits,
+                function,
+                name,
+                b"__molt_gpu_descriptor__".as_ptr(),
+                b"__molt_gpu_descriptor__".len(),
+                replacement_bits,
             );
             let observed = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
                 molt_cpython_abi::api::errors::PyErr_GetRaisedException(),
@@ -1019,7 +1030,7 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             );
             crate::bump_function_mutation_version(function);
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 7),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
                 0
             );
         }

@@ -25,18 +25,21 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
             ("live", Some("result")),
         ] {
             let bound = shape == "live";
-            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    vec!["value"],
-                    None,
-                    vec![
-                        wasm_test_op(kind, out, vec!["value"; 2 * width]),
-                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
-                    ],
-                )],
-                profile: None,
-            })
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![wasm_test_function(
+                        "molt_main",
+                        vec!["value"],
+                        None,
+                        vec![
+                            wasm_test_op(kind, out, vec!["value"; 2 * width]),
+                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                        ],
+                    )],
+                    profile: None,
+                },
+                Default::default(),
+            )
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
@@ -152,18 +155,21 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
             ("live", Some("result")),
         ] {
             let bound = shape == "live";
-            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    params.clone(),
-                    None,
-                    vec![
-                        wasm_test_op(kind, out, args.clone()),
-                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
-                    ],
-                )],
-                profile: None,
-            })
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![wasm_test_function(
+                        "molt_main",
+                        params.clone(),
+                        None,
+                        vec![
+                            wasm_test_op(kind, out, args.clone()),
+                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                        ],
+                    )],
+                    profile: None,
+                },
+                Default::default(),
+            )
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
@@ -281,7 +287,7 @@ fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTre
         functions: vec![wasm_test_function("molt_main", params, None, ops)],
         profile: None,
     };
-    let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+    let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
     wasmparser::Validator::new()
         .validate_all(&output.wasm)
         .unwrap();
@@ -420,18 +426,21 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
             ("live", Some("result")),
         ] {
             let bound = shape == "live";
-            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    vec!["value"],
-                    None,
-                    vec![
-                        wasm_test_op(spec.kind, out, vec!["value"; signature.params.len()]),
-                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
-                    ],
-                )],
-                profile: None,
-            })
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![wasm_test_function(
+                        "molt_main",
+                        vec!["value"],
+                        None,
+                        vec![
+                            wasm_test_op(spec.kind, out, vec!["value"; signature.params.len()]),
+                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                        ],
+                    )],
+                    profile: None,
+                },
+                Default::default(),
+            )
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
@@ -795,33 +804,36 @@ fn direct_calls_release_only_owned_value_results() {
             );
             external_void.return_abi = molt_ir::FunctionReturnAbi::Void;
             external_void.externalize_with_signature().unwrap();
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![
-                    wasm_test_function(
-                        "molt_main",
-                        vec!["value"],
-                        None,
-                        vec![
-                            call,
-                            wasm_test_op("const_none", Some("nothing"), vec![]),
-                            wasm_test_op(
-                                "ret",
-                                None,
-                                vec![if bound { "result" } else { "nothing" }],
-                            ),
-                        ],
-                    ),
-                    wasm_test_function(
-                        "owned_call_target",
-                        vec!["arg"],
-                        None,
-                        vec![wasm_test_op("ret", None, vec!["arg"])],
-                    ),
-                    external_owned,
-                    external_void,
-                ],
-                profile: None,
-            });
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![
+                        wasm_test_function(
+                            "molt_main",
+                            vec!["value"],
+                            None,
+                            vec![
+                                call,
+                                wasm_test_op("const_none", Some("nothing"), vec![]),
+                                wasm_test_op(
+                                    "ret",
+                                    None,
+                                    vec![if bound { "result" } else { "nothing" }],
+                                ),
+                            ],
+                        ),
+                        wasm_test_function(
+                            "owned_call_target",
+                            vec!["arg"],
+                            None,
+                            vec![wasm_test_op("ret", None, vec!["arg"])],
+                        ),
+                        external_owned,
+                        external_void,
+                    ],
+                    profile: None,
+                },
+                Default::default(),
+            );
             wasmparser::Validator::new()
                 .validate_all(&output.wasm)
                 .unwrap_or_else(|error| panic!("{kind} {target}, bound={bound}: {error}"));
@@ -867,10 +879,13 @@ fn runtime_bootstrap_does_not_retain_live_locals() {
             ops.push(init);
         }
         ops.push(wasm_test_op("ret", None, vec!["value"]));
-        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-            functions: vec![wasm_test_function("molt_main", vec!["value"], None, ops)],
-            profile: None,
-        });
+        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+            SimpleIR {
+                functions: vec![wasm_test_function("molt_main", vec!["value"], None, ops)],
+                profile: None,
+            },
+            Default::default(),
+        );
         wasmparser::Validator::new()
             .validate_all(&output.wasm)
             .unwrap();
@@ -908,31 +923,34 @@ fn dynamic_calls_release_discarded_owned_results() {
             let bound = result == Some("result");
             let mut call = wasm_test_op(kind, result, vec!["value"; argc]);
             call.s_value = target.map(str::to_string);
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![
-                    wasm_test_function(
-                        "molt_main",
-                        vec!["value"],
-                        None,
-                        vec![
-                            call,
-                            wasm_test_op("const_none", Some("nothing"), vec![]),
-                            wasm_test_op(
-                                "ret",
-                                None,
-                                vec![if bound { "result" } else { "nothing" }],
-                            ),
-                        ],
-                    ),
-                    wasm_test_function(
-                        "owned_call_target",
-                        vec!["arg"],
-                        None,
-                        vec![wasm_test_op("ret", None, vec!["arg"])],
-                    ),
-                ],
-                profile: None,
-            });
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![
+                        wasm_test_function(
+                            "molt_main",
+                            vec!["value"],
+                            None,
+                            vec![
+                                call,
+                                wasm_test_op("const_none", Some("nothing"), vec![]),
+                                wasm_test_op(
+                                    "ret",
+                                    None,
+                                    vec![if bound { "result" } else { "nothing" }],
+                                ),
+                            ],
+                        ),
+                        wasm_test_function(
+                            "owned_call_target",
+                            vec!["arg"],
+                            None,
+                            vec![wasm_test_op("ret", None, vec!["arg"])],
+                        ),
+                    ],
+                    profile: None,
+                },
+                Default::default(),
+            );
             wasmparser::Validator::new()
                 .validate_all(&output.wasm)
                 .unwrap_or_else(|error| panic!("{kind} {target:?}, bound={bound}: {error}"));
@@ -981,19 +999,26 @@ fn native_symbol_results_release_only_discarded_owned_results() {
             call.native_callable_binding = Some("direct_symbol".into());
             call.native_callable_symbol = Some("native_probe".into());
             call.native_callable_abi = Some(abi.into());
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    vec!["value"],
-                    None,
-                    vec![
-                        call,
-                        wasm_test_op("const_none", Some("nothing"), vec![]),
-                        wasm_test_op("ret", None, vec![if bound { "result" } else { "nothing" }]),
-                    ],
-                )],
-                profile: None,
-            });
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![wasm_test_function(
+                        "molt_main",
+                        vec!["value"],
+                        None,
+                        vec![
+                            call,
+                            wasm_test_op("const_none", Some("nothing"), vec![]),
+                            wasm_test_op(
+                                "ret",
+                                None,
+                                vec![if bound { "result" } else { "nothing" }],
+                            ),
+                        ],
+                    )],
+                    profile: None,
+                },
+                Default::default(),
+            );
             wasmparser::Validator::new()
                 .validate_all(&output.wasm)
                 .unwrap_or_else(|error| panic!("{abi}, bound={bound}: {error}"));
@@ -1020,15 +1045,18 @@ fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
         let outcome = std::panic::catch_unwind(|| {
             let mut call = wasm_test_op(kind, Some("result"), vec!["arg"; argc]);
             call.s_value = Some(target.into());
-            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    vec!["arg"],
-                    None,
-                    vec![call, wasm_test_op("ret", None, vec!["result"])],
-                )],
-                profile: None,
-            });
+            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![wasm_test_function(
+                        "molt_main",
+                        vec!["arg"],
+                        None,
+                        vec![call, wasm_test_op("ret", None, vec!["result"])],
+                    )],
+                    profile: None,
+                },
+                Default::default(),
+            );
         });
         assert!(
             outcome.is_err(),
@@ -1093,7 +1121,8 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 functions,
                 profile: None,
             };
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+            let output =
+                wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
             wasmparser::Validator::new()
                 .validate_all(&output.wasm)
                 .unwrap_or_else(|error| panic!("{kind}, bound={bound}: {error}"));
@@ -1158,7 +1187,8 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
             )],
             profile: None,
         };
-        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+        let output =
+            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
         wasmparser::Validator::new()
             .validate_all(&output.wasm)
             .expect("bound and discarded borrowed results must produce valid WASM");
@@ -1351,10 +1381,13 @@ fn shared_anchor_epilogue_executes_branches_and_partial_construction_failures() 
         wasm_test_op("end_if", None, vec![]),
         wasm_test_op("ret_void", None, vec![]),
     ]);
-    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-        functions: vec![wasm_test_function("molt_main", vec!["cond"], None, ops)],
-        profile: None,
-    })
+    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+        SimpleIR {
+            functions: vec![wasm_test_function("molt_main", vec!["cond"], None, ops)],
+            profile: None,
+        },
+        Default::default(),
+    )
     .wasm;
     wasmparser::Validator::new().validate_all(&wasm).unwrap();
     let (memory_pages, table_entries) = wasm_import_minimums(&wasm);

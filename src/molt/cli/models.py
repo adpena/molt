@@ -750,7 +750,6 @@ class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
     known_classes: dict[str, Any]
     global_code_ids: dict[str, int] = field(default_factory=dict)
-    global_code_id_counter: int = 0
 
 
 @dataclass

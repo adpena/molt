@@ -40,6 +40,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         skip_function_output_if_synced: false,
         probe_cache_only: false,
         ir: Some(molt_backend::BackendIrDocument {
+            code_slots: Default::default(),
             module_registry: None,
             ir: SimpleIR {
                 functions: vec![
@@ -51,7 +52,6 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                             OpIR {
                                 kind: "call".to_string(),
                                 s_value: Some("helper".to_string()),
-                                value: Some(0),
                                 ..OpIR::default()
                             },
                             OpIR {
@@ -151,6 +151,7 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
     write_json_artifact(
         &job_path,
         &NativeBatchObjectJob {
+            code_slots: None,
             ir: SimpleIR {
                 functions: vec![],
                 profile: None,
@@ -246,15 +247,15 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "ir": {
                 "functions": [
                     {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
-                        {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+                        {"kind": "call", "s_value": "molt_init_demo"},
                         {"kind": "ret_void"}
                     ]},
                     {"return_abi": "void", "name": "molt_host_init", "params": [], "ops": [
-                        {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+                        {"kind": "call", "s_value": "molt_init_demo"},
                         {"kind": "ret_void"}
                     ]},
                     {"return_abi": "void", "name": "molt_init_demo", "params": [], "ops": [
-                        {"kind": "call", "s_value": "demo__molt_module_chunk_1", "value": 0},
+                        {"kind": "call", "s_value": "demo__molt_module_chunk_1"},
                         {"kind": "ret_void"}
                     ]},
                     {"return_abi": "void", "name": "demo__molt_module_chunk_1", "params": [], "ops": [

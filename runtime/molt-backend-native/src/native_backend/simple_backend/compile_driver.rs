@@ -63,6 +63,9 @@ impl SimpleBackend {
         backend: NativeCodegenBackend,
     ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
         molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
+        if let Some(bindings) = self.code_slots.as_ref() {
+            bindings.validate_functions(&ir.functions)?;
+        }
         Ok(self.compile_selected(ir, backend))
     }
 
@@ -81,6 +84,10 @@ impl SimpleBackend {
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
         let native_target_info = prepared.native_target_info;
         let emit_resolver_here = prepared.emit_resolver_here;
+        assert!(
+            self.code_slots.is_none() || emit_resolver_here,
+            "code-slot definitions require the application metadata owner"
+        );
         let app_callable_manifest = prepared.app_callable_manifest;
         let source_callables = prepared.source_callables;
         // Extern bodies are discarded by both native backends. Capture and
@@ -317,6 +324,9 @@ impl SimpleBackend {
             // column is the MODULE_INIT_TABLE.
             if emit_resolver_here && let Some(registry) = self.module_registry.as_ref() {
                 llvm.emit_module_registry_blob(registry);
+            }
+            if emit_resolver_here && let Some(bindings) = self.code_slots.as_ref() {
+                llvm.emit_code_slot_bindings(bindings);
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
@@ -580,6 +590,9 @@ impl SimpleBackend {
         // with the runtime before `molt_runtime_init`.
         if emit_resolver_here && let Some(registry) = self.module_registry.take() {
             self.emit_module_registry_blob(&registry);
+        }
+        if emit_resolver_here && let Some(bindings) = self.code_slots.take() {
+            self.emit_code_slot_bindings(&bindings);
         }
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site

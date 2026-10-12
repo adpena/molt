@@ -452,7 +452,7 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
-fn stdlib_code_slot_fixture(code_id: i64) -> Vec<OpIR> {
+fn stdlib_code_slot_fixture(owner: &str) -> Vec<OpIR> {
     vec![
         OpIR {
             kind: "const_str".into(),
@@ -507,7 +507,7 @@ fn stdlib_code_slot_fixture(code_id: i64) -> Vec<OpIR> {
         OpIR {
             kind: "code_slot_set".into(),
             args: Some(vec!["code".into(), "globals".into()]),
-            value: Some(code_id),
+            s_value: Some(owner.into()),
             ..OpIR::default()
         },
     ]
@@ -561,7 +561,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: stdlib_code_slot_fixture(73),
+                ops: stdlib_code_slot_fixture("molt_init_sys"),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -573,7 +573,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_json".to_string(),
                 params: vec![],
-                ops: stdlib_code_slot_fixture(843),
+                ops: stdlib_code_slot_fixture("molt_init_json"),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -648,7 +648,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: stdlib_code_slot_fixture(73),
+                ops: stdlib_code_slot_fixture("molt_init_sys"),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -660,7 +660,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_json".to_string(),
                 params: vec![],
-                ops: stdlib_code_slot_fixture(843),
+                ops: stdlib_code_slot_fixture("molt_init_json"),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -844,6 +844,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         skip_function_output_if_synced: false,
         probe_cache_only: false,
         ir: Some(molt_backend::BackendIrDocument {
+            code_slots: Default::default(),
             module_registry: None,
             ir: SimpleIR {
                 functions: vec![
@@ -854,7 +855,6 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         ops: vec![OpIR {
                             kind: "call".to_string(),
                             s_value: Some("demo__module".to_string()),
-                            value: Some(0),
                             ..OpIR::default()
                         }],
                         param_types: None,

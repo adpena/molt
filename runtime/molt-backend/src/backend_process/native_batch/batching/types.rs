@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
 
 pub(crate) struct NativeApplicationArtifactOptions<'a> {
+    pub(crate) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
     pub(crate) stdlib_split_enabled: bool,
@@ -25,6 +26,8 @@ pub(crate) struct NativeApplicationArtifactResult {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct NativeBatchObjectJob {
+    /// Final program bindings belong only to the app metadata owner; reusable objects import them.
+    pub(crate) code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,
     pub(crate) ir: SimpleIR,
     pub(crate) module_context: NativeBackendModuleContext,
     pub(crate) codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment,

@@ -162,24 +162,16 @@ def _lower_entry_module_as_main(
         lower_s=main_lower_s,
         total_s=time.perf_counter() - main_frontend_start,
     )
-    main_init = SimpleTIRGenerator.module_init_symbol("__main__")
-    local_code_ids = dict(main_gen.func_code_ids)
-    if "molt_main" in local_code_ids:
-        local_code_ids[main_init] = local_code_ids.pop("molt_main")
-    local_id_to_symbol = {code_id: symbol for symbol, code_id in local_code_ids.items()}
-    try:
-        _frontend_integration._remap_module_code_ops_with_state(
-            integration_state,
-            "__main__",
-            main_ir["functions"],
-            local_id_to_symbol,
-        )
-    except ValueError as exc:
-        return fail(str(exc), json_output, command="build")
-    for func in main_ir["functions"]:
-        if func["name"] == "molt_main":
-            func["name"] = main_init
-    integration_state.functions.extend(main_ir["functions"])
+    integration_error = _frontend_integration._integrate_module_frontend_result_with_state(
+        integration_state,
+        "__main__",
+        ir_functions=main_ir["functions"],
+        func_code_ids=main_gen.func_code_ids,
+        local_class_names=[],
+        local_classes={},
+    )
+    if integration_error is not None:
+        return fail(integration_error, json_output, command="build")
     _frontend_integration._accumulate_midend_diagnostics_with_state(
         diagnostics_state,
         "__main__",

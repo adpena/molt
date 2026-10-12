@@ -67,7 +67,6 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.module_chunk_symbols: list[str] = []
         self.module_frame_entered = False
         self.module_frame_exited = False
-        self.module_frame_code_id: int | None = None
         self.module_pre_frame_exception_label: int | None = None
         self.module_obj: MoltValue | None = None
         self.source_path = source_path
@@ -241,13 +240,8 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         if not self._is_module_entry() or self.module_frame_entered:
             return
         self.module_frame_entered = True
-        code_id = self.module_frame_code_id
-        if code_id is None:
-            current_func = self.current_func_name
-            code_id = self.func_code_ids.get(current_func)
-            if code_id is None:
-                code_id = self._register_code_symbol(current_func)
-            self.module_frame_code_id = code_id
+        code_symbol = self.current_func_name
+        self._register_code_symbol(code_symbol)
         # The module/code objects precede frame entry. Import metadata does not:
         # entering first captures the canonical builtins namespace before a
         # ModuleSpec import can recursively initialize importlib.machinery.
@@ -310,7 +304,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
                     kind="CODE_SLOT_SET",
                     args=[code_val, globals_dict],
                     result=MoltValue("none"),
-                    metadata={"code_id": code_id},
+                    metadata={"code_symbol": code_symbol},
                 )
             )
         # TRACE_ENTER_SLOT owns an attempted-entry marker even when builtins
@@ -319,7 +313,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         # have no marker and must leave the caller's frame untouched.
         self.module_pre_frame_exception_label = self.function_exception_label
         self.function_exception_label = self.next_label()
-        self._emit_checked_frame_entry(code_id, self.function_exception_label)
+        self._emit_checked_frame_entry(code_symbol, self.function_exception_label)
         self._emit_module_metadata()
         # Module-scope locals() must behave like globals(); pin the module dict on
         # the frame entry so builtins.locals/globals work even via getattr aliases.

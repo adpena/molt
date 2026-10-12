@@ -129,9 +129,8 @@ class SymbolNamingMixin(GeneratorMixinBase):
     def _register_code_symbol(self, symbol: str) -> int:
         code_id = self.func_code_ids.get(symbol)
         if code_id is None:
-            code_id = self.code_id_counter
+            code_id = len(self.func_code_ids)
             self.func_code_ids[symbol] = code_id
-            self.code_id_counter += 1
         return code_id
 
     def _qualname_prefix(self) -> str:

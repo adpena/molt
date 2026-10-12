@@ -172,8 +172,10 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
 
     require(len(ops) >= 7, "kernel lacks a generated entry/error boundary")
     require(
-        ops[0]["kind"] == "trace_enter_slot" and type(ops[0].get("value")) is int,
-        "kernel lacks a compiled code slot",
+        ops[0]["kind"] == "trace_enter_slot"
+        and isinstance(ops[0].get("s_value"), str)
+        and bool(ops[0]["s_value"]),
+        "kernel lacks a compiled code owner",
     )
     require(
         ops[1]["kind"] == "check_exception", "kernel entry lacks its error boundary"
@@ -384,7 +386,6 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
         "unconsumed namespace lookup may have observable errors",
     )
     return {
-        "code_slot": ops[0]["value"],
         "ops": projected,
         "query_bindings": queries,
         "requirements": requirements,

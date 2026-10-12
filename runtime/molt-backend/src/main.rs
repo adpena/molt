@@ -316,6 +316,7 @@ fn main() -> io::Result<()> {
     let molt_backend::BackendIrDocument {
         mut ir,
         module_registry,
+        code_slots,
     } = document;
     // Native and WASM consume the catalog. Textual source emitters do not ship
     // the Molt runtime/catalog ABI and must not silently drop it.
@@ -362,6 +363,7 @@ fn main() -> io::Result<()> {
     emit_backend_target(BackendTargetEmitRequest {
         ir,
         module_registry,
+        code_slots,
         output_path: cli_args.output_path,
         output_kind,
         use_ir_pipeline: cli_args.use_ir_pipeline,

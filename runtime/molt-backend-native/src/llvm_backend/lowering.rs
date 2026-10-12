@@ -1038,7 +1038,13 @@ mod operation_shape_tests {
 
     #[test]
     fn malformed_preserved_metadata_is_rejected_before_llvm_module_mutation() {
-        for (operands, value) in [(1, Some(0)), (3, Some(0)), (2, None), (2, Some(-1))] {
+        for (operands, owner, value) in [
+            (1, Some("owner"), None),
+            (3, Some("owner"), None),
+            (2, None, None),
+            (2, Some(""), None),
+            (2, Some("owner"), Some(0)),
+        ] {
             let context = inkwell::context::Context::create();
             let backend = LlvmBackend::new(&context, "shape_admission");
             let mut func = TirFunction::new(
@@ -1051,6 +1057,9 @@ mod operation_shape_tests {
                 "_original_kind".into(),
                 AttrValue::Str("code_slot_set".into()),
             )]);
+            if let Some(owner) = owner {
+                attrs.insert("s_value".into(), AttrValue::Str(owner.into()));
+            }
             if let Some(value) = value {
                 attrs.insert("value".into(), AttrValue::Int(value));
             }

@@ -110,6 +110,9 @@ impl LuauBackend {
             &crate::tir::target_info::TargetInfo::luau_release_fast(),
             validate_luau_identity_contract,
         )?;
+        self.code_slots
+            .validate_functions(&ir.functions)
+            .map_err(|error| error.to_string())?;
         runtime_prelude::validate_ir_adapters(ir)?;
         let source = self.emit_source(ir);
         // Dispatch failures emit no source and this Result boundary never

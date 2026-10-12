@@ -40,6 +40,7 @@ pub(crate) use deferred_codegen::{
 };
 pub(crate) use deferred_codegen::{DeferredDefine, should_flush_deferred_codegen};
 mod app_resolver;
+mod code_slots;
 mod module_registry;
 mod program_pipeline;
 #[cfg(any(test, feature = "llvm"))]
@@ -91,6 +92,9 @@ pub struct SimpleBackend {
     /// the `emit_app_callable_resolver` custody: exactly one object per final
     /// binary emits the blob.
     pub module_registry: Option<ModuleRegistryIR>,
+    /// Final dense slot bindings, defined only by the application metadata object.
+    /// Other objects import stable slot symbols without carrying program IDs.
+    pub code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,
     module_context: Option<NativeBackendModuleContext>,
     partition_sources: BTreeMap<String, String>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed

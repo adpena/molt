@@ -1009,7 +1009,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
         ops.extend([
             OpIR {
                 kind: "trace_enter_slot".into(),
-                value: Some(7),
+                s_value: Some(name.clone()),
                 ..OpIR::default()
             },
             OpIR {
@@ -1169,7 +1169,7 @@ fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollba
                 },
                 OpIR {
                     kind: "trace_enter_slot".into(),
-                    value: Some(9),
+                    s_value: Some(name.into()),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -1291,7 +1291,7 @@ fn static_calls_preserve_void_abi_and_callee_owned_frames() {
             ops: vec![
                 OpIR {
                     kind: "trace_enter_slot".into(),
-                    value: Some(7),
+                    s_value: Some("void_target".into()),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -2207,6 +2207,156 @@ fn runtime_builtin_callable_admits_exact_manifest_contracts() {
                 call_sites_for_import(&compiled.function, constructor).len(),
                 1
             );
+        }
+    }
+}
+
+#[test]
+fn code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values() {
+    use molt_ir::code_slots::{CodeSlotBindings, code_slot_symbol};
+    use molt_ir::ir_schema::OpShapeViolation;
+    use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, RelocationTarget};
+
+    let _guard = acquire_backend_env_lock();
+    let _backend_env = ScopedEnvVar::set("MOLT_BACKEND", None);
+    let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", None);
+    let compile = |backend: SimpleBackend, ir: SimpleIR, kind: NativeCodegenBackend| match kind {
+        NativeCodegenBackend::Cranelift => backend.compile_checked(ir),
+        #[cfg(feature = "llvm")]
+        NativeCodegenBackend::Llvm => backend.compile_llvm_checked(ir),
+    };
+    let symbol = code_slot_symbol("molt_main");
+    for kind in [
+        NativeCodegenBackend::Cranelift,
+        #[cfg(feature = "llvm")]
+        NativeCodegenBackend::Llvm,
+    ] {
+        let mut registration = trace_probe_ir(crate::ir::ExecutionContextPolicy::None);
+        registration.functions[0].params = vec!["code".into(), "globals".into()];
+        registration.functions[0].ops.insert(
+            0,
+            OpIR {
+                kind: "code_slot_set".into(),
+                s_value: Some("molt_main".into()),
+                args: Some(vec!["code".into(), "globals".into()]),
+                ..OpIR::default()
+            },
+        );
+        let mut initialization = trace_probe_ir(crate::ir::ExecutionContextPolicy::None);
+        initialization.functions[0].ops.insert(
+            0,
+            OpIR {
+                kind: "code_slots_init".into(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+        );
+        // Some(empty) is a complete program with no bindings. It must reject
+        // either reference and a nonzero count through the direct public API.
+        for (ir, op_kind, violation) in [
+            (
+                trace_probe_ir(crate::ir::ExecutionContextPolicy::Local),
+                "trace_enter_slot",
+                OpShapeViolation::UnboundCodeSlot,
+            ),
+            (
+                registration,
+                "code_slot_set",
+                OpShapeViolation::UnboundCodeSlot,
+            ),
+            (
+                initialization,
+                "code_slots_init",
+                OpShapeViolation::CodeSlotCount {
+                    expected: 0,
+                    actual: Some(1),
+                },
+            ),
+        ] {
+            let mut application = SimpleBackend::new();
+            application.code_slots = Some(CodeSlotBindings::default());
+            let Err(error) = compile(application, ir, kind) else {
+                panic!("{kind:?}: invalid {op_kind} bindings emitted an object");
+            };
+            assert_eq!(error.function, "molt_main");
+            assert_eq!(error.op_index, 0);
+            assert_eq!(error.shape.kind, op_kind);
+            assert_eq!(error.shape.violation, violation);
+        }
+
+        // This reusable object has no final program binding values.
+        let mut common_backend = SimpleBackend::new();
+        common_backend.emit_app_callable_resolver = false;
+        assert!(common_backend.code_slots.is_none());
+        let common_bytes = compile(
+            common_backend,
+            trace_probe_ir(crate::ir::ExecutionContextPolicy::Local),
+            kind,
+        )
+        .expect("reusable objects import their program-owned bindings")
+        .bytes;
+        let common = object::File::parse(common_bytes.as_slice()).unwrap();
+        let linker_symbol = if common.format() == BinaryFormat::MachO {
+            format!("_{symbol}")
+        } else {
+            symbol.clone()
+        };
+        let imported = common
+            .symbols()
+            .find(|entry| entry.name().ok() == Some(linker_symbol.as_str()))
+            .expect("frame entry imports its stable binding symbol");
+        assert!(imported.is_undefined() && !imported.is_weak());
+        assert!(common.sections().any(|section| {
+            section.relocations().any(|(_, relocation)| {
+                matches!(relocation.target(), RelocationTarget::Symbol(index) if index == imported.index())
+            })
+        }), "frame entry must reference the imported binding");
+
+        // Independent object decoding observes a changed dense assignment in
+        // the application metadata while the common object remains reusable.
+        for slot in [0, 1] {
+            let bindings = CodeSlotBindings::try_from(BTreeMap::from([
+                ("molt_main".into(), slot),
+                ("added_module".into(), 1 - slot),
+            ]))
+            .unwrap();
+            let mut application = SimpleBackend::new();
+            application.code_slots = Some(bindings);
+            let bytes = compile(
+                application,
+                trace_probe_ir(crate::ir::ExecutionContextPolicy::default()),
+                kind,
+            )
+            .expect("complete program bindings emit their immutable data")
+            .bytes;
+            let object = object::File::parse(bytes.as_slice()).unwrap();
+            let definitions: Vec<_> = object
+                .symbols()
+                .filter(|entry| entry.name().ok() == Some(linker_symbol.as_str()))
+                .collect();
+            assert_eq!(
+                definitions.len(),
+                1,
+                "one binding definition per application"
+            );
+            let defined = &definitions[0];
+            assert!(defined.is_definition() && defined.is_global() && !defined.is_weak());
+            let section = object
+                .section_by_index(defined.section_index().unwrap())
+                .unwrap();
+            assert_eq!(section.kind(), object::SectionKind::ReadOnlyData);
+            let data: [u8; 8] = section
+                .data_range(defined.address(), 8)
+                .unwrap()
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let decoded = if object.is_little_endian() {
+                u64::from_le_bytes(data)
+            } else {
+                u64::from_be_bytes(data)
+            };
+            assert_eq!(decoded, slot);
         }
     }
 }

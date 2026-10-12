@@ -72,6 +72,7 @@ pub(super) fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> Op
 
 pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
     ir: SimpleIR,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
 ) -> WasmCompileOutput {
     let trampoline_analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
     WasmBackend::with_options(WasmCompileOptions {
@@ -80,6 +81,7 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
+    .with_code_slots(code_slots)
     .emit_wasm_module(
         &ir,
         BTreeMap::new(),
@@ -90,12 +92,15 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
 
 /// Activation fixtures exercise the shared terminal ownership boundary before
 /// final emission. Other op-loop fixtures continue to author final IR directly.
-pub(super) fn wasm_compile_activation_fixture(mut ir: SimpleIR) -> WasmCompileOutput {
+pub(super) fn wasm_compile_activation_fixture(
+    mut ir: SimpleIR,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
+) -> WasmCompileOutput {
     crate::tir::drop_phase::finalize_simple_ir_drops(
         &mut ir.functions,
         &crate::tir::TargetInfo::wasm_release_fast(),
     );
-    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir)
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, code_slots)
 }
 
 pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) -> SimpleIR {

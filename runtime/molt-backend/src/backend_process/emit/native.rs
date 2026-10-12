@@ -10,6 +10,7 @@ use super::super::shared_stdlib_cache::{
 pub(super) fn emit_native_target(
     mut ir: SimpleIR,
     module_registry: Option<molt_backend::ModuleRegistryIR>,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
     output_file: &str,
     target_triple: Option<&str>,
     native_output_kind: super::super::NativeArtifactKind,
@@ -38,6 +39,7 @@ pub(super) fn emit_native_target(
             explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
             log_prefix: "MOLT_BACKEND",
             module_registry,
+            code_slots,
         },
     )?;
 

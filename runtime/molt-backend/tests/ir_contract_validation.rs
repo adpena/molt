@@ -34,6 +34,8 @@ fn operation_shape_fixture(
             kind: shape.kind.into(),
             args: Some(params.clone()),
             value,
+            s_value: matches!(shape.kind, "code_slot_set" | "trace_enter_slot")
+                .then(|| "operation_shape_fixture".into()),
             ..OpIR::default()
         }],
     );
@@ -313,12 +315,12 @@ fn representation_conversions_require_one_operand_independent_of_result_use() {
 fn isolated_lowering_rejects_shapes_without_requiring_program_slot_closure() {
     use molt_ir::tir::op_kinds_generated::simpleir_op_shape;
     let shape = simpleir_op_shape("code_slot_set").unwrap();
-    let fragment = operation_shape_fixture(shape, 2, Some(17));
+    let fragment = operation_shape_fixture(shape, 2, None);
     // No table-init or code-construction declaration: those are program/runtime
     // semantics, not the isolated function's operand transport contract.
     let tir = molt_backend::tir::lower_from_simple::lower_to_tir(&fragment.functions[0]);
     assert!(molt_backend::tir::verify::verify_operation_shapes(&tir).is_ok());
-    let malformed = operation_shape_fixture(shape, 1, Some(17));
+    let malformed = operation_shape_fixture(shape, 1, None);
     let error = std::panic::catch_unwind(|| {
         molt_backend::tir::lower_from_simple::lower_to_tir(&malformed.functions[0])
     })

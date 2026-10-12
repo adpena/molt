@@ -9,6 +9,12 @@ fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,
     output_path: &Path,
 ) -> io::Result<()> {
+    if job.emit_app_callable_resolver != job.code_slots.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native batch code-slot bindings must belong exactly to the app metadata owner",
+        ));
+    }
     job.codegen_environment.validate_current()?;
     let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
     backend.skip_ir_passes = true;
@@ -17,6 +23,7 @@ fn compile_native_batch_object_job(
     backend.app_callable_manifest = job.app_callable_manifest;
     backend.external_function_names = job.external_function_names;
     backend.module_registry = job.module_registry;
+    backend.code_slots = job.code_slots;
     backend.set_module_context(job.module_context);
     let output = backend.compile(job.ir);
     write_output_path(output_path, &output.bytes)

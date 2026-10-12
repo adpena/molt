@@ -2106,10 +2106,7 @@ def test_function_metadata_publishes_typed_execution_kind(
                         if candidate.kind == "CODE_SLOT_SET"
                         and candidate.args[0] is op.args[3]
                     )
-                    assert (
-                        code_slot.metadata["code_id"]
-                        == gen.func_code_ids[function_def.args[0]]
-                    )
+                    assert code_slot.metadata["code_symbol"] == function_def.args[0]
                     definitions.append(function_def)
             assert not (
                 op.kind == "SETATTR_GENERIC_OBJ"
@@ -2395,15 +2392,19 @@ def test_generator_expression_uses_shared_callable_and_code_authority(
             definition.metadata["task_kind"]
             == plan.callable_task_metadata(0)["task_kind"]
         )
-        code_id = gen.func_code_ids[plan.poll_symbol]
+        assert plan.poll_symbol in ir["code_slots"]
         assert any(
-            op.kind == "CODE_SLOT_SET" and op.metadata["code_id"] == code_id
+            op.kind == "CODE_SLOT_SET"
+            and op.metadata["code_symbol"] == plan.poll_symbol
             for op in ops
         )
         body = next(
             func for func in ir["functions"] if func["name"] == plan.poll_symbol
         )
-        assert body["ops"][0] == {"kind": "trace_enter_slot", "value": code_id}
+        assert body["ops"][0] == {
+            "kind": "trace_enter_slot",
+            "s_value": plan.poll_symbol,
+        }
 
 
 @pytest.mark.parametrize(
@@ -4551,7 +4552,9 @@ def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame()
         for op in func_ops
         if op.get("kind") == "code_slot_set" and op["args"][0] == metadata["args"][2]
     )
-    assert code_slot["value"] == gen.func_code_ids[poll["name"]]
+    assert code_slot["s_value"] == poll["name"]
+    assert "value" not in code_slot
+    assert poll["name"] in ir["code_slots"]
     generator_call = _positional_call(func_ops, {definition["out"]}, 1)
     iterator = producers[generator_call["args"][1]]
     assert iterator["kind"] == "iter"

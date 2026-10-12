@@ -42,6 +42,7 @@ pub(crate) fn validate_wasm_module_catalog(
 pub(super) fn emit_wasm_target(
     ir: SimpleIR,
     module_registry: Option<ModuleRegistryIR>,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
     output_file: &str,
     wasm_options: WasmCliOptions,
 ) -> io::Result<()> {
@@ -61,7 +62,9 @@ pub(super) fn emit_wasm_target(
     if let Some(value) = wasm_options.split_runtime_app_table_base {
         options.split_runtime_app_table_base = Some(value);
     }
-    let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
+    let backend = WasmBackend::with_options(options)
+        .with_module_registry(module_registry)
+        .with_code_slots(code_slots);
     let wasm_bytes = backend.compile(ir);
     write_bytes_atomically(Path::new(output_file), &wasm_bytes).map_err(|error| {
         io::Error::new(

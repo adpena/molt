@@ -49,7 +49,6 @@ def test_entry_guards_include_late_insertions() -> None:
     ops = _build_entry_main_ops(
         entry_init="molt_init_main",
         version_ops=[{"kind": "const_str", "s_value": "3.12", "out": "version"}],
-        register_global_code_id=lambda _symbol: 1,
     )
     ops.insert(1, {"kind": "code_slots_init", "value": 5})
     ops.insert(
@@ -66,7 +65,6 @@ def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
     ops = _build_isolate_import_ops(
         code_slot_count=17,
         module_init_symbols=[("sys", "molt_init_sys"), ("json", "molt_init_json")],
-        register_global_code_id=lambda _symbol: 1,
     )
     assert not any(op["kind"] == "exception_clear" for op in ops)
     assert ops[1] == {"kind": "check_exception", "value": 1}
@@ -145,7 +143,6 @@ def test_serialized_bootstrap_matches_native_signature_fixture() -> None:
             _build_entry_main_ops(
                 entry_init=name,
                 version_ops=[],
-                register_global_code_id=lambda _symbol: 1,
             )
         )
         assert any(op["kind"] == "ret_void" for op in wrapper)
@@ -186,11 +183,12 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             module_chunk_max_ops=1,
         )
         generator.visit(ast.parse("first = 1\nsecond = 2\nthird = 3\n"))
+        document = generator.to_json()
         issue = _integrate_module_frontend_result_with_state(
             state,
             module,
-            ir_functions=generator.to_json()["functions"],
-            func_code_ids=generator.func_code_ids,
+            ir_functions=document["functions"],
+            func_code_ids=document["code_slots"],
             local_class_names=[],
             local_classes={},
         )
@@ -223,6 +221,10 @@ def test_module_initializers_solely_own_code_and_globals_publication(
     )
     assert error is None
     assert prepared is not None
+    assert prepared.ir["code_slots"] == state.global_code_ids
+    assert sorted(prepared.ir["code_slots"].values()) == list(
+        range(len(state.global_code_ids))
+    )
     functions = {function["name"]: function for function in prepared.ir["functions"]}
     for name, function in functions.items():
         expected = (
@@ -254,7 +256,9 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         slots = [op for op in ops if op["kind"] == "code_slot_set"]
         assert slots == [slot]
         assert len(slot["args"]) == 2
-        published.append(slot["value"])
+        assert slot["s_value"] == init
+        assert "value" not in slot
+        published.append(slot["s_value"])
         producers = {op["out"]: op for op in ops if "out" in op}
         code = producers[slot["args"][0]]
         globals_dict = producers[slot["args"][1]]
@@ -267,10 +271,98 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             index for index, op in enumerate(ops) if op["kind"] == "trace_enter_slot"
         )
         assert ops.index(slot) < enter_index
-        assert ops[enter_index]["value"] == slot["value"]
+        assert ops[enter_index]["s_value"] == slot["s_value"]
+        assert "value" not in ops[enter_index]
     assert len(set(published)) == len(modules)
     assert sum(
         op["kind"] == "code_slot_set"
         for function in functions.values()
         for op in function["ops"]
     ) == len(modules)
+
+
+def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() -> None:
+    source = "def shared(value):\n    return value + 1\nresult = shared(41)\n"
+    changed_source = source.replace("value + 1", "value + 2")
+    # CPython supplies the observable distinction for the body mutation below;
+    # slot numbering is a compiler representation and must not alter that code.
+    baseline_namespace: dict[str, object] = {}
+    changed_namespace: dict[str, object] = {}
+    exec(compile(source, "generated/common.py", "exec"), baseline_namespace)
+    exec(compile(changed_source, "generated/common.py", "exec"), changed_namespace)
+    assert baseline_namespace["result"] == 42
+    assert changed_namespace["result"] == 43
+
+    def integrate(modules: tuple[str, ...], common_source: str):
+        state = _FrontendIntegrationState(functions=[], known_classes={})
+        documents = {}
+        for module in modules:
+            generator = SimpleTIRGenerator(
+                module_name=module,
+                entry_module="common",
+                known_modules={"earlier", "common"},
+                source_path=f"generated/{module}.py",
+                target_python=(3, 12),
+            )
+            generator.visit(
+                ast.parse(
+                    common_source
+                    if module == "common"
+                    else "def extra():\n    return 7\n"
+                )
+            )
+            document = generator.to_json()
+            documents[module] = deepcopy(document)
+            assert sorted(document["code_slots"].values()) == list(
+                range(len(document["code_slots"]))
+            )
+            assert (
+                _integrate_module_frontend_result_with_state(
+                    state,
+                    module,
+                    ir_functions=document["functions"],
+                    func_code_ids=document["code_slots"],
+                    local_class_names=[],
+                    local_classes={},
+                )
+                is None
+            )
+        return state, documents
+
+    base, base_documents = integrate(("common",), source)
+    expanded, expanded_documents = integrate(("earlier", "common"), source)
+    mutated, _ = integrate(("earlier", "common"), changed_source)
+    assert base_documents["common"] == expanded_documents["common"]
+    common_names = {function["name"] for function in base.functions}
+    assert base.functions == [
+        function for function in expanded.functions if function["name"] in common_names
+    ]
+    assert base.functions != [
+        function for function in mutated.functions if function["name"] in common_names
+    ]
+    shifted_by = len(expanded.global_code_ids) - len(base.global_code_ids)
+    assert shifted_by > 0
+    assert "molt_main" not in expanded.global_code_ids
+    assert SimpleTIRGenerator.module_init_symbol("common") in base.global_code_ids
+    for owner, slot in base.global_code_ids.items():
+        assert expanded.global_code_ids[owner] == slot + shifted_by
+    for state in (base, expanded, mutated):
+        assert sorted(state.global_code_ids.values()) == list(
+            range(len(state.global_code_ids))
+        )
+        symbols = {function["name"] for function in state.functions}
+        calls = [
+            op
+            for function in state.functions
+            for op in function["ops"]
+            if op["kind"] in {"call", "call_internal"}
+        ]
+        runtime_imports = {op["s_value"] for op in calls} - symbols
+        assert runtime_imports, "the fixture must exercise direct runtime calls"
+        assert runtime_imports.isdisjoint(state.global_code_ids)
+        assert all("value" not in op for op in calls)
+        for function in state.functions:
+            for op in function["ops"]:
+                if op["kind"] in {"code_slot_set", "trace_enter_slot"}:
+                    assert op["s_value"] in state.global_code_ids
+                    assert "value" not in op

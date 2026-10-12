@@ -175,14 +175,14 @@ impl ModuleRegistryIR {
 }
 
 /// The full backend IR document: the function stream plus the per-build
-/// sections that ride the same wire (currently the module registry).
-/// `SimpleIR` stays the function-stream transport used by every pass; the
-/// registry is threaded explicitly to its consumers (native application
-/// object emission and dead-function-elimination roots).
+/// sections that ride the same wire (module registry and dense code bindings).
+/// `SimpleIR` stays the function-stream transport used by every pass; program
+/// metadata is threaded explicitly to emission and root-selection consumers.
 #[derive(Debug, Clone)]
 pub struct BackendIrDocument {
     pub ir: SimpleIR,
     pub module_registry: Option<ModuleRegistryIR>,
+    pub code_slots: crate::code_slots::CodeSlotBindings,
 }
 
 impl BackendIrDocument {
@@ -195,6 +195,15 @@ impl BackendIrDocument {
     pub fn from_json_value(value: &JsonValue) -> Result<Self, String> {
         let ir = SimpleIR::from_json_value(value)?;
         let obj = expect_object(value, "ir")?;
+        let code_slots: crate::code_slots::CodeSlotBindings = obj
+            .get("code_slots")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| format!("ir.code_slots: {error}"))?
+            .unwrap_or_default();
+        code_slots
+            .validate_functions(&ir.functions)
+            .map_err(|error| error.to_string())?;
         let module_registry = match obj.get("module_registry") {
             None | Some(JsonValue::Null) => None,
             Some(registry_value) => Some(ModuleRegistryIR::from_json_value(
@@ -205,6 +214,7 @@ impl BackendIrDocument {
         Ok(Self {
             ir,
             module_registry,
+            code_slots,
         })
     }
 
@@ -212,6 +222,7 @@ impl BackendIrDocument {
         let mut functions = Vec::new();
         let mut profile = None;
         let mut module_registry = None;
+        let mut code_slots = crate::code_slots::CodeSlotBindings::default();
         for line in reader.lines() {
             let line = line.map_err(|e| format!("NDJSON read error: {e}"))?;
             let trimmed = line.trim();
@@ -222,6 +233,10 @@ impl BackendIrDocument {
                 serde_json::from_str(trimmed).map_err(|e| format!("NDJSON parse error: {e}"))?;
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
+                    if let Some(bindings) = value.get("code_slots") {
+                        code_slots = serde_json::from_value(bindings.clone())
+                            .map_err(|error| format!("stream.code_slots: {error}"))?;
+                    }
                     if let Some(p) = value.get("profile")
                         && !p.is_null()
                     {
@@ -243,9 +258,14 @@ impl BackendIrDocument {
                 _ => {} // skip unknown kinds for forward compat
             }
         }
+        let ir = SimpleIR::new_validated(functions, profile)?;
+        code_slots
+            .validate_functions(&ir.functions)
+            .map_err(|error| error.to_string())?;
         Ok(Self {
-            ir: SimpleIR::new_validated(functions, profile)?,
+            ir,
             module_registry,
+            code_slots,
         })
     }
 }
@@ -262,16 +282,23 @@ impl<'de> Deserialize<'de> for BackendIrDocument {
             profile: Option<PgoProfileIR>,
             #[serde(default)]
             module_registry: Option<ModuleRegistryIR>,
+            #[serde(default)]
+            code_slots: crate::code_slots::CodeSlotBindings,
         }
 
         let wire = BackendIrDocumentWire::deserialize(deserializer)?;
         if let Some(registry) = &wire.module_registry {
             registry.validate().map_err(serde::de::Error::custom)?;
         }
+        let ir = SimpleIR::new_validated(wire.functions, wire.profile)
+            .map_err(serde::de::Error::custom)?;
+        wire.code_slots
+            .validate_functions(&ir.functions)
+            .map_err(serde::de::Error::custom)?;
         Ok(Self {
-            ir: SimpleIR::new_validated(wire.functions, wire.profile)
-                .map_err(serde::de::Error::custom)?,
+            ir,
             module_registry: wire.module_registry,
+            code_slots: wire.code_slots,
         })
     }
 }
@@ -1674,6 +1701,106 @@ mod json_parse_tests {
     }
 
     #[test]
+    fn program_slot_bindings_survive_transport_without_changing_reusable_functions() {
+        let parse = |document: &serde_json::Value| {
+            let json = document.to_string();
+            let binary = rmp_serde::to_vec_named(document).unwrap();
+            let mut stream = serde_json::json!({
+                "kind": "ir_stream_start", "code_slots": document["code_slots"]
+            })
+            .to_string();
+            for function in document["functions"].as_array().unwrap() {
+                let mut function = function.clone();
+                function["kind"] = serde_json::json!("function");
+                stream.push('\n');
+                stream.push_str(&function.to_string());
+            }
+            stream.push_str("\n{\"kind\":\"ir_stream_end\"}\n");
+            [
+                BackendIrDocument::from_json_str(&json),
+                serde_json::from_str::<BackendIrDocument>(&json).map_err(|e| e.to_string()),
+                rmp_serde::from_slice::<BackendIrDocument>(&binary).map_err(|e| e.to_string()),
+                BackendIrDocument::from_ndjson_reader(stream.as_bytes()),
+            ]
+        };
+        let mut document = serde_json::json!({
+            "code_slots": {"f": 1, "unused": 0},
+            "functions": [
+                {
+                    "return_abi": "void", "name": "molt_main", "params": ["code", "globals"],
+                    "ops": [
+                        {"kind": "code_slots_init", "value": 2},
+                        {"kind": "code_slot_set", "s_value": "f", "args": ["code", "globals"]},
+                        {"kind": "ret_void"}
+                    ]
+                },
+                {
+                    "return_abi": "void", "name": "f", "params": [], "execution_context": "local",
+                    "ops": [
+                        {"kind": "trace_enter_slot", "s_value": "f"},
+                        {"kind": "trace_exit"},
+                        {"kind": "ret_void"}
+                    ]
+                }
+            ]
+        });
+        let mut function_bytes = None;
+        for f_slot in [1, 0] {
+            document["code_slots"] = serde_json::json!({"f": f_slot, "unused": 1 - f_slot});
+            for parsed in parse(&document) {
+                let parsed = parsed.expect("every document transport preserves program bindings");
+                assert_eq!(parsed.code_slots.resolve("f"), Ok(f_slot));
+                assert_eq!(parsed.code_slots.len(), 2);
+                assert_eq!(parsed.ir.functions[0].ops[1].s_value.as_deref(), Some("f"));
+                assert!(parsed.ir.functions[0].ops[1].value.is_none());
+                assert_eq!(parsed.ir.functions[1].ops[0].s_value.as_deref(), Some("f"));
+                assert!(parsed.ir.functions[1].ops[0].value.is_none());
+                let bytes = serde_json::to_vec(&parsed.ir).unwrap();
+                if let Some(expected) = &function_bytes {
+                    assert_eq!(
+                        &bytes, expected,
+                        "dense rebinding must not rewrite function bodies"
+                    );
+                } else {
+                    function_bytes = Some(bytes);
+                }
+            }
+        }
+        for (function, op, field, payload, expected) in [
+            (
+                0,
+                0,
+                "value",
+                serde_json::json!(1),
+                "program binding count 2",
+            ),
+            (
+                0,
+                1,
+                "s_value",
+                serde_json::json!("absent"),
+                "without a program binding",
+            ),
+            (
+                1,
+                0,
+                "s_value",
+                serde_json::json!("absent"),
+                "without a program binding",
+            ),
+            (0, 1, "value", serde_json::json!(0), "forbids numeric"),
+            (1, 0, "value", serde_json::json!(0), "forbids numeric"),
+        ] {
+            let mut malformed = document.clone();
+            malformed["functions"][function]["ops"][op][field] = payload;
+            for parsed in parse(&malformed) {
+                let error = parsed.expect_err("malformed slot bindings must fail before batching");
+                assert!(error.contains(expected), "{error}");
+            }
+        }
+    }
+
+    #[test]
     fn simple_ir_rejects_unregistered_op_kinds_on_every_transport() {
         for kind in [
             "CONST_MISSING",
@@ -1995,7 +2122,7 @@ mod json_parse_tests {
             ops: vec![
                 OpIR {
                     kind: "trace_enter_slot".to_string(),
-                    value: Some(1),
+                    s_value: Some("molt_init_app".into()),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -2104,7 +2231,7 @@ mod json_parse_tests {
             0,
             OpIR {
                 kind: "trace_enter_slot".to_string(),
-                value: Some(1),
+                s_value: Some(external_local.name.clone()),
                 ..OpIR::default()
             },
         );
@@ -2384,7 +2511,7 @@ mod json_parse_tests {
                 r#"{{"functions":[{{"return_abi":"{return_abi}","name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
             ))
         };
-        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let enter = r#"{"kind":"trace_enter_slot","s_value":"frame_policy"}"#;
         let line = r#"{"kind":"line","value":2}"#;
         let locals = r#"{"kind":"frame_locals_set","args":["locals"]}"#;
         let exit = r#"{"kind":"trace_exit"}"#;
@@ -2498,7 +2625,7 @@ mod json_parse_tests {
                 r#"{{"functions":[{{"return_abi": "void", "name":"frame_call","params":[],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
             ))
         };
-        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let enter = r#"{"kind":"trace_enter_slot","s_value":"frame_call"}"#;
         let exit = r#"{"kind":"trace_exit"}"#;
         let ret = r#"{"kind":"ret_void"}"#;
         for (symbol, call) in [
@@ -2612,7 +2739,7 @@ mod json_parse_tests {
             ))
         };
         let call = r#"{"kind":"call_internal","s_value":"chunk","passes_execution_context":true}"#;
-        let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
+        let enter = r#"{"kind":"trace_enter_slot","s_value":"caller"}"#;
         let tail = r#"{"kind":"trace_exit"},{"kind":"ret_void"}"#;
         let error = parse(&format!("{call},{enter},{tail}"))
             .expect_err("a threaded call cannot consume a context before its creation");

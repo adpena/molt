@@ -155,13 +155,19 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 Some(AttrValue::Str(kind)) => Some(kind.as_str()),
                 _ => None,
             };
-            let kind = if op.opcode == super::ops::OpCode::Copy {
+            let kind = if op.opcode == super::ops::OpCode::Copy
+                || (op.opcode == super::ops::OpCode::Call
+                    && original_kind.is_some_and(|kind| {
+                        super::op_kinds_generated::kind_to_opcode_table(kind) == Some(op.opcode)
+                    })) {
                 original_kind.unwrap_or_else(|| opcode_canonical_kind_table(op.opcode))
             } else {
                 opcode_canonical_kind_table(op.opcode)
             };
-            // A typed carrier does not erase a retired origin. Live aliases
-            // still use the carrier's own shape rather than being reinterpreted.
+            // A typed carrier does not erase a retired origin. Calls retain
+            // their original dispatch shape: opaque calls may carry a call-site
+            // diagnostic value, whereas direct calls may not. Other live
+            // aliases still use the carrier's own shape.
             if let Some(original_kind) = original_kind.filter(|original| *original != kind)
                 && let Err(error) = crate::ir_schema::validate_op_not_retired(original_kind)
             {
@@ -180,6 +186,14 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
             }
             // Retired origins and malformed shapes own diagnostic precedence;
             // do not diagnose the payload of a carrier already rejected above.
+            let symbol = match op.attrs.get("s_value") {
+                Some(AttrValue::Str(symbol)) => Some(symbol.as_str()),
+                _ => None,
+            };
+            if let Err(error) = crate::ir_schema::validate_code_slot_symbol(kind, symbol) {
+                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                continue;
+            }
             if let Err(error) = crate::literal_payload::validate_tir_literal(op) {
                 errors.push(VerifyError::op(*bid, op_index, error));
             }
@@ -1091,6 +1105,9 @@ mod tests {
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 attrs.insert("value".into(), AttrValue::Int(0));
             }
+            if matches!(shape.kind, "code_slot_set" | "trace_enter_slot") {
+                attrs.insert("s_value".into(), AttrValue::Str("preserved_shape".into()));
+            }
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()
@@ -1120,6 +1137,25 @@ mod tests {
                         .message
                         .contains("explicit nonnegative")
                 );
+            }
+            if matches!(shape.kind, "code_slot_set" | "trace_enter_slot") {
+                for symbol in [
+                    None,
+                    Some(AttrValue::Str(String::new())),
+                    Some(AttrValue::Int(0)),
+                ] {
+                    let op = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
+                    op.attrs.remove("s_value");
+                    if let Some(symbol) = symbol {
+                        op.attrs.insert("s_value".into(), symbol);
+                    }
+                    let errors = verify_operation_shapes(&func).unwrap_err();
+                    assert_eq!(errors.len(), 1);
+                    assert!(
+                        errors[0].message.contains("nonempty code-owner symbol"),
+                        "{errors:?}"
+                    );
+                }
             }
         }
     }

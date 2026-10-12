@@ -1417,7 +1417,12 @@ fn trace_lifecycle_is_nonowning_but_observes_arbitrary_heap() {
             classify_copy_kind(Some(kind)),
             CopyLowering::TransparentAlias
         );
-        let trace = op_kind(OpCode::Copy, vec![], vec![], kind);
+        let mut trace = op_kind(OpCode::Copy, vec![], vec![], kind);
+        if kind == "trace_enter_slot" {
+            trace
+                .attrs
+                .insert("s_value".into(), AttrValue::Str("frame_owner".into()));
+        }
         assert_eq!(res.region_of(&trace), MemRegion::GenericHeap);
         assert!(res.may_observe_slot(&trace, ValueId(99)));
         assert!(!crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(kind));

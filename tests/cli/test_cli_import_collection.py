@@ -8681,10 +8681,7 @@ def test_direct_native_callable_wrapper_owns_ffi_and_publication_metadata() -> N
             module="nativepkg",
             direct_symbol_exports=(export,),
         ),
-        register_global_code_id=lambda symbol: {
-            wrapper["name"]: 7,
-            "molt_function_init_metadata_packed": 8,
-        }[symbol],
+        register_global_code_id=lambda symbol: {wrapper["name"]: 0}[symbol],
     )
 
     invoke_ops = [op for op in wrapper_ops if op["kind"] == "invoke_ffi"]
@@ -8721,6 +8718,9 @@ def test_direct_native_callable_wrapper_owns_ffi_and_publication_metadata() -> N
     code_slot_ops = [op for op in init_ops if op["kind"] == "code_slot_set"]
     assert len(code_slot_ops) == 1
     assert code_slot_ops[0]["args"][1] == globals_ops[0]["out"]
+    assert code_slot_ops[0]["s_value"] == wrapper["name"]
+    assert "value" not in code_slot_ops[0]
+    assert all("value" not in op for op in init_ops if op["kind"] == "call")
     published = [
         op
         for op in init_ops
@@ -8767,7 +8767,10 @@ def _source_init_for_native_callable_publication(
                 "args": ["v0", "v1"],
                 "out": "v2",
             },
-            {"kind": "trace_enter_slot", "value": 3},
+            {
+                "kind": "trace_enter_slot",
+                "s_value": SimpleTIRGenerator.module_init_symbol(module_name),
+            },
             {
                 "kind": "frame_locals_set",
                 "args": ["v1"],
@@ -16175,10 +16178,16 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
                 {
                     "name": "molt_main",
                     "return_abi": "void",
-                    "ops": [{"kind": "code_slot_set", "value": 1}],
+                    "ops": [
+                        {
+                            "kind": "code_slot_set",
+                            "s_value": "molt_main",
+                            "args": ["code", "globals"],
+                        }
+                    ],
                 }
             ],
-            "func_code_ids": {"molt_main": 1},
+            "func_code_ids": {"molt_main": 0},
             "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
@@ -16204,8 +16213,10 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
 
     assert first is not None
     assert second is not None
-    first["functions"][0]["ops"][0]["value"] = 99
-    assert second["functions"][0]["ops"][0]["value"] == 1
+    first["functions"][0]["ops"][0]["s_value"] = "different_owner"
+    first["func_code_ids"]["molt_main"] = 99
+    assert second["functions"][0]["ops"][0]["s_value"] == "molt_main"
+    assert second["func_code_ids"] == {"molt_main": 0}
 
 
 def test_finalize_backend_ir_pads_truncated_param_types() -> None:

@@ -542,7 +542,7 @@ def test_gpu_numeric_certificate_keeps_independent_multiplications_independent()
 
 
 @pytest.mark.parametrize("drift", [None, "body", "defaults", "target", "duplicate"])
-def test_gpu_final_assembly_binds_captured_origins_to_actual_global_code_slots(
+def test_gpu_final_assembly_preserves_captured_symbol_origins_across_program_bindings(
     monkeypatch,
     drift,
 ) -> None:
@@ -604,7 +604,7 @@ def test_gpu_final_assembly_binds_captured_origins_to_actual_global_code_slots(
     literal = {
         "kind": "const_str",
         "out": "metadata",
-        "s_value": json.dumps({"symbol": "kernel", "code_slot": 0}),
+        "s_value": json.dumps({"schema_version": 4, "symbol": "kernel"}),
     }
     kernel = {
         "name": "kernel",
@@ -621,17 +621,29 @@ def test_gpu_final_assembly_binds_captured_origins_to_actual_global_code_slots(
     # Both module cache tiers transport JSON; optional facts must survive that
     # boundary before final assembly consumes them, without new FunctionIR fields.
     functions = json.loads(json.dumps([kernel, *bodies]))
-    slots = {function["name"]: index + 700 for index, function in enumerate(functions)}
+    rebound_functions = json.loads(json.dumps(functions))
+    slots = {function["name"]: index for index, function in enumerate(functions)}
     _finalize_gpu_descriptors(functions, target_python=target, global_code_ids=slots)
     descriptor = json.loads(functions[0]["ops"][0]["s_value"])
-    assert descriptor["code_slot"] == 700
+    _finalize_gpu_descriptors(
+        rebound_functions,
+        target_python=target,
+        global_code_ids={
+            "earlier_module": 0,
+            **{name: index + 1 for name, index in slots.items()},
+        },
+    )
+    assert functions == rebound_functions
+    assert descriptor["schema_version"] == 4
+    assert "code_slot" not in descriptor
     assert all("gpu_body_origin" not in function for function in functions)
     if drift is None:
         assert "unsupported" not in descriptor
         assert len(descriptor["python_bodies"]) == 5
         for role, body in descriptor["python_bodies"].items():
             assert body["symbol"] == "selected_" + role
-            assert body["code_slot"] == slots[body["symbol"]]
+            assert body["symbol"] in slots
+            assert "code_slot" not in body
     else:
         assert descriptor["python_bodies"] == {}
         assert "body origin unavailable" in descriptor["unsupported"]
@@ -654,7 +666,7 @@ def test_plain_module_does_not_capture_gpu_reference_bodies(monkeypatch) -> None
     _finalize_gpu_descriptors(
         functions,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        global_code_ids={"plain": 8},
+        global_code_ids={"plain": 0},
     )
     assert functions == [{"name": "plain", "ops": []}]
 

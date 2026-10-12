@@ -333,7 +333,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.current_func_name: str = "molt_main"
         self.current_ops: list[MoltOp] = self.funcs_map["molt_main"]["ops"]
         self.func_code_ids: dict[str, int] = {}
-        self.code_id_counter = 0
         self.code_slots_emitted = False
         self.var_count: int = 0
         self.reserved_python_identifiers: set[str] = set()

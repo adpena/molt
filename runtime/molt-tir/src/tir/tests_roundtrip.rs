@@ -119,7 +119,6 @@ mod tests {
     fn call_out(out: &str, callee: &str, args: &[&str]) -> OpIR {
         OpIR {
             s_value: Some(callee.to_string()),
-            value: Some(0),
             ..op_out_args("call", out, args)
         }
     }
@@ -627,7 +626,6 @@ mod tests {
                 kind: "call".to_string(),
                 out: Some("result".into()),
                 s_value: Some("foo".into()),
-                value: Some(0),
                 ..OpIR::default()
             },
             OpIR {
@@ -778,7 +776,6 @@ mod tests {
                 kind: "call".to_string(),
                 out: Some("result".into()),
                 s_value: Some("foo".into()),
-                value: Some(0),
                 ..OpIR::default()
             },
             OpIR {
@@ -834,7 +831,6 @@ mod tests {
                 kind: "call".to_string(),
                 out: Some("r".into()),
                 s_value: Some("bar".into()),
-                value: Some(0),
                 ..OpIR::default()
             },
             OpIR {
@@ -1046,7 +1042,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 26: call ops preserve s_value and value
+    // Test 26: direct calls preserve their symbolic target and arguments
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -1056,7 +1052,7 @@ mod tests {
                 kind: "call".to_string(),
                 out: Some("r".into()),
                 s_value: Some("my_func".into()),
-                value: Some(5),
+                args: Some(vec!["argument".into()]),
                 ..OpIR::default()
             },
             op_args("ret", &["r"]),
@@ -1070,7 +1066,11 @@ mod tests {
             Some("my_func"),
             "call.s_value must be preserved"
         );
-        assert_eq!(c.value, Some(5), "call.value must be preserved");
+        assert_eq!(c.args.as_ref().map(Vec::len), Some(1));
+        assert!(
+            c.value.is_none(),
+            "direct calls do not carry numeric identities"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -1116,7 +1116,6 @@ mod tests {
                 kind: "call".to_string(),
                 out: Some("r".into()),
                 s_value: Some("foo".into()),
-                value: Some(0),
                 ..OpIR::default()
             },
             OpIR {
@@ -1376,28 +1375,33 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 30: call_func variant preserves original kind
+    // Test 30: dynamic calls preserve their original kind and diagnostic ID
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_call_func_preserves_kind() {
+    fn roundtrip_call_func_preserves_kind_and_diagnostic_id() {
         let ops = vec![
             OpIR {
                 kind: "call_func".to_string(),
                 out: Some("r".into()),
-                s_value: Some("target".into()),
+                args: Some(vec!["target".into()]),
                 value: Some(1),
                 ..OpIR::default()
             },
             op_args("ret", &["r"]),
         ];
-        let result = roundtrip_no_opt(ops);
+        let mut source = make_function(ops);
+        source.params = vec!["target".into()];
+        let tir = lower_to_tir(&source);
+        verify_function(&tir).expect("dynamic diagnostic IDs must survive TIR admission");
+        let result = lower_to_simple_ir(&tir);
         let cf = result.iter().find(|o| o.kind == "call_func");
         assert!(
             cf.is_some(),
             "call_func must survive round-trip, got: {:?}",
             result.iter().map(|o| &o.kind).collect::<Vec<_>>()
         );
+        assert_eq!(cf.unwrap().value, Some(1));
     }
 
     // ---------------------------------------------------------------------------
@@ -1414,7 +1418,7 @@ mod tests {
             let ops = vec![
                 OpIR {
                     kind: "trace_enter_slot".to_string(),
-                    value: Some(7),
+                    s_value: Some("test".into()),
                     ..OpIR::default()
                 },
                 op_val("check_exception", 19),

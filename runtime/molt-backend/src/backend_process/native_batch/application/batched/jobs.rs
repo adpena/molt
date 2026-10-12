@@ -42,6 +42,7 @@ pub(super) fn materialize_native_application_batch_jobs(
             &job_path,
             &NativeBatchObjectJob {
                 ir: batch_ir,
+                code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
                 module_context: plan.module_context.clone(),
                 codegen_environment:
                     molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,

@@ -163,7 +163,8 @@ fn json_and_ndjson_transport_preserve_extern_wasm_identity_bit_exactly() {
 fn extern_declarations_are_typed_imports_and_direct_calls_use_import_indices() {
     let ir = extern_linkage_ir();
     crate::validate_simple_ir(&ir).expect("canonical extern declarations and direct calls");
-    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir).wasm;
+    let wasm =
+        wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default()).wasm;
     wasmparser::Validator::new()
         .validate_all(&wasm)
         .expect("extern linkage must emit valid WASM");

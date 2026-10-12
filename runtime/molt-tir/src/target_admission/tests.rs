@@ -657,7 +657,8 @@ fn execution_frames_are_distinct_from_python_introspection() {
                 "frame_locals_set" => Some(vec!["locals".into()]),
                 _ => None,
             },
-            value: matches!(kind, "line" | "trace_enter_slot").then_some(7),
+            value: (kind == "line").then_some(7),
+            s_value: (kind == "trace_enter_slot").then(|| "f".into()),
             ..OpIR::default()
         }]);
         let error =

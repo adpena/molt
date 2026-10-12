@@ -153,7 +153,6 @@ unsafe extern "C" {
         symbol: *const u8,
         symbol_len: usize,
         arity: u64,
-        slot: u64,
         defaults: *const u64,
         defaults_len: usize,
     ) -> i32;
@@ -162,7 +161,7 @@ unsafe extern "C" {
         all(target_os = "macos", feature = "metal-backend"),
         all(not(target_arch = "wasm32"), feature = "webgpu-backend")
     ))]
-    fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u64, slot: u64) -> i32;
+    fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u64) -> i32;
     #[cfg(any(
         target_arch = "wasm32",
         all(target_os = "macos", feature = "metal-backend"),
@@ -616,8 +615,8 @@ pub(super) fn kernel_descriptor(callable: u64) -> u64 {
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
 #[inline]
-pub(super) fn descriptor_is_current(callable: u64, descriptor: u64, slot: u64) -> bool {
-    unsafe { __molt_gpu_descriptor_is_current(callable, descriptor, slot) != 0 }
+pub(super) fn descriptor_is_current(callable: u64, descriptor: u64) -> bool {
+    unsafe { __molt_gpu_descriptor_is_current(callable, descriptor) != 0 }
 }
 #[cfg(any(
     target_arch = "wasm32",
@@ -659,7 +658,6 @@ pub(super) fn compiled_body_matches(bits: u64, body: &super::RuntimeKernelBody) 
             body.symbol.as_ptr(),
             body.symbol.len(),
             body.arity,
-            body.code_slot,
             body.defaults.as_ptr(),
             body.defaults.len(),
         ) != 0

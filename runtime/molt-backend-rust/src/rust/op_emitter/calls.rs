@@ -302,7 +302,14 @@ impl RustBackend {
         let args = op.args.as_deref().expect("admitted code_slot_set operands");
         let code = rust_ident(&args[0]);
         let globals = rust_ident(&args[1]);
-        let code_id = op.value.expect("admitted code_slot_set ID");
+        let code_id = self
+            .code_slots
+            .resolve(
+                op.s_value
+                    .as_deref()
+                    .expect("admitted code_slot_set symbol"),
+            )
+            .expect("admitted compiled-code slot binding");
         self.emit_line(&format!(
             "molt_code_slot_set({code_id}, &{code}, &{globals});"
         ));

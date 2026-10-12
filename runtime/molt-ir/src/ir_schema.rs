@@ -117,6 +117,13 @@ pub enum OpShapeViolation {
         backend: &'static str,
     },
     ForbiddenVar,
+    ForbiddenValue,
+    CodeSlotSymbol,
+    UnboundCodeSlot,
+    CodeSlotCount {
+        expected: usize,
+        actual: Option<i64>,
+    },
     OperandCount {
         expected: usize,
         actual: Option<usize>,
@@ -158,6 +165,27 @@ impl std::fmt::Display for OpShapeDiagnostic {
         match self.violation {
             OpShapeViolation::ForbiddenVar => {
                 write!(f, "forbids `var`; `args` is the sole input carrier")
+            }
+            OpShapeViolation::ForbiddenValue => {
+                write!(
+                    f,
+                    "forbids numeric `value`; executable identity is symbolic"
+                )
+            }
+            OpShapeViolation::CodeSlotSymbol => {
+                write!(f, "requires a nonempty code-owner symbol in `s_value`")
+            }
+            OpShapeViolation::UnboundCodeSlot => {
+                write!(
+                    f,
+                    "references a code-owner symbol without a program binding"
+                )
+            }
+            OpShapeViolation::CodeSlotCount { expected, actual } => {
+                write!(
+                    f,
+                    "requires program binding count {expected}, found {actual:?}"
+                )
             }
             OpShapeViolation::OperandCount { expected, actual } => {
                 write!(f, "requires `args` length {expected}, found ")?;
@@ -226,6 +254,17 @@ pub fn validate_op_shape(
     value: Option<i64>,
 ) -> Result<(), OpShapeDiagnostic> {
     validate_op_not_retired(kind)?;
+    if matches!(
+        kind,
+        "call" | "call_internal" | "code_slot_set" | "trace_enter_slot"
+    ) && value.is_some()
+    {
+        return Err(OpShapeDiagnostic {
+            family: "code_metadata",
+            kind: kind.into(),
+            violation: OpShapeViolation::ForbiddenValue,
+        });
+    }
     let Some(shape) = simpleir_op_shape(kind) else {
         return Ok(());
     };
@@ -263,9 +302,24 @@ pub(crate) fn validate_registered_op_kind(kind: &str) -> Result<(), OpShapeDiagn
     Ok(())
 }
 
+pub fn validate_code_slot_symbol(
+    kind: &str,
+    symbol: Option<&str>,
+) -> Result<(), OpShapeDiagnostic> {
+    if matches!(kind, "code_slot_set" | "trace_enter_slot") && symbol.is_none_or(str::is_empty) {
+        return Err(OpShapeDiagnostic {
+            family: "code_metadata",
+            kind: kind.into(),
+            violation: OpShapeViolation::CodeSlotSymbol,
+        });
+    }
+    Ok(())
+}
+
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     validate_registered_op_kind(&op.kind)?;
     validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+    validate_code_slot_symbol(&op.kind, op.s_value.as_deref())?;
     if let Some(shape) = simpleir_op_shape(&op.kind)
         && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
         && op.var.is_some()
@@ -797,6 +851,36 @@ fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
 mod op_shape_tests {
     use super::*;
     use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
+
+    #[test]
+    fn executable_symbols_reject_numeric_identity_without_erasing_dynamic_diagnostics() {
+        for (kind, operands) in [
+            ("call", 0),
+            ("call_internal", 0),
+            ("code_slot_set", 2),
+            ("trace_enter_slot", 0),
+        ] {
+            assert!(validate_op_shape(kind, Some(operands), None).is_ok());
+            for value in [i64::MIN, -1, 0, 1, i64::MAX] {
+                let error = validate_op_shape(kind, Some(operands), Some(value)).unwrap_err();
+                assert_eq!(error.kind, kind);
+                assert_eq!(error.violation, OpShapeViolation::ForbiddenValue);
+            }
+        }
+        for kind in ["code_slot_set", "trace_enter_slot"] {
+            for symbol in [None, Some("")] {
+                assert_eq!(
+                    validate_code_slot_symbol(kind, symbol)
+                        .unwrap_err()
+                        .violation,
+                    OpShapeViolation::CodeSlotSymbol
+                );
+            }
+            assert!(validate_code_slot_symbol(kind, Some("module.function")).is_ok());
+        }
+        assert!(validate_op_shape("call_func", Some(1), Some(7)).is_ok());
+        assert!(validate_op_shape("code_slots_init", None, Some(7)).is_ok());
+    }
 
     #[test]
     fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {

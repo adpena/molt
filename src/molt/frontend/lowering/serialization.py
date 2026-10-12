@@ -590,26 +590,11 @@ class SerializationMixin(
             validate_serialized_kind(entry["kind"], diagnostic_function)
         return json_ops
 
-    def _finalize_code_ids(self) -> None:
-        for data in self.funcs_map.values():
-            for op in data["ops"]:
-                if op.kind in {"CALL", "CALL_INTERNAL"} and op.args:
-                    target = op.args[0]
-                    if isinstance(target, str):
-                        self._register_code_symbol(target)
-
     def _ensure_code_slots_init(self) -> None:
         if self.code_slots_emitted:
             return
         self.code_slots_emitted = True
-        max_code_id = max(self.func_code_ids.values(), default=-1)
-        for data in self.funcs_map.values():
-            for op in data["ops"]:
-                if op.kind == "CODE_SLOT_SET" and op.metadata:
-                    code_id = op.metadata.get("code_id")
-                    if code_id is not None:
-                        max_code_id = max(max_code_id, int(code_id))
-        count = max_code_id + 1
+        count = len(self.func_code_ids)
         init_op = MoltOp(
             kind="CODE_SLOTS_INIT",
             args=[count],
@@ -624,7 +609,6 @@ class SerializationMixin(
     ) -> dict[str, Any]:
         if midend_stage not in {"pre-midend", "post-midend"}:
             raise ValueError(f"unsupported IR serialization stage: {midend_stage}")
-        self._finalize_code_ids()
         self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
@@ -691,24 +675,5 @@ class SerializationMixin(
             if self.source_path:
                 func_entry["source_file"] = self.source_path
             funcs_json.append(func_entry)
-        max_code_id = -1
-        for func in funcs_json:
-            for op in func["ops"]:
-                kind = op.get("kind")
-                if kind in {"code_slot_set", "call"}:
-                    max_code_id = max(max_code_id, int(op.get("value", -1)))
-        if max_code_id >= 0:
-            for func in funcs_json:
-                if func["name"] != "molt_main":
-                    continue
-                for op in func["ops"]:
-                    if op.get("kind") == "code_slots_init":
-                        op["value"] = max_code_id + 1
-                        break
-                else:
-                    func["ops"].insert(
-                        0, {"kind": "code_slots_init", "value": max_code_id + 1}
-                    )
-                break
         self._maybe_report_midend_stats()
-        return {"functions": funcs_json}
+        return {"functions": funcs_json, "code_slots": dict(self.func_code_ids)}

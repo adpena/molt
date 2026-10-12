@@ -178,6 +178,7 @@ fn native_artifact_test_options(
     kind: NativeArtifactKind,
 ) -> NativeApplicationArtifactOptions<'static> {
     NativeApplicationArtifactOptions {
+        code_slots: Default::default(),
         native_output_kind: kind,
         target_triple: None,
         stdlib_split_enabled: false,
@@ -222,7 +223,6 @@ fn native_artifact_test_ir() -> SimpleIR {
                     OpIR {
                         kind: "call".to_string(),
                         s_value: Some("helper".to_string()),
-                        value: Some(0),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -356,7 +356,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         ops: vec![
             OpIR {
                 kind: "trace_enter_slot".to_string(),
-                value: Some(1),
+                s_value: Some("molt_init_demo".into()),
                 ..OpIR::default()
             },
             OpIR {

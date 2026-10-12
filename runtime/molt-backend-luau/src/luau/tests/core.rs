@@ -153,7 +153,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
     ];
     let mut framed_ops = vec![OpIR {
         kind: "trace_enter_slot".to_string(),
-        value: Some(1),
+        s_value: Some("a-b".into()),
         ..OpIR::default()
     }];
     framed_ops.push(OpIR {
@@ -212,7 +212,16 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
         ],
         profile: None,
     };
-    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    let source = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "a-b".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
+        .compile_checked(&ir)
+        .unwrap();
     let mapped = adversarial_params.map(sanitize_ident);
     assert_eq!(mapped.iter().collect::<BTreeSet<_>>().len(), mapped.len());
     for ident in mapped {
@@ -1664,7 +1673,7 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         },
         OpIR {
             kind: "code_slot_set".to_string(),
-            value: Some(3),
+            s_value: Some("target".into()),
             args: Some(vec!["code".to_string(), "globals".to_string()]),
             ..OpIR::default()
         },
@@ -1740,6 +1749,13 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         profile: None,
     };
     let source = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "target".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
         .compile_via_ir(&ir)
         .expect("frontend-shaped callable metadata must pass checked Luau admission");
     assert!(source.contains("function molt_function_init_metadata_packed"));
@@ -1753,7 +1769,7 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         "molt_call_checked(molt_function_set_defaults, function_value, defaults, kwdefaults)"
     ));
     assert!(source.contains("local code = {__molt_code=true"));
-    assert!(source.contains("molt_code_slots[3] = molt_frame_bind_code(3, code, globals)"));
+    assert!(source.contains("molt_code_slots[0] = molt_frame_bind_code(0, code, globals)"));
     assert!(source.contains("local function_value = molt_frame_function_new(target)"));
     assert!(source.contains("molt_frame_function_capture(func, rawget(metadata, 3))"));
     assert!(source.contains("pending.slot == slot.id and pending.code ~= nil"));
@@ -2854,7 +2870,7 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
                 ops: vec![
                     OpIR {
                         kind: "trace_enter_slot".to_string(),
-                        value: Some(0),
+                        s_value: Some("molt_main".into()),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -2880,7 +2896,15 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
         profile: None,
     };
 
-    let source = LuauBackend::new().emit_source(&ir);
+    let source = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "molt_main".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
+        .emit_source(&ir);
     assert!(source.contains(
         "sample__molt_module_chunk_1 = function(module: any, __molt_frame_context: any)"
     ));
@@ -5394,7 +5418,7 @@ fn execution_frame_siblings_have_real_luau_lowering() {
                 ops: vec![
                     OpIR {
                         kind: "trace_enter_slot".to_string(),
-                        value: Some(7),
+                        s_value: Some("local_frame".into()),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -5444,9 +5468,16 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     };
 
     let source = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "local_frame".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
         .compile_checked(&ir)
         .expect("the complete Local/Inherited frame ABI must lower");
-    assert!(source.contains("molt_frame_enter_slot(molt_code_slots[7])"));
+    assert!(source.contains("molt_frame_enter_slot(molt_code_slots[0])"));
     assert!(source.contains("molt_frame_exit(__molt_frame_context"));
     assert!(source.contains("inherited_frame(locals, __molt_frame_context)"));
     assert!(source.contains("molt_frame_set_line(__molt_frame_context, 8"));
@@ -5457,11 +5488,11 @@ fn execution_frame_siblings_have_real_luau_lowering() {
 
 #[test]
 fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
-    for guarded in [false, true] {
+    for (guarded, expected_slot) in [(false, 0), (true, 1)] {
         let mut ops = vec![
             OpIR {
                 kind: "code_slots_init".into(),
-                value: Some(8),
+                value: Some(expected_slot + 1),
                 ..OpIR::default()
             },
             OpIR {
@@ -5472,12 +5503,12 @@ fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
             OpIR {
                 kind: "code_slot_set".into(),
                 args: Some(vec!["code".into(), "globals".into()]),
-                value: Some(7),
+                s_value: Some("frame_scope".into()),
                 ..OpIR::default()
             },
             OpIR {
                 kind: "trace_enter_slot".into(),
-                value: Some(7),
+                s_value: Some("frame_scope".into()),
                 ..OpIR::default()
             },
         ];
@@ -5522,7 +5553,12 @@ fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
                 },
             ]);
         }
+        let mut bindings = BTreeMap::from([("frame_scope".to_string(), expected_slot as u64)]);
+        if expected_slot == 1 {
+            bindings.insert("earlier_module".to_string(), 0);
+        }
         let mut source = LuauBackend::new()
+            .with_code_slots(molt_ir::code_slots::CodeSlotBindings::try_from(bindings).unwrap())
             .compile_checked(&SimpleIR {
                 functions: vec![FunctionIR {
                     name: "frame_scope".into(),
@@ -5536,6 +5572,12 @@ fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
             })
             .expect("frame entry and exit must share one lexical cookie owner");
         assert!(!source.contains("local __molt_frame_context, __molt_frame_depth"));
+        assert!(source.contains(&format!(
+            "molt_code_slots[{expected_slot}] = molt_frame_bind_code({expected_slot}, code, globals)"
+        )));
+        assert!(source.contains(&format!(
+            "molt_frame_enter_slot(molt_code_slots[{expected_slot}])"
+        )));
         source.push_str(
             r#"
 assert(molt_frame_context().depth == 0)
@@ -5557,7 +5599,7 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
     let mut ops = vec![
         OpIR {
             kind: "trace_enter_slot".to_string(),
-            value: Some(3),
+            s_value: Some("luau_framed_large".into()),
             ..OpIR::default()
         },
         OpIR {
@@ -5616,6 +5658,13 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
         .map(|chunk| chunk.name.clone())
         .collect::<Vec<_>>();
     let source = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "luau_framed_large".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
         .compile_checked(&SimpleIR {
             functions: std::iter::once(stub).chain(chunks).collect(),
             profile: None,
@@ -5633,7 +5682,7 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
     }
     assert_eq!(
         source
-            .matches("molt_frame_enter_slot(molt_code_slots[3])")
+            .matches("molt_frame_enter_slot(molt_code_slots[0])")
             .count(),
         1
     );
@@ -5720,7 +5769,7 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
             ops: vec![
                 OpIR {
                     kind: "code_slots_init".to_string(),
-                    value: Some(2),
+                    value: Some(1),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -5736,7 +5785,7 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
                 },
                 OpIR {
                     kind: "code_slot_set".to_string(),
-                    value: Some(1),
+                    s_value: Some("code_frame_metadata_test".into()),
                     args: Some(vec!["code".to_string(), "globals".to_string()]),
                     ..OpIR::default()
                 },
@@ -5766,12 +5815,27 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
         profile: None,
     };
     let checked_error = LuauBackend::new()
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "code_frame_metadata_test".to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
         .compile_checked(&ir)
         .expect_err("None policy must reject frame_locals_set before source generation");
     assert!(checked_error.contains("without an execution context"));
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        LuauBackend::new().compile(&ir)
+        LuauBackend::new()
+            .with_code_slots(
+                molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                    "code_frame_metadata_test".to_string(),
+                    0,
+                )]))
+                .unwrap(),
+            )
+            .compile(&ir)
     }))
     .expect_err("unchecked lowering must fail closed instead of inventing ambient frame state");
     let message = panic
@@ -6070,11 +6134,17 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
 #[test]
 fn test_luau_tir_roundtrip_raise_catch_fails_closed_before_source() {
     let func: FunctionIR = serde_json::from_str(
-            r#"{"return_abi": "value", "name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","value":1},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
+            r#"{"return_abi": "value", "name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","s_value":"__main____raise_catch"},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
         )
         .expect("raise_catch frontend fixture should deserialize");
     let func = luau_tir_roundtrip_function(func);
-    let mut backend = LuauBackend::new();
+    let mut backend = LuauBackend::new().with_code_slots(
+        molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+            "__main____raise_catch".to_string(),
+            0,
+        )]))
+        .unwrap(),
+    );
     let error = backend
         .compile_checked(&SimpleIR {
             functions: vec![func],

@@ -434,8 +434,14 @@ removes startup ordering derived from an eager-module set.
 
 The generated operation schema admits code metadata before backend emission:
 `code_new` has exactly nine operands, `code_slot_set` exactly two (code, globals),
-and `code_slots_init`/`trace_enter_slot` no operands. Slot counts and IDs are
-explicit nonnegative integers, never implicit slot zero. The same admission
+and `code_slots_init`/`trace_enter_slot` no operands. Slot counts are explicit
+nonnegative integers. Registration and frame entry name a nonempty stable
+code-owner symbol in `s_value`; numeric `value` payloads are forbidden. The
+program's `BackendIrDocument.code_slots` binds each symbol to a unique dense
+index, and the initialization count must match that map. Reusable native
+objects import immutable binding cells defined by the application metadata
+owner; whole-program emitters resolve symbols during emission. No runtime
+symbol lookup is introduced. The same admission
 applies to serialized input, direct backend calls and preserved TIR operations;
 runtime checks still own code-object and namespace type validation.
 

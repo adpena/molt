@@ -245,7 +245,6 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
     ops = _build_isolate_import_ops(
         code_slot_count=17,
         module_init_symbols=[("sys", "molt_init_sys")],
-        register_global_code_id=lambda _symbol: 123,
     )
 
     assert ops[0] == {"kind": "code_slots_init", "value": 17}

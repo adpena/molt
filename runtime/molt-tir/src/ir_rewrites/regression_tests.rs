@@ -167,7 +167,7 @@ fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
     let mut checked_entry = ops.clone();
     checked_entry[2] = OpIR {
         kind: "trace_enter_slot".into(),
-        value: Some(7),
+        s_value: Some("checked_entry".into()),
         ..OpIR::default()
     };
     checked_entry.remove(4); // The scalar-only fixture's store has no producer here.

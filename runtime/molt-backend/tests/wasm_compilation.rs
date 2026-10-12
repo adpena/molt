@@ -928,11 +928,22 @@ fn class_def_pins_spilled_refs_across_guarded_helper() {
 #[test]
 fn explicit_trace_ops_emit_wasm_runtime_imports() {
     let mut enter = op("trace_enter_slot");
-    enter.value = Some(7);
+    enter.s_value = Some("molt_test_func".into());
 
     let exit = op("trace_exit");
-
-    let wasm = compile_single_function(vec![enter, exit, op("ret_void")], &[]);
+    let bindings = serde_json::from_value(serde_json::json!({"molt_test_func": 0})).unwrap();
+    let wasm = WasmBackend::new()
+        .with_code_slots(bindings)
+        .compile(SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_test_func".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                execution_context: molt_ir::ExecutionContextPolicy::Local,
+                ops: vec![enter, exit, op("ret_void")],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        });
     let calls = import_call_sequence(&wasm);
     assert!(
         calls.iter().any(|name| name == "trace_enter_slot"),

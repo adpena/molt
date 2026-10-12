@@ -47,17 +47,18 @@ Single JSON object containing all functions:
 ```json
 {
   "functions": [ ... ],
-  "profile": { ... }
+  "profile": { ... },
+  "code_slots": { "module_function": 0 }
 }
 ```
 
 ### NDJSON Streaming
 
-One JSON object per line. The backend accepts both formats via
-`SimpleIR::from_json_str` (batch) and `SimpleIR::from_ndjson_reader` (stream).
+One JSON object per line. `BackendIrDocument` admits the complete batch or
+stream, including program metadata; `SimpleIR` carries its function stream.
 
 ```
-{"kind":"ir_stream_start","profile":null}
+{"kind":"ir_stream_start","profile":null,"code_slots":{"module_function":0}}
 {"kind":"function","name":"molt_main","params":[],"return_abi":"void","ops":[...]}
 {"kind":"function","name":"helper","params":["a"],"return_abi":"value","ops":[...]}
 {"kind":"ir_stream_end"}
@@ -74,6 +75,16 @@ Unknown kinds are silently skipped for forward compatibility.
 |-------------|-------------------|----------|--------------------------------------|
 | `functions` | `FunctionIR[]`    | yes      | Ordered list of function definitions |
 | `profile`   | `PgoProfileIR?`   | no       | Optional PGO profile data            |
+| `code_slots` | `object<string,u64>` | when code slots are used | Stable code-owner symbols mapped to unique dense program indices |
+
+`code_slots` belongs to `BackendIrDocument`, alongside `module_registry`.
+Indices cover exactly `0..count`; every slot operation names a bound symbol.
+Unused bindings can remain after dead-function elimination. The map is part of
+final application cache identity, but never of reusable function bodies or
+shared object jobs. Native and LLVM objects import immutable per-owner binding
+cells, defined once by the application metadata owner. WASM, Luau and Rust
+source emission resolve the same symbols to immediate indices. Runtime slot
+storage remains a dense per-isolate table.
 
 The first function is the program entry root for shared dead-function elimination.
 Additional runtime/linker roots come from the existing module registry and
@@ -189,7 +200,7 @@ site collisions must not substitute an attribute or an instance's value.
 | Field             | Type       | Default | Description                                                    |
 |-------------------|------------|---------|----------------------------------------------------------------|
 | `kind`            | `string`   | --      | **Required.** Operation discriminator (see below)              |
-| `value`           | `i64?`     | `null`  | Integer immediate (const value, label target, field offset, code_id) |
+| `value`           | `i64?`     | `null`  | Integer immediate (const value, label target, field offset, call-site diagnostic ID) |
 | `f_value`         | `f64?`     | `null`  | Float immediate. Non-finite encoded as strings: `"NaN"`, `"Infinity"`, `"-Infinity"` |
 | `s_value`         | `string?`  | `null`  | String immediate (string literal, call target name, attribute name) |
 | `runtime_requirement_bits` | `u32` | `0` | Explicit generated target requirements, admitted only on declared carrier operations |
@@ -450,8 +461,8 @@ Comparisons accept optional `fast_int` / `fast_float`.
 
 | kind              | Fields used                              | Description                         |
 |-------------------|------------------------------------------|-------------------------------------|
-| `call`            | `s_value` (target), `args`, `value` (code_id), `out` | Direct function call     |
-| `call_internal`   | `s_value` (target), `args`, `value` (code_id), `out` | Internal (non-exported) call |
+| `call`            | `s_value` (target), `args`, `out` | Direct function call; `value` is forbidden |
+| `call_internal`   | `s_value` (target), `args`, `out` | Internal (non-exported) call; `value` is forbidden |
 | `call_indirect`   | `args` [callable, ...positional], `out`  | Indirect call via function pointer  |
 | `call_func`       | `args` [callable, ...positional], `out`  | Generic function call               |
 | `call_guarded`    | `s_value` (target), `args`, `out`        | Actual callable followed by unbound Python arguments; direct call only after shared shape and target admission, otherwise runtime binding |
@@ -669,7 +680,7 @@ All use the standard `args` + `out` pattern.
 | `func_new_closure`        | `s_value`, `value`, `args` [closure], `out`, optional paired `task_kind` / `task_closure_size` | Create closure |
 | `builtin_func`            | `s_value` (runtime symbol), `value` (arity), `out`, paired `builtin_name` / `args` [name] | Acquire a public builtin binding or construct a runtime callable |
 | `code_new`                | `args`, `out`                            | Create code object             |
-| `code_slot_set`           | `value` (code_id), `args` [code_obj, globals_dict] | Bind owned code and lexical namespace in slot table |
+| `code_slot_set`           | `s_value` (code-owner symbol), `args` [code_obj, globals_dict] | Bind owned code and lexical namespace in the program's slot |
 | `code_slots_init`         | `value` (count)                          | Initialize code slot table     |
 | `classmethod_new`         | `args`, `out`                            | Wrap as classmethod            |
 | `staticmethod_new`        | `args`, `out`                            | Wrap as staticmethod           |
@@ -774,7 +785,7 @@ consumed, `result` and `last` the accumulator and loop target after them, and
 |---------------------|-----------------------|----------------------------------|
 | `nop`               | --                    | No operation                     |
 | `line`              | `value` (line number) | Source line mapping               |
-| `trace_enter_slot`  | `value` (slot)        | Attempt frame entry; next `check_exception` owns failure cleanup |
+| `trace_enter_slot`  | `s_value` (code-owner symbol) | Attempt frame entry; next `check_exception` owns failure cleanup |
 | `trace_exit`        | --                    | Mark the authored normal frame exit; backend activation cleanup consumes ownership |
 | `frame_context_set` | `args` (exactly 3) | Publish argument-zero value, boxed argument kind, and class cell; no result |
 | `frame_locals_set`  | `args`                | Set frame locals dict            |

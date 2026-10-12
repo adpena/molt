@@ -274,14 +274,15 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                 return True
         return False
 
-    def _emit_checked_frame_entry(self, code_id: int, failure_label: int) -> None:
+    def _emit_checked_frame_entry(self, code_symbol: str, failure_label: int) -> None:
         # Entry can initialize builtins and fail before pushing a Python frame.
         # Its attempted-entry marker still needs TRACE_EXIT, and no body or
         # frame-local mutation may run while that failure is pending.
+        self._register_code_symbol(code_symbol)
         self.emit(
             MoltOp(
                 kind="TRACE_ENTER_SLOT",
-                args=[code_id],
+                args=[code_symbol],
                 result=MoltValue("none"),
             )
         )
@@ -395,9 +396,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if self._function_needs_frame_trace():
             entry_failure_label = self.next_label()
             self.funcs_map[name]["frame_entry_failure_label"] = entry_failure_label
-            self._emit_checked_frame_entry(
-                self._register_code_symbol(name), entry_failure_label
-            )
+            self._emit_checked_frame_entry(name, entry_failure_label)
         else:
             self.funcs_map[name].pop("frame_entry_failure_label", None)
         if has_exception_handlers:

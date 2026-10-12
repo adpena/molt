@@ -743,8 +743,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("code globals not found");
-            let code_id = op.value.expect("admitted code_slot_set ID");
-            let code_id_val = builder.ins().iconst(types::I64, code_id);
+            let code_owner = op.s_value.as_deref().expect("admitted code_slot_set owner");
+            let code_id_val = emit_code_slot_id(code_owner, module, builder);
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -841,7 +841,9 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             } else {
                 emit_owned_execution_frame_enter(
                     entered,
-                    op.value.expect("admitted trace_enter_slot ID"),
+                    op.s_value
+                        .as_deref()
+                        .expect("admitted trace_enter_slot owner"),
                     module,
                     import_ids,
                     builder,

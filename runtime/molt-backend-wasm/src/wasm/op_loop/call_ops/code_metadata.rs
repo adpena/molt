@@ -30,7 +30,14 @@ pub(super) fn emit_code_metadata_call_op(
         ),
         "trace_enter_slot" => call_ctx.frame.emit_owned_frame_entry(
             func,
-            op.value.expect("admitted trace_enter_slot ID"),
+            call_ctx
+                .code_slots
+                .resolve(
+                    op.s_value
+                        .as_deref()
+                        .expect("admitted trace_enter_slot symbol"),
+                )
+                .expect("admitted compiled-code slot binding") as i64,
             call_ctx.import_ids,
             call_ctx.reloc_enabled,
         ),
@@ -157,7 +164,14 @@ fn emit_value_then_two_locals_drop_call(
     import: WasmRuntimeImport,
 ) {
     let args = op.args.as_ref().expect("admitted code_slot_set operands");
-    let value = op.value.expect("admitted code_slot_set ID");
+    let value = call_ctx
+        .code_slots
+        .resolve(
+            op.s_value
+                .as_deref()
+                .expect("admitted code_slot_set symbol"),
+        )
+        .expect("admitted compiled-code slot binding") as i64;
     func.instruction(&Instruction::I64Const(value));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));

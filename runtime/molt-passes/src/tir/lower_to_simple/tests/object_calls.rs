@@ -548,7 +548,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
             },
             OpIR {
                 kind: "code_slot_set".into(),
-                value: Some(0),
+                s_value: Some("func_objarg__g".into()),
                 args: Some(vec!["v97".into(), "code_globals".into()]),
                 ..OpIR::default()
             },
@@ -645,7 +645,6 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 kind: "call".into(),
                 s_value: Some("func_objarg__g".into()),
                 args: Some(vec!["v104".into()]),
-                value: Some(0),
                 out: Some("v106".into()),
                 ..OpIR::default()
             },
