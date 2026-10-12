@@ -3000,10 +3000,12 @@ mod tests {
 
         // Debug images must compile this ignored probe, but must not run it.
         #[allow(clippy::assertions_on_constants)]
-        assert!(
-            !cfg!(debug_assertions),
-            "lifecycle cost probe requires an optimized image"
-        );
+        {
+            assert!(
+                !cfg!(debug_assertions),
+                "lifecycle cost probe requires an optimized image"
+            );
+        }
         let mask = std::env::var("MOLT_L7_AFFINITY_MASK")
             .expect("lifecycle cost probe requires MOLT_L7_AFFINITY_MASK");
         let affinity = enforce_current_thread_affinity(&mask);
