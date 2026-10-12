@@ -205,7 +205,7 @@ mod tests {
         let error = crate::molt_exception_last();
         crate::molt_exception_clear();
         let kind = crate::type_name(py, obj_from_bits(error)).to_string();
-        let message = crate::molt_exception_message(error);
+        let message = crate::builtins::exceptions::molt_exception_message(error);
         let text = crate::string_obj_to_owned(obj_from_bits(message)).unwrap();
         dec_ref_bits(py, message);
         dec_ref_bits(py, error);

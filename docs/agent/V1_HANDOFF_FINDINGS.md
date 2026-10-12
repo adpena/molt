@@ -153,8 +153,15 @@ are migrated. Stream/file logging now uses one stream writer; four raw logging
 intrinsics and their orphan state/bridges are removed. Multiprocessing import
 no longer queries PID, and failed process spawning never runs the target inline.
 VFS close propagates backend writeback errors after retiring the shared owner
-once. Compiled controls remain required: the earlier 1,852-case runtime result
-does not qualify this changed runtime. The selected public consumer rosters now
+once. The VFS crate passes its all-feature unit and documentation checks. The
+first joined runtime build exposes a capability-name lifetime mismatch and three
+obsolete exception-helper references in new tests. The correction preserves
+static names from generated operations and selected mounts through the existing
+audit consumer, and uses the canonical exception module directly. A fresh runtime
+execution remains required; the earlier 1,852-case result does not qualify this
+changed runtime. Clippy also exposes missing selected-component capture in the
+development proof runner; its failed executable admission is not a VFS or memory
+failure. The selected public consumer rosters now
 include 38 native and 20 WASM programs, plus the direct WASM admission boundary.
 The native public lane has not passed and the WASM public lane remains unrun.
 This integration remains bounded to the complete runtime family and required
