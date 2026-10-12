@@ -481,11 +481,8 @@ mod tests {
                     crate::attr_name_bits_from_bytes(py, b"transport_missing").unwrap(),
                 );
                 let pointer = obj_from_bits(receiver_bits.bits()).as_ptr().unwrap();
-                let transports: &[extern "C" fn(*mut u8, u64, *mut u64) -> i32] = &[
-                    super::__molt_collections_attr_lookup_ptr_allow_missing,
-                    #[cfg(feature = "stdlib_logging_ext")]
-                    crate::logging_bridge::__molt_logging_attr_lookup_ptr_allow_missing,
-                ];
+                let transports: &[extern "C" fn(*mut u8, u64, *mut u64) -> i32] =
+                    &[super::__molt_collections_attr_lookup_ptr_allow_missing];
                 for &transport in transports {
                     for runtime_prior in [false, true] {
                         for mode in [0, 1] {

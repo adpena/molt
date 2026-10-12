@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Purpose: timeout protocol, target limit and terminal-state short circuits."""
 
 import _thread

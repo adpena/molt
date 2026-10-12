@@ -45,6 +45,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_capabilities_require_operation",
+        symbol: "molt_capabilities_require_operation",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_tk_available",
         symbol: "molt_tk_available",
         arity: 0,
@@ -3594,12 +3600,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_os_utime_at",
         symbol: "molt_os_utime_at",
         arity: 7,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_getpid",
-        symbol: "molt_getpid",
-        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -12757,7 +12757,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_logging_record_new",
         symbol: "molt_logging_record_new",
-        arity: 7,
+        arity: 8,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -12839,18 +12839,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_logging_stream_handler_new",
-        symbol: "molt_logging_stream_handler_new",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_logging_stream_handler_emit",
-        symbol: "molt_logging_stream_handler_emit",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_logging_logger_new",
         symbol: "molt_logging_logger_new",
         arity: 2,
@@ -12890,12 +12878,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_logging_logger_drop",
         symbol: "molt_logging_logger_drop",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_logging_basic_config",
-        symbol: "molt_logging_basic_config",
-        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -13646,12 +13628,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_json_coerce_text",
         symbol: "molt_json_coerce_text",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_logging_file_handler_emit",
-        symbol: "molt_logging_file_handler_emit",
-        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {

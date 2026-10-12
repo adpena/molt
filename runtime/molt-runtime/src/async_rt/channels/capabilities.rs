@@ -79,10 +79,19 @@ fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
     )
 }
 
-fn operation_grants_allowed(_py: &PyToken<'_>, operation: OperationId, args: AuditArgs) -> bool {
+fn operation_grants_allowed(
+    _py: &PyToken<'_>,
+    operation: OperationId,
+    args: AuditArgs,
+    extra_capabilities: &[&str],
+) -> bool {
     let mut all_allowed = true;
-    for capability in operation.required_capabilities() {
-        let capability = capability.as_str();
+    for capability in operation
+        .required_capabilities()
+        .iter()
+        .map(|capability| capability.as_str())
+        .chain(extra_capabilities.iter().copied())
+    {
         let allowed = has_capability(_py, capability);
         audit_capability_decision(operation.as_str(), capability, args.clone(), allowed);
         all_allowed &= allowed;
@@ -96,15 +105,45 @@ pub(crate) fn operation_allowed(
     operation: OperationId,
     args: AuditArgs,
 ) -> bool {
-    operation_supported_here(_py, operation) && operation_grants_allowed(_py, operation, args)
+    operation_supported_here(_py, operation) && operation_grants_allowed(_py, operation, args, &[])
 }
 
-/// Require one generated host operation, preserving the exact denied grant in
+/// Require a named operation through the generated identifier authority.
+pub(crate) fn require_named_operation<T: crate::builtins::exceptions::ExceptionSentinel>(
+    _py: &PyToken<'_>,
+    name: &str,
+    args: AuditArgs,
+) -> Result<(), T> {
+    let Some(operation) = OperationId::from_name(name) else {
+        return Err(crate::raise_exception::<T>(
+            _py,
+            "ValueError",
+            &format!("unknown host operation '{name}'"),
+        ));
+    };
+    require_operation(_py, operation, args)
+}
+
+/// Require one generated host operation, preserving every denied grant in
 /// the diagnostic and the same operation/capability pair in the audit stream.
 pub(crate) fn require_operation<T: crate::builtins::exceptions::ExceptionSentinel>(
     _py: &PyToken<'_>,
     operation: OperationId,
     args: AuditArgs,
+) -> Result<(), T> {
+    require_operation_with_capabilities(_py, operation, args, &[])
+}
+
+/// Require an operation and the selected adapter's additional grants together.
+/// Adapter requirements are ordered, distinct and disjoint from the generated
+/// base requirements; the adapter owns that mapping, not a second grant checker.
+pub(crate) fn require_operation_with_capabilities<
+    T: crate::builtins::exceptions::ExceptionSentinel,
+>(
+    _py: &PyToken<'_>,
+    operation: OperationId,
+    args: AuditArgs,
+    extra_capabilities: &[&str],
 ) -> Result<(), T> {
     let target = runtime_state(_py)
         .execution_target
@@ -121,13 +160,14 @@ pub(crate) fn require_operation<T: crate::builtins::exceptions::ExceptionSentine
             ),
         ));
     }
-    if operation_grants_allowed(_py, operation, args) {
+    if operation_grants_allowed(_py, operation, args, extra_capabilities) {
         return Ok(());
     }
     let missing = operation
         .required_capabilities()
         .iter()
         .map(|capability| capability.as_str())
+        .chain(extra_capabilities.iter().copied())
         .filter(|capability| !has_capability(_py, capability))
         .collect::<Vec<_>>()
         .join(", ");

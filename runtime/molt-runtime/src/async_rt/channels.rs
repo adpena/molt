@@ -113,7 +113,7 @@ fn assert_send_hook_result_paths(
 
 pub(crate) use capabilities::{
     capability_fix_hint, has_capability, is_trusted, operation_allowed, raise_capability_denied,
-    require_operation,
+    require_named_operation, require_operation, require_operation_with_capabilities,
 };
 #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
 pub use channel::molt_chan_recv_blocking;

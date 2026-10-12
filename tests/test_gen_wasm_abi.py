@@ -1601,8 +1601,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     ):
         manifest.validate_loaded_manifest(broken_missing_arity)
     assert imports["logging_formatter_format_time"]["callable_arity"] == 3
-    assert imports["logging_stream_handler_new"]["callable_arity"] == 2
-    assert imports["logging_basic_config"]["callable_arity"] == 4
+    for retired in (
+        "logging_stream_handler_new",
+        "logging_stream_handler_emit",
+        "logging_file_handler_emit",
+        "logging_basic_config",
+    ):
+        assert retired not in imports
     for name, arity in {
         "abc_bootstrap": 0,
         "collections_abc_runtime_types": 0,
@@ -2166,8 +2171,13 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     assert imports["molt_is_bound_method"]["callable_arity"] == 1
     assert imports["molt_file_exit_method"]["callable_arity"] == 4
     assert imports["molt_logging_formatter_format_time"]["callable_arity"] == 3
-    assert imports["molt_logging_stream_handler_new"]["callable_arity"] == 2
-    assert imports["molt_logging_basic_config"]["callable_arity"] == 4
+    for retired in (
+        "molt_logging_stream_handler_new",
+        "molt_logging_stream_handler_emit",
+        "molt_logging_file_handler_emit",
+        "molt_logging_basic_config",
+    ):
+        assert retired not in imports
 
 
 @pytest.mark.parametrize("symbol", ["molt_socket_drop", "molt_asyncio_future_drop"])

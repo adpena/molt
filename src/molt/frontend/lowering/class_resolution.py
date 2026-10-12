@@ -31,13 +31,56 @@ class ClassResolutionMixin(GeneratorMixinBase):
         class_info = self.classes.get(class_name)
         module_name = class_info.get("module") if class_info else None
         if module_name and module_name != self.module_name:
-            return self._emit_module_attr_get_on(module_name, class_name)
-        # A current-module class reference is still a bare Name read, not
-        # ``module.attr`` syntax. When the static class value is unavailable
-        # (chunk boundary, control-flow mutation, or pending definition), keep
-        # CPython LOAD_GLOBAL semantics: module dict, builtins fallback, then
-        # NameError on miss.
-        return self._emit_global_get(class_name)
+            # Reuse an imported class binding, never import its defining module
+            # or invoke module attribute hooks merely to construct a guard.
+            binding = next(
+                (
+                    name
+                    for name, origin in self.global_imported_names.items()
+                    if origin == module_name
+                    and self.global_imported_attr_names.get(name, name) == class_name
+                ),
+                None,
+            )
+            if binding is None:
+                for name, origin in self.imported_names.items():
+                    if (
+                        name in self.local_imported_names
+                        and origin == module_name
+                        and self.imported_attr_names.get(name, name) == class_name
+                        and self._active_class_ns_scope(name) is None
+                    ):
+                        local = self._load_local_value(name, guard_unbound=False)
+                        if local is not None:
+                            return local
+                return self._emit_const_value(None)
+            class_name = binding
+        elif (
+            class_info
+            and not class_info.get("static")
+            and not self._binding_targets_module_namespace(class_name)
+        ):
+            if self._active_class_ns_scope(class_name) is None:
+                local = self._load_local_value(class_name, guard_unbound=False)
+                if local is not None:
+                    return local
+            return self._emit_const_value(None)
+        # These references belong only to synthesized layout guards. A retained
+        # instance remains usable after its class binding is deleted/rebound,
+        # including while module globals are being retired. Missing identity
+        # makes the guard miss; explicit source Names still use _emit_global_get.
+        namespace = (
+            self._emit_globals_dict()
+            if self._function_needs_frame_trace()
+            else self._emit_module_globals_dict()
+        )
+        name = self._emit_const_value(class_name)
+        missing = self._emit_const_value(None)
+        result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(kind="DICT_GET", args=[namespace, name, missing], result=result)
+        )
+        return result
 
     def _current_module_static_class_ref(self, class_name: str) -> MoltValue | None:
         if self.current_func_name != "molt_main":

@@ -74,6 +74,15 @@ impl VfsBackend for DevFs {
         }
     }
 
+    fn append_seed(&self, path: &str) -> Result<Vec<u8>, VfsError> {
+        match path {
+            "stdout" | "stderr" => Ok(Vec::new()),
+            "stdin" => Err(VfsError::ReadOnly),
+            "" => Err(VfsError::IsDirectory),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+
     fn open_append(&self, path: &str, data: &[u8]) -> Result<(), VfsError> {
         self.open_write(path, data)
     }

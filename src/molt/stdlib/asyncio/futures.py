@@ -216,10 +216,11 @@ class Future:
             state = "pending"
         return f"<Future {state}>"
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_asyncio_future_drop) -> None:
         handle = getattr(self, "_fut_handle", None)
         if handle is not None:
-            _molt_asyncio_future_drop(handle)
+            self._fut_handle = None
+            _drop(handle)
 
 def future_add_to_awaited_by(fut: Any, waiter: Any) -> None:
     if isinstance(fut, Future) and isinstance(waiter, Future):

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=thread,signal.signal,signal.raise,signal.set_wakeup_fd
+# MOLT_ENV: MOLT_CAPABILITIES=signal.signal,signal.raise,signal.set_wakeup_fd,thread.spawn,thread.shared
 # MOLT_META: backends=llvm,native platforms=posix
 """Python signal handlers run on the main thread at interpreter safepoints.
 

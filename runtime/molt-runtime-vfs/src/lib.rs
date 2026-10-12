@@ -27,7 +27,6 @@ pub enum VfsError {
     QuotaExceeded,
     SeekNotSupported,
     IoError(String),
-    CapabilityDenied(String),
 }
 
 impl std::fmt::Display for VfsError {
@@ -42,7 +41,6 @@ impl std::fmt::Display for VfsError {
             Self::QuotaExceeded => write!(f, "Quota exceeded"),
             Self::SeekNotSupported => write!(f, "Seek not supported on VFS files"),
             Self::IoError(msg) => write!(f, "{msg}"),
-            Self::CapabilityDenied(cap) => write!(f, "missing '{cap}' capability"),
         }
     }
 }
@@ -70,6 +68,19 @@ pub trait VfsBackend: Send + Sync {
 
     fn open_write(&self, path: &str, data: &[u8]) -> Result<(), VfsError>;
     fn open_append(&self, path: &str, data: &[u8]) -> Result<(), VfsError>;
+
+    /// Initial buffer for append-only handles. Stored files retain their bytes;
+    /// write-only stream adapters override this without pretending to be readable.
+    fn append_seed(&self, path: &str) -> Result<Vec<u8>, VfsError> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnly);
+        }
+        match self.open_read(path) {
+            Err(VfsError::NotFound) => Ok(Vec::new()),
+            result => result,
+        }
+    }
+
     fn stat(&self, path: &str) -> Result<VfsStat, VfsError>;
     fn readdir(&self, path: &str) -> Result<Vec<String>, VfsError>;
     fn mkdir(&self, path: &str) -> Result<(), VfsError>;
@@ -213,7 +224,7 @@ mod tests {
     use crate::bundle::BundleFs;
     use crate::dev::DevFs;
     use crate::file::MoltVfsFile;
-    use crate::load::{VfsLoadQuota, load_vfs_inner, read_dir_recursive};
+    use crate::load::{VfsLoadQuota, read_dir_recursive, unsafe_follow_host_links_enabled};
     use crate::tmp::TmpFs;
     use std::sync::{MutexGuard, OnceLock};
 
@@ -232,7 +243,7 @@ mod tests {
             std::env::remove_var("MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES");
             std::env::remove_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS");
         }
-        let _ = load_vfs_inner();
+        let _ = load_vfs();
         guard
     }
 
@@ -484,31 +495,54 @@ mod tests {
     }
 
     #[test]
-    fn capability_denies_without_grant() {
-        use crate::caps::check_mount_capability;
-        let no_caps = |_: &str| false;
+    fn append_handles_use_backend_seed_and_preserve_refusal() {
+        let dev = Arc::new(DevFs::new());
+        let mut out = MoltVfsFile::open_append(dev.clone(), "stdout").unwrap();
+        out.write(b"output").unwrap();
+        out.close().unwrap();
+        assert_eq!(dev.take_stdout(), b"output");
         assert!(matches!(
-            check_mount_capability("/bundle", false, &no_caps),
-            Err(VfsError::CapabilityDenied(_))
-        ));
-    }
-
-    #[test]
-    fn capability_allows_dev_always() {
-        use crate::caps::check_mount_capability;
-        let no_caps = |_: &str| false;
-        assert!(check_mount_capability("/dev", false, &no_caps).is_ok());
-        assert!(check_mount_capability("/dev", true, &no_caps).is_ok());
-    }
-
-    #[test]
-    fn capability_denies_bundle_write() {
-        use crate::caps::check_mount_capability;
-        let all_caps = |_: &str| true;
-        assert!(matches!(
-            check_mount_capability("/bundle", true, &all_caps),
+            MoltVfsFile::open_append(dev.clone(), "stdin"),
             Err(VfsError::ReadOnly)
         ));
+        assert!(matches!(
+            MoltVfsFile::open_append(dev.clone(), ""),
+            Err(VfsError::IsDirectory)
+        ));
+        assert!(matches!(
+            MoltVfsFile::open_append(dev, "missing"),
+            Err(VfsError::NotFound)
+        ));
+        let tmp = Arc::new(TmpFs::new(1));
+        tmp.open_write("existing", b"retained").unwrap();
+        let mut out = MoltVfsFile::open_append(tmp.clone(), "existing").unwrap();
+        out.write(b"!").unwrap();
+        out.close().unwrap();
+        assert_eq!(tmp.open_read("existing").unwrap(), b"retained!");
+        assert!(tmp.append_seed("missing").unwrap().is_empty());
+        tmp.mkdir("directory").unwrap();
+        assert!(matches!(
+            tmp.append_seed("directory"),
+            Err(VfsError::IsDirectory)
+        ));
+        let bundle = Arc::new(BundleFs::from_entries(vec![]));
+        assert!(matches!(
+            MoltVfsFile::open_append(bundle, "missing"),
+            Err(VfsError::ReadOnly)
+        ));
+    }
+
+    #[test]
+    fn selected_mount_policy_preserves_grants_and_constraints() {
+        let bundle = caps::mount_requirements("/bundle", true, true).unwrap();
+        assert_eq!(bundle.capabilities(), ["fs.bundle.read"]);
+        assert!(bundle.read_only);
+        let write = caps::mount_requirements("/bundle", false, true).unwrap();
+        assert!(write.capabilities().is_empty());
+        assert!(write.read_only);
+        let dev = caps::mount_requirements("/dev", true, true).unwrap();
+        assert!(dev.capabilities().is_empty());
+        assert!(!dev.read_only);
     }
 
     #[test]
@@ -601,6 +635,101 @@ mod tests {
     }
 
     #[test]
+    fn routing_defers_bundle_loading_and_publishes_one_shared_payload() {
+        let _guard = vfs_global_test_lock();
+        let dir = std::env::temp_dir().join("molt_vfs_lazy_payload");
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe { std::env::set_var("MOLT_VFS_BUNDLE", &dir) };
+        let state = super::load_vfs().unwrap();
+        let (_, backend, rel) = state.resolve("/bundle/value.txt").unwrap();
+        // Route selection must not inspect a source that does not yet exist.
+        let (_, scratch, scratch_path) = state.resolve("/tmp/value.txt").unwrap();
+        scratch.open_write(&scratch_path, b"scratch").unwrap();
+        assert_eq!(scratch.open_read(&scratch_path).unwrap(), b"scratch");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("value.txt"), b"first").unwrap();
+        let values = std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| backend.open_read_shared(&rel).unwrap()))
+                .collect();
+            readers
+                .into_iter()
+                .map(|reader| reader.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(&*values[0], b"first");
+        for value in &values[1..] {
+            assert!(Arc::ptr_eq(&values[0], value));
+        }
+        std::fs::write(dir.join("value.txt"), b"later").unwrap();
+        assert_eq!(backend.open_read(&rel).unwrap(), b"first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_configured_bundle_keeps_its_route_and_cached_error() {
+        let _guard = vfs_global_test_lock();
+        let dir = std::env::temp_dir().join("molt_vfs_lazy_error");
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe { std::env::set_var("MOLT_VFS_BUNDLE", &dir) };
+        let state = super::load_vfs().unwrap();
+        let (_, backend, rel) = state.resolve("/bundle/value.txt").unwrap();
+        let first = backend.open_read(&rel).unwrap_err().to_string();
+        assert!(first.contains("invalid VFS bundle source"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("value.txt"), b"new source").unwrap();
+        assert_eq!(backend.open_read(&rel).unwrap_err().to_string(), first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lazy_bundle_captures_source_and_quota_before_backend_access() {
+        let _guard = vfs_global_test_lock();
+        let dir = std::env::temp_dir().join("molt_vfs_lazy_quota");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("value.txt"), b"too large").unwrap();
+        unsafe {
+            std::env::set_var("MOLT_VFS_BUNDLE", &dir);
+            std::env::set_var("MOLT_VFS_BUNDLE_MAX_BYTES", "1");
+        }
+        let state = super::load_vfs().unwrap();
+        unsafe {
+            std::env::remove_var("MOLT_VFS_BUNDLE");
+            std::env::set_var("MOLT_VFS_BUNDLE_MAX_BYTES", "1024");
+        }
+        let (_, backend, rel) = state.resolve("/bundle/value.txt").unwrap();
+        assert!(matches!(
+            backend.open_read(&rel),
+            Err(VfsError::QuotaExceeded)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lazy_bundle_captures_link_policy_before_backend_access() {
+        let _guard = vfs_global_test_lock();
+        let dir = std::env::temp_dir().join("molt_vfs_lazy_links");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"target").unwrap();
+        if create_test_file_symlink(&target, &dir.join("linked.txt")).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        unsafe { std::env::set_var("MOLT_VFS_BUNDLE", &dir) };
+        let state = super::load_vfs().unwrap();
+        unsafe { std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "1") };
+        let (_, backend, rel) = state.resolve("/bundle/linked.txt").unwrap();
+        assert!(
+            matches!(backend.open_read(&rel), Err(VfsError::IoError(message))
+            if message.contains("bundle directory contains host link"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn injected_bundle_loads_once_for_wasm_hosts() {
         let _guard = vfs_global_test_lock();
         let path = b"dir/hello.txt";
@@ -632,8 +761,9 @@ mod tests {
         }
 
         assert_eq!(super::molt_vfs_inject_finish(), -1);
-        assert!(matches!(
-            load_vfs_inner(),
+        let state = super::load_vfs().expect("invalid injected data still owns its mount");
+        let (_, backend, rel) = state.resolve("/bundle/secret.txt").unwrap();
+        assert!(matches!(backend.open_read(&rel),
             Err(VfsError::IoError(message)) if message == "invalid injected VFS path"
         ));
         assert!(super::load_vfs().is_none());
@@ -650,7 +780,7 @@ mod tests {
         std::fs::write(dir.join("a/b/bot.txt"), b"B").unwrap();
 
         let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
-        let entries = read_dir_recursive(dir.to_str().unwrap(), &mut quota).unwrap();
+        let entries = read_dir_recursive(dir.to_str().unwrap(), &mut quota, false).unwrap();
         assert_eq!(entries.len(), 3);
 
         let map: std::collections::HashMap<String, Vec<u8>> = entries.into_iter().collect();
@@ -671,7 +801,7 @@ mod tests {
         std::fs::write(dir.join("b.txt"), b"B").unwrap();
 
         let mut quota = VfsLoadQuota::new_for_test(1024, 1, 1024);
-        let result = read_dir_recursive(dir.to_str().unwrap(), &mut quota);
+        let result = read_dir_recursive(dir.to_str().unwrap(), &mut quota, false);
         assert!(matches!(result, Err(VfsError::QuotaExceeded)));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -688,8 +818,7 @@ mod tests {
         unsafe {
             std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "true");
         }
-        let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
-        let err = read_dir_recursive(dir.to_str().unwrap(), &mut quota)
+        let err = unsafe_follow_host_links_enabled()
             .expect_err("unsafe VFS access must require an exact opt-in value");
         assert!(matches!(
             err,
@@ -716,7 +845,7 @@ mod tests {
         }
 
         let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
-        let err = read_dir_recursive(dir.to_str().unwrap(), &mut quota)
+        let err = read_dir_recursive(dir.to_str().unwrap(), &mut quota, false)
             .expect_err("directory bundle loading must reject host links by default");
         assert!(matches!(
             err,
@@ -742,7 +871,7 @@ mod tests {
         }
 
         let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
-        let err = read_dir_recursive(link_dir.to_str().unwrap(), &mut quota)
+        let err = read_dir_recursive(link_dir.to_str().unwrap(), &mut quota, false)
             .expect_err("directory bundle root links must be explicit unsafe opt-in");
         assert!(matches!(
             err,
@@ -771,7 +900,12 @@ mod tests {
             std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "1");
         }
         let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
-        let entries = read_dir_recursive(dir.to_str().unwrap(), &mut quota).unwrap();
+        let entries = read_dir_recursive(
+            dir.to_str().unwrap(),
+            &mut quota,
+            unsafe_follow_host_links_enabled().unwrap(),
+        )
+        .unwrap();
         let map: std::collections::HashMap<String, Vec<u8>> = entries.into_iter().collect();
         assert_eq!(map.get("linked.txt").unwrap(), b"target");
 

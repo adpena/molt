@@ -54,6 +54,7 @@ This is the generated human projection of the canonical built-in host permission
 | `os.access` | `safe` |
 | `os.chdir` | `standard` |
 | `os.chmod` | `standard` |
+| `os.cpu_count` | `safe` |
 | `os.ftruncate` | `standard` |
 | `os.getcwd` | `safe` |
 | `os.getegid` | `safe` |
@@ -135,9 +136,9 @@ This is the generated human projection of the canonical built-in host permission
 | `process.exec` | `process.exec` | all | all | all | all |
 | `process.asyncio` | `process.asyncio` | all | all | all | all |
 | `shutil.make_archive` | `fs.read`, `fs.write` | all | all | all | all |
-| `shutil.make_archive.external` | `process.exec` | all | all | all | all |
+| `shutil.make_archive.external` | `fs.read`, `fs.write`, `process.exec` | all | all | all | all |
 | `shutil.unpack_archive` | `fs.read`, `fs.write` | all | all | all | all |
-| `shutil.unpack_archive.external` | `process.exec` | all | all | all | all |
+| `shutil.unpack_archive.external` | `fs.read`, `fs.write`, `process.exec` | all | all | all | all |
 | `fcntl.fcntl` | `fcntl.fcntl` | all | all | all | all |
 | `signal.signal` | `signal.signal` | all | all | all | all |
 | `signal.getsignal` | `signal.signal` | all | all | all | all |
@@ -159,7 +160,7 @@ This is the generated human projection of the canonical built-in host permission
 | `time.gmtime` | `time.wall` | all | all | all | all |
 | `time.get_clock_info` | `time.wall` | all | all | all | all |
 | `time.uuid1` | `time.wall` | all | all | all | all |
-| `importlib.exec.extension.module` | `module.extension.exec` | all | all | all | all |
+| `importlib.exec.extension.module` | `fs.read`, `module.extension.exec` | all | all | all | all |
 | `select.select` | `select.select` | all | all | all | all |
 | `select.poll` | `select.poll` | all | all | all | all |
 | `select.epoll` | `select.epoll` | `native` | `linux` | all | all |
@@ -261,3 +262,70 @@ This is the generated human projection of the canonical built-in host permission
 | `tempfile.named` | `fs.write` | all | all | all | all |
 | `tempfile.tempdir` | `fs.write` | all | all | all | all |
 | `traceback.source_line` | `fs.read` | all | all | all | all |
+| `os.listdir` | `fs.read` | all | all | all | all |
+| `os.scandir` | `fs.read` | all | all | all | all |
+| `os.walk` | `fs.read` | all | all | all | all |
+| `os.getcwd` | `fs.read` | all | all | all | all |
+| `os.chdir` | `fs.write` | all | all | all | all |
+| `os.mkdir` | `fs.write` | all | all | all | all |
+| `os.rmdir` | `fs.write` | all | all | all | all |
+| `os.removedirs` | `fs.write` | all | all | all | all |
+| `os.access` | `fs.read` | all | all | all | all |
+| `os.chmod` | `fs.write` | all | all | all | all |
+| `os.link` | `fs.write` | `native` | all | all | all |
+| `os.symlink` | `fs.write` | `native` | all | all | all |
+| `os.readlink` | `fs.read` | all | all | all | all |
+| `os.truncate` | `fs.write` | `native` | all | all | all |
+| `os.getpid` | `os.getpid` | all | all | all | all |
+| `os.getppid` | `os.getppid` | `native` | all | all | all |
+| `os.getuid` | `os.getuid` | `native` | `linux`, `macos` | all | all |
+| `os.getgid` | `os.getgid` | `native` | `linux`, `macos` | all | all |
+| `os.geteuid` | `os.geteuid` | `native` | `linux`, `macos` | all | all |
+| `os.getegid` | `os.getegid` | `native` | `linux`, `macos` | all | all |
+| `os.getlogin` | `env.read` | `native` | all | all | all |
+| `os.cpu_count` | `os.cpu_count` | all | all | all | all |
+| `os.getloadavg` | `os.getloadavg` | `native` | `linux`, `macos` | all | all |
+| `os.uname` | `os.uname` | `native` | `linux`, `macos` | all | all |
+| `os.umask` | `fs.write` | `native` | `linux`, `macos` | all | all |
+| `os.path.getsize` | `fs.read` | all | all | all | all |
+| `os.path.getmtime` | `fs.read` | all | all | all | all |
+| `os.path.getatime` | `fs.read` | all | all | all | all |
+| `os.path.getctime` | `fs.read` | all | all | all | all |
+| `os.path.samefile` | `fs.read` | `native` | all | all | all |
+| `os.dup2` | `fs.write` | `native` | all | all | all |
+| `os.lseek` | `fs.read` | `native` | all | all | all |
+| `os.ftruncate` | `fs.write` | `native` | `linux`, `macos` | all | all |
+| `os.kill` | `os.kill` | `native` | `linux`, `macos` | all | all |
+| `os.waitpid` | `os.waitpid` | `native` | `linux`, `macos` | all | all |
+| `os.getpgrp` | `os.getpgrp` | `native` | `linux`, `macos` | all | all |
+| `os.setpgrp` | `os.setpgrp` | `native` | `linux`, `macos` | all | all |
+| `os.setsid` | `os.setsid` | `native` | `linux`, `macos` | all | all |
+| `os.path.realpath` | `fs.read` | all | all | all | all |
+| `os.utime` | `fs.write` | `native` | all | all | all |
+| `os.readlink_at` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `os.symlink_at` | `fs.write` | `native` | `linux`, `macos` | all | all |
+| `os.utime_at` | `fs.write` | `native` | all | all | all |
+| `os.sendfile` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `os.environ` | `env.read` | all | all | all | all |
+| `os.makedirs` | `fs.write` | all | all | all | all |
+| `pathlib.resolve` | `fs.read` | all | all | all | all |
+| `pathlib.is_mount` | `fs.read` | all | all | all | all |
+| `pathlib.iterdir` | `fs.read` | all | all | all | all |
+| `pathlib.rglob` | `fs.read` | all | all | all | all |
+| `pathlib.touch` | `fs.write` | all | all | all | all |
+| `pathlib.hardlink_to` | `fs.write` | `native` | all | all | all |
+| `pathlib.read_text` | `fs.read` | all | all | all | all |
+| `pathlib.read_bytes` | `fs.read` | all | all | all | all |
+| `pathlib.write_text` | `fs.write` | all | all | all | all |
+| `pathlib.write_bytes` | `fs.write` | all | all | all | all |
+| `pathlib.owner` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `pathlib.group` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `pathlib.samefile` | `fs.read` | all | all | all | all |
+| `concurrent.threadpool.default` | `os.cpu_count`, `thread.spawn`, `thread.shared` | `native` | all | all | all |
+| `concurrent.processpool.default` | `os.cpu_count`, `thread.spawn`, `thread.shared` | `native` | all | all | all |
+| `shutil.which.explicit_path` | `fs.read` | all | all | all | all |
+| `io.open.read` | `fs.read` | all | all | all | all |
+| `io.open.write` | `fs.write` | all | all | all | all |
+| `io.open.readwrite` | `fs.read`, `fs.write` | all | all | all | all |
+| `path.makedirs` | `fs.read`, `fs.write` | all | all | all | all |
+| `multiprocessing.spawn` | `process.exec`, `env.read` | all | all | all | all |

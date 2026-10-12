@@ -210,7 +210,7 @@
 - **GPU:** molt_gpu_* (tensor, buffer, scheduler ops — see LANE 3)
 - **Env:** molt_env_snapshot, molt_env_set, molt_env_unset, molt_env_putenv, molt_env_unsetenv
 - **Time:** molt_time_* (from runtime/molt-runtime/src/builtins/time.rs)
-- **Process/OS:** molt_getpid, molt_getuid, molt_uname, molt_cpu_count, molt_getlogin
+- **Process/OS:** molt_os_getpid, molt_getuid, molt_uname, molt_cpu_count, molt_getlogin
 - **Collections:** molt_bisect_* (insort, bisect_left/right)
 
 **Pure Python modules (no intrinsic lowering):**

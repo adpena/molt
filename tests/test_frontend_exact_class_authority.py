@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
 
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.lowering.serialization_context import SerializationContext
 
 
@@ -542,3 +543,155 @@ def test_native_base_layout_never_publishes_inferred_prefix_offsets(
     assert not any(
         op.kind == "CONST_STR" and op.args == ["__molt_field_offsets__"] for op in ops
     )
+
+
+@pytest.mark.parametrize("operation", ["read", "write", "loop"])
+def test_synthesized_layout_guards_use_optional_class_identity(operation: str) -> None:
+    generator = SimpleTIRGenerator(module_name="exact_class_authority")
+    generator.current_func_name = "retained_method"
+    generator.classes["Point"] = {
+        "module": "exact_class_authority",
+        "static": True,
+        "fields": {"x": 8},
+    }
+    first_op = len(generator.current_ops)
+    owner = MoltValue("owner", type_hint="Point")
+    if operation == "read":
+        generator._emit_guarded_getattr(owner, "x", "Point")
+    elif operation == "write":
+        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), "Point")
+    else:
+        generator._emit_layout_guard(owner, "Point")
+    ops = generator.current_ops[first_op:]
+    guards = [
+        op
+        for op in ops
+        if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
+    ]
+    assert len(guards) == 1
+    candidate = next(op for op in ops if op.result is guards[0].args[1])
+    assert candidate.kind == "DICT_GET"
+    assert next(op for op in ops if op.result is candidate.args[2]).kind == "CONST_NONE"
+    assert not any(op.kind == "MODULE_GET_GLOBAL" for op in ops)
+
+
+def test_optional_layout_identity_does_not_change_explicit_source_name() -> None:
+    ops = _ops(
+        "class Point:\n    x: int\n    def read(self):\n        return self.x, Point\n"
+    )
+    strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    assert any(
+        op.kind == "MODULE_GET_GLOBAL" and strings.get(op.args[1].name) == "Point"
+        for op in ops
+    )
+    assert any(op.kind == "DICT_GET" for op in ops)
+
+
+def test_unavailable_external_layout_identity_does_not_import_or_read_module() -> None:
+    generator = SimpleTIRGenerator(module_name="exact_class_authority")
+    generator.current_func_name = "retained_method"
+    generator.classes["Point"] = {"module": "elsewhere", "static": True}
+    first_op = len(generator.current_ops)
+    result = generator._emit_class_ref("Point")
+    ops = generator.current_ops[first_op:]
+    assert len(ops) == 1
+    assert ops[0].kind == "CONST_NONE"
+    assert ops[0].result is result
+
+
+def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
+    source = (
+        Path(__file__).parent / "differential/basic/attribute_lookup_transactions.py"
+    )
+    ir = compile_to_tir(source.read_text(encoding="utf-8"))
+    for method, guard in (
+        ("read", "guarded_field_get"),
+        ("write", "guarded_field_set"),
+        ("loop", "guarded_field_get"),
+    ):
+        function = next(
+            function
+            for function in ir["functions"]
+            if function["name"].endswith(f"__RetainedLayoutOwner_{method}")
+        )
+        assert any(op["kind"] == guard for op in function["ops"])
+        assert any(op["kind"] == "dict_get" for op in function["ops"])
+
+
+@pytest.mark.parametrize("local", [False, True], ids=["global-alias", "local-alias"])
+def test_external_layout_identity_reuses_matching_imported_alias(local: bool) -> None:
+    generator = SimpleTIRGenerator(module_name="exact_class_authority")
+    generator.current_func_name = "retained_method"
+    generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
+    generator.classes["Point"] = {"module": "elsewhere", "static": True}
+    generator.global_imported_names["Point"] = "unrelated"
+    if local:
+        generator.imported_names["Alias"] = "elsewhere"
+        generator.imported_attr_names["Alias"] = "Point"
+        generator.local_imported_names.add("Alias")
+        generator.locals["Alias"] = MoltValue("imported_alias", type_hint="type")
+    else:
+        generator.global_imported_names["Alias"] = "elsewhere"
+        generator.global_imported_attr_names["Alias"] = "Point"
+    first_op = len(generator.current_ops)
+    result = generator._emit_class_ref("Point")
+    ops = generator.current_ops[first_op:]
+    if local:
+        assert result.name == "imported_alias"
+    else:
+        lookup = next(op for op in ops if op.result is result)
+        assert lookup.kind == "DICT_GET"
+        key = next(op for op in ops if op.result is lookup.args[1])
+        assert key.args == ["Alias"]
+    assert not any(
+        op.kind in {"MODULE_IMPORT", "MODULE_CACHE_GET", "MODULE_GET_GLOBAL"}
+        for op in ops
+    )
+
+
+@pytest.mark.parametrize("operation", ["read", "write", "loop"])
+@pytest.mark.parametrize("storage", ["local", "cell", "global"])
+def test_local_class_guard_reads_optional_storage(operation: str, storage: str) -> None:
+    generator = SimpleTIRGenerator(module_name="exact_class_authority")
+    generator.current_func_name = "retained_method"
+    generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
+    generator.classes["Point"] = {
+        "module": "exact_class_authority",
+        "static": False,
+        "fields": {"x": 8},
+    }
+    generator.unbound_check_names.add("Point")
+    if storage == "global":
+        generator.global_decls.add("Point")
+    elif storage == "cell":
+        generator.boxed_locals["Point"] = MoltValue("point_cell", type_hint="cell")
+    else:
+        generator.locals["Point"] = MoltValue("point_binding", type_hint="type")
+        generator.scope_assigned.add("Point")
+    first_op = len(generator.current_ops)
+    owner = MoltValue("owner", type_hint="Point")
+    if operation == "read":
+        generator._emit_guarded_getattr(owner, "x", "Point")
+    elif operation == "write":
+        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), "Point")
+    else:
+        generator._emit_layout_guard(owner, "Point")
+    ops = generator.current_ops[first_op:]
+    assert not any(op.kind in {"RAISE", "MODULE_GET_GLOBAL"} for op in ops)
+    guard = next(
+        op
+        for op in ops
+        if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
+    )
+    if storage == "local":
+        candidate = next(op for op in ops if op.result is guard.args[1])
+        assert candidate.kind == "LOAD_VAR" and candidate.metadata == {"var": "Point"}
+    else:
+        candidate = next(op for op in ops if op.result is guard.args[1])
+        if storage == "global":
+            assert candidate.kind == "DICT_GET"
+        else:
+            assert any(
+                arg == MoltValue("point_cell", type_hint="cell")
+                for arg in candidate.args
+            )

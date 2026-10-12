@@ -1,16 +1,16 @@
 #![no_main]
 
-//! Fuzz target for VFS capability checking (`check_mount_capability`).
+//! Fuzz target for VFS capability checking (`mount_requirements`).
 //!
-//! Generates arbitrary mount prefixes and capability responses, then verifies
+//! Generates arbitrary mount prefixes and selected access modes, then verifies
 //! security invariants:
 //!   - Prefix-confusion attacks (e.g. "/devious") must never succeed.
 //!   - Only known mount prefixes at path boundaries may return `Ok`.
-//!   - Read-only mounts must reject writes regardless of capabilities.
+//!   - Read-only mounts must retain their write constraint.
 
 use libfuzzer_sys::fuzz_target;
 use molt_runtime::vfs::VfsError;
-use molt_runtime::vfs::caps::check_mount_capability;
+use molt_runtime::vfs::caps::mount_requirements;
 
 molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
     "molt-runtime fuzz_vfs_caps"
@@ -38,9 +38,7 @@ fuzz_target!(|data: &[u8]| {
 
     let flags = data[0];
     let is_write = flags & 0x01 != 0;
-    // Bits 1-2 control capability response mode:
-    //   0 = grant all, 1 = deny all, 2 = grant read only, 3 = grant write only
-    let cap_mode = (flags >> 1) & 0x03;
+    let is_read = flags & 0x02 != 0;
 
     // Build the mount prefix string. Use bit 3 to decide whether to use a
     // "near-miss" prefix (more likely to exercise boundary logic) or raw bytes.
@@ -61,15 +59,7 @@ fuzz_target!(|data: &[u8]| {
         }
     };
 
-    // Capability checker driven by cap_mode.
-    let has_cap: Box<dyn Fn(&str) -> bool> = match cap_mode {
-        0 => Box::new(|_: &str| true),
-        1 => Box::new(|_: &str| false),
-        2 => Box::new(|cap: &str| cap.contains(".read")),
-        _ => Box::new(|cap: &str| cap.contains(".write")),
-    };
-
-    let result = check_mount_capability(&mount_prefix, is_write, &*has_cap);
+    let result = mount_requirements(&mount_prefix, is_read, is_write);
 
     // ── Invariant checks ──────────────────────────────────────────────
 
@@ -103,19 +93,23 @@ fuzz_target!(|data: &[u8]| {
             || (mount_prefix.starts_with("/bundle/") && mount_prefix.len() > "/bundle".len()))
     {
         assert!(
-            matches!(result, Err(VfsError::ReadOnly)),
+            result
+                .as_ref()
+                .is_ok_and(|requirements| requirements.read_only),
             "/bundle is read-only but write returned {result:?} for {mount_prefix:?}"
         );
     }
 
-    // (e) When capabilities are denied (mode 1) and the mount requires them,
-    //     we must not get Ok.  /dev is always-allowed so it's exempt.
-    if cap_mode == 1 && result.is_ok() {
-        // /dev requires no capabilities, so Ok is valid even with deny-all.
-        assert!(
-            mount_prefix == "/dev"
-                || (mount_prefix.starts_with("/dev/") && mount_prefix.len() > "/dev".len()),
-            "Ok(()) with deny-all caps on non-/dev mount: {mount_prefix:?}"
-        );
+    // Every selected grant belongs to its access direction; readonly is never
+    // represented as an invented grant.
+    if let Ok(requirements) = result {
+        for capability in requirements.capabilities() {
+            assert!(
+                (is_read && capability.ends_with(".read"))
+                    || (is_write && capability.ends_with(".write"))
+            );
+            assert_ne!(*capability, "!");
+        }
+        assert!(requirements.capabilities().len() <= 2);
     }
 });

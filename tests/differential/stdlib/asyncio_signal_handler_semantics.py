@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=thread,signal.signal,signal.raise
+# MOLT_ENV: MOLT_CAPABILITIES=signal.signal,signal.raise,thread.spawn,thread.shared
 # MOLT_META: backends=llvm,native
 """Loop signal-handler registration follows CPython's Unix event loop."""
 

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=thread,signal.signal,signal.raise,process
+# MOLT_ENV: MOLT_CAPABILITIES=signal.signal,signal.raise,thread.spawn,thread.shared,os.getpid,os.kill
 # MOLT_META: backends=llvm,native platforms=posix
 """Signals delivered while an asyncio loop is parked reach it promptly.
 

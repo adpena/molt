@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.uname
 """Purpose: differential coverage for platform basic."""
 
 import platform
@@ -38,3 +39,11 @@ print("release_is_str", isinstance(r, str))
 # processor() returns a string
 p = platform.processor()
 print("processor_is_str", isinstance(p, str))
+
+# Every cached uname projection agrees with its shared public record.
+print("uname_system_match", platform.system() == u.system)
+print("uname_node_match", platform.node() == u.node)
+print("uname_release_match", platform.release() == u.release)
+print("uname_version_match", platform.version() == u.version)
+print("uname_machine_match", platform.machine() == u.machine)
+print("platform_is_str", isinstance(platform.platform(), str))

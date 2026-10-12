@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4bc6edced52b9430cb91ec213e70d8b2e488a7e2c89a98553290ef704f478e98",
+  "authority_sha256": "06f0c0690913ddc06b53730624969d489bd1c39d2b0ba1144ac95041952a1edb",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3629,7 +3629,8 @@
         "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none"
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -3638,7 +3639,7 @@
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
-      "id": "wasm.integration.host-exports.attribute-error",
+      "id": "wasm.integration.host-boundaries",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",
@@ -4797,6 +4798,9 @@
         "tests/test_call_argument_schedule.py",
         "tests/test_capability_manifest_e2e.py",
         "tests/test_capability_policy.py",
+        "tests/test_concurrent_futures_capability_contract.py",
+        "tests/test_filesystem_capability_contract.py",
+        "tests/test_native_async_shutdown_refcount.py",
         "tests/test_check_dynamic_policy.py",
         "tests/test_check_formal_methods_tool.py",
         "tests/test_check_runtime_feedback.py",
@@ -5158,6 +5162,9 @@
         "tests/test_call_argument_schedule.py",
         "tests/test_capability_manifest_e2e.py",
         "tests/test_capability_policy.py",
+        "tests/test_concurrent_futures_capability_contract.py",
+        "tests/test_filesystem_capability_contract.py",
+        "tests/test_native_async_shutdown_refcount.py",
         "tests/test_check_dynamic_policy.py",
         "tests/test_check_formal_methods_tool.py",
         "tests/test_check_runtime_feedback.py",

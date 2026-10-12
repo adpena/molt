@@ -43,10 +43,6 @@ _HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush")
 _HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close")
 _HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop")
 
-# StreamHandler intrinsics
-_STREAM_HANDLER_NEW = _require_intrinsic("molt_logging_stream_handler_new")
-_STREAM_HANDLER_EMIT = _require_intrinsic("molt_logging_stream_handler_emit")
-
 # Logger intrinsics
 _LOGGER_NEW = _require_intrinsic("molt_logging_logger_new")
 _LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level")
@@ -61,7 +57,6 @@ _LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop")
 # Manager / root intrinsics
 
 # Config / shutdown intrinsics
-_BASIC_CONFIG = _require_intrinsic("molt_logging_basic_config")
 _SHUTDOWN = _require_intrinsic("molt_logging_shutdown")
 
 # Level utility intrinsics
@@ -72,13 +67,7 @@ _LEVEL_TO_INT = _require_intrinsic("molt_logging_level_to_int")
 # Filter intrinsic
 _FILTER_CHECK = _require_intrinsic("molt_logging_filter_check")
 
-# FileHandler intrinsic
-_FILE_HANDLER_EMIT = _require_intrinsic("molt_logging_file_handler_emit")
-
 # Logging runtime readiness check
-
-# Capability gate
-_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 # Lock intrinsics (for handler synchronization)
 _RLOCK_NEW = _require_intrinsic("molt_rlock_new")
@@ -87,9 +76,8 @@ _RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
 _RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked")
 _RLOCK_DROP = _require_intrinsic("molt_rlock_drop")
 
-# Thread/process intrinsics for LogRecord metadata
+# Thread intrinsic for LogRecord metadata
 _THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident")
-_GETPID = _require_intrinsic("molt_getpid")
 
 __all__ = [
     "BASIC_FORMAT",
@@ -193,12 +181,6 @@ def _init_start_time() -> float:
 
 
 _start_time = _init_start_time()
-
-
-def _require_fs_write() -> None:
-    if _CAP_REQUIRE is None:
-        return None
-    _CAP_REQUIRE("fs.write")
 
 
 def addLevelName(level: int, level_name: str) -> None:
@@ -309,7 +291,8 @@ class LogRecord:
         func: str | None = None,
         sinfo: str | None = None,
     ) -> None:
-        # Create a Rust-side record handle.
+        # Query process metadata once through the canonical OS operation.
+        process_id = _os.getpid() if logProcesses else None
         self._handle = _RECORD_NEW(
             name,
             level,
@@ -318,6 +301,7 @@ class LogRecord:
             str(msg) if msg is not None else "",
             str(args) if args else "",
             str(exc_info) if exc_info else "",
+            process_id,
         )
         # Keep Python-side attributes for compatibility with __dict__ access,
         # extra fields from makeRecord, and direct attribute writes.
@@ -347,7 +331,6 @@ class LogRecord:
             self.threadName = "MainThread"
         else:
             self.threadName = f"Thread-{thread_ident}"
-        process_id = int(_GETPID())
         self.process = process_id
         self.processName = "MainProcess"
         self.message: str | None = None
@@ -566,6 +549,7 @@ class Handler(Filterer):
     def __init__(self, level: int = NOTSET) -> None:
         super().__init__()
         self._name: str | None = None
+        self._closed = False
         self.level = _check_level(level)
         self._handle = _HANDLER_NEW(self.level)
         self.formatter: Formatter | None = None
@@ -618,6 +602,8 @@ class Handler(Filterer):
         return Formatter(BASIC_FORMAT).format(record)
 
     def handleError(self, record: LogRecord) -> None:
+        if not raiseExceptions:
+            return
         try:
             ei = _sys.exc_info()
             try:
@@ -633,6 +619,7 @@ class Handler(Filterer):
         _HANDLER_FLUSH(self._handle)
 
     def close(self) -> None:
+        self._closed = True
         _HANDLER_CLOSE(self._handle)
         try:
             if self in _handler_list:
@@ -662,37 +649,24 @@ class StreamHandler(Handler):
         if stream is None:
             stream = getattr(_sys, "stderr", None)
         self.stream = stream
-        # Create a Rust-side stream handler.
-        stream_name = None
-        if stream is getattr(_sys, "stderr", None):
-            stream_name = "stderr"
-        elif stream is getattr(_sys, "stdout", None):
-            stream_name = "stdout"
-        self._stream_handle = _STREAM_HANDLER_NEW(stream_name, self.level)
 
     def emit(self, record: LogRecord) -> None:
         try:
-            _STREAM_HANDLER_EMIT(self._stream_handle, record._handle)
-        except Exception:
-            # Fallback: Python-side emit.
             msg = self.format(record)
-            if self.stream is None:
-                return None
-            try:
-                self.stream.write(msg + self.terminator)
-                self.flush()
-            except Exception:
-                return None
+            self.stream.write(msg + self.terminator)
+            self.flush()
+        except RecursionError:
+            raise
+        except Exception:
+            self.handleError(record)
 
     def flush(self) -> None:
-        if self.stream is None:
-            return None
+        self.acquire()
         try:
-            flush = getattr(self.stream, "flush", None)
-            if callable(flush):
-                flush()
-        except Exception:
-            return None
+            if self.stream and hasattr(self.stream, "flush"):
+                self.stream.flush()
+        finally:
+            self.release()
 
 
 class FileHandler(StreamHandler):
@@ -707,42 +681,38 @@ class FileHandler(StreamHandler):
         self.mode = mode
         self.encoding = encoding
         self.delay = delay
-        self.stream: Any | None = None
-        super().__init__(None)
-        if not delay:
-            self._open()
+        if delay:
+            Handler.__init__(self)
+            self.stream: Any | None = None
+        else:
+            StreamHandler.__init__(self, self._open())
 
     def _open(self) -> Any:
-        _require_fs_write()
-        self.stream = _io.open(self.baseFilename, self.mode, encoding=self.encoding)
-        return self.stream
+        return _io.open(self.baseFilename, self.mode, encoding=self.encoding)
 
     def emit(self, record: LogRecord) -> None:
-        msg = self.format(record)
-        try:
-            _FILE_HANDLER_EMIT(msg, self.baseFilename, self.mode, self.encoding)
-        except Exception:
-            # Fallback: Python-side stream write.
-            if self.stream is None:
-                self._open()
-            if self.stream is None:
-                return None
-            try:
-                self.stream.write(msg + self.terminator)
-                self.flush()
-            except Exception:
-                return None
+        if self.stream is None:
+            if self.mode != "w" or not self._closed:
+                self.stream = self._open()
+        if self.stream:
+            StreamHandler.emit(self, record)
 
     def close(self) -> None:
+        self.acquire()
         try:
-            if self.stream is not None:
-                try:
-                    self.stream.close()
-                except Exception:
-                    pass
-            self.stream = None
+            try:
+                if self.stream:
+                    try:
+                        self.flush()
+                    finally:
+                        stream = self.stream
+                        self.stream = None
+                        if hasattr(stream, "close"):
+                            stream.close()
+            finally:
+                StreamHandler.close(self)
         finally:
-            super().close()
+            self.release()
 
 
 class BaseRotatingHandler(FileHandler):
@@ -1251,12 +1221,6 @@ def basicConfig(**kwargs: Any) -> None:
             root.removeHandler(h)
     if root.handlers and not force:
         return None
-    # Try the Rust intrinsic for simple cases (no handlers arg, no filename).
-    if handlers_arg is None and filename is None:
-        try:
-            _BASIC_CONFIG(level, fmt, datefmt, stream)
-        except Exception:
-            pass
     if handlers_arg is None:
         if filename is not None:
             handler: Handler = FileHandler(filename, filemode)

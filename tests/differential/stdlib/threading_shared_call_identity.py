@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Both public APIs preserve distinct callable arguments and retained targets."""
 import _thread
 import gc

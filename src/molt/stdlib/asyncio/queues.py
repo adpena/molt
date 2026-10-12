@@ -200,10 +200,11 @@ class Queue:
             cls, item
         )
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_asyncio_queue_drop) -> None:
         handle = getattr(self, "_q_handle", None)
         if handle is not None:
-            _molt_asyncio_queue_drop(handle)
+            self._q_handle = None
+            _drop(handle)
 
 
 class PriorityQueue(Queue):

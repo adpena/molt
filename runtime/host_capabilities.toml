@@ -78,6 +78,7 @@ grants = [
   "glob.glob",
   "os.access",
   "os.getcwd",
+  "os.cpu_count",
   "os.getpid",
   "os.getppid",
   "os.getuid",
@@ -235,7 +236,7 @@ capabilities = ["fs.read", "fs.write"]
 
 [[operation]]
 name = "shutil.make_archive.external"
-capabilities = ["process.exec"]
+requires = ["shutil.make_archive", "process.exec"]
 
 [[operation]]
 name = "shutil.unpack_archive"
@@ -243,7 +244,7 @@ capabilities = ["fs.read", "fs.write"]
 
 [[operation]]
 name = "shutil.unpack_archive.external"
-capabilities = ["process.exec"]
+requires = ["shutil.unpack_archive", "process.exec"]
 
 [[operation]]
 name = "fcntl.fcntl"
@@ -342,7 +343,7 @@ capabilities = ["time.wall"]
 
 [[operation]]
 name = "importlib.exec.extension.module"
-capabilities = ["module.extension.exec"]
+capabilities = ["fs.read", "module.extension.exec"]
 
 [[operation]]
 name = "select.select"
@@ -751,3 +752,319 @@ capabilities = ["fs.write"]
 [[operation]]
 name = "traceback.source_line"
 capabilities = ["fs.read"]
+
+# Extracted path-runtime operations share the same host permission authority.
+[[operation]]
+name = "os.listdir"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.scandir"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.walk"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.getcwd"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.chdir"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.mkdir"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.rmdir"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.removedirs"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.access"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.chmod"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.link"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.symlink"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.readlink"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.truncate"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.getpid"
+capabilities = ["os.getpid"]
+
+[[operation]]
+name = "os.getppid"
+targets = ["native"]
+capabilities = ["os.getppid"]
+
+[[operation]]
+name = "os.getuid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.getuid"]
+
+[[operation]]
+name = "os.getgid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.getgid"]
+
+[[operation]]
+name = "os.geteuid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.geteuid"]
+
+[[operation]]
+name = "os.getegid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.getegid"]
+
+[[operation]]
+name = "os.getlogin"
+targets = ["native"]
+capabilities = ["env.read"]
+
+[[operation]]
+name = "os.cpu_count"
+capabilities = ["os.cpu_count"]
+
+[[operation]]
+name = "os.getloadavg"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.getloadavg"]
+
+[[operation]]
+name = "os.uname"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.uname"]
+
+[[operation]]
+name = "os.umask"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.path.getsize"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.path.getmtime"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.path.getatime"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.path.getctime"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.path.samefile"
+targets = ["native"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.dup2"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.lseek"
+targets = ["native"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.ftruncate"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.kill"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.kill"]
+
+[[operation]]
+name = "os.waitpid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.waitpid"]
+
+[[operation]]
+name = "os.getpgrp"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.getpgrp"]
+
+[[operation]]
+name = "os.setpgrp"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.setpgrp"]
+
+[[operation]]
+name = "os.setsid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["os.setsid"]
+
+[[operation]]
+name = "os.path.realpath"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.utime"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.readlink_at"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.symlink_at"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.utime_at"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "os.sendfile"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "os.environ"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "os.makedirs"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "pathlib.resolve"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.is_mount"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.iterdir"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.rglob"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.touch"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "pathlib.hardlink_to"
+targets = ["native"]
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "pathlib.read_text"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.read_bytes"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.write_text"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "pathlib.write_bytes"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "pathlib.owner"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.group"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pathlib.samefile"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "concurrent.threadpool.default"
+requires = ["os.cpu_count", "thread.spawn_shared"]
+
+[[operation]]
+name = "concurrent.processpool.default"
+requires = ["os.cpu_count", "thread.spawn_shared"]
+
+[[operation]]
+name = "shutil.which.explicit_path"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "io.open.read"
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "io.open.write"
+capabilities = ["fs.write"]
+
+[[operation]]
+name = "io.open.readwrite"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "path.makedirs"
+capabilities = ["fs.read", "fs.write"]
+
+[[operation]]
+name = "multiprocessing.spawn"
+requires = ["process.exec", "env.snapshot"]

@@ -76,8 +76,16 @@ struct UnameInfo {
 
 static UNAME_CACHE: OnceLock<UnameInfo> = OnceLock::new();
 
-fn get_uname() -> &'static UnameInfo {
-    UNAME_CACHE.get_or_init(|| {
+fn get_uname(_py: &PyToken<'_>) -> Result<&'static UnameInfo, u64> {
+    // The cache is process-wide; every runtime must authorize its own access.
+    // Other targets expose only the compile-time fallback below.
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    crate::require_operation::<u64>(
+        _py,
+        molt_runtime_core::host_capabilities_generated::OperationId::OsUname,
+        crate::audit::AuditArgs::None,
+    )?;
+    Ok(UNAME_CACHE.get_or_init(|| {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             #[allow(unused_unsafe)]
@@ -110,7 +118,7 @@ fn get_uname() -> &'static UnameInfo {
             version: "#1".to_string(),
             machine: PLATFORM_MACHINE.to_string(),
         }
-    })
+    }))
 }
 
 // ── Public intrinsics ─────────────────────────────────────────────────────
@@ -118,7 +126,11 @@ fn get_uname() -> &'static UnameInfo {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_system() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let s = get_uname().sysname.as_str();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
+        let s = uname.sysname.as_str();
         return_str(_py, s)
     })
 }
@@ -126,7 +138,11 @@ pub extern "C" fn molt_platform_system() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_machine() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let s = get_uname().machine.as_str();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
+        let s = uname.machine.as_str();
         return_str(_py, s)
     })
 }
@@ -165,7 +181,11 @@ pub extern "C" fn molt_platform_architecture() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_node() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let s = get_uname().nodename.as_str();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
+        let s = uname.nodename.as_str();
         return_str(_py, s)
     })
 }
@@ -173,7 +193,11 @@ pub extern "C" fn molt_platform_node() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_release() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let s = get_uname().release.as_str();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
+        let s = uname.release.as_str();
         return_str(_py, s)
     })
 }
@@ -181,7 +205,11 @@ pub extern "C" fn molt_platform_release() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_version() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let s = get_uname().version.as_str();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
+        let s = uname.version.as_str();
         return_str(_py, s)
     })
 }
@@ -191,7 +219,10 @@ pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> 
     crate::with_gil_entry_nopanic!(_py, {
         let _aliased = is_truthy(_py, obj_from_bits(aliased_bits));
         let terse = is_truthy(_py, obj_from_bits(terse_bits));
-        let uname = get_uname();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
         let s = if terse {
             format!("{}-{}", uname.sysname, uname.release)
         } else {
@@ -256,7 +287,10 @@ pub extern "C" fn molt_platform_python_compiler() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_platform_uname() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let uname = get_uname();
+        let uname = match get_uname(_py) {
+            Ok(uname) => uname,
+            Err(error) => return error,
+        };
         let make_str = |s: &str| -> u64 {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {

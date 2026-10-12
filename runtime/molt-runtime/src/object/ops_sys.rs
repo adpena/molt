@@ -2374,22 +2374,6 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_getpid() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let pid = unsafe { crate::molt_getpid_host() };
-            let pid = if pid < 0 { 0 } else { pid };
-            MoltObject::from_int(pid).bits()
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            MoltObject::from_int(std::process::id() as i64).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_time_monotonic() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_float(monotonic_now_secs(_py)).bits()

@@ -1259,7 +1259,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.test.control-flow",
         "wasm.integration.split-runtime",
         "wasm.integration.host-exports.gpu-kernel",
-        "wasm.integration.host-exports.attribute-error",
+        "wasm.integration.host-boundaries",
         "wasm.integration.host-exports.tinygrad-dtype",
         "wasm.integration.host-exports.tinygrad-tensor",
         "wasm.integration.host-exports.tensor-row-ops",
@@ -1311,10 +1311,6 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
             "test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
             set(),
         ),
-        "wasm.integration.host-exports.attribute-error": (
-            "test_linked_host_export_attribute_error_does_not_return_none",
-            {"wasm.build.shared-runtime"},
-        ),
         "wasm.integration.host-exports.tinygrad-dtype": (
             "test_linked_host_export_imports_tinygrad_dtype_class",
             set(),
@@ -1340,13 +1336,29 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         assert row.data["timeout_budget"] == "cold"
         assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(row))
         # Each program retains its own import closure. The GPU/tinygrad cells
-        # compile their exact feature generation; AttributeError consumes the
-        # admitted micro pair. Node needs no native host or other runtime tier.
+        # compile their exact feature generation. Node needs no native host or
+        # other runtime tier.
         assert set(row.dependencies) == {"wasm.build.backend", *runtime_dependencies}
         assert {
             selected.id
             for selected in proof_plan._topological_commands(PLAN, command_id=name)
         } == {name, "wasm.build.backend", *runtime_dependencies}
+
+    # Both host-boundary programs use core intrinsics in the admitted micro
+    # pair. Keep one shared cold build window instead of duplicating prebuilds.
+    boundaries = next(
+        row for row in PLAN.commands if row.id == "wasm.integration.host-boundaries"
+    )
+    assert boundaries.argv[6:] == (
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
+    )
+    assert boundaries.data["timeout_budget"] == "cold"
+    assert set(boundaries.dependencies) == {
+        "wasm.build.backend",
+        "wasm.build.shared-runtime",
+    }
+    assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(boundaries))
 
     # The shared compiler resource serializes cold application rows. Allocate
     # their declared work in the existing job, without extending a child bound.

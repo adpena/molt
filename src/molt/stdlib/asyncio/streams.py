@@ -197,12 +197,13 @@ class StreamReader:
                 return bytes(res)
             raise TypeError("socket stream reader returned non-bytes")
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_socket_reader_drop) -> None:
         reader = getattr(self, "_reader", None)
         if reader is None:
             return
-        if _molt_socket_reader_drop is not None:
-            _molt_socket_reader_drop(reader)
+        self._reader = None
+        if _drop is not None:
+            _drop(reader)
 
 class StreamWriter:
     def __init__(self, sock: _socket.socket) -> None:
@@ -469,12 +470,13 @@ class ProcessStreamReader:
             buf.extend(chunk)
         return bytes(buf)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_stream_reader_drop) -> None:
         reader = getattr(self, "_reader", None)
         if reader is None:
             return
-        if _molt_stream_reader_drop is not None:
-            _molt_stream_reader_drop(reader)
+        self._reader = None
+        if _drop is not None:
+            _drop(reader)
 
 class ProcessStreamWriter:
     def __init__(self, handle: Any) -> None:

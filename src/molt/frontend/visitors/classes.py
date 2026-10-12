@@ -890,10 +890,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 dynamic = True
         if node.name in self.mutated_classes:
             dynamic = True
-        # ``static`` marks a module-level top-level class whose class object has
-        # a stable global-name binding, so its methods may reference the class
-        # by module attribute (``_emit_class_ref`` -> module-attr-get) for layout
-        # guards.  A *nested* ``class`` statement (``_class_body_depth > 0``) is
+        # ``static`` marks a module-level top-level class whose global binding
+        # can supply optional identity for its methods' layout guards. A missing
+        # or rebound binding must leave generic instance access available.
+        # A *nested* ``class`` statement (``_class_body_depth > 0``) is
         # bound only into its enclosing class namespace — it has no module-global
         # name — so it must be treated exactly like a function-local class
         # (``current_func_name != "molt_main"``): non-static, routing its

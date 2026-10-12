@@ -1,4 +1,4 @@
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionValue, exception_class, exception_is_instance,
     exception_replace_field_bits, exception_traceback, molt_exception_last_pending,
@@ -10,13 +10,13 @@ use crate::{
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_pending,
-    exception_stack_pop, exception_stack_push, has_capability, header_from_obj_ptr, inc_ref_bits,
-    is_missing_bits, is_registered_ptr, is_truthy, missing_bits, molt_call_bind,
-    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new, molt_future_new,
-    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable,
-    molt_issubclass, molt_raise, molt_set_attr_name, obj_from_bits, object_type_id,
-    opaque_handle_bits, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
-    release_ptr, string_obj_to_owned,
+    exception_stack_pop, exception_stack_push, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
+    is_registered_ptr, is_truthy, missing_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_future_new, molt_future_poll,
+    molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable, molt_issubclass,
+    molt_raise, molt_set_attr_name, obj_from_bits, object_type_id, opaque_handle_bits,
+    path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
+    string_obj_to_owned,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -821,25 +821,12 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_read = has_capability(_py, "fs.read");
-        audit_capability_decision(
-            "contextlib.chdir_enter",
-            "fs.read",
+        if let Err(error) = crate::require_operation(
+            _py,
+            crate::OperationId::ContextlibChdirEnter,
             AuditArgs::None,
-            allowed_read,
-        );
-        if !allowed_read {
-            return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let allowed_write = has_capability(_py, "fs.write");
-        audit_capability_decision(
-            "contextlib.chdir_enter",
-            "fs.write",
-            AuditArgs::None,
-            allowed_write,
-        );
-        if !allowed_write {
-            return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
+        ) {
+            return error;
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(value) => value,
@@ -863,25 +850,12 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_read = has_capability(_py, "fs.read");
-        audit_capability_decision(
-            "contextlib.chdir_exit",
-            "fs.read",
+        if let Err(error) = crate::require_operation(
+            _py,
+            crate::OperationId::ContextlibChdirExit,
             AuditArgs::None,
-            allowed_read,
-        );
-        if !allowed_read {
-            return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let allowed_write = has_capability(_py, "fs.write");
-        audit_capability_decision(
-            "contextlib.chdir_exit",
-            "fs.write",
-            AuditArgs::None,
-            allowed_write,
-        );
-        if !allowed_write {
-            return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
+        ) {
+            return error;
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(value) => value,

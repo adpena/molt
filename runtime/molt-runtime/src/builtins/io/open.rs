@@ -437,13 +437,13 @@ fn open_impl(
         Ok(parsed) => parsed,
         Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
     };
-    if mode_info.readable && !has_capability(_py, "fs.read") {
-        return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-    }
-    if mode_info.writable && !has_capability(_py, "fs.write") {
-        return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
-    }
-
+    let operation = if mode_info.readable && mode_info.writable {
+        crate::OperationId::IoOpenReadwrite
+    } else if mode_info.readable {
+        crate::OperationId::IoOpenRead
+    } else {
+        crate::OperationId::IoOpenWrite
+    };
     let buffering = {
         let obj = obj_from_bits(buffering_bits);
         if obj.is_none() {
@@ -457,6 +457,9 @@ fn open_impl(
         let msg = format!("'{type_name}' object cannot be interpreted as an integer");
         index_i64_from_obj(_py, buffering_bits, &msg)
     };
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     if buffering < -1 {
         return raise_exception::<_>(_py, "ValueError", "buffering must be >= -1");
     }
@@ -510,6 +513,9 @@ fn open_impl(
     }
 
     let closefd = is_truthy(_py, obj_from_bits(closefd_bits));
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     let opener_obj = obj_from_bits(opener_bits);
     let opener_is_none = opener_obj.is_none();
 
@@ -553,6 +559,46 @@ fn open_impl(
             Err(error) => return error,
         }
     };
+
+    // Normalize arguments before selecting one route. No descriptor, opener,
+    // host filesystem, or bundle payload access occurs before this gate.
+    let vfs_route = if opener_is_none {
+        path.as_ref().and_then(|path| {
+            runtime_state(_py)
+                .get_vfs()
+                .and_then(|vfs| vfs.resolve(&path.to_string_lossy()))
+        })
+    } else {
+        None
+    };
+    let mount_requirements = match vfs_route.as_ref() {
+        Some((prefix, _, _)) => match crate::vfs::caps::mount_requirements(
+            prefix,
+            mode_info.readable,
+            mode_info.writable,
+        ) {
+            Ok(requirements) => Some(requirements),
+            Err(error) => return raise_exception::<_>(_py, "PermissionError", &error.to_string()),
+        },
+        None => None,
+    };
+    let extras = mount_requirements
+        .as_ref()
+        .map_or(&[][..], |requirements| requirements.capabilities());
+    if let Err(error) = crate::require_operation_with_capabilities(
+        _py,
+        operation,
+        crate::audit::AuditArgs::None,
+        extras,
+    ) {
+        return error;
+    }
+    if mount_requirements
+        .as_ref()
+        .is_some_and(|requirements| requirements.read_only)
+    {
+        return raise_exception::<_>(_py, "PermissionError", "Read-only file system");
+    }
 
     let mut file = None;
     #[cfg(windows)]
@@ -610,62 +656,33 @@ fn open_impl(
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         } else {
-            // VFS dispatch (Plan B v0.1)
-            // If the path resolves through a VFS mount, serve the read
-            // from the in-memory backend rather than the real filesystem.
-            let path_str = path.to_string_lossy();
-            if let Some(vfs) = runtime_state(_py).get_vfs()
-                && let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str)
-            {
+            if let Some((_mount_prefix, backend, rel_path)) = vfs_route {
                 let is_write = mode_info.writable;
-                // Capability check
-                let cap_result = crate::vfs::caps::check_mount_capability(
-                    &mount_prefix,
-                    is_write,
-                    &|cap_name| has_capability(_py, cap_name),
-                );
-                if let Err(vfs_err) = cap_result {
-                    let msg = format!("{vfs_err}: '{path_str}'");
-                    return raise_exception::<_>(_py, "PermissionError", &msg);
-                }
-                // VFS read / write dispatch
-                // For reads: load existing file content into a bytearray.
-                // For writes: start with empty (truncate) or existing
-                //   (append) content, and register a writeback entry so
-                //   molt_file_close flushes the final bytearray content
-                //   back to the VFS backend.
-                let data: Vec<u8> = if is_write && !mode_info.append {
-                    // Write-truncate: start empty.
-                    Vec::new()
-                } else if is_write && mode_info.append {
-                    // Append: seed with existing content (if any).
-                    backend.open_read(&rel_path).unwrap_or_default()
+                let path_str = path.to_string_lossy();
+                // Selected mode, not writability, determines initial contents.
+                // Missing files are creatable only for w/a/x; r+ retains bytes.
+                let initial_data = if mode_info.truncate || mode_info.create_new {
+                    match backend.stat(&rel_path) {
+                        Ok(_) if mode_info.create_new => Err(crate::vfs::VfsError::AlreadyExists),
+                        Ok(stat) if stat.is_dir => Err(crate::vfs::VfsError::IsDirectory),
+                        Ok(_) => Ok(Vec::new()),
+                        Err(crate::vfs::VfsError::NotFound) => Ok(Vec::new()),
+                        Err(error) => Err(error),
+                    }
+                } else if mode_info.append && !mode_info.readable {
+                    backend.append_seed(&rel_path)
                 } else {
-                    // Read-only: load the full file.
                     match backend.open_read(&rel_path) {
-                        Ok(bytes) => bytes,
-                        Err(vfs_err) => {
-                            let msg = format!("{vfs_err}: '{path_str}'");
-                            return match vfs_err {
-                                crate::vfs::VfsError::NotFound => {
-                                    raise_exception::<_>(_py, "FileNotFoundError", &msg)
-                                }
-                                crate::vfs::VfsError::PermissionDenied
-                                | crate::vfs::VfsError::ReadOnly
-                                | crate::vfs::VfsError::CapabilityDenied(_) => {
-                                    raise_exception::<_>(_py, "PermissionError", &msg)
-                                }
-                                crate::vfs::VfsError::IsDirectory => {
-                                    raise_exception::<_>(_py, "IsADirectoryError", &msg)
-                                }
-                                _ => raise_exception::<_>(_py, "OSError", &msg),
-                            };
-                        }
+                        Err(crate::vfs::VfsError::NotFound) if mode_info.create => Ok(Vec::new()),
+                        result => result,
                     }
                 };
+                let data = match initial_data {
+                    Ok(bytes) => bytes,
+                    Err(error) => return raise_vfs_error(_py, error, &path_str),
+                };
 
-                // Clone the Arc before dropping the VFS lock so we can
-                // register it in the writeback map for writable handles.
+                // Retain the selected backend for writable-handle retirement.
                 let vfs_backend_arc = if is_write {
                     Some((Arc::clone(&backend), rel_path.clone()))
                 } else {
@@ -718,7 +735,7 @@ fn open_impl(
                     None
                 };
 
-                let vfs_readable = mode_info.readable || mode_info.append;
+                let vfs_readable = mode_info.readable;
                 let vfs_writable = is_write;
 
                 let builtins = builtin_classes(_py);

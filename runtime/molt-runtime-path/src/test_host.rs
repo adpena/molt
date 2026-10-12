@@ -144,10 +144,7 @@ unexpected_ptr_mut_u8!(__molt_path_alloc_tuple(elems_ptr: *const u64, elems_len:
 unexpected_ptr_mut_u8!(__molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize));
 unexpected_ptr_mut_u8!(__molt_path_alloc_string(data_ptr: *const u8, data_len: usize));
 unexpected_ptr_mut_u8!(__molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize));
-unexpected_ptr_mut_u8!(__molt_path_alloc_dict_with_pairs(
-    pairs_ptr: *const u64,
-    pairs_len: usize,
-));
+unexpected_ptr_mut_u8!(__molt_path_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_raise_exception(
@@ -284,32 +281,24 @@ pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
-    let _ = (name_ptr, name_len);
-    1
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_audit_capability_decision(
+pub extern "C" fn __molt_path_require_operation(
     operation_ptr: *const u8,
     operation_len: usize,
-    capability_ptr: *const u8,
-    capability_len: usize,
     arg_kind: u32,
     arg_ptr: *const u8,
     arg_len: usize,
-    allowed: i32,
-) {
-    let _ = (
-        operation_ptr,
-        operation_len,
-        capability_ptr,
-        capability_len,
-        arg_kind,
-        arg_ptr,
-        arg_len,
-        allowed,
-    );
+    out_error_bits: *mut u64,
+) -> i32 {
+    let _ = (arg_kind, arg_ptr, arg_len, out_error_bits);
+    let operation = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(operation_ptr, operation_len))
+    };
+    // Pure satellite tests run with their host operations admitted. Still bind
+    // every operation to the production registry; unknown names must not pass.
+    if molt_runtime_core::host_capabilities_generated::OperationId::from_name(operation).is_none() {
+        unexpected("__molt_path_require_operation: unknown operation");
+    }
+    1
 }
 
 unexpected_u64!(__molt_path_molt_object_hash(bits: u64));
@@ -472,10 +461,7 @@ pub extern "C" fn molt_is_truthy_bool_nogil(bits: u64) -> i64 {
 }
 
 unexpected_i64!(molt_list_int_getitem_raw(list_bits: u64, raw_index: i64));
-unexpected_i64!(molt_list_int_getitem_raw_checked(
-    list_bits: u64,
-    raw_index: i64
-));
+unexpected_i64!(molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64));
 unexpected_u64!(molt_type_of(val_bits: u64));
 unexpected_u64!(molt_str_from_obj(val_bits: u64));
 unexpected_u64!(molt_repr_from_obj(val_bits: u64));
@@ -493,11 +479,7 @@ unexpected_u64!(molt_str_contains(container_bits: u64, item_bits: u64));
 unexpected_u64!(molt_list_contains(container_bits: u64, item_bits: u64));
 unexpected_u64!(molt_dict_contains(container_bits: u64, item_bits: u64));
 unexpected_u64!(molt_string_eq(a: u64, b: u64));
-unexpected_u64!(molt_unpack_sequence(
-    seq_bits: u64,
-    expected_count: u64,
-    output_ptr: *mut u64,
-));
+unexpected_u64!(molt_unpack_sequence(seq_bits: u64, expected_count: u64, output_ptr: *mut u64));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release_guard() -> u64 {

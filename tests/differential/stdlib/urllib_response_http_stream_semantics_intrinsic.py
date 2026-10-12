@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Purpose: urllib.response HTTP stream semantics match CPython with intrinsic lowering."""
 
 import threading

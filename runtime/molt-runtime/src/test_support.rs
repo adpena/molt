@@ -60,7 +60,10 @@ pub(crate) fn restore_pending_channels(
     );
     restore_runtime_raised(py, runtime_bits);
     let mut saved = PendingExceptionSnapshot::detach();
-    assert!(saved.c_error.is_none(), "C channel must be detached before setup");
+    assert!(
+        saved.c_error.is_none(),
+        "C channel must be detached before setup"
+    );
     saved.c_error = Some(c_error);
     saved.restore();
 }
@@ -403,6 +406,36 @@ impl RuntimeTestTransaction {
     /// one-shot lifecycle state, and leaves pending-call custody unowned.
     pub(crate) fn with_cold_runtime_lifecycle<R>(f: impl FnOnce() -> R) -> R {
         Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::Cold, f)
+    }
+
+    /// Exercise production admission with an exact grant set and no ambient tier.
+    /// Environment mutation and the whole runtime lifecycle share process custody.
+    pub(crate) fn with_explicit_capabilities(grants: &str, body: impl FnOnce(&crate::PyToken<'_>)) {
+        Self::with_cold_runtime_lifecycle(|| {
+            struct RestoreEnvironment([(&'static str, Option<std::ffi::OsString>); 2]);
+            impl Drop for RestoreEnvironment {
+                fn drop(&mut self) {
+                    for (name, value) in &self.0 {
+                        unsafe {
+                            match value {
+                                Some(value) => std::env::set_var(name, value),
+                                None => std::env::remove_var(name),
+                            }
+                        }
+                    }
+                }
+            }
+            let _restore = RestoreEnvironment(
+                ["MOLT_CAPABILITY_TIER", "MOLT_CAPABILITIES"]
+                    .map(|name| (name, std::env::var_os(name))),
+            );
+            unsafe {
+                std::env::set_var("MOLT_CAPABILITY_TIER", "none");
+                std::env::set_var("MOLT_CAPABILITIES", grants);
+            }
+            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            crate::with_gil_entry_nopanic!(py, { body(py) });
+        });
     }
 
     fn with_runtime_lifecycle<R>(mode: RuntimeTestLifecycleMode, f: impl FnOnce() -> R) -> R {

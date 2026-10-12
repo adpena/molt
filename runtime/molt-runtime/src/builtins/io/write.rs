@@ -90,8 +90,10 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                 ) {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        if !matches!(error, crate::object::ops::EncodeError::InvalidSequence { .. })
-                            || translated.as_slice() == raw
+                        if !matches!(
+                            error,
+                            crate::object::ops::EncodeError::InvalidSequence { .. }
+                        ) || translated.as_slice() == raw
                         {
                             return error.raise(_py, data_obj.bits());
                         }
@@ -360,51 +362,36 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
             return res;
         }
 
-        // VFS writeback
-        // If this handle was opened for writing on a VFS mount, read
-        // the final bytearray content and flush it to the VFS backend.
-        unsafe {
-            if let Some(handle_ptr) = file_handle_ptr(ptr).as_ref() {
-                let handle = handle_ptr;
-                if let Some((vfs_backend, vfs_path)) = vfs_writeback_take(_py, &handle.state) {
-                    // Read the bytearray content that the runtime wrote into.
-                    let mem = handle.mem_bits;
-                    if mem != 0
-                        && let Some(mem_ptr) = obj_from_bits(mem).as_ptr()
-                        && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY
-                    {
-                        let vec_ptr = bytearray_vec_ptr(mem_ptr);
-                        if !vec_ptr.is_null() {
-                            let data = &*vec_ptr;
-                            let _ = vfs_backend.open_write(&vfs_path, data);
-                        }
+        // Detach one writeback owner before publication. Binary and text
+        // wrappers share the canonical memory resolver and backend state.
+        let writeback_error = unsafe {
+            let handle = &*file_handle_ptr(ptr);
+            if let Some((backend, path)) = vfs_writeback_take(_py, &handle.state) {
+                let data = match super::buffer::memory_backend_vec_ref_from_bits(
+                    _py,
+                    memory_backend_bits(handle),
+                ) {
+                    Ok(data) => data,
+                    Err(bits) => {
+                        file_handle_close_ptr(ptr);
+                        return bits;
                     }
-                    // For text-mode handles, the buffer layer holds the
-                    // bytearray, not the outer handle. Walk through the
-                    // buffer handle's mem_bits instead.
-                    if mem == 0
-                        && handle.buffer_bits != 0
-                        && let Some(buf_ptr) = obj_from_bits(handle.buffer_bits).as_ptr()
-                        && object_type_id(buf_ptr) == TYPE_ID_FILE_HANDLE
-                    {
-                        let buf_handle = &*file_handle_ptr(buf_ptr);
-                        let buf_mem = buf_handle.mem_bits;
-                        if buf_mem != 0
-                            && let Some(mem_ptr) = obj_from_bits(buf_mem).as_ptr()
-                            && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY
-                        {
-                            let vec_ptr = bytearray_vec_ptr(mem_ptr);
-                            if !vec_ptr.is_null() {
-                                let data = &*vec_ptr;
-                                let _ = vfs_backend.open_write(&vfs_path, data);
-                            }
-                        }
-                    }
-                }
+                };
+                backend
+                    .open_write(&path, data)
+                    .err()
+                    .map(|error| (error, path))
+            } else {
+                None
             }
-        }
+        };
 
+        // Close even when publication fails; a second close must neither retry
+        // publication nor obscure the error returned by this attempt.
         file_handle_close_ptr(ptr);
+        if let Some((error, path)) = writeback_error {
+            return raise_vfs_error(_py, error, &path);
+        }
         MoltObject::none().bits()
     })
 }

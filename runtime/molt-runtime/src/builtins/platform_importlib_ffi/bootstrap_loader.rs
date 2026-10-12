@@ -341,20 +341,11 @@ fn importlib_admit_dynamic_extension(
     module_name: &str,
     path: &str,
 ) -> Result<Option<SourceExtensionLoaderContract>, u64> {
-    let allowed = has_capability(_py, "fs.read");
-    audit_capability_decision(
-        "importlib.exec.extension",
-        "fs.read",
+    crate::require_operation::<u64>(
+        _py,
+        crate::OperationId::ImportlibExecExtensionModule,
         AuditArgs::None,
-        allowed,
-    );
-    if !allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing fs.read capability",
-        ));
-    }
+    )?;
     match importlib_path_is_file(_py, path) {
         Ok(true) => {}
         Ok(false) => {
@@ -365,18 +356,6 @@ fn importlib_admit_dynamic_extension(
             ));
         }
         Err(bits) => return Err(bits),
-    }
-    let ext_allowed = crate::operation_allowed(
-        _py,
-        crate::OperationId::ImportlibExecExtensionModule,
-        AuditArgs::None,
-    );
-    if !ext_allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing module.extension.exec capability",
-        ));
     }
     importlib_require_extension_metadata(_py, module_name, path)?;
     importlib_source_extension_loader_contract(_py, module_name, path)

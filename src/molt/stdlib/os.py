@@ -355,9 +355,6 @@ if TYPE_CHECKING:
     def molt_env_get(key: str, default: Any = None) -> Any:
         return default
 
-    def _molt_getpid() -> int:
-        return 0
-
     def _molt_getcwd() -> str:
         return curdir
 

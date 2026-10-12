@@ -4,7 +4,7 @@
 //! internal `pub(crate)` function.  The path crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::audit::{AuditArgs, audit_capability_decision_owned};
+use crate::audit::AuditArgs;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
 
@@ -287,37 +287,21 @@ pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i
 // Capability helpers
 // ---------------------------------------------------------------------------
 
+/// Require a borrowed operation name and audit arguments from the path crate.
+/// Returns 1 on success; on refusal writes the exact exception sentinel and
+/// returns 0. All pointers are borrowed for this call, as in the other bridges.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
-        };
-        let allowed = has_capability(_py, name);
-        if allowed { 1 } else { 0 }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_audit_capability_decision(
+pub extern "C" fn __molt_path_require_operation(
     operation_ptr: *const u8,
     operation_len: usize,
-    capability_ptr: *const u8,
-    capability_len: usize,
     arg_kind: u32,
     arg_ptr: *const u8,
     arg_len: usize,
-    allowed: i32,
-) {
+    out_error_bits: *mut u64,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let operation = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(operation_ptr, operation_len))
-        };
-        let capability = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                capability_ptr,
-                capability_len,
-            ))
         };
         let args = match arg_kind {
             0 => AuditArgs::None,
@@ -327,14 +311,23 @@ pub extern "C" fn __molt_path_audit_capability_decision(
                 };
                 AuditArgs::Path(path.to_string())
             }
-            _ => AuditArgs::Custom(format!("invalid path audit arg kind {arg_kind}")),
+            _ => {
+                let error = raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "invalid path operation audit argument kind",
+                );
+                unsafe { *out_error_bits = error };
+                return 0;
+            }
         };
-        audit_capability_decision_owned(
-            operation.to_string(),
-            capability.to_string(),
-            args,
-            allowed != 0,
-        );
+        match crate::require_named_operation::<u64>(_py, operation, args) {
+            Ok(()) => 1,
+            Err(error) => {
+                unsafe { *out_error_bits = error };
+                0
+            }
+        }
     })
 }
 
@@ -401,6 +394,260 @@ pub extern "C" fn __molt_path_fspath_bits(bits: u64) -> u64 {
 #[cfg(all(test, feature = "stdlib_path"))]
 mod path_transport_tests {
     use super::*;
+
+    #[test]
+    fn canonical_pid_requires_exact_permission() {
+        for grants in ["", "os.getpid"] {
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                let result = molt_os_getpid();
+                if grants.is_empty() {
+                    assert_eq!(result, MoltObject::none().bits());
+                    let error = crate::molt_exception_last_pending();
+                    let _owner = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            error,
+                        )
+                    };
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "PermissionError"
+                    ));
+                    crate::molt_exception_clear();
+                } else {
+                    let pid = to_i64(obj_from_bits(result)).expect("PID integer");
+                    #[cfg(not(target_arch = "wasm32"))]
+                    assert_eq!(pid, std::process::id() as i64);
+                    #[cfg(target_arch = "wasm32")]
+                    assert!(pid >= 0);
+                    assert!(!exception_pending(py));
+                }
+            });
+        }
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn cached_platform_host_facts_require_each_runtime_permission() {
+        use crate::builtins::platform_mod::*;
+        let readers: [fn() -> u64; 7] = [
+            || molt_platform_system(),
+            || molt_platform_machine(),
+            || molt_platform_node(),
+            || molt_platform_release(),
+            || molt_platform_version(),
+            || {
+                molt_platform_platform(
+                    MoltObject::from_bool(false).bits(),
+                    MoltObject::from_bool(false).bits(),
+                )
+            },
+            || molt_platform_uname(),
+        ];
+        // Prime the process-wide cache, then start a new runtime without grants.
+        // Checking only cache initialization would leak every subsequent read.
+        for grants in ["os.uname", ""] {
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                for read in readers {
+                    let bits = read();
+                    if grants.is_empty() {
+                        assert_eq!(bits, MoltObject::none().bits());
+                        let error = crate::molt_exception_last_pending();
+                        let _owner = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                py.core_token(),
+                                error,
+                            )
+                        };
+                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                            py,
+                            error,
+                            "PermissionError"
+                        ));
+                        crate::molt_exception_clear();
+                        assert_eq!(
+                            crate::builtins::exceptions::format_exception_message(
+                                py,
+                                obj_from_bits(error).as_ptr().unwrap()
+                            ),
+                            "missing [os.uname] capabilities for 'os.uname'"
+                        );
+                    } else {
+                        assert!(!obj_from_bits(bits).is_none());
+                        assert!(!exception_pending(py));
+                        dec_ref_bits(py, bits);
+                    }
+                }
+                // Compile-time metadata does not disclose host uname state.
+                let bits = molt_platform_processor();
+                assert!(!obj_from_bits(bits).is_none());
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, bits);
+            });
+        }
+    }
+
+    #[cfg(feature = "stdlib_logging_ext")]
+    #[test]
+    fn logging_record_formats_supplied_process_without_querying_host() {
+        use molt_runtime_logging::logging_ext::*;
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
+            let string = |text: &str| {
+                let ptr = alloc_string(py, text.as_bytes());
+                assert!(!ptr.is_null());
+                unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        MoltObject::from_ptr(ptr).bits(),
+                    )
+                }
+            };
+            let name = string("pid-metadata");
+            let format = string("%(process)s");
+            let style = string("%");
+            let none = MoltObject::none().bits();
+            let formatter = molt_logging_formatter_new(
+                format.bits(),
+                none,
+                style.bits(),
+                MoltObject::from_bool(true).bits(),
+            );
+            assert!(!exception_pending(py));
+            for (process, expected) in [(MoltObject::from_int(73).bits(), "73"), (none, "None")] {
+                let record = molt_logging_record_new(
+                    name.bits(),
+                    MoltObject::from_int(20).bits(),
+                    none,
+                    MoltObject::from_int(1).bits(),
+                    name.bits(),
+                    none,
+                    none,
+                    process,
+                );
+                assert!(!exception_pending(py));
+                let rendered = molt_logging_formatter_format(formatter, record);
+                assert!(!exception_pending(py));
+                let _owner = unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), rendered)
+                };
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
+                    Some(expected)
+                );
+                molt_logging_record_drop(record);
+            }
+            molt_logging_formatter_drop(formatter);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn path_operation_bridges_preserve_exact_grants_and_complete_refusal() {
+        for (grants, missing) in [
+            ("os.cpu_count", Some("fs.read, fs.write")),
+            ("os.cpu_count,fs.read", Some("fs.write")),
+            ("os.cpu_count,fs.read,fs.write", None),
+        ] {
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                assert!(!crate::has_capability(py, "process"));
+                let cpu_count = molt_runtime_path::os_ext::molt_os_cpu_count();
+                assert!(to_i64(obj_from_bits(cpu_count)).is_some_and(|count| count > 0));
+                assert!(!exception_pending(py));
+
+                // Both extracted and reduced-profile bridges must transport
+                // the same canonical decision, including every missing grant.
+                for extracted in [true, false] {
+                    let result = molt_runtime_core::with_core_gil!(core, {
+                        if extracted {
+                            molt_runtime_path::bridge::require_operation(
+                                core,
+                                "shutil.copy",
+                                molt_runtime_path::bridge::AuditArg::Path("source".into()),
+                            )
+                        } else {
+                            crate::bridge::require_operation(
+                                core,
+                                "shutil.copy",
+                                crate::bridge::AuditArg::Path("source".into()),
+                            )
+                        }
+                    });
+                    if let Some(missing) = missing {
+                        assert_eq!(result, Err(MoltObject::none().bits()));
+                        assert!(exception_pending(py));
+                        let exception = crate::molt_exception_last_pending();
+                        let _exception_owner = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                py.core_token(),
+                                exception,
+                            )
+                        };
+                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                            py,
+                            exception,
+                            "PermissionError"
+                        ));
+                        crate::molt_exception_clear();
+                        assert_eq!(
+                            crate::builtins::exceptions::format_exception_message(
+                                py,
+                                obj_from_bits(exception).as_ptr().unwrap(),
+                            ),
+                            format!("missing [{missing}] capabilities for 'shutil.copy'"),
+                        );
+                    } else {
+                        assert_eq!(result, Ok(()));
+                        assert!(!exception_pending(py));
+                    }
+                }
+
+                // Successful FFI transport must leave failure-only output
+                // untouched; an unknown operation must never be admitted.
+                let operation = "os.cpu_count";
+                let marker = MoltObject::from_int(73).bits();
+                let mut error_bits = marker;
+                assert_eq!(
+                    __molt_path_require_operation(
+                        operation.as_ptr(),
+                        operation.len(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        &mut error_bits,
+                    ),
+                    1
+                );
+                assert_eq!(error_bits, marker);
+                let operation = "path.operation.unknown";
+                assert_eq!(
+                    __molt_path_require_operation(
+                        operation.as_ptr(),
+                        operation.len(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        &mut error_bits,
+                    ),
+                    0
+                );
+                assert_eq!(error_bits, MoltObject::none().bits());
+                let exception = crate::molt_exception_last_pending();
+                let _exception_owner = unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        exception,
+                    )
+                };
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    exception,
+                    "ValueError"
+                ));
+                crate::molt_exception_clear();
+            });
+        }
+    }
 
     #[test]
     fn path_bridge_preserves_bytes_and_does_not_publish_failure_output() {

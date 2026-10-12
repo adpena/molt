@@ -605,15 +605,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
     def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue:
         if expected_class == "dict":
             return self._emit_guard_dict_shape(obj)
-        class_info = self.classes.get(expected_class)
-        if class_info and not class_info.get("static"):
-            class_ref = self._load_local_value(expected_class)
-            if class_ref is None:
-                guard = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=guard))
-                return guard
-        else:
-            class_ref = self._emit_class_ref(expected_class)
+        class_ref = self._emit_class_ref(expected_class)
         expected_version = MoltValue(self.next_var(), type_hint="int")
         self.emit(
             MoltOp(

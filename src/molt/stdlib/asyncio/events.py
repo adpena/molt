@@ -475,13 +475,15 @@ class _EventLoop(AbstractEventLoop):
         self._selector = selector
         self._signal_handlers: dict[int, Handle] = {}
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_event_loop_drop) -> None:
         handle = getattr(self, "_loop_handle", None)
-        if handle is not None and _molt_event_loop_drop is not None:  # type: ignore[name-defined]
-            try:
-                _molt_event_loop_drop(handle)  # type: ignore[name-defined]
-            except Exception:
-                pass
+        if handle is not None:
+            self._loop_handle = None
+            if _drop is not None:
+                try:
+                    _drop(handle)
+                except Exception:
+                    pass
 
     def create_future(self) -> Future:
         return Future(loop=self)
@@ -1666,11 +1668,14 @@ class _ReadPipeTransport(Transport):
     def get_pipe(self) -> Any:
         return self._pipe
 
-    def __del__(self) -> None:
-        drop_fn = _require_asyncio_intrinsic(
-            _molt_pipe_transport_drop, "pipe_transport_drop"
-        )
-        drop_fn(self._pipe_handle)
+    def __del__(self, _drop=_molt_pipe_transport_drop) -> None:
+        handle = getattr(self, "_pipe_handle", None)
+        if handle is None:
+            return
+        self._pipe_handle = None
+        if _drop is None:
+            raise RuntimeError("asyncio intrinsic not available: pipe_transport_drop")
+        _drop(handle)
 
 class _WritePipeTransport(Transport):
     """Write pipe transport backed by Rust intrinsics.
@@ -1749,11 +1754,14 @@ class _WritePipeTransport(Transport):
     def get_pipe(self) -> Any:
         return self._pipe
 
-    def __del__(self) -> None:
-        drop_fn = _require_asyncio_intrinsic(
-            _molt_pipe_transport_drop, "pipe_transport_drop"
-        )
-        drop_fn(self._pipe_handle)
+    def __del__(self, _drop=_molt_pipe_transport_drop) -> None:
+        handle = getattr(self, "_pipe_handle", None)
+        if handle is None:
+            return
+        self._pipe_handle = None
+        if _drop is None:
+            raise RuntimeError("asyncio intrinsic not available: pipe_transport_drop")
+        _drop(handle)
 
 def _get_running_loop() -> EventLoop | None:
     return _molt_asyncio_running_loop_get()

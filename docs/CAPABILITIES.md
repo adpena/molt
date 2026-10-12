@@ -62,6 +62,29 @@ are generated together in
 Edit only `runtime/host_capabilities.toml`; the generator updates the Python,
 Rust, browser, tests, and human-readable projections together.
 
+An operation's `PermissionError` lists every required capability that is missing,
+in registry order, before the operation performs host work. Already granted
+capabilities are omitted. Requirements follow the selected operation and branch:
+a default executor needs CPU information and thread authority; an explicitly
+sized executor needs only thread authority. ZIP archive operations do not require
+permission to launch the external process used by other archive formats.
+
+Compound operations declare `requires` references to earlier operations in the
+same registry. Generation flattens and deduplicates their grants and intersects
+their target restrictions; unknown references and empty target intersections are
+errors. Emitted binaries use the generated flat requirements, with no registry
+parsing or dependency traversal. Target availability is checked separately from
+permissions. The runtime does not predict requirements of arbitrary future
+callbacks or request capabilities for branches that will not execute.
+
+File opening normalizes arguments and the path before selecting permissions.
+The selected route combines mode requirements with its virtual mount's read and
+write grants in one check, before invoking an opener or accessing a backend.
+Path-normalization callbacks execute as user code and retain their own host
+permission checks. File descriptors and custom openers do not acquire unrelated
+virtual-mount requirements. Bundle payloads are loaded only on authorized bundle
+access; mount selection itself performs no host file access.
+
 ## Using Capabilities in Code
 
 In Molt-compiled code (or shims), you check for capabilities using the `molt.capabilities` module:

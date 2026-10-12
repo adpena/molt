@@ -39,7 +39,7 @@ impl MoltVfsFile {
     }
 
     pub fn open_append(backend: Arc<dyn VfsBackend>, path: &str) -> Result<Self, VfsError> {
-        let content = backend.open_read(path).unwrap_or_default();
+        let content = backend.append_seed(path)?;
         let cursor = content.len();
         Ok(Self {
             content,

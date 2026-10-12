@@ -74,16 +74,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_logging_handler_drop as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_stream_handler_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_stream_handler_new",
-            crate::molt_logging_stream_handler_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_stream_handler_emit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_stream_handler_emit",
-            crate::molt_logging_stream_handler_emit as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_logger_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_logger_new",
             crate::molt_logging_logger_new as *const (),
@@ -119,11 +109,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_logging_logger_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_logger_drop",
             crate::molt_logging_logger_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging_ext")]
-        "molt_logging_basic_config" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_basic_config",
-            crate::molt_logging_basic_config as *const (),
         )),
         #[cfg(feature = "stdlib_logging_ext")]
         "molt_logging_shutdown" => Some(crate::builtins::functions::runtime_fn_addr(

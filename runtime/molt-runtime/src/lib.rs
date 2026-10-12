@@ -88,6 +88,7 @@ mod async_rt;
 #[cfg(feature = "stdlib_asyncio")]
 mod asyncio_bridge;
 #[cfg(any(
+    test,
     not(feature = "stdlib_http"),
     not(feature = "stdlib_itertools"),
     not(feature = "stdlib_path"),
@@ -445,7 +446,7 @@ pub use crate::async_rt::cancellation::*;
 pub use crate::async_rt::channels::*;
 pub(crate) use crate::async_rt::channels::{
     OperationId, capability_fix_hint, has_capability, operation_allowed, raise_capability_denied,
-    require_operation,
+    require_named_operation, require_operation, require_operation_with_capabilities,
 };
 pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]
@@ -1040,8 +1041,6 @@ unsafe extern "C" {
     fn molt_db_exec_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
     #[link_name = "molt_db_host_poll"]
     fn molt_db_host_poll() -> i32;
-    #[link_name = "molt_getpid_host"]
-    fn molt_getpid_host() -> i64;
     #[link_name = "molt_time_timezone_host"]
     pub(crate) fn molt_time_timezone_host() -> i64;
     #[link_name = "molt_time_local_offset_host"]
