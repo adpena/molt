@@ -720,6 +720,11 @@ pub fn rt_dec_ref(bits: u64) {
 /// Implementations must consume exactly one reference while the caller holds
 /// the runtime GIL. Immediate values require no release.
 pub unsafe trait RuntimeValueRelease {
+    /// Consume one owned reference to a runtime value.
+    ///
+    /// # Safety
+    /// The caller must hold the runtime GIL and transfer exactly one live owned
+    /// reference represented by `bits`. Immediate values require no release.
     unsafe fn release(bits: u64);
 }
 

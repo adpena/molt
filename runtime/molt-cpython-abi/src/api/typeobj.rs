@@ -1477,9 +1477,7 @@ unsafe fn builtin_slot_policy_delta(
     next: BuiltinSlotNamespacePolicy,
 ) -> Option<bool> {
     unsafe {
-        if def.base.wrapper.is_none() {
-            return None;
-        }
+        def.base.wrapper?;
         let wrapped = slot_wrapper_ptr(tp, def.slot);
         if wrapped.is_null() || wrapped == def.base.function {
             return None;
