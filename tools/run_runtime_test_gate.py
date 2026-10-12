@@ -10,6 +10,8 @@ descendant receipts (tools/runtime_descendant_receipts.py); this gate has no
 CPython target-minor coordinate authority. The allocation observer policy builds
 both feature images once and runs only its declared controls in fresh processes;
 process-global allocator counters and refusal must never share a libtest run.
+The WASI lifecycle policy builds a target libtest and hands its exact image to
+the existing native production-host integration; Rust owns its semantic roster.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import json
 import math
 import os
 import re
+import subprocess
 from pathlib import Path
 import sys
 import uuid
@@ -571,11 +574,323 @@ def child_failure_summary(
     return "\n".join(lines)
 
 
+def execute_child(
+    binary: Path,
+    child_args: list[str],
+    expected: set[str],
+    *,
+    directory: Path,
+    run_id: str,
+    source: dict,
+    timeout: float,
+    require_passed: bool,
+    environment: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+    child_command = [
+        sys.executable,
+        str(ROOT / "tools/cargo_test_binary_runner.py"),
+        "--timeout-seconds",
+        str(timeout),
+        "--receipt-dir",
+        str(directory),
+        "--run-id",
+        run_id,
+        "--source-identity-json",
+        json.dumps(source),
+    ]
+    if require_passed:
+        for test in sorted(expected):
+            child_command.extend(["--require-passed-test", test])
+    child_command.extend(["--", str(binary), *child_args])
+    child = COMMANDS.run(
+        child_command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout + 60,
+        encoding="utf-8",
+        env=environment,
+    )
+    (directory / "driver.stdout.log").write_text(child.stdout, encoding="utf-8")
+    (directory / "driver.stderr.log").write_text(child.stderr, encoding="utf-8")
+    receipts = truth.load_binary_receipts(
+        directory,
+        expected_run_id=run_id,
+        expected_source_identity=source,
+    )
+    return child, receipts
+
+
+WASI_TARGET = "wasm32-wasip1"
+WASI_CONSUMER = "actual_wasi_runtime_lifecycle_cases_through_production_host"
+
+
+def lifecycle_artifact(
+    output: str,
+    metadata: str,
+    *,
+    package: str,
+    target: str,
+    kind: str,
+    test: bool = True,
+) -> dict[str, str]:
+    """Select one compiler-produced lifecycle image before any execution."""
+    emitted = [
+        item
+        for item in truth.compiler_artifacts(output, source_context="compiler-only")
+        if isinstance(item.get("profile"), dict)
+        and item["profile"].get("test") is test
+        and item.get("executable") is not None
+        and (
+            test
+            or (
+                isinstance(item.get("target"), dict)
+                and item["target"].get("name") == target
+            )
+        )
+    ]
+    if len(emitted) != 1:
+        raise RuntimeError(f"lifecycle build requires exactly one {target} artifact")
+    identities = truth.package_identities_from_metadata(metadata)
+    records = truth.expected_test_binaries_from_artifacts(emitted, identities)
+    artifact = next(iter(records.values()))
+    packages = loads_exact(metadata)["packages"]
+    canonical = [
+        p
+        for p in packages
+        if p.get("name") == package
+        and p.get("manifest_path") == str(ROOT / "runtime" / package / "Cargo.toml")
+        and p.get("source") is None
+    ]
+    if len(canonical) != 1 or emitted[0].get("package_id") != canonical[0]["id"]:
+        raise RuntimeError("lifecycle artifact has foreign package authority")
+    if artifact["target_name"] != target or artifact["target_kind"] != kind:
+        raise RuntimeError("lifecycle artifact has wrong target authority")
+    return artifact
+
+
+def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
+    # Keep Rust's CASES as the sole semantic roster. The Python policy owns only
+    # its three-image production/handoff and the exact native integration consumer.
+    from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+
+    source = truth.git_source_identity()
+    aggregate["source_identity"] = source
+    host_target = truth.host_target()
+    aggregate["host_target"] = host_target
+    aggregate["unrun_scope"] = (
+        "WASI cases outside the Rust lifecycle roster and all native runtime semantics"
+    )
+    metadata = COMMANDS.run(
+        ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+        encoding="utf-8",
+    ).stdout
+    (run / "cargo.metadata.json").write_text(metadata, encoding="utf-8")
+    aggregate["metadata_sha256"] = hashlib.sha256(metadata.encode("utf-8")).hexdigest()
+    images = {}
+    for package, target, kind, triple in (
+        ("molt-runtime", "molt_runtime", "rlib", WASI_TARGET),
+        ("molt-wasm-host", "wasi_runtime_lifecycle", "test", host_target),
+    ):
+        command = [
+            "cargo",
+            "test",
+            "--locked",
+            "--profile",
+            args.profile,
+            "-p",
+            package,
+            "--target",
+            triple,
+            "--no-run",
+            "--message-format=json",
+        ]
+        environment = dict(os.environ)
+        plan = None
+        if triple == WASI_TARGET:
+            command.extend(
+                ["--lib", "--no-default-features", "--features", "stdlib_micro"]
+            )
+            plan = resolve_runtime_cargo_plan(
+                ROOT,
+                env=environment,
+                cargo_command=command,
+                requested_target=WASI_TARGET,
+                host_target=host_target,
+                rustflags_transform=lambda flags: (
+                    *flags,
+                    "-C",
+                    "link-arg=--export-table",
+                ),
+            )
+            plan.verify()
+            command, environment = list(plan.command), dict(plan.environment)
+        else:
+            command.extend(["--test", target])
+        directory = run / target
+        directory.mkdir()
+        image = aggregate["images"][target] = {
+            "build_command": command,
+            "target_triple": triple,
+        }
+        if plan is not None:
+            image["resolved_rustflags"] = list(plan.rustflags)
+        admit_cargo_build(command, cwd=ROOT, env=environment)
+        build = COMMANDS.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=args.build_timeout_seconds,
+            check=False,
+            encoding="utf-8",
+        )
+        (directory / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
+        (directory / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
+        image["build_returncode"] = build.returncode
+        if build.returncode:
+            raise RuntimeError(
+                f"{target}: Cargo compilation failed with {build.returncode}"
+            )
+        if plan is not None:
+            plan.verify()
+        artifact = lifecycle_artifact(
+            build.stdout, metadata, package=package, target=target, kind=kind
+        )
+        binary = Path(artifact["executable"])
+        identity = truth._file_identity(binary)
+        if triple == WASI_TARGET:
+            with binary.open("rb") as stream:
+                if stream.read(8) != b"\x00asm\x01\x00\x00\x00":
+                    raise RuntimeError(
+                        "WASI compiler artifact is not a WebAssembly module"
+                    )
+            aggregate["abi_dependency"] = observed_abi_dependency(
+                build.stdout, metadata, policy="semantic", source_root=ROOT
+            )
+        image["build"] = {
+            "artifact": artifact,
+            "executable_size": identity[0],
+            "executable_sha256": identity[1],
+            "observed": observed_build(
+                build.stdout, artifact, args.profile, environment
+            ),
+            "stdout_sha256": truth._file_identity(directory / "build.stdout.jsonl")[1],
+        }
+        images[target] = (binary, identity)
+        if package == "molt-wasm-host":
+            # CARGO_BIN_EXE binds the integration consumer to this Cargo-built
+            # production executable. Its bytes are a required input too, not
+            # merely an arbitrary descendant admitted by the outer supervisor.
+            host_artifact = lifecycle_artifact(
+                build.stdout,
+                metadata,
+                package=package,
+                target="molt-wasm-host",
+                kind="bin",
+                test=False,
+            )
+            host_binary = Path(host_artifact["executable"])
+            host_identity = truth._file_identity(host_binary)
+            image["production_host"] = {
+                "artifact": host_artifact,
+                "executable_size": host_identity[0],
+                "executable_sha256": host_identity[1],
+            }
+            images["molt-wasm-host"] = (host_binary, host_identity)
+    if truth.git_source_identity() != source or any(
+        truth._file_identity(binary) != identity for binary, identity in images.values()
+    ):
+        raise RuntimeError("lifecycle source/image changed before handoff")
+    wasm, wasm_identity = images["molt_runtime"]
+    binary, identity = images["wasi_runtime_lifecycle"]
+    environment = dict(os.environ)
+    environment.update(
+        MOLT_WASI_LIBTEST_ARTIFACT=str(wasm), MOLT_WASI_LIBTEST_SHA256=wasm_identity[1]
+    )
+    aggregate["wasi_handoff"] = {
+        key: environment[key]
+        for key in ("MOLT_WASI_LIBTEST_ARTIFACT", "MOLT_WASI_LIBTEST_SHA256")
+    }
+    selection = {
+        WASI_CONSUMER: (
+            ["--exact", WASI_CONSUMER, "--ignored", "--test-threads=1", "--nocapture"],
+            {WASI_CONSUMER},
+        )
+    }
+    child_args, required = selection[WASI_CONSUMER]
+    directory = run / "wasi_runtime_lifecycle" / "child-0"
+    directory.mkdir()
+    child, receipts = execute_child(
+        binary,
+        child_args,
+        required,
+        directory=directory,
+        run_id=aggregate["run_id"],
+        source=source,
+        timeout=args.child_timeout_seconds,
+        require_passed=True,
+        environment=environment,
+    )
+    image = aggregate["images"]["wasi_runtime_lifecycle"]
+    image["children"] = {
+        WASI_CONSUMER: {
+            "returncode": child.returncode,
+            "receipts": [str(p) for p in directory.glob("*.json")],
+        }
+    }
+    if child.returncode:
+        raise RuntimeError(
+            child_failure_summary(
+                WASI_CONSUMER, child.returncode, receipts, child.stderr
+            )
+        )
+    validate_children(
+        {WASI_CONSUMER: receipts},
+        selection,
+        source=source,
+        run_id=aggregate["run_id"],
+        binary=binary,
+        identity=identity,
+        require_passed=True,
+    )
+    if truth.git_source_identity() != source or any(
+        truth._file_identity(binary) != identity for binary, identity in images.values()
+    ):
+        raise RuntimeError("lifecycle source/image changed during execution")
+    # This is one integration pass. Its five semantic cases are enforced and
+    # reported by Rust; no invented Python test count or native WASM inventory.
+    image["passed_test_count"] = aggregate["passed_test_count"] = 1
+    aggregate["status"] = "success"
+
+
+def finish_aggregate(run: Path, aggregate: dict) -> int:
+    runner.write_receipt(run / "aggregate.json", aggregate)
+    print(
+        json.dumps(
+            {
+                "status": aggregate["status"],
+                "receipt": str(run / "aggregate.json"),
+                "error": aggregate.get("error"),
+            }
+        )
+    )
+    return 0 if aggregate["status"] == "success" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="release-output")
     parser.add_argument(
-        "--policy", choices=("semantic", "allocation-observer"), default="semantic"
+        "--policy",
+        choices=("semantic", "allocation-observer", "wasi-lifecycle"),
+        default="semantic",
     )
     parser.add_argument(
         "--parallel-threads", type=int, default=max(2, min(8, os.cpu_count() or 2))
@@ -609,11 +924,16 @@ def main(argv: list[str] | None = None) -> int:
         "scope": (
             "full default-feature runtime semantics; performance probes unrun"
             if args.policy == "semantic"
+            else "declared WASI micro-runtime lifecycle cases through the production host only"
+            if args.policy == "wasi-lifecycle"
             else "declared untimed allocation/refusal controls only; no timed performance acceptance"
         ),
         "images": {},
     }
     try:
+        if args.policy == "wasi-lifecycle":
+            run_wasi_lifecycle(args, run, aggregate)
+            return finish_aggregate(run, aggregate)
         source = truth.git_source_identity()
         aggregate["source_identity"] = source
         command = [
@@ -772,38 +1092,15 @@ def main(argv: list[str] | None = None) -> int:
             for index, (name, (child_args, expected)) in enumerate(selection.items()):
                 directory = run / target / f"child-{index}"
                 directory.mkdir()
-                child_command = [
-                    sys.executable,
-                    str(ROOT / "tools/cargo_test_binary_runner.py"),
-                    "--timeout-seconds",
-                    str(args.child_timeout_seconds),
-                    "--receipt-dir",
-                    str(directory),
-                    "--run-id",
-                    run_id,
-                    "--source-identity-json",
-                    json.dumps(source),
-                ]
-                if args.policy == "allocation-observer":
-                    for test in sorted(expected):
-                        child_command.extend(["--require-passed-test", test])
-                child_command.extend(["--", str(binary), *child_args])
-                child = COMMANDS.run(
-                    child_command,
-                    cwd=ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=args.child_timeout_seconds + 60,
-                    encoding="utf-8",
-                )
-                (directory / "driver.stdout.log").write_text(
-                    child.stdout, encoding="utf-8"
-                )
-                (directory / "driver.stderr.log").write_text(
-                    child.stderr, encoding="utf-8"
-                )
-                children[name] = truth.load_binary_receipts(
-                    directory, expected_run_id=run_id, expected_source_identity=source
+                child, children[name] = execute_child(
+                    binary,
+                    child_args,
+                    expected,
+                    directory=directory,
+                    run_id=run_id,
+                    source=source,
+                    timeout=args.child_timeout_seconds,
+                    require_passed=args.policy == "allocation-observer",
                 )
                 image["children"][name] = {
                     "returncode": child.returncode,
@@ -852,17 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         aggregate["status"] = "success"
     except Exception as exc:
         aggregate["error"] = f"{type(exc).__name__}: {exc}"
-    runner.write_receipt(run / "aggregate.json", aggregate)
-    print(
-        json.dumps(
-            {
-                "status": aggregate["status"],
-                "receipt": str(run / "aggregate.json"),
-                "error": aggregate.get("error"),
-            }
-        )
-    )
-    return 0 if aggregate["status"] == "success" else 1
+    return finish_aggregate(run, aggregate)
 
 
 if __name__ == "__main__":

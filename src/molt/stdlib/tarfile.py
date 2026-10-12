@@ -76,11 +76,18 @@ class TarFile:
             raise RuntimeError("TarFile is closed")
         return handle
 
+    def _release_handle(self, _close=_molt_tarfile_close, _drop=_molt_tarfile_drop) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _close(handle)
+        finally:
+            _drop(handle)
+
     def close(self) -> None:
-        if self._handle is not None:
-            _molt_tarfile_close(self._handle)
-            _molt_tarfile_drop(self._handle)
-            self._handle = None
+        self._release_handle()
 
     def __enter__(self) -> "TarFile":
         return self

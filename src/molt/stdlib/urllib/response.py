@@ -274,15 +274,15 @@ class addinfourl(addinfo):
             return [(str(k), str(v)) for (k, v) in items()]
         return []
 
-    def __del__(self):
+    def __del__(self, _drop=_MOLT_RESP_DROP) -> None:
         handle = getattr(self, "_molt_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_molt_handle", None)
         try:
-            _MOLT_RESP_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
-        self._molt_handle = None
 
 
 globals().pop("_require_intrinsic", None)

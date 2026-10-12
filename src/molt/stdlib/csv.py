@@ -352,12 +352,13 @@ class _Reader:
     def __iter__(self) -> Iterator[list[object]]:
         return self
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_CSV_READER_DROP) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_CSV_READER_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
 
@@ -422,12 +423,13 @@ class _Writer:
             dialect.lineterminator,
         )
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_CSV_WRITER_DROP) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
+        object.__setattr__(self, "_handle", None)
         try:
-            _MOLT_CSV_WRITER_DROP(handle)
+            _drop(handle)
         except Exception:
             pass
 

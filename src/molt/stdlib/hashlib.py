@@ -174,9 +174,13 @@ class _Hash:
     def hexdigest(self, length: int | None = None) -> str:
         return self.digest(length).hex()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_hash_drop) -> None:
         try:
-            _molt_hash_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 

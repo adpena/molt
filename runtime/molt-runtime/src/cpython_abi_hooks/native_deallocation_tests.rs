@@ -632,3 +632,92 @@ fn shutdown_drained_witness_does_not_exempt_foreign_retained_records() {
     }
     state.finish();
 }
+
+#[cfg(panic = "unwind")]
+#[test]
+fn shutdown_owner_unwind_preserves_record_and_releases_only_new_attachment() {
+    use std::cell::Cell;
+
+    let _test = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Absent record, retained detached record, inherited caller attachment,
+    // and failure after the normal lifecycle detach are distinct owners.
+    for mode in 0..4 {
+        let entry = if mode == 0 {
+            crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup()
+        } else {
+            crate::concurrency::RuntimeExecutionGuard::enter()
+        };
+        let identity = crate::runtime_state(&entry.token()).identity();
+        let caller = if mode == 2 {
+            Some(entry)
+        } else {
+            drop(entry);
+            None
+        };
+        let _gil = crate::concurrency::GilGuard::new();
+        let _shutdown =
+            crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
+        let before = object::runtime_execution_attachment_count();
+        let retained = object::runtime_retained_thread_state_count();
+        let record = Cell::new(0);
+        let dictionary = Cell::new(ptr::null_mut());
+        let error = Cell::new(ptr::null_mut());
+        let failure = crate::test_support::catch_expected_unwind(|| {
+            let _owner = object::RuntimeShutdownThreadState::begin(identity);
+            unsafe {
+                record.set(object::PyThreadState_Get().addr());
+                dictionary.set(molt_cpython_abi::api::sys::PyThreadState_GetDict());
+                assert!(!dictionary.get().is_null());
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_ValueError).cast(),
+                    c"retained shutdown failure".as_ptr(),
+                );
+                error.set(observed_error());
+                assert!(!error.get().is_null());
+            }
+            if mode == 3 {
+                object::detach_runtime_execution_thread();
+            }
+            panic!("intentional shutdown owner failure");
+        });
+        let panic = failure.expect_err("shutdown failure must propagate");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"intentional shutdown owner failure")
+        );
+        assert_eq!(object::runtime_execution_thread_is_attached(), mode == 2);
+        assert_eq!(object::runtime_execution_attachment_count(), before);
+        assert_eq!(
+            object::runtime_retained_thread_state_count(),
+            retained + usize::from(mode == 0)
+        );
+        let registration = object::retained_thread_state_identity_for_test(record.get());
+        assert_eq!(registration.map(|value| value.0), Some(identity));
+        assert_eq!(
+            unsafe { object::_PyThreadState_UncheckedGet() }.addr(),
+            record.get()
+        );
+        // A failed owner neither drains nor drops managed C edges. Reenter the
+        // same actual record to observe their identity, then retire normally.
+        drop(caller);
+        let _retry_custody =
+            crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
+        let mut owner = object::RuntimeShutdownThreadState::begin(identity);
+        unsafe {
+            assert_eq!(object::PyThreadState_Get().addr(), record.get());
+            assert_eq!(
+                molt_cpython_abi::api::sys::PyThreadState_GetDict(),
+                dictionary.get()
+            );
+            assert_eq!(observed_error(), error.get());
+        }
+        assert_eq!(
+            object::retained_thread_state_identity_for_test(record.get()),
+            registration
+        );
+        object::detach_runtime_execution_thread();
+        owner.drain(|| false);
+        owner.finish();
+        assert!(!object::current_thread_has_retained_runtime_state());
+    }
+}

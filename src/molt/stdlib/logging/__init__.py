@@ -239,10 +239,14 @@ class _RLock:
     def __exit__(self, _exc_type, _exc, _tb) -> None:  # type: ignore[no-untyped-def]
         self.release()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_RLOCK_DROP) -> None:
         try:
-            if _RLOCK_DROP is not None:
-                _RLOCK_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            if _drop is not None:
+                _drop(handle)
         except Exception:
             return
 
@@ -357,10 +361,14 @@ class LogRecord:
         except Exception:
             return "<unprintable message>"
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_RECORD_DROP) -> None:
         try:
-            if _RECORD_DROP is not None:
-                _RECORD_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            if _drop is not None:
+                _drop(handle)
         except Exception:
             return
 
@@ -537,10 +545,14 @@ class Formatter:
             s = s + "\n" + self.formatStack(record.stack_info)
         return s
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_FORMATTER_DROP) -> None:
         try:
-            if _FORMATTER_DROP is not None:
-                _FORMATTER_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            if _drop is not None:
+                _drop(handle)
         except Exception:
             return
 
@@ -633,10 +645,14 @@ class Handler(Filterer):
         except Exception:
             pass
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_HANDLER_DROP) -> None:
         try:
-            if _HANDLER_DROP is not None:
-                _HANDLER_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            if _drop is not None:
+                _drop(handle)
         except Exception:
             return
 
@@ -1092,10 +1108,14 @@ class Logger(Filterer):
     def log(self, level: int, msg: Any, *args: Any, **kwargs: Any) -> None:
         self._log(level, msg, args, **kwargs)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_LOGGER_DROP) -> None:
         try:
-            if _LOGGER_DROP is not None:
-                _LOGGER_DROP(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            if _drop is not None:
+                _drop(handle)
         except Exception:
             return
 

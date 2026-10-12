@@ -165,11 +165,12 @@ class Message:
         # Rust-side handle for intrinsic-backed operations.
         self._handle = _MOLT_EMAIL_MESSAGE_NEW()
 
-    def __del__(self):
-        """Release the Rust-side message handle."""
+    def __del__(self, _drop=_MOLT_EMAIL_MESSAGE_DROP) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            _MOLT_EMAIL_MESSAGE_DROP(handle)
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        _drop(handle)
 
     def __str__(self):
         """Return the entire formatted message as a string."""

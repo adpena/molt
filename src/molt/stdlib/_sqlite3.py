@@ -352,17 +352,17 @@ class Cursor:
             _call_intrinsic(_MOLT_SQLITE3_CURSOR_CLOSE, self._handle)
             self._closed = True
 
-    def __del__(self) -> None:
-        # Best-effort cleanup — drop the runtime handle entirely so the
-        # thread-local map does not leak across long-running sessions.
-        if not self._closed:
-            try:
-                _MOLT_SQLITE3_CURSOR_DROP(self._handle)
-            except Exception:
-                # __del__ must never raise; the runtime side already
-                # tolerates double-drop / unknown handles silently.
-                pass
-            self._closed = True
+    def __del__(self, _drop=_MOLT_SQLITE3_CURSOR_DROP) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
+        # Cursor.close only closes the logical cursor; this owns registry removal.
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
     def _check_open(self) -> None:
         if self._closed:
@@ -490,13 +490,16 @@ class Connection:
             finally:
                 self._closed = True
 
-    def __del__(self) -> None:
-        if not self._closed:
+    def __del__(self, _drop=_MOLT_SQLITE3_CLOSE) -> None:
+        handle = getattr(self, "_handle", None)
+        closed = getattr(self, "_closed", False)
+        object.__setattr__(self, "_handle", None)
+        object.__setattr__(self, "_closed", True)
+        if handle is not None and not closed:
             try:
-                _MOLT_SQLITE3_CLOSE(self._handle)
+                _drop(handle)
             except Exception:
                 pass
-            self._closed = True
 
     def _check_open(self) -> None:
         if self._closed:

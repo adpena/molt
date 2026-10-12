@@ -124,10 +124,11 @@ class LockType:
     # -- handle lifecycle ---------------------------------------------------
 
     def _drop(self, _lock_drop_intrinsic=_lock_drop) -> None:
-        if self._handle is None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _lock_drop_intrinsic(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _lock_drop_intrinsic(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:
@@ -208,10 +209,11 @@ class RLock:
         return False
 
     def _drop(self, _rlock_drop_intrinsic=_rlock_drop) -> None:
-        if self._handle is None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
             return
-        _rlock_drop_intrinsic(self._handle)
-        self._handle = None
+        object.__setattr__(self, "_handle", None)
+        _rlock_drop_intrinsic(handle)
 
     def __del__(self) -> None:
         if getattr(self, "_handle", None) is None:

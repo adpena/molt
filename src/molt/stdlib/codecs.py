@@ -171,13 +171,15 @@ class IncrementalEncoder:
     def reset(self):
         _molt_inc_enc_reset(self._handle)
 
-    def __del__(self):
+    def __del__(self, _drop=_molt_inc_enc_drop) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _molt_inc_enc_drop(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class BufferedIncrementalEncoder(IncrementalEncoder):
@@ -197,13 +199,15 @@ class IncrementalDecoder:
     def reset(self):
         _molt_inc_dec_reset(self._handle)
 
-    def __del__(self):
+    def __del__(self, _drop=_molt_inc_dec_drop) -> None:
         handle = getattr(self, "_handle", None)
-        if handle is not None:
-            try:
-                _molt_inc_dec_drop(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class BufferedIncrementalDecoder(IncrementalDecoder):
@@ -257,13 +261,15 @@ class StreamReader(Codec):
     def readline(self, size=None):
         return _molt_stream_reader_readline(self._sr_handle)
 
-    def __del__(self):
+    def __del__(self, _drop=_molt_stream_reader_drop) -> None:
         handle = getattr(self, "_sr_handle", None)
-        if handle is not None:
-            try:
-                _molt_stream_reader_drop(handle)
-            except Exception:
-                pass
+        if handle is None:
+            return
+        object.__setattr__(self, "_sr_handle", None)
+        try:
+            _drop(handle)
+        except Exception:
+            pass
 
 
 class CodecInfo:

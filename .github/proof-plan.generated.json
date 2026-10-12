@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e1b3bd0c369665dd53bac58f9abe51bffd4a92ea054a48b666a962a3acada7d6",
+  "authority_sha256": "24436728ce770d3807d865cfdd835409919435b2c94c20ecd849f4c60e9bf7b6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -634,7 +634,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 254,
+      "timeout_minutes": 284,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -5761,8 +5761,13 @@
       "argv": [
         "uv",
         "run",
+        "--active",
+        "--project",
+        ".",
         "--python",
         "3.12",
+        "--no-sync",
+        "--no-config",
         "python",
         "-m",
         "pytest",
@@ -6264,6 +6269,55 @@
         "uv",
         "rustc",
         "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--policy",
+        "wasi-lifecycle",
+        "--profile",
+        "dev-fast",
+        "--build-timeout-seconds",
+        "1200",
+        "--child-timeout-seconds",
+        "600"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
+      "cell": "linux-x86_64-rust-wasi-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.test.wasi-runtime-lifecycle",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "suite",
+      "timeout_seconds": 1800,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "wasi-clang",
+        "wasm-ld"
       ]
     },
     {
@@ -7129,14 +7183,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 15240,
+        "budget_seconds": 17040,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 15000,
-        "required_job_seconds": 15240,
+        "projected_makespan_seconds": 16800,
+        "required_job_seconds": 17040,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 15000
+          "compiler-build-resource": 16800
         }
       },
       "rust_security": {

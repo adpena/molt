@@ -4992,6 +4992,30 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         assert "wasm.build.backend" in commands[name].dependencies
 
 
+def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
+    from tools.proof_queue_pkg.policy import _proof_command_policy_error
+
+    rows = {row.id: row for row in proof_plan.ProofPlan.load().commands}
+    native = rows["native.integration.python-custody"]
+    wasi = rows["rust.test.wasi-runtime-lifecycle"]
+    for row in (native, wasi):
+        assert _proof_command_policy_error(list(row.argv)) is None
+        envelope = command_admission.envelope_for_command(row.argv)
+        assert envelope["proof_plan_command_ids"] == [row.id]
+        expected_tools = set(row.toolchains)
+        if "cargo" in expected_tools:
+            expected_tools.add("git")
+        assert set(envelope["toolchains"]) == expected_tools
+    assert (
+        "tests/cli/test_cli_native_main_stub_authority.py::"
+        "test_rendered_native_main_reports_owned_raised_exception"
+    ) in native.argv
+    assert {"clang", "llvm-ar", "llvm-nm", "wasm-ld"} <= set(native.toolchains)
+    assert {"cargo", "rustc", "wasi-clang", "wasm-ld"} <= set(wasi.toolchains)
+    assert wasi.argv[wasi.argv.index("--policy") + 1] == "wasi-lifecycle"
+    assert proof_plan.cargo_native_units(wasi.data) == {"target": ["c"]}
+
+
 def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     plan = proof_plan.ProofPlan.load()
     declared = {
@@ -4999,6 +5023,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     }
     assert declared == {
         "wasm.build.host",
+        "rust.test.wasi-runtime-lifecycle",
         "rust.clippy.workspace-default",
         "portability.rust.linux-aarch64.clippy-workspace",
         "portability.rust.macos.clippy-workspace",
@@ -5032,6 +5057,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     # runtime operations additionally compile simdutf; TableGen is host C++.
     c_only = {
         "wasm.build.host",
+        "rust.test.wasi-runtime-lifecycle",
         "rust.test.compiler-authorities",
         "rust.test.ir-wasm-runtime-authorities",
         "llvm.build.backend",

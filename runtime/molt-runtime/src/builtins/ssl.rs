@@ -18,7 +18,7 @@ use std::io::{BufReader, Read, Write};
 #[cfg(molt_has_net_io)]
 use std::net::TcpStream;
 #[cfg(all(molt_has_net_io, unix))]
-use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::os::unix::io::FromRawFd;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -1202,7 +1202,8 @@ pub extern "C" fn molt_ssl_socket_version(_handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
-    // Returns the underlying fd as an integer handle.
+    // Retire the TLS-owned duplicate; the Python facade retains the original
+    // transport. Graceful TLS shutdown is a separate provider obligation.
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
@@ -1215,12 +1216,9 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
             let state = SOCK_REGISTRY.lock().unwrap().remove(&id);
             match state {
                 None => raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle"),
-                Some(s) => {
-                    let fd = match s.inner {
-                        SslSocketInner::Client(stream) => stream.sock.into_raw_fd(),
-                        SslSocketInner::Server(stream) => stream.sock.into_raw_fd(),
-                    };
-                    int_bits_from_i64(_py, fd as i64)
+                Some(state) => {
+                    drop(state);
+                    return_none()
                 }
             }
         }
@@ -1300,4 +1298,125 @@ pub extern "C" fn molt_ssl_openssl_version() -> u64 {
         // Report rustls version string instead of OpenSSL.
         return_str(_py, "rustls/0.23 (Molt TLS backend)")
     })
+}
+
+#[cfg(all(test, molt_has_net_io, unix))]
+mod tests {
+    use super::*;
+    use crate::builtins::exceptions::{
+        exception_matches_builtin_name, molt_exception_clear, molt_exception_last_pending,
+    };
+    use std::net::TcpListener;
+    use std::os::fd::AsRawFd;
+    use std::time::Duration;
+
+    fn wrap_original(py: &PyToken<'_>, original: &TcpStream) -> (u64, i32) {
+        let context = molt_ssl_context_new(MoltObject::from_int(PROTOCOL_TLS_CLIENT).bits());
+        assert!(!crate::exception_pending(py));
+        let hostname = MoltObject::from_ptr(crate::alloc_string(py, b"localhost")).bits();
+        let handle = molt_ssl_wrap_socket(
+            MoltObject::from_int(i64::from(original.as_raw_fd())).bits(),
+            context,
+            hostname,
+            MoltObject::from_bool(false).bits(),
+        );
+        crate::dec_ref_bits(py, hostname);
+        molt_ssl_context_drop(context);
+        assert!(!crate::exception_pending(py));
+        let id = to_i64(obj_from_bits(handle)).unwrap();
+        let duplicate = match &SOCK_REGISTRY.lock().unwrap().get(&id).unwrap().inner {
+            SslSocketInner::Client(stream) => stream.sock.as_raw_fd(),
+            SslSocketInner::Server(stream) => stream.sock.as_raw_fd(),
+        };
+        assert_ne!(duplicate, original.as_raw_fd());
+        assert_ne!(unsafe { libc::fcntl(duplicate, libc::F_GETFD) }, -1);
+        (handle, duplicate)
+    }
+
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let original = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        for socket in [&original, &peer] {
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+        }
+        (original, peer)
+    }
+
+    fn take_error(py: &PyToken<'_>, name: &str) {
+        assert!(crate::exception_pending(py));
+        let error = molt_exception_last_pending();
+        assert!(exception_matches_builtin_name(py, error, name));
+        molt_exception_clear();
+        crate::dec_ref_bits(py, error);
+    }
+
+    #[test]
+    fn socket_retirement_closes_only_the_owned_duplicate() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::concurrency::gil::with_gil(|py| {
+                // This exercises descriptor custody, not graceful TLS shutdown:
+                // wrapping creates a connection but no handshake is performed.
+                let retirements: [extern "C" fn(u64) -> u64; 3] = [
+                    molt_ssl_socket_unwrap,
+                    molt_ssl_socket_close,
+                    molt_ssl_socket_drop,
+                ];
+                for retire in retirements {
+                    let (mut original, mut peer) = socket_pair();
+                    let (handle, _duplicate) = wrap_original(&py, &original);
+                    let result = retire(handle);
+                    assert_eq!(result, MoltObject::none().bits());
+                    assert!(!crate::exception_pending(&py));
+                    let id = to_i64(obj_from_bits(handle)).unwrap();
+                    assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
+                    original.write_all(b"original transport survives").unwrap();
+                    let mut received = [0; 27];
+                    peer.read_exact(&mut received).unwrap();
+                    assert_eq!(&received, b"original transport survives");
+                    // EOF proves that no duplicate still owns this socket;
+                    // unlike a retired FD number, its peer cannot be reused
+                    // by unrelated concurrent file opens.
+                    drop(original);
+                    assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
+                    assert_eq!(molt_ssl_socket_drop(handle), MoltObject::none().bits());
+                    assert!(!crate::exception_pending(&py));
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn failed_unwrap_preserves_live_socket_owner_and_repeated_unwrap_refuses() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::concurrency::gil::with_gil(|py| {
+                let (original, _peer) = socket_pair();
+                let (handle, duplicate) = wrap_original(&py, &original);
+                let id = to_i64(obj_from_bits(handle)).unwrap();
+                for (invalid, error) in [
+                    (MoltObject::none().bits(), "TypeError"),
+                    (MoltObject::from_int(-1).bits(), "ValueError"),
+                ] {
+                    molt_ssl_socket_unwrap(invalid);
+                    take_error(&py, error);
+                    assert!(SOCK_REGISTRY.lock().unwrap().contains_key(&id));
+                    assert_ne!(unsafe { libc::fcntl(duplicate, libc::F_GETFD) }, -1);
+                }
+                assert_eq!(molt_ssl_socket_unwrap(handle), MoltObject::none().bits());
+                assert!(!crate::exception_pending(&py));
+                molt_ssl_socket_unwrap(handle);
+                take_error(&py, "ValueError");
+                assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
+                assert_ne!(
+                    unsafe { libc::fcntl(original.as_raw_fd(), libc::F_GETFD) },
+                    -1
+                );
+            });
+        });
+    }
 }

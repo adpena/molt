@@ -72,9 +72,13 @@ class HMAC:
     def hexdigest(self) -> str:
         return self.digest().hex()
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_hmac_drop) -> None:
         try:
-            _molt_hmac_drop(self._handle)
+            handle = getattr(self, '_handle', None)
+            if handle is None:
+                return
+            object.__setattr__(self, '_handle', None)
+            _drop(handle)
         except Exception:
             pass
 

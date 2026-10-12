@@ -46,3 +46,20 @@ async def main() -> None:
 
 
 asyncio.run(main())
+
+
+# Keep each synchronization owner alive until module retirement. Strict stderr
+# comparison makes a finalizer that loses its cleanup binding observable.
+shutdown_resources = (
+    threading.Lock(),
+    threading.RLock(),
+    threading.Condition(),
+    threading.Event(),
+    threading.Semaphore(),
+    threading.BoundedSemaphore(),
+    threading.Barrier(1),
+    threading.local(),
+)
+shutdown_thread = threading.Thread(target=blocking, args=(0,))
+shutdown_thread.start()
+shutdown_thread.join()
