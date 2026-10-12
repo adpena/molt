@@ -20,8 +20,8 @@ fn main() {
     }
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
-    emit_wasm_long_double_link_policy(&target_arch);
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
+    emit_wasm_long_double_link_policy(&target_arch, &out_dir);
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     emit_c_api_version(&manifest_dir, &out_dir);
     let build_python = build_python::resolve();
@@ -170,7 +170,7 @@ fn is_c_identifier(symbol: &str) -> bool {
 /// Unbundled lazy inputs avoid duplicating the formatter in the manual reloc
 /// link. Raw library links use the selected libc and no executable startup CRT.
 /// Emscripten owns a different C runtime and receives no WASI archive.
-fn emit_wasm_long_double_link_policy(target_arch: &str) {
+fn emit_wasm_long_double_link_policy(target_arch: &str, out_dir: &Path) {
     if target_arch != "wasm32" {
         return;
     }
@@ -194,13 +194,19 @@ fn emit_wasm_long_double_link_policy(target_arch: &str) {
     // selection in the admitted C-ABI plan avoids a second SDK path authority;
     // a Cargo-wide link argument would also reach unrelated final artifacts.
     if target_os == "wasi" {
-        println!(
-            "cargo:rustc-env=MOLT_WASI_TEST_COMMAND_CRT={}",
-            member("crt_command")
-                .file_name()
-                .and_then(|name| name.to_str())
-                .expect("WASI command CRT filename")
-        );
+        let name = member("crt_command")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("WASI command CRT filename");
+        // #[link] requires a literal, so project the admitted filename through
+        // the same build output mechanism used by the other Rust declarations.
+        fs::write(
+            out_dir.join("molt_wasi_test_startup.rs"),
+            format!(
+                "#[link(name = {name:?}, kind = \"static\", modifiers = \"-bundle,+verbatim\")]\nunsafe extern \"C\" {{}}\n"
+            ),
+        )
+        .expect("cannot write WASI test startup declaration");
     }
     // SDK filenames already follow the target's lib<name>.a grammar.
     // Keep the original admitted bytes in place; no OUT_DIR copies or aliases.
