@@ -89,7 +89,11 @@ other release finding. The dependency table below owns
 the execution order; it does not defer any open finding beyond v1.0.
 
 Current qualified boundaries: the optimized native runtime semantic gate
-passes 1,880 cases and the ABI family passes 783 cases across 56 executables,
+passes 1,881 cases at `e3f20e557`, including the builtin metadata allocation-failure
+regression; seven performance probes remain unrun. The reduced-profile runtime,
+IR/pass and WASM host authority group passes 2,327 cases across five executables,
+with two intentional ignores, at the same source. These are native host tests,
+not WASM target execution. The ABI family passes 783 cases across 56 executables,
 with one intentional ignore. The latest supervisor correction passes its
 100-case applicable family; actual native compiler/linker consumers pass 72
 checks with six platform skips. Candidate `39172765a` passes all five WASI
@@ -106,8 +110,15 @@ the verified process boundary. This is development-side cleanup work; it adds
 no emitted-program work or cross-platform execution claim.
 
 The remaining landing work is the affected compiled public native/WASM
-consumer group and changed mutation-result consumers in default and reduced
-runtime profiles. The native run stopped after six passes
+consumer group and actual warm-cache policy behavior. Changed mutation-result
+consumers now pass in both default and reduced runtime profiles.
+The warm-cache run built its first native binary but refused execution because
+the helper selected nested guard scratch outside the admitted proof root.
+Pytest and compiler-test helpers now share the existing proof-first scratch
+selection, including conformance, with queue and direct-guard cleanup ownership
+preserved. Focused placement tests and actual queued execution must qualify
+this development-only correction; unchanged Rust evidence remains valid.
+The earlier public native run stopped after six passes
 at the subprocess path-conversion fixture: its missing `process.exec` grant
 prevented the callback oracle from running. The five affected asyncio spawn
 fixtures now declare that capability through the existing test-header authority;
@@ -135,9 +146,9 @@ ignored mutation results in production and fixtures. Those consumers now inspect
 the operation result, unpublished builtin metadata uses the existing rollback
 owner, and the reduced-profile logging bridge shares the public error marker.
 An independent allocation-denial regression checks metadata ownership and
-preservation of a prior error. Its runtime execution and the changed default/
-reduced-profile consumer families remain required; the Clippy pass is compile
-and lint evidence only.
+preservation of a prior error. That regression now executes successfully in both
+default and reduced profiles. The Clippy pass remains compile and lint evidence;
+the separate runtime results above qualify those executed semantic boundaries.
 The full native/WASM release matrix, standalone-without-Python installed
 qualification, security/resource repairs and positive performance admission
 remain open in their owning buckets. Do not grow this migration with unrelated

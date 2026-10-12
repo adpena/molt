@@ -39,6 +39,7 @@ from molt.harness_conformance import (  # noqa: E402
     load_molt_conformance_suite,
     write_molt_conformance_summary,
 )
+from molt.temporary_artifacts import execution_scratch  # noqa: E402
 from run_monty_conformance import parse_expectation  # noqa: E402
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
@@ -613,10 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     env = _molt_build_env()
     _ensure_build_dirs(env)
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
-    tmp_root = Path(env["TMPDIR"])
+    tmp_root = execution_scratch(env)
     tmp_root.mkdir(parents=True, exist_ok=True)
     with process_guard_common.guarded_temporary_directory(
-        prefix="molt_conform_", dir=tmp_root
+        prefix="molt_conform_"
     ) as tmp:
         try:
             with harness_memory_guard.repo_process_sentinel(

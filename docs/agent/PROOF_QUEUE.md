@@ -602,7 +602,12 @@ content paths select different `rust-lld` files fails the capture.
 
 Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
 one short `pt-*` directory before child launch and passes it through
-`MOLT_GUARD_SCRATCH_ROOT`; pytest and guarded helpers consume that allocation.
+`MOLT_GUARD_SCRATCH_ROOT`. Direct pytest runs and guarded helpers consume that
+allocation through `execution_scratch`. Queued runs use the admitted
+`MOLT_PROOF_SCRATCH_ROOT` through the same selector, including conformance
+helpers; nested guards cannot move executable outputs outside queue custody.
+The queue retires those outputs after terminal closure. This selection is
+development tooling and adds no work to emitted binaries.
 Scratch generation, marker and target identities use `resolve_owned_path` on
 both sides of each receipt/environment comparison. This authority rejects
 lexical links/reparse points before resolution and gives Windows DOS/UNC paths
@@ -633,8 +638,8 @@ directory stays blocked. File identity alone cannot tell: Linux reuses a freed
 inode number. So each lease target holds an allocation receipt
 (`.molt-scratch-target.json`) whose nonce its owner records, and adoption needs
 both the recorded identity and that receipt. A busy lock means a live owner and
-defers the work. A consumer (`guard_scratch`, `new_guarded_directory`, the pytest
-temp root) finds its generation from the allocation it inherited, its lease
+defers the work. A direct-guard consumer finds its generation through
+`guard_scratch` from the allocation it inherited, its lease
 target and guard token, never from `MOLT_MEMORY_GUARD_STATE_ROOT`: a process may
 point the guards it starts at another root without moving its own lease. A lock
 on a generation never creates it, so a generation that a remover moved away
