@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Public codecs.StreamWriter protocol; CPython is the differential oracle."""
 
 

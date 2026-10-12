@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.getpid
 """Purpose: differential coverage for logging filter mutation."""
 
 import io

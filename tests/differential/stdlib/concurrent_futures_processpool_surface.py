@@ -1,5 +1,5 @@
 """Purpose: differential coverage for concurrent.futures processpool surface."""
-# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read,fs.write,thread
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read,fs.write,thread.spawn,thread.shared
 
 from __future__ import annotations
 

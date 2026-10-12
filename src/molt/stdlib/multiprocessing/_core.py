@@ -59,7 +59,9 @@ _MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
 _MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
 _MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
 _MOLT_PENDING = _intrinsics_require("molt_pending", globals())
-_MOLT_CAP_REQUIRE = _intrinsics_require("molt_capabilities_require", globals())
+_MOLT_REQUIRE_OPERATION = _intrinsics_require(
+    "molt_capabilities_require_operation", globals()
+)
 _MOLT_STRUCT_PACK = _intrinsics_require("molt_struct_pack", globals())
 _MOLT_STRUCT_UNPACK = _intrinsics_require("molt_struct_unpack", globals())
 _MOLT_MP_CODEC_DUMPS = _intrinsics_require(
@@ -165,8 +167,8 @@ class _RemoteError(Exception):
     pass
 
 
-def _require_process_capability() -> None:
-    _MOLT_CAP_REQUIRE("process.exec")
+def _require_spawn_operation() -> None:
+    _MOLT_REQUIRE_OPERATION("multiprocessing.spawn")
 
 
 def _get_env_value(key: str, default: str) -> str:
@@ -1384,14 +1386,11 @@ class Process:
     def start(self) -> None:
         if self._started:
             raise RuntimeError("process already started")
-        self._started = True
-        if _MOLT_PROCESS_SPAWN is None:
-            self._run_inline()
-            return
+        _require_spawn_operation()
+        spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
         method = _effective_start_method(self._ctx)
         if method != "spawn":
             _mp_debug(f"mp: start method {method!r} uses spawn semantics")
-        _require_process_capability()
         entry_module = _resolve_entry_module_name()
         env = _build_spawn_env()
         env[_ENTRY_OVERRIDE_ENV] = _MP_ENTRY_OVERRIDE
@@ -1429,22 +1428,18 @@ class Process:
             cwd = os.getcwd()
         except Exception:
             cwd = None
-        try:
-            spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
-            handle = spawn_proc(
-                args,
-                env,
-                cwd,
-                _STDIO_PIPE,
-                _STDIO_PIPE,
-                _STDIO_INHERIT,
-            )
-        except RuntimeError:
-            self._run_inline()
-            return
+        handle = spawn_proc(
+            args,
+            env,
+            cwd,
+            _STDIO_PIPE,
+            _STDIO_PIPE,
+            _STDIO_INHERIT,
+        )
         if handle is None:
             raise RuntimeError("process spawn failed")
         self._handle = handle
+        self._started = True
         stdin_stream = _require_intrinsic(_MOLT_PROCESS_STDIN, "molt_process_stdin")(
             handle
         )
@@ -1460,14 +1455,6 @@ class Process:
         )
         message = (_MSG_RUN, self._target, self._args, self._kwargs)
         self._hub.send(message)
-
-    def _run_inline(self) -> None:
-        try:
-            if self._target is not None:
-                self._target(*self._args, **self._kwargs)
-            self._exitcode = 0
-        except BaseException:
-            self._exitcode = 1
 
     def join(self, timeout: float | None = None) -> None:
         if not self._started:
@@ -1931,9 +1918,8 @@ class _Worker:
         initargs: Sequence[Any],
         start_method: str,
     ) -> None:
-        if _MOLT_PROCESS_SPAWN is None:
-            raise RuntimeError("worker spawn unavailable")
-        _require_process_capability()
+        _require_spawn_operation()
+        spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
         entry_module = _resolve_entry_module_name()
         env = _build_spawn_env()
         env[_ENTRY_OVERRIDE_ENV] = _MP_ENTRY_OVERRIDE
@@ -1968,7 +1954,6 @@ class _Worker:
             cwd = os.getcwd()
         except Exception:
             cwd = None
-        spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
         handle = spawn_proc(
             args,
             env,

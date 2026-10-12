@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.getpid
 """Purpose: ensure logging percent-style formatting is intrinsic-backed and stable."""
 
 import logging

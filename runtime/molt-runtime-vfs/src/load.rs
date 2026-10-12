@@ -1,7 +1,8 @@
 //! VFS loading and host-injected bundle custody.
 
-use crate::{MountTable, VfsError, VfsState, bundle, dev, tmp};
-use std::sync::{Arc, Mutex};
+use crate::{MountTable, VfsBackend, VfsError, VfsStat, VfsState, bundle, dev, tmp};
+use std::io::Read;
+use std::sync::{Arc, Mutex, OnceLock};
 
 const VFS_BUNDLE_DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
 const VFS_BUNDLE_DEFAULT_MAX_ENTRIES: usize = 100_000;
@@ -97,6 +98,28 @@ impl VfsLoadQuota {
         Ok(())
     }
 
+    /// Read an entry whose metadata length was already reserved. Preserve that
+    /// reservation if the file shrank, and charge growth exactly once.
+    fn read_reserved_entry(
+        &mut self,
+        reader: impl Read,
+        expected_len: usize,
+    ) -> Result<Vec<u8>, VfsError> {
+        let remaining = self
+            .max_total_bytes
+            .checked_sub(self.total_bytes)
+            .ok_or(VfsError::QuotaExceeded)?;
+        let limit = expected_len
+            .checked_add(remaining)
+            .ok_or(VfsError::QuotaExceeded)?
+            .min(self.max_entry_bytes);
+        let data = read_bounded_payload(reader, limit)?;
+        if data.len() > expected_len {
+            self.reserve_additional_bytes(data.len() - expected_len)?;
+        }
+        Ok(data)
+    }
+
     #[cfg(feature = "vfs_bundle_tar")]
     fn check_blob_len(&self, len: usize) -> Result<(), VfsError> {
         if len > self.max_total_bytes {
@@ -107,6 +130,24 @@ impl VfsLoadQuota {
     }
 }
 
+/// Permit at most one probe byte beyond the admitted size, regardless of
+/// payload growth after metadata inspection. No reader is consumed on overflow.
+fn read_bounded_payload(reader: impl Read, limit: usize) -> Result<Vec<u8>, VfsError> {
+    let probe_limit = u64::try_from(limit)
+        .ok()
+        .and_then(|limit| limit.checked_add(1))
+        .ok_or(VfsError::QuotaExceeded)?;
+    let mut data = Vec::new();
+    reader
+        .take(probe_limit)
+        .read_to_end(&mut data)
+        .map_err(|error| VfsError::IoError(error.to_string()))?;
+    if data.len() > limit {
+        return Err(VfsError::QuotaExceeded);
+    }
+    Ok(data)
+}
+
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -115,7 +156,7 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn unsafe_follow_host_links_enabled() -> Result<bool, VfsError> {
+pub(crate) fn unsafe_follow_host_links_enabled() -> Result<bool, VfsError> {
     match std::env::var(VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS) {
         Ok(raw) if raw == "1" => Ok(true),
         Ok(raw) if raw.is_empty() || raw == "0" => Ok(false),
@@ -155,11 +196,11 @@ fn is_host_link(meta: &std::fs::Metadata) -> bool {
 pub(crate) fn read_dir_recursive(
     base: &str,
     quota: &mut VfsLoadQuota,
+    unsafe_follow_links: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, VfsError> {
     use std::path::Path;
 
     let base_path = Path::new(base);
-    let unsafe_follow_links = unsafe_follow_host_links_enabled()?;
     let base_meta =
         std::fs::symlink_metadata(base_path).map_err(|err| VfsError::IoError(err.to_string()))?;
     if is_host_link(&base_meta) && !unsafe_follow_links {
@@ -206,13 +247,12 @@ pub(crate) fn read_dir_recursive(
             if meta.is_dir() {
                 stack.push(path.to_string_lossy().into_owned());
             } else if meta.is_file() {
-                let expected_len = usize::try_from(meta.len()).unwrap_or(0);
+                let expected_len =
+                    usize::try_from(meta.len()).map_err(|_| VfsError::QuotaExceeded)?;
                 quota.reserve_entry(&rel, expected_len)?;
-                let data =
-                    std::fs::read(&path).map_err(|err| VfsError::IoError(err.to_string()))?;
-                if data.len() > expected_len {
-                    quota.reserve_additional_bytes(data.len() - expected_len)?;
-                }
+                let file =
+                    std::fs::File::open(&path).map_err(|err| VfsError::IoError(err.to_string()))?;
+                let data = quota.read_reserved_entry(file, expected_len)?;
                 result.push((rel, data));
             }
         }
@@ -302,58 +342,148 @@ pub extern "C" fn molt_vfs_inject_finish() -> i32 {
     })
 }
 
-/// Load VFS from injected entries (WASM) or environment (native).
-pub fn load_vfs() -> Option<VfsState> {
-    match load_vfs_inner() {
-        Ok(state) => state,
-        Err(err) => panic!("failed to load VFS bundle: {err}"),
+/// The configured bundle source is captured without touching the host filesystem.
+/// Its payload (or load error) is published once, only at backend access.
+enum BundleSource {
+    Injected(InjectedBundleState),
+    Host {
+        path: String,
+        quota: VfsLoadQuota,
+        follow_links: Result<bool, VfsError>,
+    },
+}
+
+impl BundleSource {
+    fn load(self) -> Result<bundle::BundleFs, VfsError> {
+        match self {
+            Self::Injected(state) => {
+                if let Some(error) = state.error {
+                    return Err(error);
+                }
+                bundle::BundleFs::try_from_entries(state.entries)
+            }
+            Self::Host {
+                path,
+                mut quota,
+                follow_links,
+            } => {
+                let follow_links = follow_links?;
+                if std::path::Path::new(&path).is_dir() {
+                    let entries = read_dir_recursive(&path, &mut quota, follow_links)?;
+                    return bundle::BundleFs::try_from_entries(entries);
+                }
+                if path.ends_with(".tar") {
+                    #[cfg(feature = "vfs_bundle_tar")]
+                    {
+                        let metadata = std::fs::metadata(&path)
+                            .map_err(|err| VfsError::IoError(err.to_string()))?;
+                        let tar_len =
+                            usize::try_from(metadata.len()).map_err(|_| VfsError::QuotaExceeded)?;
+                        quota.check_blob_len(tar_len)?;
+                        let file = std::fs::File::open(&path)
+                            .map_err(|err| VfsError::IoError(err.to_string()))?;
+                        let bytes = read_bounded_payload(file, quota.max_total_bytes)?;
+                        return bundle::BundleFs::from_tar_with_quota(&bytes, &mut quota)
+                            .map_err(VfsError::IoError);
+                    }
+                    #[cfg(not(feature = "vfs_bundle_tar"))]
+                    return Err(VfsError::IoError(
+                        "VFS tar bundles are unavailable in this build".into(),
+                    ));
+                }
+                Err(VfsError::IoError(format!(
+                    "invalid VFS bundle source: {path}"
+                )))
+            }
+        }
     }
 }
 
-pub(crate) fn load_vfs_inner() -> Result<Option<VfsState>, VfsError> {
+struct LazyBundleFs {
+    source: Mutex<Option<BundleSource>>,
+    loaded: OnceLock<Result<bundle::BundleFs, VfsError>>,
+}
+
+impl LazyBundleFs {
+    fn new(source: BundleSource) -> Self {
+        Self {
+            source: Mutex::new(Some(source)),
+            loaded: OnceLock::new(),
+        }
+    }
+
+    fn get(&self) -> Result<&bundle::BundleFs, VfsError> {
+        self.loaded
+            .get_or_init(|| {
+                let source = self
+                    .source
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("bundle source must have one initialization owner");
+                source.load()
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+impl VfsBackend for LazyBundleFs {
+    fn open_read(&self, path: &str) -> Result<Vec<u8>, VfsError> {
+        self.get()?.open_read(path)
+    }
+    fn open_read_shared(&self, path: &str) -> Result<Arc<Vec<u8>>, VfsError> {
+        self.get()?.open_read_shared(path)
+    }
+    fn stat(&self, path: &str) -> Result<VfsStat, VfsError> {
+        self.get()?.stat(path)
+    }
+    fn readdir(&self, path: &str) -> Result<Vec<String>, VfsError> {
+        self.get()?.readdir(path)
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.get().is_ok_and(|bundle| bundle.exists(path))
+    }
+    fn is_readonly(&self) -> bool {
+        true
+    }
+    fn open_write(&self, _path: &str, _data: &[u8]) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+    fn open_append(&self, _path: &str, _data: &[u8]) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+    fn mkdir(&self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+    fn unlink(&self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+    fn rename(&self, _from: &str, _to: &str) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+}
+
+/// Build only the mount table from injected data or frozen environment settings.
+/// Routing never reads or validates a host bundle payload. A configured bundle
+/// always owns /bundle; a bad source fails there instead of falling through to
+/// the host filesystem. Relative host source paths resolve at first backend use.
+pub fn load_vfs() -> Option<VfsState> {
     let injected = INJECTED_BUNDLE.lock().unwrap().take();
-    if let Some(state) = injected {
-        if let Some(err) = state.error {
-            return Err(err);
+    let source = match injected {
+        Some(state) if state.error.is_some() || !state.entries.is_empty() => {
+            BundleSource::Injected(state)
         }
-        if !state.entries.is_empty() {
-            let mut mt = MountTable::new();
-            let bundle = bundle::BundleFs::try_from_entries(state.entries)?;
-            mt.add_mount("/bundle", Arc::new(bundle));
-            add_runtime_mounts(&mut mt);
-            return Ok(Some(VfsState::from_table(mt)));
-        }
-    }
-
-    let Some(bundle_path) = std::env::var("MOLT_VFS_BUNDLE").ok() else {
-        return Ok(None);
+        _ => BundleSource::Host {
+            path: std::env::var("MOLT_VFS_BUNDLE").ok()?,
+            quota: VfsLoadQuota::from_env(),
+            follow_links: unsafe_follow_host_links_enabled(),
+        },
     };
-
     let mut mt = MountTable::new();
-    let mut quota = VfsLoadQuota::from_env();
-
-    if std::path::Path::new(&bundle_path).is_dir() {
-        let entries = read_dir_recursive(&bundle_path, &mut quota)?;
-        let bundle = bundle::BundleFs::try_from_entries(entries)?;
-        mt.add_mount("/bundle", Arc::new(bundle));
-    } else if bundle_path.ends_with(".tar") {
-        #[cfg(feature = "vfs_bundle_tar")]
-        {
-            let tar_len = std::fs::metadata(&bundle_path)
-                .ok()
-                .and_then(|meta| usize::try_from(meta.len()).ok())
-                .unwrap_or(0);
-            quota.check_blob_len(tar_len)?;
-            let tar_bytes =
-                std::fs::read(&bundle_path).map_err(|err| VfsError::IoError(err.to_string()))?;
-            let bundle = bundle::BundleFs::from_tar_with_quota(&tar_bytes, &mut quota)
-                .map_err(VfsError::IoError)?;
-            mt.add_mount("/bundle", Arc::new(bundle));
-        }
-    }
-
+    mt.add_mount("/bundle", Arc::new(LazyBundleFs::new(source)));
     add_runtime_mounts(&mut mt);
-    Ok(Some(VfsState::from_table(mt)))
+    Some(VfsState::from_table(mt))
 }
 
 fn add_runtime_mounts(mt: &mut MountTable) {
@@ -363,4 +493,77 @@ fn add_runtime_mounts(mt: &mut MountTable) {
         .unwrap_or(64);
     mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
     mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn oversized_payload_consumes_only_one_probe_byte_beyond_limit() {
+        let mut source = Cursor::new([0_u8; 64]);
+        assert!(matches!(
+            read_bounded_payload(&mut source, 4),
+            Err(VfsError::QuotaExceeded)
+        ));
+        assert_eq!(source.position(), 5);
+        let mut exact = Cursor::new(*b"four");
+        assert_eq!(read_bounded_payload(&mut exact, 4).unwrap(), b"four");
+    }
+
+    #[test]
+    fn growing_entry_cannot_exceed_its_individual_limit() {
+        let mut quota = VfsLoadQuota::new_for_test(64, 8, 64);
+        quota.max_entry_bytes = 4;
+        quota.reserve_entry("file", 1).unwrap();
+        let mut source = Cursor::new([0_u8; 64]);
+        assert!(matches!(
+            quota.read_reserved_entry(&mut source, 1),
+            Err(VfsError::QuotaExceeded)
+        ));
+        assert_eq!(source.position(), 5);
+        assert_eq!(quota.total_bytes, 1);
+    }
+
+    #[test]
+    fn growing_entry_uses_only_remaining_total_and_charges_growth_once() {
+        let mut quota = VfsLoadQuota::new_for_test(8, 8, 64);
+        quota.reserve_entry("earlier", 5).unwrap();
+        quota.reserve_entry("current", 1).unwrap();
+        let mut oversized = Cursor::new([0_u8; 64]);
+        assert!(matches!(
+            quota.read_reserved_entry(&mut oversized, 1),
+            Err(VfsError::QuotaExceeded)
+        ));
+        assert_eq!(oversized.position(), 4);
+        assert_eq!(quota.total_bytes, 6);
+        assert_eq!(
+            quota.read_reserved_entry(Cursor::new(*b"abc"), 1).unwrap(),
+            b"abc"
+        );
+        assert_eq!(quota.total_bytes, 8);
+    }
+
+    #[test]
+    fn shrinking_entry_keeps_existing_metadata_reservation() {
+        let mut quota = VfsLoadQuota::new_for_test(8, 8, 64);
+        quota.reserve_entry("file", 4).unwrap();
+        assert_eq!(
+            quota.read_reserved_entry(Cursor::new(*b"a"), 4).unwrap(),
+            b"a"
+        );
+        assert_eq!(quota.total_bytes, 4);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn overflowing_probe_limit_is_rejected_without_reading() {
+        let mut source = Cursor::new(*b"a");
+        assert!(matches!(
+            read_bounded_payload(&mut source, usize::MAX),
+            Err(VfsError::QuotaExceeded)
+        ));
+        assert_eq!(source.position(), 0);
+    }
 }

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=thread
+# MOLT_ENV: MOLT_CAPABILITIES=os.cpu_count,thread.spawn,thread.shared
 # MOLT_META: backends=llvm,native
 """Cross-thread publications end an idle loop's wait at once.
 

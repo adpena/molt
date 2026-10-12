@@ -188,7 +188,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "aa48dd685643e11c564a7015db6f4d96f039723733dd2eaf3a51d5e0be731c0a",
+      "sha256": "67c0beee0204e80307b60b64148fddcd8374b63ea4eb86274664e6091d95575d",
       "source_type": "module"
     },
     "loader_bridge.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "3e32713925b716196498fcc21151438d4d983094438d708d8396fc0e7de37f51",
+      "sha256": "47dd4a2988ba2569f724a081edaebed6ef485d276499290d6ade66e4879e61c3",
       "source_type": "data"
     }
   },

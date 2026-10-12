@@ -500,53 +500,6 @@ pub extern "C" fn molt_logging_filter_check(filter_name_bits: u64, record_name_b
     })
 }
 
-// ─── logging file handler intrinsics ────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_file_handler_emit(
-    msg_bits: u64,
-    filename_bits: u64,
-    mode_bits: u64,
-    encoding_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "msg must be str");
-        };
-        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "filename must be str");
-        };
-        let mode = string_obj_to_owned(obj_from_bits(mode_bits)).unwrap_or_else(|| "a".to_string());
-        let _encoding = string_obj_to_owned(obj_from_bits(encoding_bits));
-
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let open_result = if mode.contains('w') {
-            OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&filename)
-        } else {
-            OpenOptions::new().append(true).create(true).open(&filename)
-        };
-        match open_result {
-            Ok(mut f) => {
-                let _ = f.write_all(msg.as_bytes());
-                let _ = f.write_all(b"\n");
-            }
-            Err(e) => {
-                return raise_exception::<_>(
-                    _py,
-                    "IOError",
-                    &format!("cannot open {}: {}", filename, e),
-                );
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
 // ─── pprint format/isreadable/isrecursive with context ──────────────────────
 
 #[unsafe(no_mangle)]
@@ -1249,16 +1202,10 @@ pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_1 = crate::has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.copyfile", "fs.read", AuditArgs::None, allowed_1);
-        let allowed_2 = crate::has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copyfile", "fs.write", AuditArgs::None, allowed_2);
-        if !allowed_1 || !allowed_2 {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) =
+            crate::require_operation(_py, crate::OperationId::ShutilCopyfile, AuditArgs::None)
+        {
+            return error;
         }
         let Some(src) = string_obj_to_owned(obj_from_bits(src_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "src must be str");
@@ -1281,22 +1228,19 @@ pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_1 = crate::has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.which", "fs.read", AuditArgs::None, allowed_1);
-        let allowed_2 = crate::has_capability(_py, "env.read");
-        audit_capability_decision("shutil.which", "env.read", AuditArgs::None, allowed_2);
-        if !allowed_1 || !allowed_2 {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/env.read capability",
-            );
-        }
         let Some(cmd) = string_obj_to_owned(obj_from_bits(cmd_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "cmd must be str");
         };
         if cmd.is_empty() {
             return MoltObject::none().bits();
+        }
+        let operation = if cfg!(windows) || obj_from_bits(path_bits).is_none() {
+            crate::OperationId::ShutilWhich
+        } else {
+            crate::OperationId::ShutilWhichExplicitPath
+        };
+        if let Err(error) = crate::require_operation(_py, operation, AuditArgs::None) {
+            return error;
         }
         let path = if obj_from_bits(path_bits).is_none() {
             env_state_get("PATH")
@@ -1386,16 +1330,10 @@ pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_1 = crate::has_capability(_py, "fs.read");
-        audit_capability_decision("py.compile.compile", "fs.read", AuditArgs::None, allowed_1);
-        let allowed_2 = crate::has_capability(_py, "fs.write");
-        audit_capability_decision("py.compile.compile", "fs.write", AuditArgs::None, allowed_2);
-        if !allowed_1 || !allowed_2 {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) =
+            crate::require_operation(_py, crate::OperationId::PyCompileCompile, AuditArgs::None)
+        {
+            return error;
         }
         let Some(file) = string_obj_to_owned(obj_from_bits(file_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "file must be str");

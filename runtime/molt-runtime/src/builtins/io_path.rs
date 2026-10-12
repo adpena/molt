@@ -595,11 +595,10 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
     }
 
     crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        if !has_capability(_py, "fs.write") {
-            return raise_capability_denied(_py, "fs.write");
+        if let Err(error) =
+            crate::require_operation(_py, crate::OperationId::PathMakedirs, AuditArgs::None)
+        {
+            return error;
         }
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,

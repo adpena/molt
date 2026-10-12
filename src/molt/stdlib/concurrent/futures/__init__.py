@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 # Load all intrinsics at module import time (hard-fail if unavailable).
 # ---------------------------------------------------------------------------
 _MOLT_THREADPOOL_NEW = _require_intrinsic("molt_concurrent_threadpool_new")
+_MOLT_REQUIRE_OPERATION = _require_intrinsic("molt_capabilities_require_operation")
 _MOLT_THREADPOOL_DROP = _require_intrinsic("molt_concurrent_threadpool_drop")
 _MOLT_THREADPOOL_SUBMIT = _require_intrinsic("molt_concurrent_threadpool_submit")
 _MOLT_THREADPOOL_SHUTDOWN = _require_intrinsic("molt_concurrent_threadpool_shutdown")
@@ -373,11 +374,12 @@ class Future:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def __del__(self) -> None:
-        handle = self._handle
+    def __del__(self, _drop=_MOLT_FUTURE_DROP) -> None:
+        handle = getattr(self, "_handle", None)
         if handle is not None:
+            self._handle = None
             try:
-                _MOLT_FUTURE_DROP(handle)
+                _drop(handle)
             except Exception:
                 pass
 
@@ -472,6 +474,7 @@ class ThreadPoolExecutor(Executor):
         initargs: tuple[Any, ...] | list[Any] = (),
     ) -> None:
         if max_workers is None:
+            _MOLT_REQUIRE_OPERATION("concurrent.threadpool.default")
             max_workers = min(32, (_os.cpu_count() or 1) + 4)
         if max_workers <= 0:
             raise ValueError("max_workers must be greater than 0")
@@ -536,15 +539,16 @@ class ThreadPoolExecutor(Executor):
         if self._handle is not None:
             _MOLT_THREADPOOL_SHUTDOWN(self._handle, wait, cancel_futures)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_MOLT_THREADPOOL_DROP) -> None:
         try:
             shutdown = self._shutdown
             handle = self._handle
         except AttributeError:
             return
+        self._handle = None
         if not shutdown and handle is not None:
             try:
-                _MOLT_THREADPOOL_DROP(handle)
+                _drop(handle)
             except Exception:
                 pass
 
@@ -584,6 +588,7 @@ class ProcessPoolExecutor(ThreadPoolExecutor):
         # max_tasks_per_child is not meaningful in thread-based execution; ignore.
 
         if max_workers is None:
+            _MOLT_REQUIRE_OPERATION("concurrent.processpool.default")
             max_workers = _os.cpu_count() or 1
 
         super().__init__(

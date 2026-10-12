@@ -1399,6 +1399,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_capabilities_require_operation",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_capabilities_trusted",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -4849,11 +4854,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_getpid",
-        arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_getrecursionlimit",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -6804,11 +6804,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_logging_basic_config",
-        arity: 4,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_logging_config_dict",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -6831,11 +6826,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_logging_config_valid_ident",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_file_handler_emit",
-        arity: 4,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -6960,22 +6950,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_logging_record_new",
-        arity: 7,
+        arity: 8,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_logging_shutdown",
         arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_stream_handler_emit",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_logging_stream_handler_new",
-        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

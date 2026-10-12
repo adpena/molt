@@ -11,7 +11,7 @@
 //   copy / copy2 / copytree / move: fs.read + fs.write
 //   rmtree:                         fs.write
 //   disk_usage / get_terminal_size: fs.read (no writes)
-//   make_archive / unpack_archive:  fs.read + fs.write + process (tar formats)
+//   make_archive / unpack_archive:  fs.read + fs.write + process.exec (tar formats)
 //   chown:                          fs.write  (Unix only)
 
 #[cfg(target_arch = "wasm32")]
@@ -237,17 +237,12 @@ fn rmtree_recursive(path: &Path) -> std::io::Result<()> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.copy", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copy", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilCopy,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -279,17 +274,12 @@ pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.copy2", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copy2", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilCopy2,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -320,17 +310,12 @@ pub extern "C" fn molt_shutil_copymode(
     follow_symlinks_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.copymode", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copymode", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilCopymode,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -356,17 +341,12 @@ pub extern "C" fn molt_shutil_copystat(
     follow_symlinks_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.copystat", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copystat", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilCopystat,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -392,17 +372,12 @@ pub extern "C" fn molt_shutil_copytree(
     dirs_exist_ok_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.copytree", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copytree", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilCopytree,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -450,17 +425,12 @@ pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
-        audit_capability_decision("shutil.move", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.move", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
+        if let Err(error) = require_operation(
+            _py,
+            OperationId::ShutilMove,
+            audit_src_dst_arg(src_bits, dst_bits),
+        ) {
+            return error;
         }
         let src = match require_path_local(_py, src_bits, "src") {
             Ok(p) => p,
@@ -755,23 +725,6 @@ pub extern "C" fn molt_shutil_make_archive(
     root_dir_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_path_arg(base_name_bits);
-        audit_capability_decision(
-            "shutil.make_archive",
-            "fs.read",
-            audit_args.clone(),
-            allowed_r,
-        );
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.make_archive", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
-        }
         let base_name = match string_obj_to_owned(obj_from_bits(base_name_bits)) {
             Some(s) => s,
             None => return raise_exception::<_>(_py, "TypeError", "base_name must be str"),
@@ -780,6 +733,32 @@ pub extern "C" fn molt_shutil_make_archive(
             Some(s) => s,
             None => return raise_exception::<_>(_py, "TypeError", "format must be str"),
         };
+        let (ext, operation) = match format.as_str() {
+            #[cfg(feature = "stdlib_archive")]
+            "zip" => (".zip", OperationId::ShutilMakeArchive),
+            #[cfg(not(feature = "stdlib_archive"))]
+            "zip" => {
+                return raise_exception::<u64>(
+                    _py,
+                    "NotImplementedError",
+                    "ZIP archive support is unavailable in this build",
+                );
+            }
+            "tar" => (".tar", OperationId::ShutilMakeArchiveExternal),
+            "gztar" => (".tar.gz", OperationId::ShutilMakeArchiveExternal),
+            "bztar" => (".tar.bz2", OperationId::ShutilMakeArchiveExternal),
+            "xztar" => (".tar.xz", OperationId::ShutilMakeArchiveExternal),
+            other => {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    &format!("unknown archive format '{other}'"),
+                );
+            }
+        };
+        if let Err(error) = require_operation(_py, operation, audit_path_arg(base_name_bits)) {
+            return error;
+        }
         let root_dir = if obj_from_bits(root_dir_bits).is_none() {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         } else {
@@ -789,20 +768,6 @@ pub extern "C" fn molt_shutil_make_archive(
             }
         };
 
-        let ext = match format.as_str() {
-            "zip" => ".zip",
-            "tar" => ".tar",
-            "gztar" => ".tar.gz",
-            "bztar" => ".tar.bz2",
-            "xztar" => ".tar.xz",
-            other => {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    &format!("unknown archive format '{other}'"),
-                );
-            }
-        };
         let archive_path = format!("{base_name}{ext}");
 
         match format.as_str() {
@@ -825,19 +790,6 @@ pub extern "C" fn molt_shutil_make_archive(
                 }
             }
             "tar" | "gztar" | "bztar" | "xztar" => {
-                // External archive helpers require the exact process execution grant.
-                let allowed = crate::operation_allowed(
-                    _py,
-                    crate::OperationId::ShutilMakeArchiveExternal,
-                    AuditArgs::Path(archive_path.clone()),
-                );
-                if !allowed {
-                    return raise_exception::<u64>(
-                        _py,
-                        "PermissionError",
-                        "missing 'process.exec' capability for archive operations",
-                    );
-                }
                 // Use std::process to invoke tar(1) which is universally available.
                 let compression_flag = match format.as_str() {
                     "gztar" => Some("-z"),
@@ -912,27 +864,32 @@ pub extern "C" fn molt_shutil_make_archive(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let allowed_r = has_capability(_py, "fs.read");
-        let audit_args = audit_path_arg(filename_bits);
-        audit_capability_decision(
-            "shutil.unpack_archive",
-            "fs.read",
-            audit_args.clone(),
-            allowed_r,
-        );
-        let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.unpack_archive", "fs.write", audit_args, allowed_w);
-        if !allowed_r || !allowed_w {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
-        }
         let filename = match path_from_bits(_py, filename_bits) {
             Ok(p) => p,
             Err(error) => return error,
         };
+        let name_lower = filename.to_string_lossy().to_lowercase();
+        let operation = if cfg!(feature = "stdlib_archive") && name_lower.ends_with(".zip") {
+            OperationId::ShutilUnpackArchive
+        } else if name_lower.ends_with(".tar")
+            || name_lower.ends_with(".tar.gz")
+            || name_lower.ends_with(".tgz")
+            || name_lower.ends_with(".tar.bz2")
+            || name_lower.ends_with(".tbz2")
+            || name_lower.ends_with(".tar.xz")
+            || name_lower.ends_with(".txz")
+        {
+            OperationId::ShutilUnpackArchiveExternal
+        } else {
+            return raise_exception::<u64>(_py, "ValueError", "unknown archive format");
+        };
+        if let Err(error) = require_operation(
+            _py,
+            operation,
+            AuditArgs::Path(filename.to_string_lossy().into_owned()),
+        ) {
+            return error;
+        }
         let extract_dir = if obj_from_bits(extract_dir_bits).is_none() {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         } else {
@@ -942,7 +899,6 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
             }
         };
 
-        let name_lower = filename.to_string_lossy().to_lowercase();
         #[cfg(feature = "stdlib_archive")]
         if name_lower.ends_with(".zip") {
             match unpack_zip(&filename, &extract_dir) {
@@ -950,40 +906,15 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
                 Err(err) => return shutil_err(_py, err, "unpack_archive"),
             }
         }
-        // Use tar(1) for all tar variants.
-        if name_lower.ends_with(".tar")
-            || name_lower.ends_with(".tar.gz")
-            || name_lower.ends_with(".tgz")
-            || name_lower.ends_with(".tar.bz2")
-            || name_lower.ends_with(".tbz2")
-            || name_lower.ends_with(".tar.xz")
-            || name_lower.ends_with(".txz")
-        {
-            // External archive helpers require the exact process execution grant.
-            let allowed = crate::operation_allowed(
-                _py,
-                crate::OperationId::ShutilUnpackArchiveExternal,
-                AuditArgs::Path(filename.to_string_lossy().into_owned()),
-            );
-            if !allowed {
-                return raise_exception::<u64>(
-                    _py,
-                    "PermissionError",
-                    "missing 'process.exec' capability for archive operations",
-                );
-            }
-            let mut cmd = std::process::Command::new("tar");
-            cmd.arg("-xf").arg(&filename);
-            cmd.arg("-C").arg(&extract_dir);
-            match cmd.status() {
-                Ok(status) if status.success() => return MoltObject::none().bits(),
-                Ok(_) => {
-                    return raise_exception::<_>(_py, "OSError", "tar extraction failed");
-                }
-                Err(err) => return shutil_err(_py, err, "unpack_archive"),
-            }
+        // All remaining admitted formats use the external tar implementation.
+        let mut cmd = std::process::Command::new("tar");
+        cmd.arg("-xf").arg(&filename);
+        cmd.arg("-C").arg(&extract_dir);
+        match cmd.status() {
+            Ok(status) if status.success() => MoltObject::none().bits(),
+            Ok(_) => raise_exception::<_>(_py, "OSError", "tar extraction failed"),
+            Err(err) => shutil_err(_py, err, "unpack_archive"),
         }
-        raise_exception::<_>(_py, "ValueError", "unknown archive format")
     })
 }
 
@@ -1130,4 +1061,220 @@ pub extern "C" fn molt_shutil_chown(_path_bits: u64, _user_bits: u64, _group_bit
     crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "chown")
     })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod capability_tests {
+    use super::*;
+    use crate::test_support::RuntimeTestTransaction;
+
+    #[allow(dead_code)]
+    mod cargo_test_artifacts {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test_support/cargo_test_artifacts.rs"
+        ));
+    }
+
+    fn take_error(py: &PyToken<'_>) -> (String, String) {
+        assert!(exception_pending(py), "operation must raise");
+        let raised = crate::molt_exception_last();
+        crate::molt_exception_clear();
+        let kind = crate::type_name(py, obj_from_bits(raised)).to_string();
+        let message_bits = crate::molt_exception_message(raised);
+        assert!(!exception_pending(py));
+        let message = string_obj_to_owned(obj_from_bits(message_bits)).unwrap();
+        dec_ref_bits(py, message_bits);
+        dec_ref_bits(py, raised);
+        (kind, message)
+    }
+
+    fn assert_denied(py: &PyToken<'_>, operation: &str, missing: &str) {
+        assert_eq!(
+            take_error(py),
+            (
+                "PermissionError".to_string(),
+                format!("missing [{missing}] capabilities for '{operation}'"),
+            ),
+        );
+    }
+
+    #[test]
+    fn filesystem_operations_report_only_all_missing_grants_before_host_work() {
+        use crate::builtins::{contextlib, functions};
+        type BinaryOperation = fn(u64, u64) -> u64;
+        let cases: &[(&str, BinaryOperation)] = &[
+            ("contextlib.chdir_enter", |src, _| {
+                contextlib::molt_contextlib_chdir_enter(src)
+            }),
+            ("contextlib.chdir_exit", |src, _| {
+                contextlib::molt_contextlib_chdir_exit(src)
+            }),
+            ("shutil.copy", |src, dst| molt_shutil_copy(src, dst)),
+            ("shutil.copy2", |src, dst| molt_shutil_copy2(src, dst)),
+            ("shutil.copymode", |src, dst| {
+                molt_shutil_copymode(src, dst, MoltObject::from_bool(true).bits())
+            }),
+            ("shutil.copystat", |src, dst| {
+                molt_shutil_copystat(src, dst, MoltObject::from_bool(true).bits())
+            }),
+            ("shutil.copytree", |src, dst| {
+                molt_shutil_copytree(src, dst, MoltObject::from_bool(false).bits())
+            }),
+            ("shutil.move", |src, dst| molt_shutil_move(src, dst)),
+            ("shutil.copyfile", |src, dst| {
+                functions::molt_shutil_copyfile(src, dst)
+            }),
+            ("py.compile.compile", |src, dst| {
+                functions::molt_py_compile_compile(src, dst)
+            }),
+        ];
+        for (grants, missing) in [
+            ("", "fs.read, fs.write"),
+            ("fs.read", "fs.write"),
+            ("fs.write", "fs.read"),
+        ] {
+            RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                let artifacts =
+                    cargo_test_artifacts::CargoTestArtifacts::new("filesystem-capability-denial")
+                        .unwrap();
+                let source = artifacts.path().join("source");
+                let destination = artifacts.path().join("destination");
+                fs::write(&source, b"untouched").unwrap();
+                let source_bits = str_bits_local(py, &source.to_string_lossy());
+                let destination_bits = str_bits_local(py, &destination.to_string_lossy());
+                let cwd = std::env::current_dir().unwrap();
+                for &(operation, invoke) in cases {
+                    let _ = invoke(source_bits, destination_bits);
+                    assert_denied(py, operation, missing);
+                    assert_eq!(fs::read(&source).unwrap(), b"untouched");
+                    assert!(!destination.exists());
+                    assert_eq!(std::env::current_dir().unwrap(), cwd);
+                }
+                dec_ref_bits(py, source_bits);
+                dec_ref_bits(py, destination_bits);
+            });
+        }
+    }
+
+    #[test]
+    fn external_archives_report_complete_branch_requirements_before_host_work() {
+        for (grants, missing) in [
+            ("", "fs.read, fs.write, process.exec"),
+            ("fs.read", "fs.write, process.exec"),
+            ("fs.write", "fs.read, process.exec"),
+            ("process.exec", "fs.read, fs.write"),
+            ("fs.read,fs.write", "process.exec"),
+            ("fs.read,process.exec", "fs.write"),
+            ("fs.write,process.exec", "fs.read"),
+        ] {
+            RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                let artifacts =
+                    cargo_test_artifacts::CargoTestArtifacts::new("archive-capability-denial")
+                        .unwrap();
+                let base = artifacts.path().join("new-archive");
+                let base_bits = str_bits_local(py, &base.to_string_lossy());
+                let format_bits = str_bits_local(py, "tar");
+                let _ = molt_shutil_make_archive(base_bits, format_bits, MoltObject::none().bits());
+                assert_denied(py, "shutil.make_archive.external", missing);
+                assert!(!base.with_extension("tar").exists());
+                let archive_bits =
+                    str_bits_local(py, &base.with_extension("tar").to_string_lossy());
+                let _ = molt_shutil_unpack_archive(archive_bits, MoltObject::none().bits());
+                assert_denied(py, "shutil.unpack_archive.external", missing);
+                dec_ref_bits(py, archive_bits);
+                dec_ref_bits(py, format_bits);
+                dec_ref_bits(py, base_bits);
+            });
+        }
+    }
+
+    #[cfg(feature = "stdlib_archive")]
+    #[test]
+    fn zip_archive_roundtrip_needs_no_process_capability() {
+        RuntimeTestTransaction::with_explicit_capabilities("fs.read,fs.write", |py| {
+            let artifacts =
+                cargo_test_artifacts::CargoTestArtifacts::new("zip-capability-roundtrip").unwrap();
+            let source = artifacts.path().join("source");
+            let destination = artifacts.path().join("destination");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir(&destination).unwrap();
+            fs::write(source.join("payload.txt"), b"zip without process authority").unwrap();
+            let base_bits = str_bits_local(py, &artifacts.path().join("archive").to_string_lossy());
+            let format_bits = str_bits_local(py, "zip");
+            let source_bits = str_bits_local(py, &source.to_string_lossy());
+            let destination_bits = str_bits_local(py, &destination.to_string_lossy());
+            let archive_bits = molt_shutil_make_archive(base_bits, format_bits, source_bits);
+            assert!(!exception_pending(py));
+            let _ = molt_shutil_unpack_archive(archive_bits, destination_bits);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                fs::read(destination.join("payload.txt")).unwrap(),
+                b"zip without process authority"
+            );
+            for bits in [
+                base_bits,
+                format_bits,
+                source_bits,
+                destination_bits,
+                archive_bits,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[cfg(not(feature = "stdlib_archive"))]
+    #[test]
+    fn unavailable_zip_creation_raises_instead_of_panicking() {
+        RuntimeTestTransaction::with_explicit_capabilities("fs.read,fs.write", |py| {
+            let base_bits = str_bits_local(py, "unused-archive");
+            let format_bits = str_bits_local(py, "zip");
+            let _ = molt_shutil_make_archive(base_bits, format_bits, MoltObject::none().bits());
+            assert_eq!(
+                take_error(py),
+                (
+                    "NotImplementedError".to_string(),
+                    "ZIP archive support is unavailable in this build".to_string(),
+                )
+            );
+            dec_ref_bits(py, base_bits);
+            dec_ref_bits(py, format_bits);
+        });
+    }
+
+    #[test]
+    fn executable_lookup_requires_only_environment_access_actually_used() {
+        use crate::builtins::functions::molt_shutil_which;
+        for (grants, missing) in [
+            ("", "env.read, fs.read"),
+            ("fs.read", "env.read"),
+            ("env.read", "fs.read"),
+        ] {
+            RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+                let command = str_bits_local(py, "missing-command");
+                let _ = molt_shutil_which(command, MoltObject::none().bits());
+                assert_denied(py, "shutil.which", missing);
+                dec_ref_bits(py, command);
+            });
+        }
+        RuntimeTestTransaction::with_explicit_capabilities("fs.read", |py| {
+            let artifacts =
+                cargo_test_artifacts::CargoTestArtifacts::new("which-explicit-path").unwrap();
+            let command = str_bits_local(py, "missing-command");
+            let path = str_bits_local(py, &artifacts.path().to_string_lossy());
+            let result = molt_shutil_which(command, path);
+            #[cfg(windows)]
+            assert_denied(py, "shutil.which", "env.read");
+            #[cfg(not(windows))]
+            {
+                assert!(!exception_pending(py));
+                assert!(obj_from_bits(result).is_none());
+            }
+            #[cfg(windows)]
+            let _ = result;
+            dec_ref_bits(py, command);
+            dec_ref_bits(py, path);
+        });
+    }
 }

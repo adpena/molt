@@ -1240,6 +1240,12 @@ runtime_name = "molt_capabilities_require"
 callable_arity = 1
 
 [[import]]
+name = "capabilities_require_operation"
+type = 2
+runtime_name = "molt_capabilities_require_operation"
+callable_arity = 1
+
+[[import]]
 name = "capabilities_trusted"
 type = 0
 runtime_name = "molt_capabilities_trusted"
@@ -2673,12 +2679,6 @@ name = "getframe"
 type = 2
 runtime_name = "molt_getframe"
 callable_arity = 1
-
-[[import]]
-name = "getpid"
-type = 0
-runtime_name = "molt_getpid"
-callable_arity = 0
 
 [[import]]
 name = "getrecursionlimit"

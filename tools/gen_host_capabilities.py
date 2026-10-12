@@ -256,21 +256,54 @@ def load_schema(path: Path = SOURCE) -> Schema:
         raise SchemaError("explicit_policy_tier must grant no ambient capabilities")
 
     operations: list[Operation] = []
-    operation_names: set[str] = set()
+    operations_by_name: dict[str, Operation] = {}
     for index, row in enumerate(_rows(data["operation"], "operation")):
-        required_keys = {"name", "capabilities"}
+        required_keys = {"name"}
         optional_keys = {"targets", "platforms", "architectures", "python_versions"}
-        if not required_keys <= set(row) or set(row) - required_keys - optional_keys:
+        requirement_keys = set(row) & {"capabilities", "requires"}
+        if (
+            not required_keys <= set(row)
+            or len(requirement_keys) != 1
+            or set(row) - required_keys - optional_keys - requirement_keys
+        ):
             raise SchemaError(
-                f"operation[{index}] keys must be name, capabilities, and optional "
+                f"operation[{index}] keys must be name, exactly one of "
+                "capabilities/requires, and optional "
                 "targets/platforms/architectures/python_versions"
             )
         name = _token(row["name"], f"operation[{index}].name")
-        capabilities = _strings(
-            row["capabilities"], f"operation[{index}].capabilities", tokens=True
+        requirement_key = next(iter(requirement_keys))
+        requirements = _strings(
+            row[requirement_key],
+            f"operation[{index}].{requirement_key}",
+            tokens=True,
         )
-        if not capabilities:
-            raise SchemaError(f"operation[{index}].capabilities must not be empty")
+        if not requirements:
+            raise SchemaError(f"operation[{index}].{requirement_key} must not be empty")
+        components: tuple[Operation, ...] = ()
+        if requirement_key == "requires":
+            unknown_or_forward = [
+                required
+                for required in requirements
+                if required not in operations_by_name
+            ]
+            if unknown_or_forward:
+                raise SchemaError(
+                    f"operation {name!r} must require only earlier operations: "
+                    f"{unknown_or_forward!r}"
+                )
+            components = tuple(
+                operations_by_name[required] for required in requirements
+            )
+            capabilities = tuple(
+                dict.fromkeys(
+                    capability
+                    for component in components
+                    for capability in component.capabilities
+                )
+            )
+        else:
+            capabilities = requirements
         targets = _strings(
             row.get("targets", []), f"operation[{index}].targets", tokens=True
         )
@@ -301,19 +334,39 @@ def load_schema(path: Path = SOURCE) -> Schema:
             TARGET_PYTHON_VERSIONS,
             f"operation[{index}].python_versions",
         )
-        if name in operation_names:
+        if name in operations_by_name:
             raise SchemaError(f"duplicate operation name {name!r}")
-        operation_names.add(name)
-        operations.append(
-            Operation(
-                name,
-                capabilities,
-                targets,
-                platforms,
-                architectures,
-                python_versions,
-            )
+        dimensions = {
+            "targets": targets,
+            "platforms": platforms,
+            "architectures": architectures,
+            "python_versions": python_versions,
+        }
+        for dimension, values in dimensions.items():
+            constraints = [
+                values,
+                *(getattr(component, dimension) for component in components),
+            ]
+            bounded = [constraint for constraint in constraints if constraint]
+            if bounded:
+                admitted = set(bounded[0]).intersection(*bounded[1:])
+                if not admitted:
+                    raise SchemaError(
+                        f"operation {name!r} has no shared {dimension} across its requirements"
+                    )
+                dimensions[dimension] = tuple(
+                    value for value in bounded[0] if value in admitted
+                )
+        operation = Operation(
+            name,
+            capabilities,
+            dimensions["targets"],
+            dimensions["platforms"],
+            dimensions["architectures"],
+            dimensions["python_versions"],
         )
+        operations.append(operation)
+        operations_by_name[name] = operation
 
     capabilities = tuple(
         sorted(
@@ -329,7 +382,7 @@ def load_schema(path: Path = SOURCE) -> Schema:
         )
     )
     _validate_projection_names(capabilities, "capability")
-    _validate_projection_names(operation_names, "operation")
+    _validate_projection_names(operations_by_name, "operation")
     missing_from_maximum = sorted(
         set(capabilities) - set(effective_by_name[maximum_builtin_tier])
     )
@@ -540,6 +593,19 @@ def render_rust(schema: Schema) -> str:
         [
             "}\n\n",
             "impl OperationId {\n",
+            "    pub fn from_name(name: &str) -> Option<Self> {\n",
+            "        match name {\n",
+        ]
+    )
+    lines.extend(
+        f"            {_rust_string(operation.name)} => Some(Self::{_rust_variant(operation.name)}),\n"
+        for operation in schema.operations
+    )
+    lines.extend(
+        [
+            "            _ => None,\n",
+            "        }\n",
+            "    }\n\n",
             "    pub const fn as_str(self) -> &'static str {\n",
             "        match self {\n",
         ]

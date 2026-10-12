@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Test that collections.deque works correctly when shared across threads.
 
 Verifies cross-thread visibility of deque mutations: append, popleft,

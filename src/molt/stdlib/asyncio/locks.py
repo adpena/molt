@@ -84,10 +84,11 @@ class Event:
         state = "set" if self.is_set() else "unset"
         return f"<Event [{state}]>"
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_asyncio_event_drop) -> None:
         handle = getattr(self, "_evt_handle", None)
         if handle is not None:
-            _molt_asyncio_event_drop(handle)
+            self._evt_handle = None
+            _drop(handle)
 
 
 class Lock:
@@ -130,10 +131,11 @@ class Lock:
         state = "locked" if self.locked() else "unlocked"
         return f"<Lock [{state}]>"
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_asyncio_lock_drop) -> None:
         handle = getattr(self, "_lock_handle", None)
         if handle is not None:
-            _molt_asyncio_lock_drop(handle)
+            self._lock_handle = None
+            _drop(handle)
 
 
 class Condition:
@@ -234,10 +236,11 @@ class Semaphore:
         state = "locked" if value == 0 else f"unlocked, value:{value}"
         return f"<Semaphore [{state}]>"
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_asyncio_semaphore_drop) -> None:
         handle = getattr(self, "_sem_handle", None)
         if handle is not None:
-            _molt_asyncio_semaphore_drop(handle)
+            self._sem_handle = None
+            _drop(handle)
 
 
 class BoundedSemaphore(Semaphore):

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read,os.getpid
 """Purpose: differential coverage for logging handlers timed rotation."""
 
 import logging

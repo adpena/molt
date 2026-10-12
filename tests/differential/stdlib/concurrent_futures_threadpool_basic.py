@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Purpose: differential coverage for concurrent futures threadpool basic."""
 
 from concurrent.futures import ThreadPoolExecutor, wait

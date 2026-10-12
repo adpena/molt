@@ -87,156 +87,83 @@ const MOUNT_CAPABILITIES: &[(&str, &str, &str)] = &[
     ("/dev", "", ""), // always readable and writable
 ];
 
-/// Check whether the given operation is allowed on the mount.
-/// Returns Ok(()) if allowed, Err with diagnostic if denied.
-pub fn check_mount_capability(
+/// Selected mount requirements. Read-only is a constraint, not a capability:
+/// callers report all missing grants before applying this constraint.
+#[derive(Debug)]
+pub struct MountRequirements {
+    capabilities: [&'static str; 2],
+    count: usize,
+    pub read_only: bool,
+}
+
+impl MountRequirements {
+    pub fn capabilities(&self) -> &[&'static str] {
+        &self.capabilities[..self.count]
+    }
+}
+
+/// Resolve only policy metadata; authorization belongs to the runtime gate.
+pub fn mount_requirements(
     mount_prefix: &str,
-    is_write: bool,
-    has_cap: &dyn Fn(&str) -> bool,
-) -> Result<(), VfsError> {
+    readable: bool,
+    writable: bool,
+) -> Result<MountRequirements, VfsError> {
     let entry = MOUNT_CAPABILITIES.iter().find(|(prefix, _, _)| {
         mount_prefix == *prefix
             || (mount_prefix.len() > prefix.len()
                 && mount_prefix.starts_with(prefix)
                 && mount_prefix.as_bytes()[prefix.len()] == b'/')
     });
-
     let Some((_, read_cap, write_cap)) = entry else {
         return Err(VfsError::NotFound);
     };
-
-    if is_write {
-        if *write_cap == NEVER {
-            return Err(VfsError::ReadOnly);
-        }
-        if write_cap.is_empty() {
-            return Ok(()); // always allowed
-        }
-        if !has_cap(write_cap) {
-            return Err(VfsError::CapabilityDenied(format!(
-                "operation requires '{write_cap}' capability\n  \
-                 mount: {mount_prefix}\n  \
-                 hint: set MOLT_CAPABILITIES={write_cap} or add to host profile"
-            )));
-        }
-    } else {
-        if !read_cap.is_empty() && !has_cap(read_cap) {
-            return Err(VfsError::CapabilityDenied(format!(
-                "operation requires '{read_cap}' capability\n  \
-                 mount: {mount_prefix}\n  \
-                 hint: set MOLT_CAPABILITIES={read_cap} or add to host profile"
-            )));
+    let mut requirements = MountRequirements {
+        capabilities: [""; 2],
+        count: 0,
+        read_only: writable && *write_cap == NEVER,
+    };
+    for (selected, capability) in [(readable, *read_cap), (writable, *write_cap)] {
+        if selected && !capability.is_empty() && capability != NEVER {
+            requirements.capabilities[requirements.count] = capability;
+            requirements.count += 1;
         }
     }
-
-    Ok(())
+    Ok(requirements)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Helper: always-grant capability checker.
-    fn allow_all(_cap: &str) -> bool {
-        true
-    }
-
-    /// Helper: never-grant capability checker.
-    fn deny_all(_cap: &str) -> bool {
-        false
+    #[test]
+    fn selected_access_requires_only_its_mount_grants() {
+        for (read, write, expected) in [
+            (true, false, vec!["fs.tmp.read"]),
+            (false, true, vec!["fs.tmp.write"]),
+            (true, true, vec!["fs.tmp.read", "fs.tmp.write"]),
+        ] {
+            for prefix in ["/tmp", "/tmp/child"] {
+                let selected = mount_requirements(prefix, read, write).unwrap();
+                assert_eq!(selected.capabilities(), expected);
+                assert!(!selected.read_only);
+            }
+        }
+        let bundle = mount_requirements("/bundle", true, true).unwrap();
+        assert_eq!(bundle.capabilities(), ["fs.bundle.read"]);
+        assert!(bundle.read_only);
+        let dev = mount_requirements("/dev/null", true, true).unwrap();
+        assert!(dev.capabilities().is_empty());
+        assert!(!dev.read_only);
     }
 
     #[test]
-    fn dev_exact_match_allowed() {
-        let result = check_mount_capability("/dev", false, &allow_all);
-        assert!(
-            result.is_ok(),
-            "/dev exact read should be allowed without caps"
-        );
-    }
-
-    #[test]
-    fn dev_null_with_separator_allowed() {
-        let result = check_mount_capability("/dev/null", false, &allow_all);
-        assert!(
-            result.is_ok(),
-            "/dev/null should match /dev mount via separator"
-        );
-    }
-
-    #[test]
-    fn devious_must_not_match_dev() {
-        let result = check_mount_capability("/devious", false, &allow_all);
-        assert!(
-            matches!(result, Err(VfsError::NotFound)),
-            "/devious must NOT match /dev — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn tmp_private_must_not_match_tmp() {
-        let result = check_mount_capability("/tmp_private", false, &allow_all);
-        assert!(
-            matches!(result, Err(VfsError::NotFound)),
-            "/tmp_private must NOT match /tmp — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn bundle_extra_must_not_match_bundle() {
-        let result = check_mount_capability("/bundle_extra", false, &allow_all);
-        assert!(
-            matches!(result, Err(VfsError::NotFound)),
-            "/bundle_extra must NOT match /bundle — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn tmp_exact_checks_read_cap_granted() {
-        let result = check_mount_capability("/tmp", false, &allow_all);
-        assert!(result.is_ok(), "/tmp read with cap granted should succeed");
-    }
-
-    #[test]
-    fn tmp_exact_checks_read_cap_denied() {
-        let result = check_mount_capability("/tmp", false, &deny_all);
-        assert!(
-            matches!(result, Err(VfsError::CapabilityDenied(_))),
-            "/tmp read without cap should be CapabilityDenied — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn tmp_subpath_checks_read_cap() {
-        let result = check_mount_capability("/tmp/foo", false, &allow_all);
-        assert!(
-            result.is_ok(),
-            "/tmp/foo read with cap granted should succeed"
-        );
-
-        let result = check_mount_capability("/tmp/foo", false, &deny_all);
-        assert!(
-            matches!(result, Err(VfsError::CapabilityDenied(_))),
-            "/tmp/foo read without cap should be CapabilityDenied — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn bundle_write_is_readonly() {
-        let result = check_mount_capability("/bundle", true, &allow_all);
-        assert!(
-            matches!(result, Err(VfsError::ReadOnly)),
-            "/bundle write should be ReadOnly — got {result:?}"
-        );
-    }
-
-    #[test]
-    fn unknown_mount_is_not_found() {
-        let result = check_mount_capability("/unknown", false, &allow_all);
-        assert!(
-            matches!(result, Err(VfsError::NotFound)),
-            "/unknown should be NotFound — got {result:?}"
-        );
+    fn policy_requires_mount_path_boundaries() {
+        for prefix in ["/devious", "/tmp_private", "/bundle_extra", "/unknown"] {
+            assert!(matches!(
+                mount_requirements(prefix, true, true),
+                Err(VfsError::NotFound)
+            ));
+        }
     }
 
     #[test]

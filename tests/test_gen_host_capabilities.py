@@ -297,3 +297,97 @@ def test_schema_rejects_unknown_target_vocabulary(
     )
     with pytest.raises(gen.SchemaError, match="contains unsupported values"):
         gen.load_schema(invalid)
+
+
+def test_composite_operations_preserve_branch_requirements_and_target_intersection() -> (
+    None
+):
+    generated = _generated()
+    assert tuple(
+        item.value
+        for item in generated.capabilities_for_operation(
+            generated.OperationId.CONCURRENT_THREADPOOL_DEFAULT
+        )
+    ) == ("os.cpu_count", "thread.spawn", "thread.shared")
+    assert generated.OPERATION_TARGETS[
+        generated.OperationId.CONCURRENT_THREADPOOL_DEFAULT
+    ] == ("native",)
+    assert tuple(
+        item.value
+        for item in generated.capabilities_for_operation(
+            generated.OperationId.SHUTIL_MAKE_ARCHIVE_EXTERNAL
+        )
+    ) == ("fs.read", "fs.write", "process.exec")
+    assert tuple(
+        item.value
+        for item in generated.capabilities_for_operation(
+            generated.OperationId.SHUTIL_MAKE_ARCHIVE
+        )
+    ) == ("fs.read", "fs.write")
+
+
+def test_transitive_composition_deduplicates_grants_and_intersects_each_dimension(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    path = tmp_path / "composed.toml"
+    path.write_text(
+        gen.SOURCE.read_text(encoding="utf-8")
+        + """
+[[operation]]
+name = "test.first"
+capabilities = ["fs.read", "fs.write"]
+targets = ["native", "wasi"]
+platforms = ["linux", "macos"]
+architectures = ["x86_64", "aarch64"]
+python_versions = ["3.12", "3.13"]
+[[operation]]
+name = "test.second"
+capabilities = ["fs.write", "env.read"]
+targets = ["native"]
+platforms = ["linux"]
+architectures = ["aarch64"]
+python_versions = ["3.13"]
+[[operation]]
+name = "test.composed"
+requires = ["test.first", "test.second"]
+[[operation]]
+name = "test.transitive"
+requires = ["test.composed", "test.first"]
+""",
+        encoding="utf-8",
+    )
+    operation = gen.load_schema(path).operations[-1]
+    assert operation.capabilities == ("fs.read", "fs.write", "env.read")
+    assert operation.targets == ("native",)
+    assert operation.platforms == ("linux",)
+    assert operation.architectures == ("aarch64",)
+    assert operation.python_versions == ("3.13",)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "message"),
+    [
+        ('requires = ["unknown.operation"]', "require only earlier operations"),
+        ('requires = ["test.invalid"]', "require only earlier operations"),
+        ("requires = []", "must not be empty"),
+        ('requires = ["time.time", "time.time"]', "must be unique"),
+        ('requires = ["time.time"]\ncapabilities = ["time.wall"]', "exactly one"),
+        ('requires = ["thread.spawn_shared"]\ntargets = ["wasi"]', "no shared targets"),
+        ('requires = ["select.epoll"]\nplatforms = ["macos"]', "no shared platforms"),
+    ],
+)
+def test_invalid_composition_never_becomes_an_unconstrained_operation(
+    tmp_path: Path, suffix: str, message: str
+) -> None:
+    gen = _gen()
+    path = tmp_path / "invalid-composition.toml"
+    path.write_text(
+        gen.SOURCE.read_text(encoding="utf-8")
+        + '\n[[operation]]\nname = "test.invalid"\n'
+        + suffix
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match=message):
+        gen.load_schema(path)

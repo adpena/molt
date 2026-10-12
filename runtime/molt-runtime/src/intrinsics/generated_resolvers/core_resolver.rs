@@ -19,6 +19,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_capabilities_require",
             crate::molt_capabilities_require as *const (),
         )),
+        "molt_capabilities_require_operation" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_capabilities_require_operation",
+            crate::molt_capabilities_require_operation as *const (),
+        )),
         "molt_abc_bootstrap" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_abc_bootstrap",
             crate::molt_abc_bootstrap as *const (),
@@ -86,10 +90,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_spawn" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_spawn",
             crate::molt_spawn as *const (),
-        )),
-        "molt_getpid" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_getpid",
-            crate::molt_getpid as *const (),
         )),
         "molt_env_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_env_get",

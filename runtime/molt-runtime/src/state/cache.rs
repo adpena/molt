@@ -394,26 +394,6 @@ pub(crate) fn intern_bridge_protocol_name(
     }
 }
 
-#[cfg(feature = "stdlib_logging_ext")]
-pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Result<Option<u64>, ()> {
-    if crate::exception_pending(_py) {
-        return Err(());
-    }
-    if key != b"write" {
-        return Ok(None);
-    }
-    let bits = intern_static_name(
-        _py,
-        &crate::runtime_state(_py).interned.write_name,
-        b"write",
-    );
-    if bits == 0 || crate::exception_pending(_py) {
-        Err(())
-    } else {
-        Ok(Some(bits))
-    }
-}
-
 /// Allocate one owned keyword-marker object for a runtime cache publication.
 /// Zero is the cache initialization failure value; Python None is never a
 /// marker candidate. Both itertools bridge profiles and functools use this
@@ -531,34 +511,19 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    #[cfg(any(
-        feature = "stdlib_math",
-        feature = "stdlib_serial",
-        feature = "stdlib_logging_ext"
-    ))]
+    #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
     #[test]
     fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
             assert_eq!(
                 super::intern_bridge_protocol_name(py, b"unsupported-name"),
                 Ok(None)
             );
-            #[cfg(feature = "stdlib_logging_ext")]
-            assert_eq!(
-                super::intern_bridge_write_name(py, b"unsupported-name"),
-                Ok(None)
-            );
             crate::raise_exception::<u64>(py, "MemoryError", "original bridge allocation failure");
             let original = crate::exception_last_bits_noinc(py);
-            #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
             for key in [b"__float__".as_slice(), b"unsupported-name"] {
                 assert_eq!(super::intern_bridge_protocol_name(py, key), Err(()));
-            }
-            #[cfg(feature = "stdlib_logging_ext")]
-            for key in [b"write".as_slice(), b"unsupported-name"] {
-                assert_eq!(super::intern_bridge_write_name(py, key), Err(()));
             }
             assert_eq!(crate::exception_last_bits_noinc(py), original);
             let _ = crate::molt_exception_clear();

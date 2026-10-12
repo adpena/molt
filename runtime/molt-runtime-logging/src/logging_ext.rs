@@ -154,7 +154,7 @@ struct LogRecordState {
     relative_created: f64,
     thread: i64,
     thread_name: String,
-    process: i64,
+    process: Option<i64>,
     process_name: String,
     message: Option<String>,
     asctime: Option<String>,
@@ -204,6 +204,7 @@ pub extern "C" fn molt_logging_record_new(
     msg_bits: u64,
     args_bits: u64,
     exc_info_bits: u64,
+    process_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
@@ -211,6 +212,20 @@ pub extern "C" fn molt_logging_record_new(
         };
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "LogRecord level must be int");
+        };
+        // Process metadata is supplied by the Python caller after its canonical
+        // os.getpid operation (or None when logProcesses is disabled).
+        let process = if obj_from_bits(process_bits).is_none() {
+            None
+        } else {
+            let Some(process) = to_i64(obj_from_bits(process_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "LogRecord process must be int or None",
+                );
+            };
+            Some(process)
         };
         let pathname = opt_str(pathname_bits).unwrap_or_default();
         let lineno = to_i64(obj_from_bits(lineno_bits)).unwrap_or(0);
@@ -243,7 +258,7 @@ pub extern "C" fn molt_logging_record_new(
             relative_created,
             thread: 0,
             thread_name: "MainThread".to_string(),
-            process: std::process::id() as i64,
+            process,
             process_name: "MainProcess".to_string(),
             message: None,
             asctime: None,
@@ -553,7 +568,9 @@ fn lookup_record_field(record: &LogRecordState, key: &str, message: &str, asctim
         "relativeCreated" => format!("{:.6}", record.relative_created),
         "thread" => record.thread.to_string(),
         "threadName" => record.thread_name.clone(),
-        "process" => record.process.to_string(),
+        "process" => record
+            .process
+            .map_or_else(|| "None".to_string(), |pid| pid.to_string()),
         "processName" => record.process_name.clone(),
         "message" => message.to_string(),
         "asctime" => asctime.to_string(),
@@ -792,50 +809,20 @@ pub extern "C" fn molt_logging_formatter_drop(handle_bits: u64) -> u64 {
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HandlerKind {
-    Base,
-    Stream,
-}
-
 struct HandlerState {
-    kind: HandlerKind,
     level: i64,
     formatter_handle: Option<i64>,
     /// For base handler, emitted records are buffered here as formatted strings.
     buffer: Vec<String>,
-    /// For StreamHandler: 0 = stderr (default), 1 = stdout, or raw stream bits.
-    stream_target: StreamTarget,
     closed: bool,
-}
-
-#[derive(Clone, Copy)]
-enum StreamTarget {
-    Stderr,
-    Stdout,
-    /// Raw stream object bits from the Python side.
-    Custom(u64),
 }
 
 impl HandlerState {
     fn new_base(level: i64) -> Self {
         Self {
-            kind: HandlerKind::Base,
             level,
             formatter_handle: None,
             buffer: Vec::new(),
-            stream_target: StreamTarget::Stderr,
-            closed: false,
-        }
-    }
-
-    fn new_stream(stream_target: StreamTarget, level: i64) -> Self {
-        Self {
-            kind: HandlerKind::Stream,
-            level,
-            formatter_handle: None,
-            buffer: Vec::new(),
-            stream_target,
             closed: false,
         }
     }
@@ -996,113 +983,6 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
     })
 }
 
-// ── StreamHandler intrinsics ─────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
-        let stream_target = if obj_from_bits(stream_bits).is_none() {
-            StreamTarget::Stderr
-        } else {
-            // Check if stream_bits refers to a known name.
-            if let Some(name) = string_obj_to_owned(obj_from_bits(stream_bits)) {
-                match name.as_str() {
-                    "stderr" | "<stderr>" => StreamTarget::Stderr,
-                    "stdout" | "<stdout>" => StreamTarget::Stdout,
-                    _ => StreamTarget::Custom(stream_bits),
-                }
-            } else {
-                StreamTarget::Custom(stream_bits)
-            }
-        };
-        let handler = HandlerState::new_stream(stream_target, level);
-        let id = next_handler_handle();
-        logging_state()
-            .handler_registry
-            .lock()
-            .unwrap()
-            .insert(id, handler);
-        MoltObject::from_int(id).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(h_id) = handle_from_bits(_py, handler_bits, "StreamHandler") else {
-            return MoltObject::none().bits();
-        };
-        let Some(r_id) = handle_from_bits(_py, record_bits, "LogRecord") else {
-            return MoltObject::none().bits();
-        };
-        let (formatted, stream_target) = {
-            let mut rec_reg = logging_state().record_registry.lock().unwrap();
-            let Some(record) = rec_reg.get_mut(&r_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
-            };
-            let handler_reg = logging_state().handler_registry.lock().unwrap();
-            let Some(handler) = handler_reg.get(&h_id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid StreamHandler handle");
-            };
-            if handler.closed {
-                return MoltObject::none().bits();
-            }
-            let formatted = handler.format_record(record);
-            (formatted, handler.stream_target)
-        };
-
-        // Write to the target stream.
-        match stream_target {
-            StreamTarget::Stderr => {
-                eprintln!("{formatted}");
-            }
-            StreamTarget::Stdout => {
-                println!("{formatted}");
-            }
-            StreamTarget::Custom(stream_obj_bits) => {
-                // Write the formatted message + newline to the stream object
-                // by looking up its .write() method and calling it.
-                let msg_with_newline = format!("{formatted}\n");
-                let msg_ptr = alloc_string(_py, msg_with_newline.as_bytes());
-                if !msg_ptr.is_null() {
-                    let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-                    if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
-                        unsafe {
-                            let write_name = crate::bridge::intern_static_name(_py, b"write");
-                            if obj_from_bits(write_name).is_none() {
-                                dec_ref_bits(_py, msg_bits);
-                                return MoltObject::none().bits();
-                            }
-                            let write_fn = match crate::bridge::attr_lookup_ptr_allow_missing(
-                                _py, stream_ptr, write_name,
-                            ) {
-                                Ok(method) => method,
-                                Err(()) => {
-                                    dec_ref_bits(_py, msg_bits);
-                                    return MoltObject::none().bits();
-                                }
-                            };
-                            if let Some(write_fn) = write_fn {
-                                let result = crate::bridge::call_callable1(_py, write_fn, msg_bits);
-                                if !obj_from_bits(result).is_none() {
-                                    dec_ref_bits(_py, result);
-                                }
-                                dec_ref_bits(_py, write_fn);
-                                if crate::bridge::exception_pending(_py) {
-                                    crate::bridge::clear_exception(_py);
-                                }
-                            }
-                        }
-                    }
-                    dec_ref_bits(_py, msg_bits);
-                }
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
 // ── Logger ───────────────────────────────────────────────────────────────────
 
 struct LoggerState {
@@ -1156,7 +1036,6 @@ struct LoggingRuntimeState {
     formatter_registry: Mutex<HashMap<i64, FormatterState>>,
     handler_registry: Mutex<HashMap<i64, HandlerState>>,
     logger_registry: Mutex<HashMap<i64, LoggerState>>,
-    root_logger_handle: Mutex<Option<i64>>,
     logger_cache: Mutex<HashMap<String, i64>>,
     start_time: f64,
 }
@@ -1173,7 +1052,6 @@ impl LoggingRuntimeState {
             formatter_registry: Mutex::new(HashMap::new()),
             handler_registry: Mutex::new(HashMap::new()),
             logger_registry: Mutex::new(HashMap::new()),
-            root_logger_handle: Mutex::new(None),
             logger_cache: Mutex::new(HashMap::new()),
             start_time: current_time_secs(),
         }
@@ -1185,7 +1063,6 @@ impl LoggingRuntimeState {
         self.formatter_registry.lock().unwrap().clear();
         self.handler_registry.lock().unwrap().clear();
         self.logger_registry.lock().unwrap().clear();
-        *self.root_logger_handle.lock().unwrap() = None;
         self.logger_cache.lock().unwrap().clear();
     }
 }
@@ -1341,104 +1218,6 @@ pub extern "C" fn molt_logging_logger_drop(handle_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         logging_state().logger_registry.lock().unwrap().remove(&id);
-        MoltObject::none().bits()
-    })
-}
-
-// ── Manager / root logger ────────────────────────────────────────────────────
-
-fn ensure_root_logger() -> i64 {
-    let mut root_opt = logging_state().root_logger_handle.lock().unwrap();
-    if let Some(id) = *root_opt {
-        return id;
-    }
-    let logger = LoggerState::new("root".to_string(), WARNING);
-    let id = next_logger_handle();
-    logging_state()
-        .logger_registry
-        .lock()
-        .unwrap()
-        .insert(id, logger);
-    *root_opt = Some(id);
-    id
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_basic_config(
-    level_bits: u64,
-    format_bits: u64,
-    datefmt_bits: u64,
-    stream_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let root_id = ensure_root_logger();
-
-        // Check if root already has handlers — if so, basicConfig is a no-op
-        // (matching CPython behavior).
-        {
-            let registry = logging_state().logger_registry.lock().unwrap();
-            if let Some(logger) = registry.get(&root_id)
-                && !logger.handlers.is_empty()
-            {
-                return MoltObject::none().bits();
-            }
-        }
-
-        // Create a StreamHandler.
-        let stream_target = if obj_from_bits(stream_bits).is_none() {
-            StreamTarget::Stderr
-        } else if let Some(name) = string_obj_to_owned(obj_from_bits(stream_bits)) {
-            match name.as_str() {
-                "stderr" | "<stderr>" => StreamTarget::Stderr,
-                "stdout" | "<stdout>" => StreamTarget::Stdout,
-                _ => StreamTarget::Custom(stream_bits),
-            }
-        } else {
-            StreamTarget::Custom(stream_bits)
-        };
-
-        let handler = HandlerState::new_stream(stream_target, NOTSET);
-        let handler_id = next_handler_handle();
-        logging_state()
-            .handler_registry
-            .lock()
-            .unwrap()
-            .insert(handler_id, handler);
-
-        // Create a Formatter if format or datefmt was provided.
-        let fmt_str = opt_str(format_bits);
-        let datefmt = opt_str(datefmt_bits);
-        if fmt_str.is_some() || datefmt.is_some() {
-            let formatter = FormatterState {
-                fmt: fmt_str.unwrap_or_else(|| "%(levelname)s:%(name)s:%(message)s".to_string()),
-                datefmt,
-                style: FormatStyle::Percent,
-                default_time_format: "%Y-%m-%d %H:%M:%S".to_string(),
-                default_msec_format: "%s,%03d".to_string(),
-            };
-            let fmt_id = next_formatter_handle();
-            logging_state()
-                .formatter_registry
-                .lock()
-                .unwrap()
-                .insert(fmt_id, formatter);
-            let mut h_reg = logging_state().handler_registry.lock().unwrap();
-            if let Some(h) = h_reg.get_mut(&handler_id) {
-                h.formatter_handle = Some(fmt_id);
-            }
-        }
-
-        // Add handler to root logger.
-        let mut registry = logging_state().logger_registry.lock().unwrap();
-        if let Some(logger) = registry.get_mut(&root_id) {
-            logger.handlers.push(handler_id);
-            // Set level if provided.
-            if !obj_from_bits(level_bits).is_none() {
-                let level = to_i64(obj_from_bits(level_bits)).unwrap_or(WARNING);
-                logger.level = level;
-            }
-        }
-
         MoltObject::none().bits()
     })
 }

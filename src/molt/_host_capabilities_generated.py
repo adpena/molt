@@ -44,6 +44,7 @@ class CapabilityId(StrEnum):
     OS_ACCESS = "os.access"
     OS_CHDIR = "os.chdir"
     OS_CHMOD = "os.chmod"
+    OS_CPU_COUNT = "os.cpu_count"
     OS_FTRUNCATE = "os.ftruncate"
     OS_GETCWD = "os.getcwd"
     OS_GETEGID = "os.getegid"
@@ -289,6 +290,73 @@ class OperationId(StrEnum):
     TEMPFILE_NAMED = "tempfile.named"
     TEMPFILE_TEMPDIR = "tempfile.tempdir"
     TRACEBACK_SOURCE_LINE = "traceback.source_line"
+    OS_LISTDIR = "os.listdir"
+    OS_SCANDIR = "os.scandir"
+    OS_WALK = "os.walk"
+    OS_GETCWD = "os.getcwd"
+    OS_CHDIR = "os.chdir"
+    OS_MKDIR = "os.mkdir"
+    OS_RMDIR = "os.rmdir"
+    OS_REMOVEDIRS = "os.removedirs"
+    OS_ACCESS = "os.access"
+    OS_CHMOD = "os.chmod"
+    OS_LINK = "os.link"
+    OS_SYMLINK = "os.symlink"
+    OS_READLINK = "os.readlink"
+    OS_TRUNCATE = "os.truncate"
+    OS_GETPID = "os.getpid"
+    OS_GETPPID = "os.getppid"
+    OS_GETUID = "os.getuid"
+    OS_GETGID = "os.getgid"
+    OS_GETEUID = "os.geteuid"
+    OS_GETEGID = "os.getegid"
+    OS_GETLOGIN = "os.getlogin"
+    OS_CPU_COUNT = "os.cpu_count"
+    OS_GETLOADAVG = "os.getloadavg"
+    OS_UNAME = "os.uname"
+    OS_UMASK = "os.umask"
+    OS_PATH_GETSIZE = "os.path.getsize"
+    OS_PATH_GETMTIME = "os.path.getmtime"
+    OS_PATH_GETATIME = "os.path.getatime"
+    OS_PATH_GETCTIME = "os.path.getctime"
+    OS_PATH_SAMEFILE = "os.path.samefile"
+    OS_DUP2 = "os.dup2"
+    OS_LSEEK = "os.lseek"
+    OS_FTRUNCATE = "os.ftruncate"
+    OS_KILL = "os.kill"
+    OS_WAITPID = "os.waitpid"
+    OS_GETPGRP = "os.getpgrp"
+    OS_SETPGRP = "os.setpgrp"
+    OS_SETSID = "os.setsid"
+    OS_PATH_REALPATH = "os.path.realpath"
+    OS_UTIME = "os.utime"
+    OS_READLINK_AT = "os.readlink_at"
+    OS_SYMLINK_AT = "os.symlink_at"
+    OS_UTIME_AT = "os.utime_at"
+    OS_SENDFILE = "os.sendfile"
+    OS_ENVIRON = "os.environ"
+    OS_MAKEDIRS = "os.makedirs"
+    PATHLIB_RESOLVE = "pathlib.resolve"
+    PATHLIB_IS_MOUNT = "pathlib.is_mount"
+    PATHLIB_ITERDIR = "pathlib.iterdir"
+    PATHLIB_RGLOB = "pathlib.rglob"
+    PATHLIB_TOUCH = "pathlib.touch"
+    PATHLIB_HARDLINK_TO = "pathlib.hardlink_to"
+    PATHLIB_READ_TEXT = "pathlib.read_text"
+    PATHLIB_READ_BYTES = "pathlib.read_bytes"
+    PATHLIB_WRITE_TEXT = "pathlib.write_text"
+    PATHLIB_WRITE_BYTES = "pathlib.write_bytes"
+    PATHLIB_OWNER = "pathlib.owner"
+    PATHLIB_GROUP = "pathlib.group"
+    PATHLIB_SAMEFILE = "pathlib.samefile"
+    CONCURRENT_THREADPOOL_DEFAULT = "concurrent.threadpool.default"
+    CONCURRENT_PROCESSPOOL_DEFAULT = "concurrent.processpool.default"
+    SHUTIL_WHICH_EXPLICIT_PATH = "shutil.which.explicit_path"
+    IO_OPEN_READ = "io.open.read"
+    IO_OPEN_WRITE = "io.open.write"
+    IO_OPEN_READWRITE = "io.open.readwrite"
+    PATH_MAKEDIRS = "path.makedirs"
+    MULTIPROCESSING_SPAWN = "multiprocessing.spawn"
 
 
 OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = (
@@ -309,12 +377,20 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
                 CapabilityId.FS_READ,
                 CapabilityId.FS_WRITE,
             ),
-            OperationId.SHUTIL_MAKE_ARCHIVE_EXTERNAL: (CapabilityId.PROCESS_EXEC,),
+            OperationId.SHUTIL_MAKE_ARCHIVE_EXTERNAL: (
+                CapabilityId.FS_READ,
+                CapabilityId.FS_WRITE,
+                CapabilityId.PROCESS_EXEC,
+            ),
             OperationId.SHUTIL_UNPACK_ARCHIVE: (
                 CapabilityId.FS_READ,
                 CapabilityId.FS_WRITE,
             ),
-            OperationId.SHUTIL_UNPACK_ARCHIVE_EXTERNAL: (CapabilityId.PROCESS_EXEC,),
+            OperationId.SHUTIL_UNPACK_ARCHIVE_EXTERNAL: (
+                CapabilityId.FS_READ,
+                CapabilityId.FS_WRITE,
+                CapabilityId.PROCESS_EXEC,
+            ),
             OperationId.FCNTL_FCNTL: (CapabilityId.FCNTL_FCNTL,),
             OperationId.SIGNAL_SIGNAL: (CapabilityId.SIGNAL_SIGNAL,),
             OperationId.SIGNAL_GETSIGNAL: (CapabilityId.SIGNAL_SIGNAL,),
@@ -343,6 +419,7 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.TIME_GET_CLOCK_INFO: (CapabilityId.TIME_WALL,),
             OperationId.TIME_UUID1: (CapabilityId.TIME_WALL,),
             OperationId.IMPORTLIB_EXEC_EXTENSION_MODULE: (
+                CapabilityId.FS_READ,
                 CapabilityId.MODULE_EXTENSION_EXEC,
             ),
             OperationId.SELECT_SELECT: (CapabilityId.SELECT_SELECT,),
@@ -497,6 +574,87 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.TEMPFILE_NAMED: (CapabilityId.FS_WRITE,),
             OperationId.TEMPFILE_TEMPDIR: (CapabilityId.FS_WRITE,),
             OperationId.TRACEBACK_SOURCE_LINE: (CapabilityId.FS_READ,),
+            OperationId.OS_LISTDIR: (CapabilityId.FS_READ,),
+            OperationId.OS_SCANDIR: (CapabilityId.FS_READ,),
+            OperationId.OS_WALK: (CapabilityId.FS_READ,),
+            OperationId.OS_GETCWD: (CapabilityId.FS_READ,),
+            OperationId.OS_CHDIR: (CapabilityId.FS_WRITE,),
+            OperationId.OS_MKDIR: (CapabilityId.FS_WRITE,),
+            OperationId.OS_RMDIR: (CapabilityId.FS_WRITE,),
+            OperationId.OS_REMOVEDIRS: (CapabilityId.FS_WRITE,),
+            OperationId.OS_ACCESS: (CapabilityId.FS_READ,),
+            OperationId.OS_CHMOD: (CapabilityId.FS_WRITE,),
+            OperationId.OS_LINK: (CapabilityId.FS_WRITE,),
+            OperationId.OS_SYMLINK: (CapabilityId.FS_WRITE,),
+            OperationId.OS_READLINK: (CapabilityId.FS_READ,),
+            OperationId.OS_TRUNCATE: (CapabilityId.FS_WRITE,),
+            OperationId.OS_GETPID: (CapabilityId.OS_GETPID,),
+            OperationId.OS_GETPPID: (CapabilityId.OS_GETPPID,),
+            OperationId.OS_GETUID: (CapabilityId.OS_GETUID,),
+            OperationId.OS_GETGID: (CapabilityId.OS_GETGID,),
+            OperationId.OS_GETEUID: (CapabilityId.OS_GETEUID,),
+            OperationId.OS_GETEGID: (CapabilityId.OS_GETEGID,),
+            OperationId.OS_GETLOGIN: (CapabilityId.ENV_READ,),
+            OperationId.OS_CPU_COUNT: (CapabilityId.OS_CPU_COUNT,),
+            OperationId.OS_GETLOADAVG: (CapabilityId.OS_GETLOADAVG,),
+            OperationId.OS_UNAME: (CapabilityId.OS_UNAME,),
+            OperationId.OS_UMASK: (CapabilityId.FS_WRITE,),
+            OperationId.OS_PATH_GETSIZE: (CapabilityId.FS_READ,),
+            OperationId.OS_PATH_GETMTIME: (CapabilityId.FS_READ,),
+            OperationId.OS_PATH_GETATIME: (CapabilityId.FS_READ,),
+            OperationId.OS_PATH_GETCTIME: (CapabilityId.FS_READ,),
+            OperationId.OS_PATH_SAMEFILE: (CapabilityId.FS_READ,),
+            OperationId.OS_DUP2: (CapabilityId.FS_WRITE,),
+            OperationId.OS_LSEEK: (CapabilityId.FS_READ,),
+            OperationId.OS_FTRUNCATE: (CapabilityId.FS_WRITE,),
+            OperationId.OS_KILL: (CapabilityId.OS_KILL,),
+            OperationId.OS_WAITPID: (CapabilityId.OS_WAITPID,),
+            OperationId.OS_GETPGRP: (CapabilityId.OS_GETPGRP,),
+            OperationId.OS_SETPGRP: (CapabilityId.OS_SETPGRP,),
+            OperationId.OS_SETSID: (CapabilityId.OS_SETSID,),
+            OperationId.OS_PATH_REALPATH: (CapabilityId.FS_READ,),
+            OperationId.OS_UTIME: (CapabilityId.FS_WRITE,),
+            OperationId.OS_READLINK_AT: (CapabilityId.FS_READ,),
+            OperationId.OS_SYMLINK_AT: (CapabilityId.FS_WRITE,),
+            OperationId.OS_UTIME_AT: (CapabilityId.FS_WRITE,),
+            OperationId.OS_SENDFILE: (CapabilityId.FS_READ,),
+            OperationId.OS_ENVIRON: (CapabilityId.ENV_READ,),
+            OperationId.OS_MAKEDIRS: (CapabilityId.FS_WRITE,),
+            OperationId.PATHLIB_RESOLVE: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_IS_MOUNT: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_ITERDIR: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_RGLOB: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_TOUCH: (CapabilityId.FS_WRITE,),
+            OperationId.PATHLIB_HARDLINK_TO: (CapabilityId.FS_WRITE,),
+            OperationId.PATHLIB_READ_TEXT: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_READ_BYTES: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_WRITE_TEXT: (CapabilityId.FS_WRITE,),
+            OperationId.PATHLIB_WRITE_BYTES: (CapabilityId.FS_WRITE,),
+            OperationId.PATHLIB_OWNER: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_GROUP: (CapabilityId.FS_READ,),
+            OperationId.PATHLIB_SAMEFILE: (CapabilityId.FS_READ,),
+            OperationId.CONCURRENT_THREADPOOL_DEFAULT: (
+                CapabilityId.OS_CPU_COUNT,
+                CapabilityId.THREAD_SPAWN,
+                CapabilityId.THREAD_SHARED,
+            ),
+            OperationId.CONCURRENT_PROCESSPOOL_DEFAULT: (
+                CapabilityId.OS_CPU_COUNT,
+                CapabilityId.THREAD_SPAWN,
+                CapabilityId.THREAD_SHARED,
+            ),
+            OperationId.SHUTIL_WHICH_EXPLICIT_PATH: (CapabilityId.FS_READ,),
+            OperationId.IO_OPEN_READ: (CapabilityId.FS_READ,),
+            OperationId.IO_OPEN_WRITE: (CapabilityId.FS_WRITE,),
+            OperationId.IO_OPEN_READWRITE: (
+                CapabilityId.FS_READ,
+                CapabilityId.FS_WRITE,
+            ),
+            OperationId.PATH_MAKEDIRS: (CapabilityId.FS_READ, CapabilityId.FS_WRITE),
+            OperationId.MULTIPROCESSING_SPAWN: (
+                CapabilityId.PROCESS_EXEC,
+                CapabilityId.ENV_READ,
+            ),
         }
     )
 )
@@ -512,6 +670,37 @@ OPERATION_TARGETS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyTy
         OperationId.SELECT_EPOLL: ("native",),
         OperationId.GUI_WINDOW: ("native",),
         OperationId.PROCESS_SPAWN: ("native",),
+        OperationId.OS_LINK: ("native",),
+        OperationId.OS_SYMLINK: ("native",),
+        OperationId.OS_TRUNCATE: ("native",),
+        OperationId.OS_GETPPID: ("native",),
+        OperationId.OS_GETUID: ("native",),
+        OperationId.OS_GETGID: ("native",),
+        OperationId.OS_GETEUID: ("native",),
+        OperationId.OS_GETEGID: ("native",),
+        OperationId.OS_GETLOGIN: ("native",),
+        OperationId.OS_GETLOADAVG: ("native",),
+        OperationId.OS_UNAME: ("native",),
+        OperationId.OS_UMASK: ("native",),
+        OperationId.OS_PATH_SAMEFILE: ("native",),
+        OperationId.OS_DUP2: ("native",),
+        OperationId.OS_LSEEK: ("native",),
+        OperationId.OS_FTRUNCATE: ("native",),
+        OperationId.OS_KILL: ("native",),
+        OperationId.OS_WAITPID: ("native",),
+        OperationId.OS_GETPGRP: ("native",),
+        OperationId.OS_SETPGRP: ("native",),
+        OperationId.OS_SETSID: ("native",),
+        OperationId.OS_UTIME: ("native",),
+        OperationId.OS_READLINK_AT: ("native",),
+        OperationId.OS_SYMLINK_AT: ("native",),
+        OperationId.OS_UTIME_AT: ("native",),
+        OperationId.OS_SENDFILE: ("native",),
+        OperationId.PATHLIB_HARDLINK_TO: ("native",),
+        OperationId.PATHLIB_OWNER: ("native",),
+        OperationId.PATHLIB_GROUP: ("native",),
+        OperationId.CONCURRENT_THREADPOOL_DEFAULT: ("native",),
+        OperationId.CONCURRENT_PROCESSPOOL_DEFAULT: ("native",),
     }
 )
 OPERATION_PLATFORMS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyType(
@@ -521,6 +710,24 @@ OPERATION_PLATFORMS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxy
         OperationId.SIGNAL_SIGPENDING: ("linux", "macos"),
         OperationId.SIGNAL_SIGWAIT: ("linux", "macos"),
         OperationId.SELECT_EPOLL: ("linux",),
+        OperationId.OS_GETUID: ("linux", "macos"),
+        OperationId.OS_GETGID: ("linux", "macos"),
+        OperationId.OS_GETEUID: ("linux", "macos"),
+        OperationId.OS_GETEGID: ("linux", "macos"),
+        OperationId.OS_GETLOADAVG: ("linux", "macos"),
+        OperationId.OS_UNAME: ("linux", "macos"),
+        OperationId.OS_UMASK: ("linux", "macos"),
+        OperationId.OS_FTRUNCATE: ("linux", "macos"),
+        OperationId.OS_KILL: ("linux", "macos"),
+        OperationId.OS_WAITPID: ("linux", "macos"),
+        OperationId.OS_GETPGRP: ("linux", "macos"),
+        OperationId.OS_SETPGRP: ("linux", "macos"),
+        OperationId.OS_SETSID: ("linux", "macos"),
+        OperationId.OS_READLINK_AT: ("linux", "macos"),
+        OperationId.OS_SYMLINK_AT: ("linux", "macos"),
+        OperationId.OS_SENDFILE: ("linux", "macos"),
+        OperationId.PATHLIB_OWNER: ("linux", "macos"),
+        OperationId.PATHLIB_GROUP: ("linux", "macos"),
     }
 )
 OPERATION_ARCHITECTURES: Final[Mapping[OperationId, tuple[str, ...]]] = (
@@ -583,6 +790,7 @@ CAPABILITY_TIERS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "glob.glob",
             "os.access",
             "os.getcwd",
+            "os.cpu_count",
             "os.getpid",
             "os.getppid",
             "os.getuid",
@@ -610,6 +818,7 @@ CAPABILITY_TIERS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "glob.glob",
             "os.access",
             "os.getcwd",
+            "os.cpu_count",
             "os.getpid",
             "os.getppid",
             "os.getuid",
@@ -672,6 +881,7 @@ CAPABILITY_TIERS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "glob.glob",
             "os.access",
             "os.getcwd",
+            "os.cpu_count",
             "os.getpid",
             "os.getppid",
             "os.getuid",

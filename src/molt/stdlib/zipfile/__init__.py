@@ -48,7 +48,6 @@ _EOCD_SIG = b"PK\x05\x06"
 _ZIP64_EOCD_SIG = b"PK\x06\x06"
 _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
 
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 _MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32")
 _MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY = _require_intrinsic(
     "molt_zipfile_parse_central_directory"
@@ -65,10 +64,6 @@ class ZipInfo:
 
 _Entry = tuple[bytes, int, int, int, int, int]
 _IndexEntry = tuple[int, int, int, int, int]
-
-
-def _require_capability(name: str) -> None:
-    _MOLT_CAPABILITIES_REQUIRE(name)
 
 
 def _u16(value: int) -> bytes:
@@ -121,10 +116,8 @@ class ZipFile:
         if compression not in _SUPPORTED_COMPRESSION:
             raise NotImplementedError("unsupported compression method")
         if mode == "w":
-            _require_capability("fs.write")
             self._fp = open(file, "wb")
         else:
-            _require_capability("fs.read")
             handle = open(file, "rb")
             data = handle.read()
             handle.close()

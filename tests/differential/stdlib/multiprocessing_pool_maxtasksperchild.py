@@ -1,4 +1,5 @@
 """Purpose: differential coverage for Pool maxtasksperchild behavior."""
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read
 
 import multiprocessing as mp
 

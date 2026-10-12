@@ -27,11 +27,14 @@ class AuthenticationError(ProcessError):
 
 
 class _CompatProcess:
-    __slots__ = ("name", "pid")
+    __slots__ = ("name",)
 
     def __init__(self) -> None:
         self.name = "MainProcess"
-        self.pid = _os.getpid()
+
+    @property
+    def pid(self):
+        return _os.getpid()
 
 
 _MAIN_PROCESS = _CompatProcess()

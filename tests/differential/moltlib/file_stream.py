@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read,os.getpid
 """File-stream public I/O, bounded pulls, closure, and async context semantics."""
 
 import asyncio

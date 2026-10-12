@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,os.cpu_count,os.getpid,os.uname
 """Purpose: differential coverage for os.access, os.cpu_count, os.getpid,
 os.getppid, os.devnull, os.F_OK/R_OK/W_OK/X_OK, os.umask, os.uname."""
 

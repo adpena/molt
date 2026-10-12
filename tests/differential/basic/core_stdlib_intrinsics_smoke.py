@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,thread.spawn,thread.shared
 """Purpose: intrinsic-backed smoke coverage for core stdlib wrappers."""
 
 import os

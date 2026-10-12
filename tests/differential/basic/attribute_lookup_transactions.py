@@ -291,6 +291,126 @@ CASES["custom_action_does_not_probe_counterpart"] = custom_action_does_not_probe
 CASES["paired_object_defaults_keep_generic_admission"] = paired_object_defaults_keep_generic_admission
 
 
+class RetainedLayoutOwner:
+    def __init__(self):
+        self.value = 11
+
+    def read(self):
+        return self.value
+
+    def write(self, value):
+        self.value = value
+
+    def loop(self):
+        total = 0
+        for _ in range(3):
+            total += self.value
+        return total
+
+    def explicit_name(self):
+        return RetainedLayoutOwner
+
+
+def retained_layout_survives_class_binding_changes():
+    owner = RetainedLayoutOwner()
+    original = RetainedLayoutOwner
+    namespace = globals()
+    del namespace["RetainedLayoutOwner"]
+    try:
+        assert owner.read() == 11
+        owner.write(17)
+        assert owner.loop() == 51
+        try:
+            owner.explicit_name()
+        except NameError:
+            pass
+        else:
+            raise AssertionError("an explicit source Name must still fail")
+        namespace["RetainedLayoutOwner"] = int
+        assert owner.explicit_name() is int
+        assert owner.read() == 17
+        owner.write(23)
+        assert owner.loop() == 69
+        del owner.value
+        try:
+            owner.read()
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError("missing fields must retain AttributeError")
+    finally:
+        namespace["RetainedLayoutOwner"] = original
+
+
+CASES["retained_layout_survives_class_binding_changes"] = retained_layout_survives_class_binding_changes
+
+
+def retained_local_layout_survives_deleted_cell():
+    class LocalLayout:
+        def __init__(self):
+            self.value = 31
+
+        def read(self, explicit=False):
+            if explicit:
+                return LocalLayout
+            return self.value
+
+        def write(self, value):
+            if value is None:
+                return LocalLayout
+            self.value = value
+
+    owner = LocalLayout()
+    del LocalLayout
+    assert owner.read() == 31
+    owner.write(37)
+    assert owner.read() == 37
+    try:
+        owner.read(True)
+    except NameError:
+        pass
+    else:
+        raise AssertionError("explicit deleted free variable must still fail")
+    try:
+        LocalLayout
+    except UnboundLocalError:
+        pass
+    else:
+        raise AssertionError("explicit deleted local must still fail")
+
+
+def retained_global_declared_layout_survives_deletion():
+    global GlobalDeclaredLayout
+
+    class GlobalDeclaredLayout:
+        def __init__(self):
+            self.value = 41
+
+        def read(self):
+            global GlobalDeclaredLayout
+            return self.value
+
+        def write(self, value):
+            global GlobalDeclaredLayout
+            self.value = value
+
+    owner = GlobalDeclaredLayout()
+    del GlobalDeclaredLayout
+    assert owner.read() == 41
+    owner.write(43)
+    assert owner.read() == 43
+    try:
+        GlobalDeclaredLayout
+    except NameError:
+        pass
+    else:
+        raise AssertionError("explicit deleted global must still fail")
+
+
+CASES["retained_local_layout_survives_deleted_cell"] = retained_local_layout_survives_deleted_cell
+CASES["retained_global_declared_layout_survives_deletion"] = retained_global_declared_layout_survives_deletion
+
+
 for name, case in CASES.items():
     case()
     print(name, "ok")

@@ -335,7 +335,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
     ) -> None:
         name = obj_name or obj.name
         class_info = self.classes.get(expected_class)
-        class_ref: MoltValue | None = None
         if class_info and self._class_is_exception_subclass(expected_class, class_info):
             self.emit(
                 MoltOp(
@@ -365,35 +364,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return
-        if class_info and not class_info.get("static"):
-            class_ref = self._load_local_value(expected_class)
-            if class_ref is None:
-                if self._exact_class_for_value(
-                    obj, obj_name
-                ) == expected_class and self._class_layout_stable(expected_class):
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR",
-                            args=[obj, attr, value, expected_class],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    return
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_PTR",
-                        args=[obj, attr, value],
-                        result=MoltValue("none"),
-                    )
-                )
-                return
-
-        def resolve_class_ref() -> MoltValue:
-            nonlocal class_ref
-            if class_ref is None:
-                class_ref = self._emit_class_ref(expected_class)
-            return class_ref
-
         assumption = self._loop_guard_assumption(name, expected_class)
         if assumption is True:
             self.emit(
@@ -425,7 +395,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return
         guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
-            class_ref = resolve_class_ref()
+            class_ref = self._emit_class_ref(expected_class)
             expected_version = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(
@@ -478,7 +448,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
     ) -> MoltValue:
         name = obj_name or obj.name
         class_info = self.classes.get(expected_class)
-        class_ref: MoltValue | None = None
         if class_info and self._class_is_exception_subclass(expected_class, class_info):
             res = MoltValue(self.next_var())
             self.emit(
@@ -510,37 +479,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return res
-        if class_info and not class_info.get("static"):
-            class_ref = self._load_local_value(expected_class)
-            if class_ref is None:
-                if self._exact_class_for_value(
-                    obj, obj_name
-                ) == expected_class and self._class_layout_stable(expected_class):
-                    res = MoltValue(self.next_var())
-                    self.emit(
-                        MoltOp(
-                            kind="GETATTR",
-                            args=[obj, attr, expected_class],
-                            result=res,
-                        )
-                    )
-                    return res
-                res = MoltValue(self.next_var())
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_GENERIC_PTR",
-                        args=[obj, attr],
-                        result=res,
-                    )
-                )
-                return res
-
-        def resolve_class_ref() -> MoltValue:
-            nonlocal class_ref
-            if class_ref is None:
-                class_ref = self._emit_class_ref(expected_class)
-            return class_ref
-
         assumption = self._loop_guard_assumption(name, expected_class)
         if assumption is True:
             res = MoltValue(self.next_var())
@@ -575,7 +513,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return res
         guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
-            class_ref = resolve_class_ref()
+            class_ref = self._emit_class_ref(expected_class)
             expected_version = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(

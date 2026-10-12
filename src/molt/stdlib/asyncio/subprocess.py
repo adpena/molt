@@ -147,10 +147,15 @@ class Process:
             raise
         return out, err
 
-    def __del__(self) -> None:
-        _PROCESS_WAIT_FUTURES.pop(id(self), None)
-        if _molt_process_drop is not None:
-            _molt_process_drop(self._handle)
+    def __del__(
+        self, _drop=_molt_process_drop, _wait_futures=_PROCESS_WAIT_FUTURES
+    ) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            self._handle = None
+        _wait_futures.pop(id(self), None)
+        if handle is not None and _drop is not None:
+            _drop(handle)
 
 async def create_subprocess_exec(
     *program: Any,

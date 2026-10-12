@@ -132,9 +132,12 @@ class CancellationToken:
     def token_id(self) -> int:
         return int(self._token)
 
-    def __del__(self) -> None:
+    def __del__(self, _drop=_molt_cancel_token_drop) -> None:
         if getattr(self, "_owned", False):
-            _molt_cancel_token_drop(int(self._token))
+            self._owned = False
+            token = getattr(self, "_token", None)
+            if token is not None:
+                _drop(int(token))
 
 def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
     token = CancellationToken()

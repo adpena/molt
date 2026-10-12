@@ -3,6 +3,47 @@ use std::collections::BTreeMap;
 #[cfg(feature = "stdlib_archive")]
 use std::io::Write;
 
+#[test]
+fn dynamic_extension_admission_reports_complete_static_grants_before_path_access() {
+    for (grants, missing) in [
+        ("", "fs.read, module.extension.exec"),
+        ("fs.read", "module.extension.exec"),
+        ("module.extension.exec", "fs.read"),
+    ] {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
+            let name = alloc_test_string_bits(py, "capability_refusal_not_a_compiled_module");
+            // Invalid path: a filesystem check would produce ImportError, so
+            // PermissionError proves admission preceded that protected action.
+            let path = alloc_test_string_bits(py, "");
+            let result = molt_importlib_extension_loader_create_module(
+                name,
+                path,
+                MoltObject::none().bits(),
+            );
+            assert_eq!(result, MoltObject::none().bits());
+            let error = crate::molt_exception_last_pending();
+            let _owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), error)
+            };
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "PermissionError"
+            ));
+            crate::molt_exception_clear();
+            assert_eq!(
+                crate::builtins::exceptions::format_exception_message(
+                    py,
+                    obj_from_bits(error).as_ptr().unwrap()
+                ),
+                format!("missing [{missing}] capabilities for 'importlib.exec.extension.module'")
+            );
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, path);
+        });
+    }
+}
+
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     with_env_projection(entries, f)

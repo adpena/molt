@@ -629,6 +629,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_capabilities_require_operation",
+        import: WasmRuntimeImport::CapabilitiesRequireOperation,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_capabilities_trusted",
         import: WasmRuntimeImport::CapabilitiesTrusted,
         arity: 0,
@@ -962,11 +967,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_getframe",
         import: WasmRuntimeImport::Getframe,
         arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_getpid",
-        import: WasmRuntimeImport::Getpid,
-        arity: 0,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_getrecursionlimit",
@@ -11091,7 +11091,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_logging_record_new",
         import: WasmRuntimeImport::LoggingRecordNew,
-        arity: 7,
+        arity: 8,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_logging_record_get_message",
@@ -11159,16 +11159,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_logging_stream_handler_new",
-        import: WasmRuntimeImport::LoggingStreamHandlerNew,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_logging_stream_handler_emit",
-        import: WasmRuntimeImport::LoggingStreamHandlerEmit,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_logging_logger_new",
         import: WasmRuntimeImport::LoggingLoggerNew,
         arity: 2,
@@ -11202,11 +11192,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_logging_logger_drop",
         import: WasmRuntimeImport::LoggingLoggerDrop,
         arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_logging_basic_config",
-        import: WasmRuntimeImport::LoggingBasicConfig,
-        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_logging_shutdown",
@@ -11792,11 +11777,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_json_coerce_text",
         import: WasmRuntimeImport::JsonCoerceText,
         arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_logging_file_handler_emit",
-        import: WasmRuntimeImport::LoggingFileHandlerEmit,
-        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_logging_filter_check",
@@ -12824,6 +12804,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_is_bound_method" => Some(WasmRuntimeImport::IsBoundMethod),
         "molt_capabilities_has" => Some(WasmRuntimeImport::CapabilitiesHas),
         "molt_capabilities_require" => Some(WasmRuntimeImport::CapabilitiesRequire),
+        "molt_capabilities_require_operation" => {
+            Some(WasmRuntimeImport::CapabilitiesRequireOperation)
+        }
         "molt_capabilities_trusted" => Some(WasmRuntimeImport::CapabilitiesTrusted),
         "molt_abs_builtin" => Some(WasmRuntimeImport::AbsBuiltin),
         "molt_divmod_builtin" => Some(WasmRuntimeImport::DivmodBuiltin),
@@ -12891,7 +12874,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_errno_constants" => Some(WasmRuntimeImport::ErrnoConstants),
         "molt_getargv" => Some(WasmRuntimeImport::Getargv),
         "molt_getframe" => Some(WasmRuntimeImport::Getframe),
-        "molt_getpid" => Some(WasmRuntimeImport::Getpid),
         "molt_getrecursionlimit" => Some(WasmRuntimeImport::Getrecursionlimit),
         "molt_hash_builtin" => Some(WasmRuntimeImport::HashBuiltin),
         "molt_id" => Some(WasmRuntimeImport::Id),
@@ -15316,8 +15298,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_logging_handler_flush" => Some(WasmRuntimeImport::LoggingHandlerFlush),
         "molt_logging_handler_close" => Some(WasmRuntimeImport::LoggingHandlerClose),
         "molt_logging_handler_drop" => Some(WasmRuntimeImport::LoggingHandlerDrop),
-        "molt_logging_stream_handler_new" => Some(WasmRuntimeImport::LoggingStreamHandlerNew),
-        "molt_logging_stream_handler_emit" => Some(WasmRuntimeImport::LoggingStreamHandlerEmit),
         "molt_logging_logger_new" => Some(WasmRuntimeImport::LoggingLoggerNew),
         "molt_logging_logger_set_level" => Some(WasmRuntimeImport::LoggingLoggerSetLevel),
         "molt_logging_logger_add_handler" => Some(WasmRuntimeImport::LoggingLoggerAddHandler),
@@ -15327,7 +15307,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::LoggingLoggerGetEffectiveLevel)
         }
         "molt_logging_logger_drop" => Some(WasmRuntimeImport::LoggingLoggerDrop),
-        "molt_logging_basic_config" => Some(WasmRuntimeImport::LoggingBasicConfig),
         "molt_logging_shutdown" => Some(WasmRuntimeImport::LoggingShutdown),
         "molt_logging_get_level_name" => Some(WasmRuntimeImport::LoggingGetLevelName),
         "molt_logging_add_level_name" => Some(WasmRuntimeImport::LoggingAddLevelName),
@@ -15455,7 +15434,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_gzip_flush" => Some(WasmRuntimeImport::GzipFlush),
         "molt_json_calc_lineno_col" => Some(WasmRuntimeImport::JsonCalcLinenoCol),
         "molt_json_coerce_text" => Some(WasmRuntimeImport::JsonCoerceText),
-        "molt_logging_file_handler_emit" => Some(WasmRuntimeImport::LoggingFileHandlerEmit),
         "molt_logging_filter_check" => Some(WasmRuntimeImport::LoggingFilterCheck),
         "molt_lzma_file_close" => Some(WasmRuntimeImport::LzmaFileClose),
         "molt_lzma_file_drop" => Some(WasmRuntimeImport::LzmaFileDrop),

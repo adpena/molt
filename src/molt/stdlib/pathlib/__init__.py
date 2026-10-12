@@ -344,7 +344,6 @@ class Path:
         parents: bool = False,
         exist_ok: bool = False,
     ) -> None:
-        capabilities.require("fs.write")
         if parents:
             _MOLT_PATH_MAKEDIRS(self._path, mode, bool(exist_ok))
             return

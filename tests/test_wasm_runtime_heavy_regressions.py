@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
+import pytest
+
+from molt.node_runtime import resolve_node_runtime
+from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests.wasm_linked_runner import (
+    _run_wasm_test_process,
     build_wasm_linked,
     require_wasm_toolchain,
     run_wasm_linked,
@@ -172,3 +178,86 @@ def test_wasm_smtplib_thread_dependent_paths_fail_fast(
         "caught",
     ]
     _assert_no_recursive_mutex_panic(run.stderr)
+
+
+@pytest.mark.slow
+def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    # This is an actual Node/WASI proof. Required tools fail selection/build;
+    # a missing host must not turn the security assertion into a skipped test.
+    node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
+    src = tmp_path / "wasm_operation_permissions.py"
+    src.write_text(
+        textwrap.dedent(
+            """\
+            from _intrinsics import require_intrinsic
+
+            require_operation = require_intrinsic("molt_capabilities_require_operation")
+            try:
+                with open("destination.bin", "w+b") as destination:
+                    with open("source.bin", "rb") as source:
+                        destination.write(source.read())
+            except PermissionError as exc:
+                print(type(exc).__name__, str(exc))
+            else:
+                print("copied")
+
+            for name in ("unknown.operation", b"io.open.readwrite"):
+                try:
+                    require_operation(name)
+                except (ValueError, TypeError) as exc:
+                    print(type(exc).__name__, str(exc))
+                else:
+                    print("unexpected operation admission")
+            """
+        ),
+        encoding="utf-8",
+    )
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    manifest = wasm_runtime_manifest_path(output_wasm)
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    source = payload_dir / "source.bin"
+    destination = payload_dir / "destination.bin"
+    payload = b"source payload\x00with binary bytes\xff"
+    sentinel = b"destination must survive denied truncation"
+    source.write_bytes(payload)
+    command = [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)]
+    for grants, missing in [
+        ("", "fs.read, fs.write"),
+        ("fs.read", "fs.write"),
+        ("fs.write", "fs.read"),
+        ("fs.read,fs.write", None),
+    ]:
+        destination.write_bytes(sentinel)
+        env = os.environ.copy()
+        # The explicit linked manifest owns runtime/table/bundle selection.
+        for key in (
+            "MOLT_WASM_TABLE_BASE",
+            "MOLT_RUNTIME_WASM",
+            "MOLT_WASM_MANIFEST_PATH",
+            "MOLT_VFS_BUNDLE",
+        ):
+            env.pop(key, None)
+        env["MOLT_CAPABILITY_TIER"] = "none"
+        env["MOLT_CAPABILITIES"] = grants
+        run = _run_wasm_test_process(command, cwd=payload_dir, env=env)
+        diagnostic = f"grants={grants!r}\nstdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+        assert run.returncode == 0, diagnostic
+        expected = (
+            f"PermissionError missing [{missing}] capabilities for 'io.open.readwrite'"
+            if missing is not None
+            else "copied"
+        )
+        assert run.stdout.strip().splitlines() == [
+            expected,
+            "ValueError unknown host operation 'unknown.operation'",
+            "TypeError host operation name must be str",
+        ], diagnostic
+        # Host reads are an independent oracle: denied guest code cannot read
+        # its own sentinel without granting the very permission being tested.
+        assert source.read_bytes() == payload, diagnostic
+        assert destination.read_bytes() == (
+            sentinel if missing is not None else payload
+        ), diagnostic
+        _assert_no_recursive_mutex_panic(run.stderr)
