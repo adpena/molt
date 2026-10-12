@@ -653,7 +653,7 @@ pub fn durable_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn summarize_identities(mut identities: Vec<FileIdentity>) -> Result<IdentitySummary, String> {
-    identities.sort_by(|left, right| left.path.cmp(&right.path));
+    identities.sort();
     Ok(IdentitySummary {
         count: identities.len() as u64,
         sha256: crate::budget::digest(
@@ -2374,8 +2374,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn derived_identity_drift_is_rejected_during_record_and_replay() {
-        let receipt = unique_path("derived-drift.json");
+    fn derived_generations_share_a_path_and_replay_with_a_stable_summary() {
+        let receipt = unique_path("derived-generations.json");
         let derived_root = unique_path("derived-root");
         fs::create_dir_all(&derived_root).unwrap();
         let policy = test_policy(
@@ -2385,107 +2385,111 @@ pub(crate) mod tests {
                 path: derived_root.clone(),
             }],
         );
-        let derived_path = policy.derived[0].path.join("derived-tool");
         let image = |sha256: &str| FileIdentity {
-            path: derived_path.clone(),
+            path: policy.derived[0].path.join("derived-tool"),
             file_id: "test-derived".to_owned(),
             size_bytes: 1,
             sha256: sha256.to_owned(),
             class: ImageClass::Derived,
             roles: vec!["generated-tool".to_owned()],
         };
-        let root_image = test_root_image(&policy);
-        let events = vec![
-            ProcessEvent {
-                sequence: 1,
-                process_id: 1,
-                stable_process_id: "test:1".to_owned(),
-                event: ProcessEventKind::ProcessCreate {
-                    parent_process_id: None,
-                },
-            },
-            ProcessEvent {
-                sequence: 2,
-                process_id: 1,
-                stable_process_id: "test:1".to_owned(),
-                event: ProcessEventKind::Exec { image: root_image },
-            },
-            ProcessEvent {
-                sequence: 3,
-                process_id: 1,
-                stable_process_id: "test:1".to_owned(),
-                event: ProcessEventKind::Exec {
-                    image: image(&"a".repeat(64)),
-                },
-            },
-            ProcessEvent {
-                sequence: 4,
-                process_id: 1,
-                stable_process_id: "test:1".to_owned(),
-                event: ProcessEventKind::Exec {
-                    image: image(&"b".repeat(64)),
-                },
-            },
-        ];
-
+        let first = image(&"a".repeat(64));
+        let second = image(&"b".repeat(64));
         let capability = test_capability(policy.policy.mode);
         let mut journal = EventJournal::create(&receipt, &policy, &capability).unwrap();
         journal
-            .record_transition(1, "test:1".to_owned(), events[0].event.clone())
+            .record_transition(
+                1,
+                "root".to_owned(),
+                ProcessEventKind::ProcessCreate {
+                    parent_process_id: None,
+                },
+            )
             .unwrap();
         let before = journal.ledger.snapshot();
         assert!(
             journal
-                .record_transition(1, "test:1".to_owned(), events[2].event.clone())
+                .record_transition(
+                    1,
+                    "root".to_owned(),
+                    ProcessEventKind::Exec {
+                        image: first.clone()
+                    }
+                )
                 .unwrap_err()
                 .contains("initial root image")
         );
         assert_eq!(journal.ledger.snapshot(), before);
         journal
-            .record_transition(1, "test:1".to_owned(), events[1].event.clone())
+            .record_transition(
+                1,
+                "root".to_owned(),
+                ProcessEventKind::Exec {
+                    image: test_root_image(&policy),
+                },
+            )
             .unwrap();
-        journal
-            .record_transition(1, "test:1".to_owned(), events[2].event.clone())
-            .unwrap();
+        // Observe reverse lexical order, then repeat an unchanged generation.
+        // Each unique opened image survives even after the path is rebuilt.
+        for image in [&second, &first, &second] {
+            journal
+                .record_transition(
+                    1,
+                    "root".to_owned(),
+                    ProcessEventKind::Exec {
+                        image: image.clone(),
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            journal.ledger.snapshot().derived_images,
+            vec![first.clone(), second.clone()]
+        );
         let before = journal.ledger.snapshot();
         assert!(
             journal
-                .record_transition(1, "test:1".to_owned(), events[3].event.clone())
+                .record_transition(
+                    2,
+                    "child".to_owned(),
+                    ProcessEventKind::Fork {
+                        parent_process_id: 1,
+                        image: Some(first.clone()),
+                    }
+                )
                 .unwrap_err()
-                .contains("identity changed")
+                .contains("fork image disagrees")
         );
         assert_eq!(journal.ledger.snapshot(), before);
         journal
             .record_transition(
                 2,
-                "test:2".to_owned(),
+                "child".to_owned(),
                 ProcessEventKind::Fork {
                     parent_process_id: 1,
-                    image: Some(image(&"a".repeat(64))),
+                    image: Some(second.clone()),
                 },
             )
             .unwrap();
-        for id in [2, 1] {
+        for (pid, stable) in [(2, "child"), (1, "root")] {
             journal
                 .record_transition(
-                    id,
-                    format!("test:{id}"),
+                    pid,
+                    stable.to_owned(),
                     ProcessEventKind::ProcessExit { exit_code: 0 },
                 )
                 .unwrap();
         }
         let published = assert_published_replay_matches(journal, &receipt, &policy, &capability);
-        assert_eq!(published.event_log.count, 6);
-        assert_eq!(published.verified.derived_images.count, 1);
-
-        let summary = write_event_fixture(&receipt, &events);
-        assert!(
-            verify_event_artifact(&receipt, &summary, &policy, &capability)
-                .unwrap_err()
-                .contains("identity changed")
-        );
-        let _ = fs::remove_file(event_artifact_path(&receipt, &summary.sha256).unwrap());
-        let _ = fs::remove_dir_all(derived_root);
+        let ordered = vec![first.clone(), second.clone()];
+        let expected = IdentitySummary {
+            count: 2,
+            sha256: sha256_bytes(&serde_json::to_vec(&ordered).unwrap()),
+        };
+        assert_eq!(published.event_log.count, 8);
+        assert_eq!(published.verified.derived_images, expected);
+        assert_eq!(summarize_identities(vec![second, first]).unwrap(), expected);
+        fs::remove_dir_all(derived_root).unwrap();
     }
 
     #[test]

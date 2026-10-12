@@ -30,6 +30,78 @@ impl Drop for TestRun {
 }
 
 #[test]
+fn derived_executable_generations_at_one_path_execute_and_replay() {
+    use molt_proof_supervisor::{ImageClass, ProcessEvent, ProcessEventKind};
+
+    let mut run = prepare_fixture(ClosureMode::DeclaredTree, &["exit", "0"]);
+    let root = run.directory.join("derived");
+    fs::create_dir(&root).unwrap();
+    let image = root.join(if cfg!(windows) {
+        "generated.exe"
+    } else {
+        "generated"
+    });
+    let report = run.directory.join("child-exits.json");
+    run.policy.derived_roots.push(DerivedRoot {
+        role: "generated-fixture".to_owned(),
+        path: root,
+    });
+    run.policy.command = vec![
+        run.binary.display().to_string(),
+        "fixture-child".to_owned(),
+        "derived-generations".to_owned(),
+        image.display().to_string(),
+        report.display().to_string(),
+    ];
+    fs::write(&run.policy_path, serde_json::to_vec(&run.policy).unwrap()).unwrap();
+    let original_digest = sha256_file(&run.binary).unwrap();
+    let output = execute(&run);
+    assert!(output.status.success(), "{}", text(&output));
+    let receipt: Receipt = serde_json::from_slice(&fs::read(&run.receipt_path).unwrap()).unwrap();
+    assert!(receipt.complete, "{receipt:#?}");
+    assert!(
+        receipt.errors.is_empty() && receipt.violations.is_empty(),
+        "{receipt:#?}"
+    );
+    assert_eq!(receipt.root_exit_code, Some(0));
+    assert_eq!(receipt.accounting.process_creates, 4);
+    assert_eq!(receipt.accounting.process_exits, 4);
+    assert_eq!(
+        serde_json::from_slice::<Vec<i32>>(&fs::read(report).unwrap()).unwrap(),
+        vec![7, 13, 19]
+    );
+    let changed_digest = sha256_file(&image).unwrap();
+    assert_ne!(original_digest, changed_digest);
+    let image = dunce::canonicalize(image).unwrap();
+    let event_log = receipt.event_log.as_ref().unwrap();
+    let observed: Vec<_> = fs::read_to_string(run.receipt_path.with_file_name(&event_log.file))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<ProcessEvent>(line).unwrap())
+        .filter_map(|event| match event.event {
+            ProcessEventKind::Exec { image } | ProcessEventKind::InitialImage { image }
+                if image.class == ImageClass::Derived =>
+            {
+                Some(image)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(observed.len(), 3);
+    assert!(observed.iter().all(|observed| observed.path == image));
+    assert_eq!(observed[0].sha256, original_digest);
+    assert_eq!(observed[1].sha256, changed_digest);
+    assert_eq!(observed[0].file_id, observed[1].file_id);
+    assert_eq!(observed[1], observed[2]);
+    assert_eq!(receipt.derived_image_summary.count, 2);
+    let replay = verify(&run.binary, &run.policy_path, &run.receipt_path);
+    assert!(replay.status.success(), "{}", text(&replay));
+    let verified: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(verified["complete"], true);
+    assert_eq!(verified["identity_valid"], true);
+}
+
+#[test]
 fn verify_reports_the_exact_raw_receipt_bytes_including_whitespace_and_unicode() {
     let run = run_fixture(ClosureMode::Leaf);
     let mut receipt: Receipt =

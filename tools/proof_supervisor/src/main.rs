@@ -201,6 +201,37 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
                 .map_err(|error| error.to_string())?;
             Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
         }
+        [command, fixture, image, report]
+            if command == "fixture-child" && fixture == "derived-generations" =>
+        {
+            let source = std::env::current_exe().map_err(|error| error.to_string())?;
+            fs::copy(source, image).map_err(|error| error.to_string())?;
+            let mut codes = Vec::new();
+            for (index, expected) in [7, 13, 19].into_iter().enumerate() {
+                let status = Command::new(image)
+                    .args(["fixture-child", "exit", &expected.to_string()])
+                    .status()
+                    .map_err(|error| error.to_string())?;
+                if status.code() != Some(expected) {
+                    return Err(format!("derived generation {index} exited with {status}"));
+                }
+                codes.push(expected);
+                if index == 0 {
+                    // ELF and PE tolerate trailing data. Change bytes on the
+                    // same inode only after its process has exited; the third
+                    // execution then reuses the second generation unchanged.
+                    let mut file = fs::OpenOptions::new()
+                        .append(true)
+                        .open(image)
+                        .map_err(|error| error.to_string())?;
+                    file.write_all(b"molt-derived-generation-two\n")
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            fs::write(report, serde_json::to_vec(&codes).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            Ok(0)
+        }
         [command, fixture, count] if command == "fixture-child" && fixture == "spawn-many" => {
             let count: usize = count
                 .parse()

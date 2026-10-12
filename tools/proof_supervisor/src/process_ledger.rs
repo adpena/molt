@@ -3,31 +3,7 @@ use crate::{
     Accounting, Admission, CAPABILITY_SCHEMA, Capability, ClosureMode, FileIdentity, ImageClass,
     ProcessEvent, ProcessEventKind, RootExitDisposition, ValidatedPolicy, validate_digest,
 };
-use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::path::Path;
-
-/// The immutable path inside FileIdentity is the sole registry key owner.
-/// Set identity is path-only; drift validation separately compares the complete
-/// stored FileIdentity, never this key equality relation.
-struct DerivedEntry(FileIdentity);
-impl Borrow<Path> for DerivedEntry {
-    fn borrow(&self) -> &Path {
-        &self.0.path
-    }
-}
-impl PartialEq for DerivedEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.path == other.0.path
-    }
-}
-impl Eq for DerivedEntry {}
-impl Hash for DerivedEntry {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.path.hash(state);
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessLedgerSnapshot {
@@ -143,7 +119,7 @@ pub(crate) struct ProcessLedger<'policy> {
     active_by_stable_id: HashMap<String, ActiveProcess>,
     active_by_process_id: HashMap<u32, String>,
     seen_stable_ids: HashSet<String>,
-    derived: HashSet<DerivedEntry>,
+    derived: HashSet<FileIdentity>,
     violation_count: u64,
     violations: Vec<String>,
     retained_bytes: usize,
@@ -361,7 +337,7 @@ impl<'policy> ProcessLedger<'policy> {
         };
         if let Some(image) = observed_image {
             let bytes = budget::image_size(image)?;
-            if image.class == ImageClass::Derived && !self.derived.contains(image.path.as_path()) {
+            if image.class == ImageClass::Derived && !self.derived.contains(image) {
                 budget::bound(
                     self.derived.len() + 1,
                     crate::BUDGET_INVENTORY_UNIQUE_IMAGES,
@@ -467,11 +443,11 @@ impl<'policy> ProcessLedger<'policy> {
         }
         if let Some(image) = observed_image {
             storage.image = Some(budget::copy_image(image)?);
-            if image.class == ImageClass::Derived && !self.derived.contains(image.path.as_path()) {
+            if image.class == ImageClass::Derived && !self.derived.contains(image) {
                 self.derived
                     .try_reserve(1)
                     .map_err(|_| "derived index reservation refused")?;
-                storage.derived = Some(DerivedEntry(budget::copy_image(image)?));
+                storage.derived = Some(budget::copy_image(image)?);
             }
         }
         if let LedgerDelta::Create { root, .. } = &delta {
@@ -525,8 +501,8 @@ impl<'policy> ProcessLedger<'policy> {
             accounting: self.accounting.clone(),
             root_exit_code: self.root_exit_code,
             derived_images: {
-                let mut images: Vec<_> = self.derived.iter().map(|entry| entry.0.clone()).collect();
-                images.sort_by(|a, b| a.path.cmp(&b.path));
+                let mut images: Vec<_> = self.derived.iter().cloned().collect();
+                images.sort();
                 images
             },
             violation_count: self.violation_count,
@@ -605,15 +581,6 @@ impl<'policy> ProcessLedger<'policy> {
                 image.path.display()
             ))?);
         }
-        if image.class == ImageClass::Derived
-            && let Some(prior) = self.derived.get(image.path.as_path())
-            && &prior.0 != image
-        {
-            return Err(crate::bounded_diagnostic(format_args!(
-                "derived image identity changed within event log: {}",
-                image.path.display()
-            ))?);
-        }
         Ok(())
     }
 
@@ -681,7 +648,7 @@ struct PreparedStorage {
     active_key: Option<String>,
     root_key: Option<String>,
     image: Option<FileIdentity>,
-    derived: Option<DerivedEntry>,
+    derived: Option<FileIdentity>,
     admission: Option<Admission>,
     violation: Option<String>,
 }
@@ -869,11 +836,7 @@ mod allocation_boundary_tests {
     }
     fn owned_payload(ledger: &ProcessLedger<'_>) -> usize {
         ledger.violations.iter().map(String::len).sum::<usize>()
-            + ledger
-                .derived
-                .iter()
-                .map(|entry| image_payload(&entry.0))
-                .sum::<usize>()
+            + ledger.derived.iter().map(image_payload).sum::<usize>()
             + ledger
                 .active_by_stable_id
                 .iter()
@@ -1031,10 +994,8 @@ mod allocation_boundary_tests {
             // These synthetic observed identities exercise admitted protocol
             // sizes without requiring the host filesystem to create long paths.
             let image = policy.classify_observed_image(
-                &policy.derived[0]
-                    .path
-                    .join(format!("{filler}-{:08}", ledger.derived.len())),
-                "derived-id".to_owned(),
+                &policy.derived[0].path.join(format!("{filler}-same-path")),
+                format!("derived-id-{:08}", ledger.derived.len()),
                 17,
                 "b".repeat(64),
             );
@@ -1094,8 +1055,9 @@ mod allocation_boundary_tests {
             sequence += 1;
         }
         let image = last_image.unwrap();
-        // Set equality is path-only. Drift must still compare ALL identity
-        // fields: separate digest and file-id mutations must both be refused.
+        // The registry is full after admitting successive generations at one
+        // path. Further digest and file-id generations must hit its budget
+        // before copying payloads; pathname reuse does not evade the bound.
         for field in ["sha256", "file-id"] {
             let mut changed = image.clone();
             if field == "sha256" {
@@ -1114,9 +1076,7 @@ mod allocation_boundary_tests {
             let result = ledger.apply(&row);
             let observed = crate::allocation_observer::finish_observations();
             assert!(
-                result
-                    .unwrap_err()
-                    .contains("derived image identity changed"),
+                result.unwrap_err().contains("derived identity storage"),
                 "{field}"
             );
             assert_eq!(observed.at_least_threshold, 0);

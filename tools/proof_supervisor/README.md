@@ -19,8 +19,9 @@ policy schema is `molt.proof-process-closure.v3`. It requires an absolute cwd,
 an absolute command image, an exact environment, a fixed SHA-256 image set,
 and optional non-overlapping derived executable roots. `leaf` rejects every
 descendant process. `declared-tree` admits only fixed images or identities first
-executed from declared derived roots; a derived path cannot change identity
-during the run.
+executed from declared derived roots. Rebuilding a derived pathname is allowed:
+each execution binds its actual opened image, and every distinct full identity
+remains in the bounded inventory. Fixed input images remain immutable.
 
 ### Cold Cargo custody and preserved candidates
 
@@ -219,7 +220,7 @@ digest, byte/record counts and contiguous sequence numbers. One `ProcessLedger`
 applies typed process-create, initial-image, fork, exec, exit and unclassified-clone events
 during both capture and replay. It validates the recorded platform dialect, stable process
 identities, live parent ownership, image classification, root command, root exit,
-derived-image stability and violation counts. Threads remain under kernel custody
+derived-image generations and violation counts. Threads remain under kernel custody
 without inflating the process ledger. Windows Job and completion-port accounting
 remain independent kernel observations. Exact native path components, opened-file
 identity and size are preserved in the image records.
@@ -237,8 +238,9 @@ prevents ordinary event or receipt publication.
 The ledger borrows the sealed policy. Each transition validates budgets, reserves
 index capacity and prepares owned keys/images before writing. Borrowed image and
 event-wire preflight precedes classification and copies. A derived registry entry
-owns its path once; full identity drift checks remain separate from path-key
-equality. Retained admission identities and diagnostic samples participate in the
+owns its full image identity once. Repeated observations reuse that witness;
+new generations at the same path consume the existing count and byte budgets.
+Summaries sort by complete identity for deterministic capture and replay. Retained admission identities and diagnostic samples participate in the
 same aggregate debit as live images and derived witnesses. Each stored diagnostic
 conservatively charges its full bounded buffer capacity; observations beyond the
 sample cap store nothing and add no debit. Borrowed violation facts are formatted
