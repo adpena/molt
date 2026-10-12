@@ -1763,7 +1763,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -1782,7 +1782,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -2985,7 +2985,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
