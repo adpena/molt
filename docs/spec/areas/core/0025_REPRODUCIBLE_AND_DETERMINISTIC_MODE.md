@@ -24,7 +24,21 @@ Builds must be reproducible when the deterministic flag is enabled.
 ### 2.2 Build Rules
 - No nondeterministic timestamps embedded in artifacts.
 - Stable ordering for any generated tables or metadata.
-- Hash seeds and randomized data structures must be fixed.
+- Compiler emission order and tie-breaking must be independent of internal hash seeds.
+
+Compiler lookup tables may use randomized hashing. Select their representation
+for the access pattern and measured cost; preserve required source ordering and
+canonicalize output ordering at the boundaries that need it. Neither container
+lifetime nor `HashMap`/`BTreeMap` choice proves determinism. Python-visible
+collection ordering and runtime hashing follow their language and runtime
+contracts.
+
+Qualify these properties with the existing
+[production IR hash-seed comparisons](../../../../tests/determinism/test_ir_determinism.py),
+[repeated artifact comparisons](../../../../tools/check_reproducible_build.py), and
+[runtime observation comparisons](../../../../tools/check_deterministic_runtime.py).
+These are development and release checks, with no added work in the end-user
+binary. Evidence establishes only the exercised cells; see section 5.1.
 
 ---
 
