@@ -1368,6 +1368,272 @@ def _compiler_phase_languages(language: str, target: str) -> tuple[str, ...]:
     )
 
 
+def llvm_sdk_tool_images(selection: Mapping[str, object]) -> list[dict[str, object]]:
+    images = []
+    for role, value in {**selection["tools"], **selection["selectors"]}.items():
+        path = Path(value)
+        images.append(capture_image("llvm-sdk-" + role, path, preserve_path=True))
+        if custody_path(path.resolve(strict=True)) != custody_path(path):
+            images.append(capture_image("llvm-sdk-" + role, path))
+    return canonical_images(images)
+
+
+def _llvm_sdk_link_commands(
+    selection: Mapping[str, object], scratch: Path, closure: tuple[str, ...]
+):
+    from molt.llvm_toolchain import llvm_sdk_probe_command
+    from molt.llvm_linker_roles import host_llvm_linker_role
+    import platform
+
+    prefix = Path(selection["prefix"])
+    tools = {role: Path(value) for role, value in selection["tools"].items()}
+    return (
+        (
+            "sdk-cpp-link",
+            llvm_sdk_probe_command(
+                prefix,
+                tools["clang++"],
+                tools[host_llvm_linker_role(platform.system())],
+                closure,
+                scratch / "sdk_probe.cpp",
+                scratch / "sdk_probe",
+            ),
+        ),
+        (
+            "c-link",
+            [
+                str(tools["clang"]),
+                "-std=c11",
+                str(scratch / "main.c"),
+                "-o",
+                str(scratch / "main"),
+            ],
+        ),
+    )
+
+
+def capture_llvm_sdk_selection(
+    selection: Mapping[str, object], *, cwd: Path, env: Mapping[str, str]
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Trace SDK verification and ordinary C final-link helpers without compiling."""
+    from molt.llvm_toolchain import (
+        _llvm_link_closure,
+    )
+
+    prefix = Path(selection["prefix"])
+    tools = {role: Path(value) for role, value in selection["tools"].items()}
+    closure, _libraries = _llvm_link_closure(prefix, tools["llvm-config"])
+    probe_env = {**env, **selection["probe_environment"]}
+    images = llvm_sdk_tool_images(selection)
+    phases = []
+    probes = []
+    with tempfile.TemporaryDirectory(prefix="molt-proof-llvm-sdk-") as temporary:
+        scratch = Path(temporary)
+        cpp, source = scratch / "sdk_probe.cpp", scratch / "main.c"
+        cpp.write_text("int main() { return 0; }\n", encoding="utf-8")
+        source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        commands = _llvm_sdk_link_commands(selection, scratch, closure)
+        for phase, command in commands:
+            phase_env = probe_env if phase == "sdk-cpp-link" else env
+            completed = _run_rust_link_probe(
+                [command[0], "-###", *command[1:]],
+                phase=phase,
+                unit="llvm-sdk",
+                cwd=cwd,
+                compiler_cwd=cwd,
+                env=phase_env,
+                timeout=30.0,
+                probes=probes,
+            )
+            reported = _driver_command_lines(completed.stdout + "\n" + completed.stderr)
+            if completed.returncode != 0 or not reported:
+                raise RustLinkCaptureError(
+                    "LLVM SDK driver did not expose final-link helpers",
+                    unit="llvm-sdk",
+                    probes=probes,
+                )
+            helpers = []
+            for argv in reported:
+                path = Path(argv[0])
+                if not path.is_absolute():
+                    path = (
+                        cwd / path
+                        if any(sep in argv[0] for sep in ("/", "\\"))
+                        else find_executable(argv[0], environment=phase_env)
+                    )
+                if path is None:
+                    raise ValueError(f"LLVM SDK helper is unavailable: {argv[0]}")
+                image = capture_image("llvm-sdk-" + phase, path, preserve_path=True)
+                images.append(image)
+                if custody_path(path.resolve(strict=True)) != custody_path(path):
+                    images.append(capture_image("llvm-sdk-" + phase, path))
+                helpers.append(
+                    {"command": argv, "path": image["path"], "sha256": image["sha256"]}
+                )
+            phases.append({"phase": phase, "command": command, "helpers": helpers})
+    return canonical_images(images), {
+        **selection,
+        "scratch": str(scratch),
+        "link_closure": list(closure),
+        "phases": phases,
+        "probes": probes,
+    }
+
+
+def validate_llvm_sdk_selection(
+    identity: Mapping[str, object],
+    *,
+    required: bool,
+    expected: Mapping[str, object] | None = None,
+) -> None:
+    """Validate exact selected roles and transcript-bound helpers at every receiver."""
+    from molt.llvm_toolchain import llvm_verification_tool_paths
+
+    record = identity.get("llvm_sdk")
+    if not required:
+        if record is not None:
+            raise ValueError("non-verifier toolchain has unexpected LLVM SDK closure")
+        return
+    if not isinstance(record, Mapping) or set(record) != {
+        "prefix",
+        "tools",
+        "phases",
+        "probes",
+        "scratch",
+        "link_closure",
+        "selectors",
+        "probe_environment",
+    }:
+        raise ValueError("LLVM SDK verification closure is missing or malformed")
+    tools = record["tools"]
+    if (
+        not isinstance(tools, Mapping)
+        or not isinstance(record["prefix"], str)
+        or not Path(record["prefix"]).is_absolute()
+    ):
+        raise ValueError("LLVM SDK selection is malformed")
+    if any(
+        not isinstance(value, str) or not Path(value).is_absolute()
+        for value in tools.values()
+    ) or not isinstance(tools.get("llvm-config"), str):
+        raise ValueError("LLVM SDK tool paths are malformed")
+    canonical = {
+        role: str(path)
+        for role, path in llvm_verification_tool_paths(
+            Path(record["prefix"]), Path(tools["llvm-config"])
+        )
+    }
+    if dict(tools) != canonical or tools["llvm-config"] != identity.get("path"):
+        raise ValueError("LLVM SDK tools differ from the verification selection")
+    if expected is not None and {
+        key: record[key]
+        for key in ("prefix", "tools", "selectors", "probe_environment")
+    } != dict(expected):
+        raise ValueError("LLVM SDK selection has changed")
+    selectors, overlay = record["selectors"], record["probe_environment"]
+    if (
+        not isinstance(selectors, Mapping)
+        or not isinstance(overlay, Mapping)
+        or set(selectors)
+        != ({"xcode-select", "xcrun"} if sys.platform == "darwin" else set())
+        or set(overlay)
+        != (
+            {"DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"}
+            if sys.platform == "darwin"
+            else set()
+        )
+    ):
+        raise ValueError("LLVM SDK platform selection is malformed")
+    if any(
+        not isinstance(value, str) or not Path(value).is_absolute()
+        for value in selectors.values()
+    ) or any(not isinstance(value, str) or not value for value in overlay.values()):
+        raise ValueError("LLVM SDK platform selection values are malformed")
+    raw_images = identity.get("process_images")
+    if not isinstance(raw_images, list):
+        raise ValueError("LLVM SDK has no process images")
+    images = canonical_images(raw_images)
+    observed = {row["path"]: row for row in images}
+    expected_images = set()
+    for path in (*tools.values(), *selectors.values()):
+        lexical, physical = (
+            str(custody_path(Path(path))),
+            str(custody_path(Path(path).resolve(strict=True))),
+        )
+        expected_images.update((lexical, physical))
+        if (
+            lexical not in observed
+            or physical not in observed
+            or observed[lexical]["sha256"] != observed[physical]["sha256"]
+        ):
+            raise ValueError("LLVM SDK selected tool image is missing or substituted")
+    phases, probes = record["phases"], record["probes"]
+    if (
+        not isinstance(phases, list)
+        or [row.get("phase") for row in phases if isinstance(row, Mapping)]
+        != ["sdk-cpp-link", "c-link"]
+        or not isinstance(probes, list)
+        or len(probes) != 2
+    ):
+        raise ValueError("LLVM SDK final-link phases are incomplete")
+    if (
+        not isinstance(record["scratch"], str)
+        or not Path(record["scratch"]).is_absolute()
+        or not isinstance(record["link_closure"], list)
+        or any(not isinstance(token, str) for token in record["link_closure"])
+    ):
+        raise ValueError("LLVM SDK probe inputs are malformed")
+    commands = dict(
+        _llvm_sdk_link_commands(
+            record, Path(record["scratch"]), tuple(record["link_closure"])
+        )
+    )
+    for phase, probe, driver in zip(phases, probes, ("clang++", "clang"), strict=True):
+        command, helpers = phase.get("command"), phase.get("helpers")
+        if (
+            not isinstance(command, list)
+            or not command
+            or command != commands[phase["phase"]]
+            or not isinstance(helpers, list)
+            or not helpers
+            or not isinstance(probe, Mapping)
+        ):
+            raise ValueError("LLVM SDK driver phase is malformed")
+        if (
+            probe.get("returncode") != 0
+            or probe.get("phase") != phase["phase"]
+            or probe.get("argv") != [command[0], "-###", *command[1:]]
+        ):
+            raise ValueError("LLVM SDK driver transcript differs from selection")
+        reported = _driver_command_lines(
+            str(probe.get("stdout", "")) + "\n" + str(probe.get("stderr", ""))
+        )
+        if [
+            row.get("command") for row in helpers if isinstance(row, Mapping)
+        ] != reported:
+            raise ValueError("LLVM SDK helper closure differs from its transcript")
+        for helper in helpers:
+            path = helper.get("path")
+            image = observed.get(path)
+            if image is None or image["sha256"] != helper.get("sha256"):
+                raise ValueError("LLVM SDK helper image is missing or substituted")
+            invoked = Path(helper["command"][0])
+            if invoked.is_absolute() and str(custody_path(invoked)) != path:
+                raise ValueError("LLVM SDK helper differs from driver-selected path")
+            physical_path = str(custody_path(Path(path).resolve(strict=True)))
+            expected_images.update((path, physical_path))
+            physical = observed.get(physical_path)
+            if physical is None or physical["sha256"] != image["sha256"]:
+                raise ValueError("LLVM SDK helper physical content is missing")
+
+    if set(observed) != expected_images:
+        raise ValueError("LLVM SDK closure contains undeclared executable images")
+    material = dict(identity)
+    digest = material.pop("identity_sha256", None)
+    if digest != canonical_json_sha256(material):
+        raise ValueError("LLVM SDK identity digest is invalid")
+
+
 def capture_native_compiler_process_images(
     command: Sequence[str],
     *,
@@ -3743,6 +4009,11 @@ def _validate_captured_toolchains(toolchains: Mapping[str, object]) -> None:
         if not isinstance(raw, Mapping):
             raise ValueError("captured toolchain identity is malformed")
         policy = policies.get(name)
+        validate_llvm_sdk_selection(
+            raw,
+            required=policy is not None
+            and policy.data.get("compiler_tool_selector") == "llvm-sdk",
+        )
         if name == "rustc":
             validate_rust_link_selection(raw, full_capture=True)
             validate_clippy_selection(raw)

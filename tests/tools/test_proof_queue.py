@@ -1253,6 +1253,8 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     command_admission._proof_command_registry.cache_clear()
     native = command_admission.envelope_for_command(["clang", "--version"])
     assert native["toolchains"] == ["clang"]
+    scalar = command_admission.envelope_for_command(["llvm-config", "--version"])
+    assert scalar["toolchains"] == ["llvm-config"]
     plan = proof_plan.ProofPlan.load()
     command = next(
         item for item in plan.commands if item.id == "wasm.test.control-flow"
@@ -1262,6 +1264,13 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     assert selected["proof_plan_command_ids"] == [command.id]
     assert "wasi-clang" in selected["toolchains"]
     assert selected["toolchains"] == list(plan.toolchain_closure(command.toolchains))
+    verifier = next(
+        item for item in plan.commands if item.id == "native.integration.python-custody"
+    )
+    assert (
+        "llvm-sdk"
+        in command_admission.envelope_for_command(list(verifier.argv))["toolchains"]
+    )
 
 
 def test_ordinary_duplicate_executable_policy_still_rejects(monkeypatch) -> None:
@@ -17899,13 +17908,17 @@ def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
     selected = guest / "tools/llvm"
     monkeypatch.setattr(state, "ROOT", source)
     monkeypatch.setattr(
-        guarded_execution, "llvm_family_toolchains", lambda _plan: frozenset({"clang"})
+        guarded_execution,
+        "llvm_family_toolchains",
+        lambda _plan: frozenset({"clang", "llvm-sdk"}),
     )
     seen = []
 
     def discover(root, *, environ, cwd):
         seen.append((root, environ, cwd))
-        return SimpleNamespace(prefix=selected)
+        return SimpleNamespace(
+            prefix=selected, llvm_config=guest / "external/llvm-config"
+        )
 
     monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
     env = {"MOLT_TARGET_ROOT": "tools", "PATH": ""}
@@ -17915,6 +17928,12 @@ def test_native_llvm_proof_prefix_uses_compiler_source_and_request_cwd(
     assert seen == [(source, env, guest)]
     assert prefix == str(selected)
     assert resolved["PATH"].split(os.pathsep)[0] == str(selected / "bin")
+
+    pinned, _ = guarded_execution.prefer_canonical_llvm_prefix(
+        env, ["llvm-sdk"], cwd=guest
+    )
+    assert pinned["LLVM_CONFIG_PATH"] == str(guest / "external/llvm-config")
+    assert "LLVM_CONFIG_PATH" not in resolved
 
 
 @pytest.mark.usefixtures("admitted_build_capacity")

@@ -232,8 +232,10 @@ containing spaces; independent review passes. The next actual run reaches
 compilation and exposes a test-only HTTP feature reference plus two signal
 constant references absent from WASI libc. The HTTP case now follows its real
 feature, retaining the ordinary owner and iterator checks in the micro profile;
-signal tests use the existing target-selected constants. Actual WASI execution
-remains outstanding until these repaired consumers compile and run.
+signal tests use the existing target-selected constants. These corrections
+compile on WASI. Final executable linking then exposes a missing startup object
+under the non-self-contained SDK link plan; the lifecycle cases remain unrun
+until the executable startup contract is repaired.
 
 Both actual WASM host-boundary programs pass on `b38bf66a3` with complete
 process custody. The host-error program preserves `AttributeError`; the file
@@ -245,8 +247,13 @@ direct guards and explicit caller roots retain their existing semantics.
 Six focused controls and independent review pass. After installing the complete
 authenticated SDK, actual execution confirms the scratch repair: 61 checks pass,
 six skip, and the remaining eleven fail at the shared SDK verifier's uncaptured
-C++ prerequisite. The verifier's entire execution closure and the selected
-cross-format linker consumers must migrate together before this row qualifies.
+C++ prerequisite. An explicit SDK-verification operation now reuses the verifier's
+canonical tool roles, selected Darwin environment and exact link command. All
+receivers validate the complete executable set and both SDK/C final-link phases;
+ordinary compiler policies retain their existing scope. The affected proof rows,
+selected cross-format linkers, fingerprints and generated projections migrate
+together. Independent adversarial review and focused host controls pass; actual
+compiler-consumer execution remains required.
 
 Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
 classes; all exact-source CPython reference executions pass with empty stderr.

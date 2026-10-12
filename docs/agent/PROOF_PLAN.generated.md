@@ -124,6 +124,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
+| `llvm-sdk` | `executable` | `compiler:llvm-sdk` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |

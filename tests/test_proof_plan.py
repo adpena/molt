@@ -2480,6 +2480,7 @@ def _receipt_for(
         "clang": "clang version {}",
         "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
+        "llvm-sdk": "{}",
         "mlir-opt": "LLVM version {}",
         "llvm-strip": "LLVM version {}",
         "wasm-opt": "wasm-opt version {0} (version_{0})",
@@ -2520,6 +2521,13 @@ def _receipt_for(
                 ).encode()
             ).hexdigest(),
         }
+        if policies[name].data.get("compiler_tool_selector") == "llvm-sdk":
+            toolchains[name]["llvm_sdk_sha256"] = hashlib.sha256(
+                b"verified LLVM SDK closure"
+            ).hexdigest()
+            toolchains[name]["identity_sha256"] = (
+                proof_plan._toolchain_fingerprint_digest(toolchains[name])
+            )
     evidence_bytes = b'{"schema":"test.evidence"}'
     evidence_digest = hashlib.sha256(evidence_bytes).hexdigest()
     evidence_outputs = [
@@ -4828,7 +4836,16 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
     )
 
 
-def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_path):
+@pytest.mark.parametrize(
+    "role, digest_field, version",
+    [
+        ("wasi-clang", "wasi_sdk_sha256", "clang version 23.1.0"),
+        ("llvm-sdk", "llvm_sdk_sha256", "22.1.8"),
+    ],
+)
+def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(
+    tmp_path, role, digest_field, version
+):
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
     for sibling in PLAN.commands:
         if sibling.family == command.family and sibling.id != command.id:
@@ -4836,17 +4853,17 @@ def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_pa
                 json.dumps(_receipt_for(sibling, tmp_path)), encoding="utf-8"
             )
     receipt = _receipt_for(command, tmp_path)
-    policy = next(item for item in PLAN.toolchain_policies if item.name == "wasi-clang")
+    policy = next(item for item in PLAN.toolchain_policies if item.name == role)
     sdk = {
         "path": "/sdk/bin/clang",
         "launcher_path": "/sdk/bin/clang-23",
         "launcher_sha256": "1" * 64,
         "content_path": "/sdk/bin/clang-23",
         "executable_sha256": "1" * 64,
-        "version": "clang version 23.1.0",
+        "version": version,
         "probe_cwd": ".",
         "version_pattern": policy.data["version_pattern"],
-        "wasi_sdk_sha256": "2" * 64,
+        digest_field: "2" * 64,
     }
     # Independent wire oracle: native identities retain their old seven fields;
     # this selected SDK role binds its complete captured closure as field eight.
@@ -4856,24 +4873,24 @@ def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_pa
             + "1" * 64
             + "\0/sdk/bin/clang-23\0"
             + "1" * 64
-            + "\0clang version 23.1.0\0.\0"
+            + f"\0{version}\0.\0"
             + "2" * 64
         ).encode()
     ).hexdigest()
-    receipt["toolchains"]["wasi-clang"] = sdk
+    receipt["toolchains"][role] = sdk
     path = tmp_path / "sdk.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
-    sdk["wasi_sdk_sha256"] = "3" * 64
+    sdk[digest_field] = "3" * 64
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
-        "wasi-clang toolchain identity hash is invalid" in error
+        f"{role} toolchain identity hash is invalid" in error
         for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
     )
-    del sdk["wasi_sdk_sha256"]
+    del sdk[digest_field]
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
-        "invalid wasi-clang toolchain identity" in error
+        f"invalid {role} toolchain identity" in error
         for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
     )
 
@@ -5368,17 +5385,19 @@ def test_compiler_helper_selection_reuses_actual_compiler_authority(
     monkeypatch.setattr(llvm_wasi_tools, "llvm_tool_candidates", llvm)
     monkeypatch.setattr(wasm_optimizer_identity, "find_wasm_opt", optimizer)
     policy = next(p for p in PLAN.toolchain_policies if p.name == name)
-    assert proof_plan.compiler_tool_path(policy, environment=env) == selected
+    assert (
+        proof_plan.compiler_tool_path(policy, environment=env, cwd=tmp_path) == selected
+    )
     assert seen == [(role, env)]
 
 
-def test_missing_compiler_helper_is_refused_before_probe(monkeypatch):
+def test_missing_compiler_helper_is_refused_before_probe(monkeypatch, tmp_path):
     from molt import llvm_wasi_tools
 
     monkeypatch.setattr(llvm_wasi_tools, "llvm_tool_candidates", lambda *a, **k: ())
     policy = next(p for p in PLAN.toolchain_policies if p.name == "llvm-strip")
     with pytest.raises(ValueError, match="selected compiler helper is unavailable"):
-        proof_plan.compiler_tool_path(policy, environment={})
+        proof_plan.compiler_tool_path(policy, environment={}, cwd=tmp_path)
 
 
 def test_optimizer_policy_accepts_only_canonical_pinned_binaryen_banners():
@@ -5396,3 +5415,24 @@ def test_optimizer_policy_accepts_only_canonical_pinned_binaryen_banners():
         "wasm-opt version 133 ",
     ):
         assert re.fullmatch(pattern, banner) is None
+
+
+def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkeypatch):
+    from molt import llvm_toolchain
+    from types import SimpleNamespace
+
+    policy = next(item for item in PLAN.toolchain_policies if item.name == "llvm-sdk")
+    requested = tmp_path / "requested-cwd"
+    env = {"LLVM_CONFIG_PATH": "external/llvm-config"}
+    calls = []
+
+    def discover(root, *, environ, cwd):
+        calls.append((root, environ, cwd))
+        return SimpleNamespace(llvm_config=cwd / environ["LLVM_CONFIG_PATH"])
+
+    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", discover)
+    assert (
+        proof_plan.compiler_tool_path(policy, environment=env, cwd=requested)
+        == requested / "external/llvm-config"
+    )
+    assert calls == [(proof_plan.ROOT, env, requested)]

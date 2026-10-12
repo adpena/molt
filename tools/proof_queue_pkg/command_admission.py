@@ -484,6 +484,7 @@ def _proof_command_registry() -> dict[str, object]:
         if (
             policy.identity_kind != "executable"
             or policy.data.get("wasi_sdk_tool") is not None
+            or policy.data.get("compiler_tool_selector") == "llvm-sdk"
         ):
             continue
         executable = str(policy.data.get("executable") or policy.name)

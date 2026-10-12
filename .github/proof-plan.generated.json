@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "24436728ce770d3807d865cfdd835409919435b2c94c20ecd849f4c60e9bf7b6",
+  "authority_sha256": "c3c8b5672527b764aae3fde321596ed2f493b1e3fcaf8f47647c0dd56ffea9e4",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5801,7 +5801,12 @@
         "clang",
         "llvm-ar",
         "llvm-nm",
-        "wasm-ld"
+        "wasm-ld",
+        "llvm-sdk",
+        "ld.lld",
+        "lld-link",
+        "ld64.lld",
+        "wasi-clang"
       ]
     },
     {
@@ -6687,7 +6692,7 @@
         "python",
         "uv",
         "clang",
-        "llvm-config",
+        "llvm-sdk",
         "ld.lld"
       ]
     },
@@ -6735,7 +6740,7 @@
         "rustc",
         "cargo",
         "clang",
-        "llvm-config",
+        "llvm-sdk",
         "llvm-strip"
       ]
     },
@@ -9192,6 +9197,19 @@
     {
       "executable": "llvm-config",
       "name": "llvm-config",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^22\\.1\\.8$"
+    },
+    {
+      "compiler_tool_selector": "llvm-sdk",
+      "executable": "llvm-config",
+      "name": "llvm-sdk",
       "setup_evidence": [
         "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
       ],

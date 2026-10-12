@@ -234,6 +234,10 @@ def toolchain_images(
         from tools.proof_queue_pkg.toolchain_capture import validate_rust_link_selection
 
         validate_rust_link_selection(identity)
+    if name == "llvm-sdk":
+        from tools.proof_queue_pkg.toolchain_capture import validate_llvm_sdk_selection
+
+        validate_llvm_sdk_selection(identity, required=True)
     raw_images = identity.get("process_images")
     if name == "python" and raw_images is None:
         raw_path = identity.get("executable")

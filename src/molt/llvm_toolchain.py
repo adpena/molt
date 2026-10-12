@@ -1536,14 +1536,15 @@ def _llvm_link_closure(
     return tuple(rendered), tuple(resolved_local)
 
 
-def _compile_link_probe(
+def llvm_sdk_probe_command(
     prefix: Path,
     clangxx: Path,
     host_linker: Path,
     link_closure: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Compile and link the SDK headers and authoritative llvm-config closure."""
-
+    source: Path,
+    output: Path,
+) -> list[str]:
+    """One driver command for SDK verification and executable-phase capture."""
     local_libraries = [
         str(prefix / token) for token in link_closure if not token.startswith("system:")
     ]
@@ -1558,6 +1559,40 @@ def _compile_link_probe(
         for token in link_closure
         if token.startswith("system:")
     ]
+    return [
+        str(clangxx),
+        "-std=c++17",
+        f"--ld-path={host_linker}",
+        *(["-fms-runtime-lib=dll"] if os.name == "nt" else []),
+        f"-I{prefix / 'include'}",
+        str(source),
+        *local_libraries,
+        *system_libraries,
+        "-o",
+        str(output),
+    ]
+
+
+def llvm_sdk_probe_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """Pin the same SDK loader/target context for capture and verification."""
+    probe_env = dict(environ)
+    if sys.platform == "darwin":
+        from molt.platform_toolchain import select_darwin_toolchain
+
+        probe_env.update(select_darwin_toolchain(probe_env).environment())
+    return probe_env
+
+
+def _compile_link_probe(
+    prefix: Path,
+    clangxx: Path,
+    host_linker: Path,
+    link_closure: tuple[str, ...],
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Compile and link the SDK headers and authoritative llvm-config closure."""
+
     with tempfile.TemporaryDirectory(prefix="molt-llvm-sdk-probe-") as temp:
         temp_root = Path(temp)
         source = temp_root / "sdk_probe.cpp"
@@ -1573,27 +1608,13 @@ def _compile_link_probe(
             "int main() { llvm::LLVMContext context; return 0; }\n",
             encoding="utf-8",
         )
-        command = [
-            str(clangxx),
-            "-std=c++17",
-            f"--ld-path={host_linker}",
-            *(["-fms-runtime-lib=dll"] if os.name == "nt" else []),
-            f"-I{prefix / 'include'}",
-            str(source),
-            *local_libraries,
-            *system_libraries,
-            "-o",
-            str(output),
-        ]
-        probe_env = dict(os.environ)
+        command = llvm_sdk_probe_command(
+            prefix, clangxx, host_linker, link_closure, source, output
+        )
         try:
-            if sys.platform == "darwin":
-                # Upstream clang finds the macOS SDK only through SDKROOT; pin
-                # the selected Xcode SDK instead of trusting the caller's shell.
-                # (platform_toolchain imports this module, so import here.)
-                from molt.platform_toolchain import select_darwin_toolchain
-
-                probe_env.update(select_darwin_toolchain(probe_env).environment())
+            probe_env = llvm_sdk_probe_environment(
+                os.environ if environ is None else environ
+            )
             result = subprocess.run(
                 command,
                 check=False,
@@ -1866,6 +1887,60 @@ def _attestation_value_summary(value: Any) -> str:
     return repr(value)
 
 
+def llvm_verification_tool_paths(
+    prefix: Path, llvm_config: Path
+) -> tuple[tuple[str, Path], ...]:
+    """Exact platform-specific executable roles used by SDK verification."""
+    suffix = ".exe" if os.name == "nt" else ""
+    host_linker_role = host_llvm_linker_role(platform.system())
+    host_linker = (f"{host_linker_role}{suffix}",)
+    return (
+        ("llvm-config", llvm_config),
+        ("clang", _required_tool(prefix, f"clang{suffix}")),
+        ("clang++", _required_tool(prefix, f"clang++{suffix}")),
+        (
+            host_linker_role,
+            _required_tool(prefix, *host_linker),
+        ),
+        ("wasm-ld", _required_tool(prefix, f"wasm-ld{suffix}")),
+        ("mlir-opt", _required_tool(prefix, f"mlir-opt{suffix}")),
+        ("mlir-tblgen", _required_tool(prefix, f"mlir-tblgen{suffix}")),
+        ("llvm-tblgen", _required_tool(prefix, f"llvm-tblgen{suffix}")),
+    )
+
+
+def llvm_verification_selection(
+    *, root: Path, cwd: Path, env: Mapping[str, str]
+) -> dict[str, object]:
+    discovery = discover_llvm_toolchain(root, environ=dict(env), cwd=cwd)
+    if discovery is None:
+        raise ValueError("LLVM SDK verification requires a selected prefix")
+    selectors = {}
+    overlay = {}
+    if sys.platform == "darwin":
+        from molt.platform_toolchain import (
+            darwin_toolchain_selector_paths,
+            select_darwin_toolchain,
+        )
+
+        selectors = {
+            role: str(path)
+            for role, path in darwin_toolchain_selector_paths(env).items()
+        }
+        overlay = select_darwin_toolchain(env).environment()
+    return {
+        "prefix": str(discovery.prefix),
+        "selectors": selectors,
+        "probe_environment": overlay,
+        "tools": {
+            role: str(path)
+            for role, path in llvm_verification_tool_paths(
+                discovery.prefix, discovery.llvm_config
+            )
+        },
+    }
+
+
 def verify_llvm_toolchain_prefix(
     root: Path,
     prefix: Path,
@@ -1925,22 +2000,7 @@ def verify_llvm_toolchain_prefix(
             f"LLVM/MLIR prefix is missing required targets {missing_targets}; "
             f"built targets are {list(built_targets)}"
         )
-    suffix = ".exe" if os.name == "nt" else ""
-    host_linker_role = host_llvm_linker_role(platform.system())
-    host_linker = (f"{host_linker_role}{suffix}",)
-    tools = (
-        ("llvm-config", llvm_config),
-        ("clang", _required_tool(resolved, f"clang{suffix}")),
-        ("clang++", _required_tool(resolved, f"clang++{suffix}")),
-        (
-            host_linker_role,
-            _required_tool(resolved, *host_linker),
-        ),
-        ("wasm-ld", _required_tool(resolved, f"wasm-ld{suffix}")),
-        ("mlir-opt", _required_tool(resolved, f"mlir-opt{suffix}")),
-        ("mlir-tblgen", _required_tool(resolved, f"mlir-tblgen{suffix}")),
-        ("llvm-tblgen", _required_tool(resolved, f"llvm-tblgen{suffix}")),
-    )
+    tools = llvm_verification_tool_paths(resolved, llvm_config)
     directories = (
         _required_directory(resolved, "include/llvm"),
         _required_directory(resolved, "include/mlir"),
@@ -1965,6 +2025,7 @@ def verify_llvm_toolchain_prefix(
             tools[2][1],
             host_linker_path,
             link_closure,
+            environ=environ,
         )
     lib_dir = resolved / "lib"
     library_files = tuple(path for path in lib_dir.iterdir() if path.is_file())

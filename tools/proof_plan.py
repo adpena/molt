@@ -700,7 +700,11 @@ class ProofPlan:
             selector = policy.data.get("compiler_tool_selector")
             if selector is not None and (
                 identity_kind != "executable"
-                or {"native-strip": "llvm-strip", "wasm-opt": "wasm-opt"}.get(selector)
+                or {
+                    "native-strip": "llvm-strip",
+                    "wasm-opt": "wasm-opt",
+                    "llvm-sdk": "llvm-config",
+                }.get(selector)
                 != policy.data.get("executable")
                 or policy.data.get("wasi_sdk_tool") is not None
             ):
@@ -2234,11 +2238,13 @@ def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
     )
     if "wasi_sdk_sha256" in identity:
         material += "\0" + identity["wasi_sdk_sha256"]
+    if "llvm_sdk_sha256" in identity:
+        material += "\0" + identity["llvm_sdk_sha256"]
     return hashlib.sha256(material.encode()).hexdigest()
 
 
 def compiler_tool_path(
-    policy: ToolchainPolicy, *, environment: Mapping[str, str]
+    policy: ToolchainPolicy, *, environment: Mapping[str, str], cwd: Path
 ) -> Path | None:
     """Use the compiler's selector for a declared post-link executable.
 
@@ -2253,6 +2259,11 @@ def compiler_tool_path(
 
         candidates = llvm_tool_candidates("strip", environment=environment)
         selected = candidates[0] if candidates else None
+    elif selector == "llvm-sdk":
+        from molt.llvm_toolchain import discover_llvm_toolchain
+
+        discovery = discover_llvm_toolchain(ROOT, environ=dict(environment), cwd=cwd)
+        selected = discovery.llvm_config if discovery is not None else None
     elif selector == "wasm-opt":
         from molt.wasm_optimizer_identity import find_wasm_opt
 
@@ -2272,7 +2283,10 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
-    compiler_path = compiler_tool_path(policy, environment=os.environ)
+    probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
+    compiler_path = compiler_tool_path(
+        policy, environment=os.environ, cwd=probe_directory
+    )
     sdk_role = policy.data.get("wasi_sdk_tool")
     if compiler_path is not None:
         path = str(compiler_path)
@@ -2309,7 +2323,6 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         path = shutil.which(requested)
     if path is None:
         return None
-    probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
     command_path = Path(path).absolute()
     launcher_path = command_path.resolve()
 
@@ -2409,6 +2422,28 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     }
     if sdk_closure is not None:
         identity["wasi_sdk_sha256"] = sdk_digest
+    if policy.data.get("compiler_tool_selector") == "llvm-sdk":
+        from molt.llvm_toolchain import llvm_verification_selection
+
+        selected = llvm_verification_selection(
+            root=ROOT, cwd=probe_directory, env=os.environ
+        )
+        images = [
+            {
+                "role": role,
+                "path": path,
+                "content_path": str(Path(path).resolve(strict=True)),
+                "sha256": content_hash(Path(path)),
+            }
+            for role, path in {**selected["tools"], **selected["selectors"]}.items()
+        ]
+        identity["llvm_sdk_sha256"] = hashlib.sha256(
+            json.dumps(
+                {"selection": selected, "images": images},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
     identity["identity_sha256"] = _toolchain_fingerprint_digest(identity)
     return identity
 
@@ -3307,6 +3342,16 @@ def verify_receipts(
                             is None
                             if policies[name].data.get("wasi_sdk_tool") is not None
                             else "wasi_sdk_sha256" in identity
+                        )
+                        or (
+                            re.fullmatch(
+                                r"[0-9a-f]{64}",
+                                str(identity.get("llvm_sdk_sha256", "")),
+                            )
+                            is None
+                            if policies[name].data.get("compiler_tool_selector")
+                            == "llvm-sdk"
+                            else "llvm_sdk_sha256" in identity
                         )
                     ):
                         errors.append(

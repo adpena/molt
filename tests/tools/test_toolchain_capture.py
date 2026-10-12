@@ -4077,3 +4077,228 @@ def test_clippy_alias_requires_one_cross_platform_sibling_driver(
     else:
         with pytest.raises(ValueError, match="different sibling drivers"):
             toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
+
+
+@pytest.mark.parametrize("aliases", [False, True])
+def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, aliases: bool
+) -> None:
+    import copy
+    from molt import llvm_toolchain
+    from molt.llvm_linker_roles import host_llvm_linker_role
+    import platform
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_identity
+
+    prefix = tmp_path / "sdk"
+    suffix = ".exe" if os.name == "nt" else ""
+    names = (
+        "clang",
+        "clang++",
+        host_llvm_linker_role(platform.system()),
+        "wasm-ld",
+        "mlir-opt",
+        "mlir-tblgen",
+        "llvm-tblgen",
+    )
+    for name in names:
+        path = prefix / "bin" / (name + suffix)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode())
+    if aliases:
+        clangxx = prefix / "bin" / ("clang++" + suffix)
+        clangxx.unlink()
+        physical_lld = prefix / "bin" / ("lld" + suffix)
+        physical_lld.write_bytes(b"LLVM multicall linker content")
+        linker_alias = (
+            prefix / "bin" / (host_llvm_linker_role(platform.system()) + suffix)
+        )
+        linker_alias.unlink()
+        try:
+            clangxx.symlink_to("clang" + suffix)
+            linker_alias.symlink_to(physical_lld.name)
+        except OSError as exc:
+            pytest.skip(f"symlink capability unavailable: {exc}")
+    config = tmp_path / ("external-llvm-config" + suffix)
+    config.write_bytes(b"external config")
+    default_linker = tmp_path / ("default-ld" + suffix)
+    default_linker.write_bytes(b"different default system linker")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda *a, **kw: SimpleNamespace(prefix=prefix, llvm_config=config),
+    )
+    monkeypatch.setattr(llvm_toolchain, "_llvm_link_closure", lambda *a: ((), ()))
+    from molt import platform_toolchain
+
+    selectors = {}
+    for name in ("xcode-select", "xcrun"):
+        selected = tmp_path / name
+        selected.write_bytes(name.encode())
+        selectors[name] = selected
+    overlay = {
+        "DEVELOPER_DIR": str(tmp_path / "developer"),
+        "SDKROOT": str(tmp_path / "macos-sdk"),
+        "MACOSX_DEPLOYMENT_TARGET": "15.0",
+    }
+    monkeypatch.setattr(
+        platform_toolchain, "darwin_toolchain_selector_paths", lambda env: selectors
+    )
+    monkeypatch.setattr(
+        platform_toolchain,
+        "select_darwin_toolchain",
+        lambda env: SimpleNamespace(environment=lambda: dict(overlay)),
+    )
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        assert argv[1] == "-###"  # No compiler output is ever produced during capture.
+        sdk_probe = any(value.startswith("--ld-path=") for value in argv)
+        assert kwargs["env"] == (
+            overlay if sdk_probe and sys.platform == "darwin" else {}
+        )
+        linker = next(
+            (
+                value.removeprefix("--ld-path=")
+                for value in argv
+                if value.startswith("--ld-path=")
+            ),
+            str(default_linker),
+        )
+        stderr = "\n".join(
+            " " + json.dumps(str(value)) + ' "phase"' for value in (argv[0], linker)
+        )
+        return subprocess.CompletedProcess(argv, 0, "", stderr)
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    selection = llvm_toolchain.llvm_verification_selection(
+        root=tmp_path, cwd=tmp_path, env={}
+    )
+    assert set(selection["tools"]) == {"llvm-config", *names}
+    assert selection["tools"]["llvm-config"] == str(config)
+    images, record = toolchain_capture.capture_llvm_sdk_selection(
+        selection, cwd=tmp_path, env={}
+    )
+    assert len(calls) == 2
+    assert str(default_linker) in {row["path"] for row in images}
+    if aliases:
+        assert str(physical_lld) in {row["path"] for row in images}
+        assert str(linker_alias) in {row["path"] for row in images}
+    launcher = next(row for row in images if row["path"] == str(config))
+    plan = proof_plan.ProofPlan.load()
+    policy = next(p for p in plan.toolchain_policies if p.name == "llvm-sdk")
+    identity = dict(
+        path=str(config),
+        content_path=str(config),
+        launcher_sha256=launcher["sha256"],
+        executable_sha256=launcher["sha256"],
+        version=policy.data["setup_value"],
+        process_images=images,
+        llvm_sdk=record,
+    )
+    identity["identity_sha256"] = canonical_json_sha256(identity)
+    command_identity._validate_toolchain_identity(plan, "llvm-sdk", identity)
+    toolchain_capture._validate_captured_toolchains({"llvm-sdk": identity})
+    for omitted in ("llvm-config", *names, *selection["selectors"]):
+        broken = copy.deepcopy(identity)
+        path = {**selection["tools"], **selection["selectors"]}[omitted]
+        broken["process_images"] = [row for row in images if row["path"] != path]
+        with pytest.raises(ValueError, match="missing|substituted"):
+            command_identity._validate_toolchain_identity(plan, "llvm-sdk", broken)
+    for receiver in (
+        lambda value: command_identity._validate_toolchain_identity(
+            plan, "llvm-sdk", value
+        ),
+        lambda value: toolchain_capture._validate_captured_toolchains(
+            {"llvm-sdk": value}
+        ),
+        lambda value: process_image_capture.toolchain_images("llvm-sdk", value),
+    ):
+        broken = dict(identity)
+        del broken["llvm_sdk"]
+        with pytest.raises(ValueError, match="closure is missing"):
+            receiver(broken)
+    for corruption in (
+        "helper",
+        "transcript",
+        "phase",
+        "compile-only",
+        "foreign-image",
+        "alias-content",
+    ):
+        broken = copy.deepcopy(identity)
+        if corruption == "helper":
+            broken["process_images"] = [
+                row for row in images if row["path"] != str(default_linker)
+            ]
+        elif corruption == "transcript":
+            broken["llvm_sdk"]["probes"][1]["stderr"] = '"/other/ld" "phase"'
+        elif corruption == "compile-only":
+            phase = broken["llvm_sdk"]["phases"][1]
+            phase["command"].insert(1, "-c")
+            broken["llvm_sdk"]["probes"][1]["argv"].insert(2, "-c")
+        elif corruption == "alias-content":
+            if not aliases:
+                continue
+            broken["process_images"] = [
+                row for row in images if row["path"] != str(physical_lld)
+            ]
+        elif corruption == "foreign-image":
+            foreign = tmp_path / "unrelated-executable"
+            foreign.write_bytes(b"not part of this operation")
+            broken["process_images"].append(
+                process_image_capture.capture_image("extra", foreign)
+            )
+        else:
+            broken["llvm_sdk"]["phases"].pop()
+        with pytest.raises(ValueError):
+            command_identity._validate_toolchain_identity(plan, "llvm-sdk", broken)
+    # Scalar llvm-config does not acquire the verification operation's obligations.
+    scalar = {key: value for key, value in identity.items() if key != "llvm_sdk"}
+    command_identity._validate_toolchain_identity(plan, "llvm-config", scalar)
+
+    version_calls = []
+
+    def version(argv, **kwargs):
+        version_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, str(policy.data["setup_value"]), "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    telemetry = []
+    envelope = {"argv": ["driver"], "toolchains": ["llvm-sdk"]}
+
+    def capture():
+        return command_identity._tool_identity(
+            plan,
+            "llvm-sdk",
+            envelope,
+            envelope["argv"],
+            cwd=tmp_path,
+            env={},
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+
+    captured = capture()
+    command_identity._validate_toolchain_identity(plan, "llvm-sdk", captured)
+    assert len(version_calls) == 1 and len(calls) == 4
+    assert capture() == captured and telemetry[-1]["state"] == "hit"
+    assert len(version_calls) == 1 and len(calls) == 4
+    # An omitted role cannot be laundered by resealing the stored JSON identity.
+    location = Path(telemetry[-1]["record"])
+    stored = json.loads(location.read_text())
+    del stored["identity"]["llvm_sdk"]
+    stored["identity"].pop("identity_sha256")
+    stored["identity"]["identity_sha256"] = canonical_json_sha256(stored["identity"])
+    location.write_text(json.dumps(stored))
+    recaptured = capture()
+    command_identity._validate_toolchain_identity(plan, "llvm-sdk", recaptured)
+    assert recaptured["process_images"] == captured["process_images"]
+    assert telemetry[-1]["state"] == "miss"
+    assert len(version_calls) == 2 and len(calls) == 6
+    # Content drift in a sibling, not just llvm-config, invalidates warm reuse.
+    Path(selection["tools"]["clang++"]).write_bytes(b"changed compiler")
+    changed = capture()
+    assert changed != captured and telemetry[-1]["state"] == "miss"
+    assert len(version_calls) == 3 and len(calls) == 8

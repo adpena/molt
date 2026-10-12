@@ -601,6 +601,15 @@ setup_value = "22.1.8"
 setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
 
 [[toolchain_policy]]
+name = "llvm-sdk"
+compiler_tool_selector = "llvm-sdk"
+executable = "llvm-config"
+version_args = ["--version"]
+version_pattern = '^22\.1\.8$'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
 name = "mlir-opt"
 executable = "mlir-opt"
 version_args = ["--version"]
@@ -2739,7 +2748,7 @@ timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py", "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"]
-toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
+toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld", "llvm-sdk", "ld.lld", "lld-link", "ld64.lld", "wasi-clang"]
 
 [[command]]
 id = "native.integration.bench-cli"
@@ -3069,7 +3078,7 @@ timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = ["linker.test.generated-object-admission"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/cli/test_native_link_plan.py", "tests/cli/test_cli_native_link_command_authority.py", "tests/cli/test_native_link_fail_closed.py"]
-toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
+toolchains = ["python", "uv", "clang", "llvm-sdk", "ld.lld"]
 
 [[command]]
 id = "llvm.test.differential"
@@ -3083,7 +3092,7 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.test.lowering"]
 env = { MOLT_PYTEST_TRUTH_RECEIPT = "proof-receipts/evidence/llvm-differential-truth.json", MOLT_PYTEST_TRUTH_MINIMUM_EXECUTED = "2" }
 argv = ["uv", "run", "python3", "-m", "pytest", "-p", "tools.pytest_truth_plugin", "-q", "tests/test_native_lir_loop_join_semantics.py", "-k", "integer_carrier_matrix"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "llvm-strip"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-sdk", "llvm-strip"]
 
 [[command]]
 id = "security.python.audit"
