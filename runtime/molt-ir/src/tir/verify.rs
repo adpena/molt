@@ -1105,8 +1105,13 @@ mod tests {
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 attrs.insert("value".into(), AttrValue::Int(0));
             }
-            if matches!(shape.kind, "code_slot_set" | "trace_enter_slot") {
-                attrs.insert("s_value".into(), AttrValue::Str("preserved_shape".into()));
+            let symbol = match shape.kind {
+                "code_slot_set" | "trace_enter_slot" => Some("preserved_shape"),
+                "module_slot" => Some("fixture.module"),
+                _ => None,
+            };
+            if let Some(symbol) = symbol {
+                attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
             }
             func.blocks
                 .get_mut(&func.entry_block)
@@ -1114,9 +1119,17 @@ mod tests {
                 .ops
                 .push(TirOp {
                     dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
+                    opcode: if shape.kind == "module_slot" {
+                        OpCode::ModuleSlot
+                    } else {
+                        OpCode::Copy
+                    },
                     operands: (0..shape.operands).map(|i| ValueId(i as u32)).collect(),
-                    results: vec![],
+                    results: if shape.kind == "module_slot" {
+                        vec![ValueId(100)]
+                    } else {
+                        vec![]
+                    },
                     attrs,
                     source_span: None,
                 });
@@ -1138,7 +1151,7 @@ mod tests {
                         .contains("explicit nonnegative")
                 );
             }
-            if matches!(shape.kind, "code_slot_set" | "trace_enter_slot") {
+            if symbol.is_some() {
                 for symbol in [
                     None,
                     Some(AttrValue::Str(String::new())),
@@ -1151,10 +1164,12 @@ mod tests {
                     }
                     let errors = verify_operation_shapes(&func).unwrap_err();
                     assert_eq!(errors.len(), 1);
-                    assert!(
-                        errors[0].message.contains("nonempty code-owner symbol"),
-                        "{errors:?}"
-                    );
+                    let expected = if shape.kind == "module_slot" {
+                        "nonempty canonical module name"
+                    } else {
+                        "nonempty code-owner symbol"
+                    };
+                    assert!(errors[0].message.contains(expected), "{errors:?}");
                 }
             }
         }

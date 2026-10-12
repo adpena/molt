@@ -2104,7 +2104,9 @@ fn symbolic_module_slots_resolve_from_the_program_registry() {
             .compile_checked(&ir)
             .unwrap();
         assert!(
-            source.contains(&format!("module_id = MoltValue::Int({expected}i64)")),
+            source.contains(&format!(
+                "let mut module_id: MoltValue = MoltValue::Int({expected}i64);"
+            )),
             "{source}"
         );
     }

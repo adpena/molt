@@ -109,10 +109,11 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
 
 #[test]
 fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
-    for (opcode, ty) in [
-        (OpCode::BoxVal, TirType::I64),
-        (OpCode::BoxVal, TirType::DynBox),
-        (OpCode::UnboxVal, TirType::DynBox),
+    for (opcode, ty, inline) in [
+        (OpCode::BoxVal, TirType::I64, false),
+        (OpCode::BoxVal, TirType::I64, true),
+        (OpCode::BoxVal, TirType::DynBox, false),
+        (OpCode::UnboxVal, TirType::DynBox, false),
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
@@ -135,6 +136,12 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
             .values
             .insert(ValueId(0), llvm_fn.get_first_param().unwrap());
         lowering.value_types.insert(ValueId(0), ty.clone());
+        if inline {
+            lowering
+                .repr_facts
+                .repr_by_value
+                .insert(ValueId(0), crate::Repr::RawI64Safe);
+        }
         lowering.lower_op(
             func.entry_block,
             &TirOp {
@@ -149,7 +156,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
         backend.builder.build_return(None).unwrap();
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
-        let allocates = opcode == OpCode::BoxVal && ty == TirType::I64;
+        let allocates = opcode == OpCode::BoxVal && ty == TirType::I64 && !inline;
         assert_eq!(
             ir.matches("call i64 @molt_int_from_i64").count(),
             usize::from(allocates),
@@ -863,53 +870,84 @@ fn lower_i64_comparison() {
 
 #[test]
 fn lower_box_i64() {
-    let ctx = Context::create();
-    let mut backend = make_backend(&ctx);
+    for transfer in ["box", "return", "phi"] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
 
-    // Build: fn box_it(x: i64) -> DynBox { return box(x) }
-    let mut func = TirFunction::new(
-        "box_i64".into(),
-        vec![TirType::I64],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let v_boxed = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::BoxVal,
-        operands: vec![ValueId(0)],
-        results: vec![v_boxed],
-        attrs: AttrDict::new(),
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![v_boxed],
-    };
+        // Build: fn box_it(x: i64) -> DynBox { return box(x) }
+        let mut func = TirFunction::new(
+            "box_i64".into(),
+            vec![TirType::I64],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let v_boxed = func.fresh_value();
+        let target = func.fresh_block();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        if transfer == "box" {
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::BoxVal,
+                operands: vec![ValueId(0)],
+                results: vec![v_boxed],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![v_boxed],
+            };
+        } else if transfer == "return" {
+            entry.terminator = Terminator::Return {
+                values: vec![ValueId(0)],
+            };
+        } else {
+            entry.terminator = Terminator::Branch {
+                target,
+                args: vec![ValueId(0)],
+            };
+            func.blocks.insert(
+                target,
+                TirBlock {
+                    id: target,
+                    args: vec![TirValue {
+                        id: v_boxed,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![],
+                    terminator: Terminator::Return {
+                        values: vec![v_boxed],
+                    },
+                },
+            );
+        }
 
-    // `box(x)` emits the NaN-boxing arithmetic only when `x` is a RAW i64.
-    // An unproven `i64` parameter carries already-boxed (`DynBox`), for which
-    // `box` is a no-op; prove the parameter raw so the box path is exercised.
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
-    facts
-        .repr_by_value
-        .insert(ValueId(0), crate::Repr::RawI64Safe);
-    backend.function_repr_facts.insert(func.name.clone(), facts);
+        // `box(x)` emits the NaN-boxing arithmetic only when `x` is a RAW i64.
+        // An unproven `i64` parameter carries already-boxed (`DynBox`), for which
+        // `box` is a no-op; prove the parameter raw so the box path is exercised.
+        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        facts
+            .repr_by_value
+            .insert(ValueId(0), crate::Repr::RawI64Safe);
+        backend.function_repr_facts.insert(func.name.clone(), facts);
 
-    let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().unwrap();
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(!ir.contains("@molt_int_from_i64"), "{transfer}: {ir}");
+        assert!(!ir.contains("br i1"), "{transfer}: {ir}");
 
-    // Should contain the NaN-boxing OR operations
-    assert!(
-        ir.contains("or i64"),
-        "expected NaN-boxing OR in IR: {}",
-        ir
-    );
-    assert!(
-        ir.contains("and i64"),
-        "expected NaN-boxing AND mask in IR: {}",
-        ir
-    );
+        // Should contain the NaN-boxing OR operations
+        assert!(
+            ir.contains("or i64"),
+            "expected NaN-boxing OR in IR: {}",
+            ir
+        );
+        assert!(
+            ir.contains("and i64"),
+            "expected NaN-boxing AND mask in IR: {}",
+            ir
+        );
+    }
 }
 
 #[test]

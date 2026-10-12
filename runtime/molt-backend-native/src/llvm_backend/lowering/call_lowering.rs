@@ -749,6 +749,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &source_tir_types[idx],
                     &param_tir_types[idx],
                     current_bb,
+                    Some(id),
                 )
             };
             let target_ty = target_fn
