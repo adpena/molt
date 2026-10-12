@@ -1170,6 +1170,7 @@ _REUSABLE_IDENTITY_FIELDS = frozenset(
         "process_images",
         "link_selection",
         "clippy_selection",
+        "llvm_sdk",
         "wasi_sdk",
         "identity_sha256",
     }
@@ -1315,6 +1316,7 @@ def _reused_identity_is_current(
     command_argv: Sequence[str],
     native_units: Mapping[str, Sequence[str]] | None = None,
     clippy_paths: Mapping[str, str] | None = None,
+    llvm_sdk_selection: Mapping[str, object] | None = None,
 ) -> bool:
     """Re-prove a stored identity from file bytes before it is reused.
 
@@ -1338,6 +1340,11 @@ def _reused_identity_is_current(
         return False
     try:
         _validate_wasi_sdk_policy(policy, identity)
+        toolchain_capture.validate_llvm_sdk_selection(
+            identity,
+            required=policy.data.get("compiler_tool_selector") == "llvm-sdk",
+            expected=llvm_sdk_selection,
+        )
         process_image_capture.toolchain_images(policy.name, identity)
         if policy.name == "rustc":
             toolchain_capture.validate_clippy_selection(
@@ -1431,7 +1438,7 @@ def _tool_identity(
         probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
     bound_payload = _bound_tool_payload(envelope, exact, requested)
     compiler_path = (
-        proof_plan.compiler_tool_path(policy, environment=env)
+        proof_plan.compiler_tool_path(policy, environment=env, cwd=probe_cwd)
         if bound_payload is None
         else None
     )
@@ -1511,6 +1518,23 @@ def _tool_identity(
         path_dependency_images = process_image_capture.canonical_images(
             path_dependency_images
         )
+    llvm_sdk_selection = None
+    if policy.data.get("compiler_tool_selector") == "llvm-sdk":
+        from molt.llvm_toolchain import llvm_verification_selection
+
+        llvm_sdk_selection = llvm_verification_selection(
+            root=proof_plan.ROOT, cwd=probe_cwd, env=env
+        )
+        if llvm_sdk_selection["tools"]["llvm-config"] != str(path):
+            raise ValueError(
+                "LLVM SDK verifier launcher differs from selected configuration authority"
+            )
+        path_dependency_images.extend(
+            toolchain_capture.llvm_sdk_tool_images(llvm_sdk_selection)
+        )
+        path_dependency_images = process_image_capture.canonical_images(
+            path_dependency_images
+        )
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -1553,6 +1577,7 @@ def _tool_identity(
                 command_argv=command_argv,
                 native_units=envelope.get("cargo_native_units", {}),
                 clippy_paths=clippy_paths,
+                llvm_sdk_selection=llvm_sdk_selection,
             ):
                 if reuse_telemetry is not None:
                     reuse_telemetry.append(
@@ -1598,6 +1623,13 @@ def _tool_identity(
             cwd=probe_cwd,
             env=env,
         )
+        process_image_capture.revalidate_images(path_dependency_images)
+    if llvm_sdk_selection is not None:
+        sdk_images, sdk_record = toolchain_capture.capture_llvm_sdk_selection(
+            llvm_sdk_selection, cwd=probe_cwd, env=env
+        )
+        material["llvm_sdk"] = sdk_record
+        material["process_images"].extend(sdk_images)
         process_image_capture.revalidate_images(path_dependency_images)
     if path_dependency_images:
         material["process_images"] = process_image_capture.canonical_images(
@@ -1916,6 +1948,9 @@ def _validate_toolchain_identity(
         process_image_capture.toolchain_images(name, identity)
         return
     _validate_wasi_sdk_policy(policy, identity, full_capture=full_capture)
+    toolchain_capture.validate_llvm_sdk_selection(
+        identity, required=policy.data.get("compiler_tool_selector") == "llvm-sdk"
+    )
     _validate_node_package_identity(policy, identity, full_capture=full_capture)
     if name == "rustc":
         toolchain_capture.validate_clippy_selection(

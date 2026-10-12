@@ -1669,10 +1669,12 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
         clangxx,
         linker,
         ("lib/LLVMCore.lib",),
+        environ={"MOLT_SDK_PROBE_CONTEXT": "explicit"},
     )
 
     [(command, env)] = commands
     assert f"--ld-path={linker}" in command
+    assert env["MOLT_SDK_PROBE_CONTEXT"] == "explicit"
     assert proof[1] == f"linker:bin/{linker.name}"
     # Upstream clang finds the macOS SDK only through SDKROOT.
     assert (env.get("SDKROOT") == "/pinned-sdk") == (sys.platform == "darwin")

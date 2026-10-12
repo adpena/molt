@@ -262,6 +262,8 @@ def prefer_canonical_llvm_prefix(
     discovery = discover_llvm_toolchain(state.ROOT, environ=dict(resolved), cwd=cwd)
     if discovery is None:
         return resolved, None
+    if "llvm-sdk" in declared:
+        resolved["LLVM_CONFIG_PATH"] = str(discovery.llvm_config)
     bin_dir = str((Path(discovery.prefix) / "bin").resolve())
     entries = [entry for entry in resolved.get("PATH", "").split(os.pathsep) if entry]
     if not entries or os.path.normcase(entries[0]) != os.path.normcase(bin_dir):

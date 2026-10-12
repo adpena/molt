@@ -177,15 +177,31 @@ class DarwinToolchain:
         }
 
 
+def darwin_toolchain_selector_paths(
+    env: Mapping[str, str], *, needs_developer_selection: bool = True
+) -> dict[str, Path]:
+    """Exact prerequisite executables used by the Darwin selection transaction."""
+    tools = {}
+    if needs_developer_selection:
+        tools["xcode-select"] = resolve_executable(
+            "xcode-select", environment=env, label="Darwin developer selector"
+        )
+    tools["xcrun"] = resolve_executable(
+        "xcrun", environment=env, label="Darwin SDK selector"
+    )
+    return tools
+
+
 def select_darwin_toolchain(
     env: Mapping[str, str], *, developer_dir: Path | None = None
 ) -> DarwinToolchain:
     """Pin xcode-select once, then resolve every xcrun shim in that selection."""
     selected_env = dict(env)
+    selectors = darwin_toolchain_selector_paths(
+        env, needs_developer_selection=developer_dir is None
+    )
     if developer_dir is None:
-        selector = resolve_executable(
-            "xcode-select", environment=selected_env, label="Darwin developer selector"
-        )
+        selector = selectors["xcode-select"]
         selected = _query([str(selector), "--print-path"], selected_env)
         if not selected or "\n" in selected:
             raise ValueError("xcode-select must select exactly one developer directory")
@@ -194,9 +210,7 @@ def select_darwin_toolchain(
         raise ValueError(f"Darwin developer directory is unavailable: {developer_dir}")
     developer_dir = developer_dir.resolve(strict=True)
     selected_env["DEVELOPER_DIR"] = str(developer_dir)
-    xcrun = resolve_executable(
-        "xcrun", environment=selected_env, label="Darwin SDK selector"
-    )
+    xcrun = selectors["xcrun"]
 
     def query(*args: str) -> str:
         value = _query([str(xcrun), "--sdk", "macosx", *args], selected_env)
