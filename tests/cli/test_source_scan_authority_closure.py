@@ -639,7 +639,6 @@ def test_native_runtime_import_generations_share_resolver_without_stale_source(
             stdlib_allowlist=set(),
             resolver_cache=cache,
             target_python=PYTHON,
-            capability_config_digest="",
         )
     assert graph == {"first": first, "second": second}
     assert set(roles) == {"first", "second"}
@@ -699,7 +698,6 @@ def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
         stdlib_allowlist=set(),
         resolver_cache=cache,
         target_python=PYTHON,
-        capability_config_digest="",
         slice_cache=slices,
         operation_counts=counts,
     )

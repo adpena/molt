@@ -197,7 +197,6 @@ def _wrapper_build_dependency_fingerprints(
     build_args: Sequence[str],
     env: Mapping[str, str],
     project_root: Path,
-    capability_config_digest: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     stdlib_root = _stdlib_root_path()
     module_reasons: dict[str, set[str]] = {}
@@ -231,7 +230,6 @@ def _wrapper_build_dependency_fingerprints(
                     target=target,
                     import_admission_policy=import_admission_policy,
                     target_python=resolved_build_entry.target_python,
-                    capability_config_digest=capability_config_digest,
                     image_scope=resolved_build_entry.image_scope,
                     stdlib_profile=_wrapper_stdlib_profile(
                         build_args, project_root=project_root, env=env
@@ -348,7 +346,6 @@ def _wrapper_build_cache_input(
         build_args=build_args,
         env=env,
         project_root=project_root,
-        capability_config_digest=capability_config_digest,
     )
     if closure_fingerprints is None:
         return None

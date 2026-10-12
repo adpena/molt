@@ -155,7 +155,6 @@ def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
             is_package=False,
             import_scan_mode="full",
             target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
-            capability_config_digest="",
         )
 
     key_before = analysis_key()

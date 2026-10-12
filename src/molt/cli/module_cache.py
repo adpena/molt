@@ -741,7 +741,7 @@ def _module_lowering_execution_view(
     )
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 10
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 11
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 4
@@ -758,15 +758,14 @@ def _module_analysis_cache_key(
     is_package: bool | None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
-    capability_config_digest: str,
 ) -> str:
     """Content-addressed key for one module-analysis identity.
 
     Single authority for the analysis cache key: the session-local filename and
     the shared-tier slot both derive from this so they can never drift. The key
     covers the resolved source path, the module identity, the import scan mode,
-    the target Python tag, the frontend tooling fingerprint, and (when set) the
-    capability config digest -- every input that changes the analysis result.
+    the target Python tag and the frontend tooling fingerprint. Runtime policy
+    is installed after compilation and does not change module analysis.
     """
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
     key_parts = [
@@ -777,8 +776,6 @@ def _module_analysis_cache_key(
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
     ]
-    if capability_config_digest:
-        key_parts.append(f"capability_config={capability_config_digest}")
     return _resolved_module_cache_key(
         os.fspath(path),
         *key_parts,
@@ -794,7 +791,6 @@ def _module_analysis_cache_path(
     is_package: bool | None = None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -807,7 +803,6 @@ def _module_analysis_cache_path(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -820,7 +815,6 @@ def _shared_module_analysis_cache_path_for(
     is_package: bool | None = None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> Path | None:
     cache_key = _module_analysis_cache_key(
         path,
@@ -829,7 +823,6 @@ def _shared_module_analysis_cache_path_for(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     return _shared_module_analysis_cache_path(path.stem, cache_key)
 
@@ -907,13 +900,12 @@ def _validate_persisted_module_analysis_payload(
     *,
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None,
-    capability_config_digest: str,
     snapshot: PythonSourceSnapshot | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     """Validate one analysis payload; the single correctness gate for both tiers.
 
     Returns the decoded ``(func_defaults, func_kinds)`` pair only when
-    every schema / fingerprint / scan-mode / capability / source-content check
+    every schema / fingerprint / scan-mode / source-content check
     passes. Applied identically to a session-local payload and to one hydrated
     from the shared tier, so a shared hit can never bypass a check the
     session-local path enforces.
@@ -925,7 +917,6 @@ def _validate_persisted_module_analysis_payload(
         or payload.get("compiler_fingerprint")
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
-        or payload.get("capability_config_digest", "") != capability_config_digest
         or "imports" in payload
     ):
         return None
@@ -978,7 +969,6 @@ def _read_persisted_module_analysis(
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     snapshot: PythonSourceSnapshot | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     # Debug opt-out: force a cold re-analysis (no session-local or shared reuse).
@@ -991,14 +981,12 @@ def _read_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     result = _validate_persisted_module_analysis_payload(
         _read_artifact_sync_state(cache_path),
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
-        capability_config_digest=capability_config_digest,
         snapshot=snapshot,
     )
     if result is not None:
@@ -1006,7 +994,7 @@ def _read_persisted_module_analysis(
     # Session-local miss: hydrate from the shared, content-addressed tier so a
     # fresh session reuses another session's analysis instead of re-parsing. The
     # hydrated payload is re-validated through the same gate above (schema /
-    # fingerprint / scan-mode / capability / source-content sha256), so a shared
+    # fingerprint / scan-mode / source-content sha256), so a shared
     # hit can never serve a stale or mismatched result.
     shared_path = _shared_module_analysis_cache_path_for(
         path,
@@ -1014,7 +1002,6 @@ def _read_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     if not _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path):
         return None
@@ -1023,7 +1010,6 @@ def _read_persisted_module_analysis(
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
-        capability_config_digest=capability_config_digest,
         snapshot=snapshot,
     )
 
@@ -1040,7 +1026,6 @@ def _write_persisted_module_analysis(
     func_kinds: dict[str, str],
     snapshot: PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -1049,7 +1034,6 @@ def _write_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     stat = path.stat()
     if snapshot.path.resolve() != path.resolve() or not _payload_source_matches(
@@ -1059,7 +1043,6 @@ def _write_persisted_module_analysis(
     payload: dict[str, Any] = {
         "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
-        "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
@@ -1085,7 +1068,6 @@ def _write_persisted_module_analysis(
             is_package=is_package,
             import_scan_mode=import_scan_mode,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         ),
     )
 
@@ -1190,7 +1172,6 @@ def _load_module_analysis(
     stdlib_root: Path | None = None,
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[
     ast.AST | None,
@@ -1232,7 +1213,6 @@ def _load_module_analysis(
         stdlib_root=stdlib_root,
         stdlib_allowlist=stdlib_allowlist,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
         runtime_import_custody=runtime_import_custody,
     )
     imports = loaded_scan.scan.imports
@@ -1248,7 +1228,6 @@ def _load_module_analysis(
             import_scan_mode=import_scan_mode,
             path_stat=path_stat,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
             snapshot=snapshot,
         )
         if project_root is not None
@@ -1304,7 +1283,6 @@ def _load_module_analysis(
                     func_kinds=func_kinds,
                     snapshot=snapshot,
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                 )
     return (
         tree if retain_tree else None,

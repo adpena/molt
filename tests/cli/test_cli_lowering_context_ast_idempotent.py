@@ -213,7 +213,6 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                 source,
                 import_scan_mode="module_init",
                 path_stat=source.stat(),
-                capability_config_digest="",
             )
             lowering_result = MC._validate_persisted_module_lowering_payload(
                 json.loads(json.dumps(lowering)),
@@ -310,7 +309,6 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             source,
             import_scan_mode="module_init",
             path_stat=source.stat(),
-            capability_config_digest="",
         )
         assert analysis_result == (defaults, kinds)
         lowering_result = MC._validate_persisted_module_lowering_payload(

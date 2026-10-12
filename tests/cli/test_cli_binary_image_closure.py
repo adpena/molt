@@ -339,6 +339,50 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
     assert "pkg.runtime.ops_cpu" in closure["declared_root_modules"]
 
 
+@pytest.mark.parametrize(
+    "policy_env",
+    [
+        {"MOLT_CAPABILITIES": "fs.read"},
+        {"MOLT_RESOURCE_MAX_MEMORY": "1MB"},
+        {"MOLT_AUDIT_ENABLED": "1", "MOLT_AUDIT_SINK": "jsonl"},
+        {"MOLT_IO_MODE": "virtual"},
+    ],
+)
+def test_wrapper_complete_binary_cache_tracks_policy_with_same_source_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy_env: dict[str, str],
+) -> None:
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_fingerprint", lambda **_kwargs: "compiler"
+    )
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling"
+    )
+    entry = tmp_path / "app.py"
+    entry.write_text("value = 7\n", encoding="utf-8")
+    resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
+    assert error is None and resolved is not None
+    base_env = {"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""}
+    common = dict(
+        resolved_build_entry=resolved,
+        build_args=["--target", "native"],
+        project_root=tmp_path,
+    )
+    base = cli_wrapper_build._wrapper_build_cache_input(env=base_env, **common)
+    changed = cli_wrapper_build._wrapper_build_cache_input(
+        env={**base_env, **policy_env}, **common
+    )
+    assert base is not None and changed is not None
+    base_payload, base_key = base
+    changed_payload, changed_key = changed
+    assert base_payload["module_sources"] == changed_payload["module_sources"]
+    assert (
+        base_payload["binary_image_closure"] == changed_payload["binary_image_closure"]
+    )
+    assert base_key != changed_key
+
+
 def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

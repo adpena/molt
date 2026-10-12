@@ -195,7 +195,6 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
     options: dict[str, Any] = {
         "import_scan_mode": "full",
         "path_stat": path.stat(),
-        "capability_config_digest": "",
         "snapshot": snapshot if admitted_snapshot else None,
     }
     if admitted_snapshot:
