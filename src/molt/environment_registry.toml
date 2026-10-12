@@ -5644,6 +5644,22 @@ owner = "src/molt/wasi_sdk_identity.py"
 summary = "Bounded versioned projection of the manifest-selected WASI SDK C runtime, shared by Python consumers and Rust build scripts. Contains the exact single-thread wasip1 target, SDK roots and libc/long-double/compiler-rt/CRT content identities. Missing, malformed or conflicting projections refuse C-runtime builds; environment text is not native content-use attestation."
 
 [[variable]]
+name = "MOLT_WASI_LIBTEST_ARTIFACT"
+audience = "internal"
+kind = "path"
+default = ""
+owner = "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs"
+summary = "The runtime test gate passes the exact Cargo-produced WASI libtest image to the native lifecycle integration consumer; its paired SHA-256 is verified before production-host compilation and execution."
+
+[[variable]]
+name = "MOLT_WASI_LIBTEST_SHA256"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs"
+summary = "Binds the WASI libtest artifact bytes selected by the runtime test gate before the lifecycle integration consumer invokes the production host."
+
+[[variable]]
 name = "MOLT_WASI_SYSROOT"
 audience = "user"
 kind = "path"

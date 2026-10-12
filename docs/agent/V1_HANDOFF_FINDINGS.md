@@ -61,11 +61,31 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-Integration ownership (2026-10-11 UTC): the parent integrator is taking over all
+Integration ownership (2026-10-12 UTC): the parent integrator is taking over all
 preserved WIP for reconciliation and landing against current main. Existing
 coordination records retain active worker scope and exact donor custody; the
 ledger remains the single release-status index. Complete semantic families must
 be qualified and landed together, with replaced internal lanes deleted.
+
+The comprehensive review of candidate `d69e99530` projects 98 open finding
+records through `tools/finding_status.py`, with no ledger identity defects.
+This is a dated inventory, not 98 independent bugs or a completion percentage:
+the rows include implementation defects, incomplete migrations and missing
+acceptance evidence. The candidate is 65 commits ahead of fetched main and
+changes 941 paths. Finish its actual public native/WASM consumer and applicable
+lint obligations, resolve exposed migration failures, and land the coherent
+runtime/ABI family before expanding it with another broad implementation.
+Runtime unit/ABI passes and two WASM boundary programs do not qualify those
+remaining consumers or the release. Independent current-review capacity is
+unavailable; retain that limitation rather than crediting a review that did not run.
+
+The release work below is organized by complete product outcomes. Security and
+correctness repairs, the installed positive acceptance path, and measured
+performance are all critical work; tooling is justified by the specific product
+or evidence boundary it unlocks. Keep unchanged valid evidence, stop redundant
+proof fanout, and close complete repair units on main without waiting for every
+other release finding. The dependency table at the end of this ledger owns
+the execution order; it does not defer any open finding beyond v1.0.
 
 Prior qualification (2026-10-11 UTC): candidate `bdca2f503` passes the complete
 optimized Linux/aarch64 runtime gate: 1,836 parallel cases and all ten isolated
@@ -236,8 +256,13 @@ signal tests use the existing target-selected constants. These corrections
 compile on WASI. Final executable linking then exposes a missing startup object
 under the non-self-contained SDK link plan. The runtime's test-only support now
 links the command CRT selected by the existing authenticated C-ABI projection;
-production libraries do not receive a startup declaration. Actual linking and
-the five lifecycle cases remain unverified for this successor. The generated
+production libraries do not receive a startup declaration. Candidate `d69e99530`
+links the actual WASI libtest and executes it through the production host with
+complete process custody. Its five-case selection incorrectly includes Rust
+unwind recovery on the selected `panic=abort` target: one case passes before
+that injected panic terminates the instance. The successor selects the existing
+cleanup-owned C-state retirement case; native unwind coverage remains unchanged.
+The complete corrected WASI selection remains unverified. The generated
 declaration uses the raw WASM linker's exact-filename syntax: Rust's WASM linker
 does not implement the native `+verbatim` modifier. Earlier rejected attribute
 and library-name attempts remain failed compilation evidence.
@@ -264,7 +289,7 @@ supervisor creation event whose reported child ID is zero. The supervisor
 retains an incomplete journal and closes all observed native custody; this is
 not a compiler-consumer pass. Creation-event refusal now retains the task ID,
 wait status and admitted process owner needed to distinguish the failing
-transition. Its cause remains open; no timeout or admission rule is weakened.
+transition. No timeout or admission rule is weakened.
 Live observation of the next bounded run shows an exited linker leader with a
 new thread retained in a tracing stop. Linux permits fatal group termination to
 supersede a creation stop and deliver a new thread's EXIT before its creator's
@@ -272,9 +297,15 @@ notification. The successor releases only kernel-proven exiting threads of an
 existing process owner and rechecks creation/exec payloads against the current
 kernel stop tag. It neither turns an exit status into a child PID nor resumes
 unadmitted user code. A deterministic real-kernel control holds both initial
-stops, kills the owned group, and challenges both transitions. Compilation,
-kernel execution, the actual linker consumer and independent review remain
-required; a disappearing unadmitted process still fails closed.
+stops, kills the owned group, and challenges both transitions. Candidate
+`d69e99530` passes the optimized standalone supervisor build, that exact kernel
+regression, and the complete applicable supervisor family: 100 passes and one
+intentionally ignored fixture entrypoint. Build custody and direct guarded
+kernel execution remain distinct. The actual native compiler-consumer row then
+passes 72 checks with six platform skips and complete descendant accounting,
+without errors or custody violations. Independent review of this final kernel
+correction remains unavailable; a disappearing unadmitted process still fails
+closed, and these Linux/aarch64 results do not qualify other platform cells.
 
 Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
 classes; all exact-source CPython reference executions pass with empty stderr.
@@ -2253,18 +2284,40 @@ open release finding does not require holding an independently complete repair;
 an unmigrated consumer does. Reuse unchanged accepted inputs rather than
 restarting unrelated proofs after every edit.
 
-| Order | Owning work and release consequence | Acceptance boundary |
+| Work bucket | Next complete outcome and owning findings | Verification that changes the decision |
 | --- | --- | --- |
-| 1 | Finish V1-28 SDK target context and exact Cargo artifact-kind capture, preserving the hash-seed and warning repairs that PR 158 carries. | Actual runtime pair, supported direct Cargo, combined/split source extensions, real native-C compilation, and installed bundle/setup/compiled-runtime consumers. Synthetic selection alone is insufficient. |
-| 2 | Integrate the reconciled SOURCE/cache/publication family under V1-01/V1-09/V1-25. Preserve current SDK and final-link cache authorities. | Real receipt/cache refusal when source-derived ABI obligations change with identical runtime bytes, successful commit boundaries, output/source alias controls, migrated fixtures, independent replay and matched compiler-side cost. |
-| 3 | Complete workspace, process, source and writer custody through existing V1-01/V1-12/V1-25 authorities; land disjoint complete units. | Wrong-workspace counterexample, installed process lifecycle, sampler failure, native journal preallocation/failure atomicity, retained source/bytecode identity, and actual hardlink/ancestor/publication consumers. |
-| 4 | Reconcile runtime resource ownership and physical C publication before dependent numeric/container, sort, codec/JSON and lazy-class consumers. Keep independent semantic, TLS/socket and versioned-fact repairs moving. | Actual native/WASM semantic oracles, reentry and allocation-denial boundaries, final refcounts/charges, platform-specific execution, and measured latency/scaling/physical memory. Shared RuntimeHooks and ownership migrations have one integration owner. |
-| 5 | Complete required installed LLVM delivery, compiler SDK behavior and package/extension closure under V1-02/V1-06/V1-24/V1-28. Existing LLVM coordinates and independent inventory wiring are already present. | Delivered feature/tool/runtime closure and actual installed public CLI execution without Cargo; current source-extension seals and complete native/WASM output companions. |
-| 6 | Complete lossless output, actual execution identities and the positive measured-metric admission path early enough to support the final campaign. | One complete authenticated producer/receiver/installed-consumer path with independent omission/substitution controls, then the declared current-candidate semantic, performance/resource, reproducibility and supply-chain matrices, E1-E4 and H0. |
+| Integration | Finish and land the existing runtime/ABI candidate and its consumer migration; reconcile remaining SOURCE/cache/writer donors against current main (V1-01/V1-09/V1-12/V1-25/V1-28). Delete replaced lanes with their consumers. | Reuse retained runtime/ABI results; execute the still-unqualified affected public native/WASM consumers and required lint once. Recheck only inputs invalidated by a repair. Source identity, failure atomicity and complete migration determine landing readiness. |
+| Correctness and conformance | Close shared compiler/runtime, frame/exception/async, C-ABI and container protocols; versioned tokens/Unicode/errno, codecs, JSON, imports and compression follow their existing authorities (V1-05/V1-14–V1-18/V1-21–V1-23/V1-26–V1-30, HF-02/HF-95/HF-104/HF-106). | One independent CPython-source or kernel/API counterexample per changed invariant, then the affected semantic family. Retain minimized seeds and exact outputs. Defer the complete target/version/profile campaign until a coherent candidate is stable; do not replace missing semantics with narrower claims. |
+| Security and resources | Complete TLS/socket and descriptor boundaries, VFS file identity, real process synchronization, physical resource charging and bounded retention (V1-10/V1-11/V1-13/V1-19/V1-20/V1-33/V1-34). Address concrete safety failures before dependent performance work. | Actual boundary tests for ownership, coercion, extent, callback/reentry, denial and cleanup on the affected platforms. Unit success cannot establish missing native/WASM behavior; unrelated broad suites add no evidence for these boundaries. |
+| Installed delivery | Make installed compile/edit/run, LLVM and required runtime delivery, package/extension custody and native/WASM scientific witnesses complete (V1-01/V1-02/V1-06/V1-24/V1-28, HF-04). | A complete installed success path and independent failure controls, using the exact delivered artifacts. Emitted programs execute where host/fallback Python is unavailable; installed users need no Cargo build of Molt. Reproduce current extension seals before E1. |
+| Performance | Complete the positive measured-metric producer/receiver path early, then remove measured bottlenecks in algorithms, runtime, startup, artifact size, memory and compilation (V1-07/V1-19–V1-21/V1-27/V1-29/V1-30, HF-26/HF-79/HF-132). | One representative authenticated measurement path first; matched before/after metrics for each load-bearing change. Measure scaling where complexity changes. Run the required performance matrix once the candidate and metric contract are stable; a microbenchmark cannot replace product acceptance. |
+| Release and developer experience | Close lossless output, effective differential/property/fuzz coverage, maintainable dependencies, bounded CI/build cost and reproducible authenticated publication (V1-03/V1-04/V1-06/V1-08/V1-12/V1-25 and the open CI/harness findings). | Test the actual changed automation boundary. Reuse valid evidence and existing commands; avoid another framework or full-suite fanout. Final current-candidate E1–E4 and authenticated H0 cover the declared matrix and all open obligations before v1.0 publication. |
 
-These dependencies allow parallel disjoint work; they do not require one giant
-patch or universal new capabilities beyond the declared support contract. Every
-existing open finding remains an exit obligation. Compiler startup/build/link
+These are work buckets, not six serial phases or separate backlogs. Complete the
+current integration outcome first; keep disjoint safety/correctness repairs and
+the installed/performance acceptance paths moving as capacity permits. Findings
+retain their single owning rows even when a shared invariant crosses buckets.
+The dependencies do not require one giant patch or universal new capabilities
+beyond the declared support contract.
+
+Verification has a decision boundary. Before dispatch, name the changed
+invariant, the defect an independent oracle would detect, and the result needed
+to proceed. Use the smallest existing proof that resolves that uncertainty.
+After it passes, run an actual affected-consumer group only when migration,
+platform behavior or product execution remains unproved. Preserve exact input
+identities and reuse unaffected passing evidence. Do not repeat runtime/ABI
+suites for documentation, isolated tooling or unchanged semantic inputs; do not
+add tests for trivial reversible edits or implementation mirrors. Broad
+conformance, performance, supply-chain and release matrices are candidate
+qualification work, not a per-edit ritual. A new failure justifies widening to
+its affected family, not restarting every green lane.
+
+Development checks must earn their cost by exposing a concrete defect or
+establishing a required acceptance claim. Do not add a new required gate merely
+because a checker exists. Retire duplicated checks and obsolete fixtures as the
+canonical boundary takes ownership; retain independent oracles and the final
+release obligations. Every existing open finding remains an exit obligation.
+Compiler startup/build/link
 cost, emitted-guest execution/memory cost, development verification cost and
 release supply-chain cost must be measured and attributed separately. Proof
 capture and release signing stay on the development/release side; installed
