@@ -58,6 +58,7 @@ _METADATA_KEYS = frozenset(
         "backends",
         "expect_fail",
         "expect_fail_reason",
+        "host_toolchains",
         "max_py",
         "min_py",
         "platforms",
@@ -68,8 +69,9 @@ _METADATA_KEYS = frozenset(
         "verified_subset_scope",
     }
 )
-_LIST_KEYS = frozenset({"architectures", "backends", "platforms"})
+_LIST_KEYS = frozenset({"architectures", "backends", "host_toolchains", "platforms"})
 _PYTHON_MINOR_RE = re.compile(r"3\.(?:0|[1-9][0-9]*)\Z", re.ASCII)
+_TOOLCHAIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z", re.ASCII)
 _REASON_RE = re.compile(r"[a-z][a-z0-9_]*\Z", re.ASCII)
 _RAW_METADATA_CANDIDATE_RE = re.compile(
     r"^[ \t]*#[ \t]*MOLT_META\b[^\r\n]*", re.ASCII | re.MULTILINE
@@ -123,6 +125,7 @@ class TestMetadata:
     stdout_mode: str = "exact"
     stderr_mode: str = "ignore"
     stdlib_profile: str | None = None
+    host_toolchains: tuple[tuple[str, str], ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the canonical JSON-ready representation of non-default fields."""
@@ -152,7 +155,20 @@ class TestMetadata:
             record["stderr"] = self.stderr_mode
         if self.stdlib_profile is not None:
             record["stdlib_profile"] = self.stdlib_profile
+        if self.host_toolchains:
+            record["host_toolchains"] = [
+                f"{selector}:{name}" for selector, name in self.host_toolchains
+            ]
         return record
+
+    def required_host_toolchains(self, platform: str) -> tuple[str, ...]:
+        """Select declared tools for the execution host, independent of guest grants."""
+        tags = coordinate_platform_tags(platform=platform)
+        return tuple(
+            sorted(
+                {name for selector, name in self.host_toolchains if selector in tags}
+            )
+        )
 
     def exclusion_reason(
         self,
@@ -290,10 +306,11 @@ def parse_metadata(file_path: str | Path) -> TestMetadata:
 
     path = Path(file_path)
     raw, _identity = _read_source(path)
-    return _parse_metadata_bytes(path, raw)
+    return parse_metadata_bytes(path, raw)
 
 
-def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
+def parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
+    """Parse metadata from the exact bytes already captured by a source owner."""
     comments = _metadata_comments(path, source_bytes)
     if not comments:
         return TestMetadata()
@@ -359,6 +376,23 @@ def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
     stderr_mode = _enum_values(raw, "stderr", STDERR_MODES)
     profiles = _enum_values(raw, "stdlib_profile", STDLIB_PROFILES)
 
+    host_toolchains: list[tuple[str, str]] = []
+    for value in raw.get("host_toolchains", ()):
+        if value.count(":") != 1:
+            raise ValueError(
+                "MOLT_META host_toolchains must contain platform:tool pairs"
+            )
+        selector, name = value.split(":")
+        if selector not in PLATFORM_SELECTORS:
+            raise ValueError(
+                f"MOLT_META host_toolchains contains unknown platform {selector!r}"
+            )
+        if _TOOLCHAIN_NAME_RE.fullmatch(name) is None:
+            raise ValueError(
+                f"MOLT_META host_toolchains contains invalid tool name {name!r}"
+            )
+        host_toolchains.append((selector, name))
+
     return TestMetadata(
         source_role=source_role,
         verification_scope=scope,
@@ -372,6 +406,7 @@ def _parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
         stdout_mode=stdout_mode[0] if stdout_mode else "exact",
         stderr_mode=stderr_mode[0] if stderr_mode else "ignore",
         stdlib_profile=profiles[0] if profiles else None,
+        host_toolchains=tuple(host_toolchains),
     )
 
 
@@ -777,7 +812,7 @@ def _load_source(
     path: Path, relative: str
 ) -> tuple[TestPolicySource, StableRegularFileIdentity]:
     raw, identity = _read_source(path)
-    metadata = _parse_metadata_bytes(path, raw)
+    metadata = parse_metadata_bytes(path, raw)
     if (
         metadata.verification_scope != CPYTHON_EQUIVALENCE_SCOPE
         and not metadata.expect_molt_fail

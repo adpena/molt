@@ -646,6 +646,12 @@ def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     monkeypatch.setattr(
         environment_authority, "_source_build_custody_root", lambda _repo: custody
     )
+    if lane_id == "native.capability-cache-policy":
+        # This lane migrated to pytest's module entrypoint. Preparation admits
+        # plain scripts only; it must not silently rewrite the module payload.
+        with pytest.raises(ValueError, match="not a plain Python script"):
+            command_admission.prepared_named_lane_command(lane_id, python)
+        return
     command = command_admission.prepared_named_lane_command(lane_id, python)
     envelope = command_admission.envelope_for_command(command)
     assert envelope["kind"] == "named-lane"
@@ -826,14 +832,7 @@ def selected_diff_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize("lane_id", DIFFERENTIAL_LANES)
-def test_default_differential_lanes_do_not_hash_dynamic_selection(lane_id, monkeypatch):
-    from molt import toolchain_identity
-
-    monkeypatch.setattr(
-        toolchain_identity,
-        "stable_regular_file_identity",
-        lambda *a, **kw: pytest.fail("unchanged default lane hashed dynamic cases"),
-    )
+def test_default_differential_lanes_keep_canonical_recipe_source_authority(lane_id):
     lane = PLAN.named_lane(lane_id)
     envelope = command_admission.envelope_for_command(lane.argv)
     assert envelope["kind"] == "named-lane"
@@ -876,6 +875,58 @@ def test_differential_file_and_list_selection_freezes_exact_case_closure(
     first.write_bytes(b"print('z')\n")
     with pytest.raises(ValueError, match="envelope"):
         command_admission.validate_envelope(envelope, spec["command"])
+
+
+@pytest.mark.parametrize(
+    "platform,expected",
+    [
+        ("linux", {"posix-sh", "posix-uname"}),
+        ("macos", {"posix-sh", "posix-uname", "posix-file"}),
+        ("windows", set()),
+    ],
+)
+def test_differential_host_tools_follow_selected_cases_and_platform(
+    selected_diff_sources, monkeypatch, platform, expected
+):
+    from tools.compat import test_policy
+
+    root, first, second = selected_diff_sources
+    first.write_text(
+        "# MOLT_META: host_toolchains=macos:posix-file,posix:posix-sh,posix:posix-uname\n"
+        "print('a')\n"
+    )
+    monkeypatch.setattr(test_policy, "current_platform_name", lambda: platform)
+    lane = PLAN.named_lane("runtime.public-consumers.native")
+    base = set(PLAN.toolchain_closure(lane.toolchains))
+    for case, extra in ((first, expected), (second, set())):
+        relative = case.relative_to(root).as_posix()
+        command = command_admission.selected_differential_lane_command(
+            lane.id, cases=[relative]
+        )
+        envelope = command_admission.envelope_for_command(command)
+        assert set(envelope["toolchains"]) == base | extra
+        assert envelope["process_closure"]["toolchains"] == envelope["toolchains"]
+        # Default recipes consume the same declaration as explicit selections.
+        default = replace(lane, data={**lane.data, "differential_cases": [relative]})
+        assert set(command_admission._named_lane_toolchains(default)) == base | extra
+
+
+def test_differential_host_tools_reject_all_unknown_policies(
+    selected_diff_sources, monkeypatch
+):
+    from tools.compat import test_policy
+
+    root, first, second = selected_diff_sources
+    first.write_text(
+        "# MOLT_META: host_toolchains=posix:missing-posix,windows:missing-windows\n"
+        "print('a')\n"
+    )
+    monkeypatch.setattr(test_policy, "current_platform_name", lambda: "linux")
+    command = command_admission.selected_differential_lane_command(
+        "runtime.public-consumers.native", cases=[first.relative_to(root).as_posix()]
+    )
+    with pytest.raises(ValueError, match="missing-posix, missing-windows"):
+        command_admission.envelope_for_command(command)
 
 
 def test_differential_suite_expansion_is_frozen_before_queueing(selected_diff_sources):
@@ -998,6 +1049,7 @@ def test_prepared_differential_lane_keeps_selected_files(
     )
 
     root, first, second = selected_diff_sources
+    first.write_text("# MOLT_META: host_toolchains=posix:posix-sh\nprint('a')\n")
     custody = root / "environments"
     environment = custody / ("a" * 64)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")

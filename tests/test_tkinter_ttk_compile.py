@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import development_artifact_env, scratch_root
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 from tests import process_guard_common
 
@@ -50,10 +50,8 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
     if not python:
         pytest.skip("python executable unavailable")
 
-    tmp_root = scratch_root(REPO_ROOT)
-    tmp_root.mkdir(parents=True, exist_ok=True)
     with process_guard_common.guarded_temporary_directory(
-        prefix="tkinter-ttk-compile-", dir=tmp_root
+        prefix="tkinter-ttk-compile-"
     ) as workdir:
         source = workdir / "tkinter_ttk_compile.py"
         output = workdir / "tkinter_ttk_compile_molt"

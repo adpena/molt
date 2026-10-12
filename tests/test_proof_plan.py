@@ -5360,6 +5360,29 @@ def test_runtime_public_consumers_lane_uses_canonical_diff_outputs() -> None:
     }.intersection(options)
 
 
+@pytest.mark.parametrize("output", ["", None, 0, "unexpected output"])
+def test_receipt_preserves_empty_behavioral_probe_contract(tmp_path, output):
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    command = next(row for row in PLAN.commands if row.id == "python.static.ty")
+    receipt = _receipt_for(command, tmp_path)
+    shell = dict(receipt["toolchains"]["uv"])
+    shell.update(
+        version=output, version_pattern=policies["posix-sh"].data["version_pattern"]
+    )
+    # Keep a valid digest for the unexpected string, so rejection proves the
+    # canonical output constraint rather than a coincidental stale fingerprint.
+    if isinstance(output, str):
+        shell["identity_sha256"] = proof_plan._toolchain_fingerprint_digest(shell)
+    receipt["toolchains"]["posix-sh"] = shell
+    (tmp_path / "probe.json").write_text(json.dumps(receipt), encoding="utf-8")
+    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    shell_errors = [error for error in errors if "posix-sh" in error]
+    if output == "" and isinstance(output, str):
+        assert not shell_errors, shell_errors
+    else:
+        assert shell_errors, errors
+
+
 @pytest.mark.parametrize(
     "name,role", [("llvm-strip", "strip"), ("wasm-opt", "wasm-opt")]
 )

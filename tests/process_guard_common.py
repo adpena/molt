@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 import json
-import shutil
 import subprocess
 import sys
 import textwrap
-import tempfile
 import threading
 from enum import Enum
 from contextlib import contextmanager
@@ -312,50 +310,10 @@ def _timeout_receipt(result: object) -> str:
 
 
 @contextmanager
-def preserve_primary_during_cleanup(
-    cleanup: Callable[[], object], *, label: str
-) -> Iterator[None]:
-    """Run cleanup while preserving and annotating an in-flight primary error."""
-
-    try:
-        yield
-    except BaseException as primary:
-        try:
-            cleanup()
-        except BaseException as cleanup_error:
-            primary.add_note(
-                json.dumps(
-                    {
-                        "schema": "molt.test-process-cleanup.v1",
-                        "label": label,
-                        "cleanup_error": (
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        ),
-                    },
-                    sort_keys=True,
-                )
-            )
-        raise
-    else:
-        cleanup()
-
-
-@contextmanager
-def guarded_temporary_directory(
-    *, prefix: str, dir: str | Path | None = None
-) -> Iterator[Path]:
-    """Own scratch used by guarded children without masking their failures."""
-
-    if dir is None:
-        # Child-tree closure, not the Python context exit, owns reclamation.
-        yield new_guarded_directory(os.environ, prefix=prefix)
-        return
-    path = Path(tempfile.mkdtemp(prefix=prefix, dir=dir))
-    with preserve_primary_during_cleanup(
-        lambda: shutil.rmtree(path),
-        label=str(path),
-    ):
-        yield path
+def guarded_temporary_directory(*, prefix: str) -> Iterator[Path]:
+    """Allocate helper scratch whose queue or guard owns terminal cleanup."""
+    # Child-tree closure, not the Python context exit, owns reclamation.
+    yield new_guarded_directory(os.environ, prefix=prefix)
 
 
 def run_guarded_test_process(

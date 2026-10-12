@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ef02dac4773554eeaf5406025678f3a8f00c9fe7825e34d7edeef254fdfc0795",
+  "authority_sha256": "4f1d33d49d62f0a4a3ff8fc402fd59d1895c7c3d15904657480db62211f79ff8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9014,6 +9014,67 @@
         "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain"
       ],
       "version_pattern": "^molt-source-extension-toolchain-v4$"
+    },
+    {
+      "executable": "/bin/sh",
+      "name": "posix-sh",
+      "setup_evidence": [
+        "src/molt/stdlib/subprocess.py::/bin/sh"
+      ],
+      "setup_value": "host POSIX shell",
+      "version_args": [
+        "-c",
+        ":"
+      ],
+      "version_pattern": "^$"
+    },
+    {
+      "executable": "echo",
+      "name": "posix-echo",
+      "setup_evidence": [
+        "tests/differential/stdlib/subprocess_basic_run.py::subprocess.run"
+      ],
+      "setup_value": "host POSIX utility",
+      "version_args": [
+        "molt-proof-probe"
+      ],
+      "version_pattern": "^molt-proof-probe$"
+    },
+    {
+      "executable": "true",
+      "name": "posix-true",
+      "setup_evidence": [
+        "tests/differential/stdlib/subprocess_basic_run.py::subprocess.check_call"
+      ],
+      "setup_value": "host POSIX utility",
+      "version_args": [
+        "molt-proof-probe"
+      ],
+      "version_pattern": "^$"
+    },
+    {
+      "executable": "uname",
+      "name": "posix-uname",
+      "setup_evidence": [
+        "tests/differential/stdlib/platform_basic.py::platform.processor"
+      ],
+      "setup_value": "host POSIX utility",
+      "version_args": [
+        "-s"
+      ],
+      "version_pattern": "^.+$"
+    },
+    {
+      "executable": "file",
+      "name": "posix-file",
+      "setup_evidence": [
+        "tests/differential/stdlib/platform_basic.py::platform.platform"
+      ],
+      "setup_value": "host file utility",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^file-[0-9]+\\."
     },
     {
       "executable": "uv",

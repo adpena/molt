@@ -7,7 +7,7 @@ import functools
 import os
 from pathlib import Path
 import re
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_bytes
 from molt.rust_toolchain import rust_flag_spans
@@ -569,6 +569,48 @@ def _toolchain_dependency_closure(names: Sequence[str]) -> list[str]:
     return list(plan.toolchain_closure(str(name) for name in names))
 
 
+def _named_lane_toolchains(
+    lane: proof_plan.NamedLane,
+    selected_cases: Sequence[Mapping[str, str]] | None = None,
+) -> list[str]:
+    """Admit host utilities only for the cases that consume them on this host."""
+    from molt.toolchain_identity import capture_stable_regular_file
+    from tools.compat import test_policy
+
+    declared = list(lane.toolchains)
+    cases = (
+        [{"path": case} for case in lane.differential_cases]
+        if selected_cases is None
+        else selected_cases
+    )
+    if not cases:
+        return _toolchain_dependency_closure(declared)
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    policies = {policy.name for policy in plan.toolchain_policies}
+    platform = test_policy.current_platform_name()
+    errors: list[str] = []
+    for case in cases:
+        path = _REPO_ROOT / case["path"]
+        identity, source = capture_stable_regular_file(
+            path, label="differential host tool requirements"
+        )
+        if "sha256" in case and identity.sha256 != case["sha256"]:
+            raise ValueError("differential source changed since command admission")
+        metadata = test_policy.parse_metadata_bytes(path, source)
+        unknown = sorted(
+            {name for _platform, name in metadata.host_toolchains} - policies
+        )
+        if unknown:
+            errors.append(
+                f"{case['path']}: unknown host toolchain policies: {', '.join(unknown)}"
+            )
+        declared.extend(metadata.required_host_toolchains(platform))
+    if errors:
+        raise ValueError("; ".join(errors))
+    return _toolchain_dependency_closure(declared)
+
+
 def _command_registration(
     argv: Sequence[str],
     *,
@@ -603,9 +645,9 @@ def _command_registration(
     assert isinstance(named, dict)
     lane_match = named.get(tuple(str(value) for value in argv))
     if isinstance(lane_match, dict):
-        declared = lane_match["toolchains"]
-        assert isinstance(declared, tuple)
-        toolchains = _toolchain_dependency_closure([str(name) for name in declared])
+        plan = registry["plan"]
+        assert isinstance(plan, proof_plan.ProofPlan)
+        toolchains = _named_lane_toolchains(plan.named_lane(str(lane_match["id"])))
         if not toolchains:
             raise ValueError(
                 f"named lane {lane_match['id']!r} has no toolchain authority"
@@ -629,7 +671,13 @@ def _command_registration(
         assert isinstance(plan, proof_plan.ProofPlan)
         return (
             "named-lane",
-            _toolchain_dependency_closure(plan.named_lane(lane_id).toolchains),
+            _named_lane_toolchains(
+                plan.named_lane(lane_id),
+                cast(
+                    Sequence[Mapping[str, str]] | None,
+                    typed_python.get("selected_cases"),
+                ),
+            ),
             [lane_id],
             proof_plan.cargo_native_units(plan.named_lane(lane_id).data),
         )

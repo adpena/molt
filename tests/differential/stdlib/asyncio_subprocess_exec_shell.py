@@ -1,3 +1,4 @@
+# MOLT_META: host_toolchains=posix:posix-sh
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,process.exec
 """Purpose: differential coverage for asyncio subprocess exec/shell."""
 

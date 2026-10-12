@@ -240,8 +240,9 @@ index capacity and prepares owned keys/images before writing. Borrowed image and
 event-wire preflight precedes classification and copies. A derived registry entry
 owns its full image identity once. Repeated observations reuse that witness;
 new generations at the same path consume the existing count and byte budgets.
-Summaries sort by complete identity for deterministic capture and replay. Retained admission identities and diagnostic samples participate in the
-same aggregate debit as live images and derived witnesses. Each stored diagnostic
+Summaries sort by complete identity for deterministic capture and replay.
+Retained admission identities and diagnostic samples participate in the same
+aggregate debit as live images and derived witnesses. Each stored diagnostic
 conservatively charges its full bounded buffer capacity; observations beyond the
 sample cap store nothing and add no debit. Borrowed violation facts are formatted
 only after the complete transition fits. Diagnostic formatting retains only its

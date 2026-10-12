@@ -112,6 +112,11 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `fish` | `executable` | — | `^fish, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
 | `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v4$` | — | — | — |
+| `posix-sh` | `executable` | — | `^$` | `.` | `host POSIX shell` | 1 |
+| `posix-echo` | `executable` | — | `^molt-proof-probe$` | `.` | `host POSIX utility` | 1 |
+| `posix-true` | `executable` | — | `^$` | `.` | `host POSIX utility` | 1 |
+| `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
+| `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.11\.1$` | `.` | `26.11.1` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |

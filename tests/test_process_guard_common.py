@@ -292,27 +292,6 @@ def test_run_guarded_test_process_does_not_infer_timeout_from_child_124(
     assert result.returncode == 124
 
 
-def test_cleanup_failure_is_attached_without_replacing_primary() -> None:
-    primary = subprocess.TimeoutExpired(["compiler"], 5)
-
-    try:
-        with process_guard_common.preserve_primary_during_cleanup(
-            lambda: (_ for _ in ()).throw(NotADirectoryError("repro root changed")),
-            label="tmp/repro",
-        ):
-            raise primary
-    except subprocess.TimeoutExpired as exc:
-        assert exc is primary
-        receipt = json.loads(exc.__notes__[0])
-        assert receipt == {
-            "cleanup_error": "NotADirectoryError: repro root changed",
-            "label": "tmp/repro",
-            "schema": "molt.test-process-cleanup.v1",
-        }
-    else:  # pragma: no cover - assertion clarity
-        raise AssertionError("expected TimeoutExpired")
-
-
 def test_module_os_view_keeps_patches_out_of_the_process_wide_os(monkeypatch):
     import os
     from pathlib import Path
