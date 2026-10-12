@@ -1081,7 +1081,7 @@ mod capability_tests {
         let raised = crate::molt_exception_last();
         crate::molt_exception_clear();
         let kind = crate::type_name(py, obj_from_bits(raised)).to_string();
-        let message_bits = crate::molt_exception_message(raised);
+        let message_bits = crate::builtins::exceptions::molt_exception_message(raised);
         assert!(!exception_pending(py));
         let message = string_obj_to_owned(obj_from_bits(message_bits)).unwrap();
         dec_ref_bits(py, message_bits);

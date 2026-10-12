@@ -83,7 +83,7 @@ fn operation_grants_allowed(
     _py: &PyToken<'_>,
     operation: OperationId,
     args: AuditArgs,
-    extra_capabilities: &[&str],
+    extra_capabilities: &[&'static str],
 ) -> bool {
     let mut all_allowed = true;
     for capability in operation
@@ -137,13 +137,14 @@ pub(crate) fn require_operation<T: crate::builtins::exceptions::ExceptionSentine
 /// Require an operation and the selected adapter's additional grants together.
 /// Adapter requirements are ordered, distinct and disjoint from the generated
 /// base requirements; the adapter owns that mapping, not a second grant checker.
+/// Capability names come from static declarations; only the selected slice is borrowed.
 pub(crate) fn require_operation_with_capabilities<
     T: crate::builtins::exceptions::ExceptionSentinel,
 >(
     _py: &PyToken<'_>,
     operation: OperationId,
     args: AuditArgs,
-    extra_capabilities: &[&str],
+    extra_capabilities: &[&'static str],
 ) -> Result<(), T> {
     let target = runtime_state(_py)
         .execution_target
