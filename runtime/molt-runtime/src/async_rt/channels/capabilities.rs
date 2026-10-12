@@ -64,6 +64,21 @@ pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
     caps.contains(name)
 }
 
+/// Capability platform coordinates describe the guest runtime, independently
+/// of its deployment target. All wasm32 hosts share the existing WASI platform
+/// contract; native coordinates retain Rust's OS names (macos, windows, linux).
+#[inline]
+fn operation_platform() -> &'static str {
+    #[cfg(target_arch = "wasm32")]
+    {
+        molt_runtime_platform::env_support::sys_platform_str()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::consts::OS
+    }
+}
+
 #[inline]
 fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
     let target = runtime_state(_py)
@@ -72,7 +87,7 @@ fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
     let python = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
     operation.supports_target(
         target,
-        std::env::consts::OS,
+        operation_platform(),
         std::env::consts::ARCH,
         python.major,
         python.minor,
@@ -149,7 +164,7 @@ pub(crate) fn require_operation_with_capabilities<
     let target = runtime_state(_py)
         .execution_target
         .get_or_init(load_execution_target);
-    let platform = std::env::consts::OS;
+    let platform = operation_platform();
     let architecture = std::env::consts::ARCH;
     if !operation_supported_here(_py, operation) {
         return Err(crate::raise_exception::<T>(
@@ -208,6 +223,31 @@ pub(crate) fn capability_fix_hint(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_runtime_platform_admits_portable_operations() {
+        let target = load_execution_target();
+        assert!(OperationId::IoOpenReadwrite.supports_target(
+            &target,
+            operation_platform(),
+            std::env::consts::ARCH,
+            3,
+            12,
+        ));
+        if cfg!(target_arch = "wasm32") {
+            assert_eq!(
+                operation_platform(),
+                molt_runtime_platform::env_support::sys_platform_str()
+            );
+            assert!(!OperationId::ThreadSpawnShared.supports_target(
+                &target,
+                operation_platform(),
+                std::env::consts::ARCH,
+                3,
+                12,
+            ));
+        }
+    }
 
     #[test]
     fn generated_operation_target_gates_apply_to_boolean_checks() {

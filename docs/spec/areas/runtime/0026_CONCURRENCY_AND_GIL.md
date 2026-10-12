@@ -172,6 +172,16 @@ use the same ordered retirement and current-thread C/Molt-TLS fixed point;
 their process-global ownership and registry-reset policies differ. An absent C
 record is not fabricated just to drain runtime TLS. Native isolates do not own
 the primary runtime's static C state or process-wide retained-thread count.
+Ordinary WASM execution attaches the same C state authority as native execution;
+single-threaded GIL custody does not remove C error or deallocation ownership.
+Nested calls reuse their outer execution boundary. Shutdown reuses its record
+through callback/projection retirement and retires it empty before the
+callback-free identity tail. Projection retirement accepts only the exact
+current shutdown record whose owners have drained; foreign or nonempty records
+still prevent retirement.
+If a worker boundary already retired the record, or isolate initialization
+failed before creating one, callback-capable teardown admits one record at its
+own entry. Native deallocation never fabricates a replacement record.
 
 Canonical exception identities are independent of mutable Python `builtins`
 bindings, with aliases sharing one owning cache entry. Unknown dynamically

@@ -4392,6 +4392,7 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
             "molt_exception_kind",
             "molt_exception_message",
             "molt_exception_last",
+            "molt_exception_last_pending",
             "molt_traceback_format_exc",
             "molt_type_tag_of_bits",
             "molt_len",
@@ -4416,7 +4417,8 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
     assert "molt_string_as_ptr" in exports
     assert "molt_exception_kind" in exports
     assert "molt_exception_message" in exports
-    assert "molt_exception_last" in exports
+    assert "molt_exception_last_pending" in exports
+    assert "molt_exception_last" not in exports
     assert "molt_traceback_format_exc" in exports
     assert "molt_type_tag_of_bits" in exports
     assert "molt_len" in exports

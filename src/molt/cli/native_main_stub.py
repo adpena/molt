@@ -166,7 +166,7 @@ extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
 extern unsigned long long molt_exception_pending();
-extern unsigned long long molt_exception_last();
+extern unsigned long long molt_exception_last_pending();
 extern unsigned long long molt_exception_report_uncaught(unsigned long long exc_bits);
 extern void molt_dec_ref(unsigned long long bits);
 extern void molt_dec_ref_obj(unsigned long long bits);
@@ -216,7 +216,7 @@ static int molt_finish() {
         fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
     }
     if (pending != 0) {
-        unsigned long long exc = molt_exception_last();
+        unsigned long long exc = molt_exception_last_pending();
         unsigned long long exit_code = molt_exception_report_uncaught(exc);
         molt_dec_ref_obj(exc);
         molt_runtime_exit(exit_code);

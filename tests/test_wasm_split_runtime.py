@@ -963,12 +963,20 @@ def test_linked_host_export_attribute_error_does_not_return_none(
 ) -> None:
     source = tmp_path / "missing_attr_probe.py"
     source.write_text(
-        "_x = None\n\ndef get_attr():\n    return _x.foo\n",
+        "_x = None\n\ndef get_attr():\n    return _x.foo\n"
+        "\ndef get_ok():\n    return [1, 2, 3]\n",
         encoding="utf-8",
     )
     calls_path = tmp_path / "calls.json"
     calls_path.write_text(
-        json.dumps({"calls": [{"export": "missing_attr_probe__get_attr", "args": []}]}),
+        json.dumps(
+            {
+                "calls": [
+                    {"export": "missing_attr_probe__get_ok", "args": []},
+                    {"export": "missing_attr_probe__get_ok", "args": []},
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
@@ -995,6 +1003,21 @@ def test_linked_host_export_attribute_error_does_not_return_none(
 
     run_env = os.environ.copy()
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+    successful = _run_wasm_test_process(
+        ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        cwd=ROOT,
+        env=run_env,
+        timeout=60,
+    )
+    assert successful.returncode == 0, successful.stdout + successful.stderr
+    assert [row["result_repr"] for row in json.loads(successful.stdout)] == [
+        "[1, 2, 3]",
+        "[1, 2, 3]",
+    ]
+    calls_path.write_text(
+        json.dumps({"calls": [{"export": "missing_attr_probe__get_attr", "args": []}]}),
+        encoding="utf-8",
+    )
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
         cwd=ROOT,
@@ -1006,6 +1029,15 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     assert "AttributeError" in run.stderr, run.stderr
     assert "None" in run.stderr, run.stderr
     assert "foo" in run.stderr, run.stderr
+    for secondary in (
+        "panicked at",
+        "RuntimeError: unreachable",
+        "RefCell",
+        "runtime shutdown did not complete",
+        "null function",
+        "signature mismatch",
+    ):
+        assert secondary not in run.stderr, run.stderr
 
 
 @pytest.mark.slow

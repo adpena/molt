@@ -4430,13 +4430,20 @@ fn destroy_current_thread_state(
     if !drained_record {
         return;
     }
+    retire_empty_current_thread_state();
+}
+
+fn retire_empty_current_thread_state() {
     let record = MOLT_THREAD_STATE.with(|slot| {
-        let record = slot
-            .borrow_mut()
-            .take()
-            .expect("destroying a missing PyThreadState");
+        let mut slot = slot.borrow_mut();
+        let record = slot.as_deref().expect("destroying a missing PyThreadState");
+        // Failed validation must leave the exact owner published for runtime
+        // quarantine; never drop an invalid owned record under this borrow.
         assert!(!record.attached, "destroying an attached PyThreadState");
-        record
+        assert!(!record.tearing_down, "destroying a draining PyThreadState");
+        assert!(record.state_dict.is_null() && record.current_error.is_none());
+        record.native_deallocation.assert_idle();
+        slot.take().expect("validated thread state disappeared")
     });
     drop(record);
 }
@@ -4906,7 +4913,7 @@ fn set_current_thread_state_attached(attached: bool) {
 
 /// Establish the CPython thread-state half of the outer compiled-execution
 /// boundary. Runtime initialization alone is deliberately insufficient: the
-/// native main/embedding boundary must hold execution custody and call this
+/// compiled main/embedding boundary must hold execution custody and call this
 /// after acquiring it.
 pub fn attach_runtime_execution_thread(runtime_owner: usize) -> bool {
     assert_ne!(
@@ -5066,39 +5073,108 @@ pub fn retained_thread_state_identity_for_test(address: usize) -> Option<(usize,
         .map(|record| (record.runtime_owner, record.id))
 }
 
-/// Drain the shutdown owner's detached CPython state while the runtime is
-/// still live and the caller holds execution custody.
-///
-/// Unlike ordinary execution cleanup, shutdown owns the complete runtime
-/// lifetime boundary and must destroy every current-thread record regardless
-/// of which embedding path originally created it. `cleanup_runtime_tls` is
-/// invoked before every CPython managed-edge pass so finalizers crossing either
-/// ownership domain converge before the record is destroyed. The callback
-/// returns true whenever it detached owned runtime references; even with no C
-/// edges, that requires another pass because their finalizers may refill TLS.
-/// A panic propagates to the caller's runtime-owner boundary, which retains a
-/// failed owner. Only the actual native-thread TLS destructor aborts directly.
-pub fn clear_current_thread_state_for_runtime_shutdown(cleanup_runtime_tls: impl FnMut() -> bool) {
-    assert!(
-        !current_thread_state_attached(),
-        "runtime shutdown thread-state cleanup requires a detached state"
-    );
-    assert!(
-        !runtime_execution_thread_is_attached(),
-        "runtime shutdown thread-state cleanup crossed execution attachment"
-    );
-    GILSTATE_ATTACHMENT.with(|state| {
-        assert_eq!(
-            state.get().0,
-            0,
-            "runtime shutdown thread-state cleanup crossed PyGILState custody"
+/// Retain the shutdown owner's actual C record through callback-capable
+/// projection retirement. Draining its managed edges is distinct from retiring
+/// the record: native decrefs still require its deallocation queue afterwards.
+/// A failed teardown leaves this record with the existing failed-runtime owner.
+#[must_use = "shutdown must finish its C record after the last callback drain"]
+pub struct RuntimeShutdownThreadState {
+    runtime_owner: usize,
+    id: u64,
+    _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+/// Evidence from a completed two-domain drain, borrowed from its shutdown owner.
+/// No general empty-record query can substitute for this phase-specific value:
+/// a saved error may be invisible while a drain callback is still on the stack.
+pub struct DrainedRuntimeShutdownThreadState<'a> {
+    owner: &'a RuntimeShutdownThreadState,
+}
+
+impl RuntimeShutdownThreadState {
+    pub fn begin(runtime_owner: usize) -> Self {
+        // An isolate can fail before ordinary execution, or its last WorkerEnd
+        // can already have retired C state. Teardown is a real owner boundary:
+        // establish its attached record before any callbacks, never lazily at
+        // decref. The lifecycle detaches it before the managed-edge drain.
+        assert_runtime_initialized("runtime shutdown C owner");
+        assert_ne!(unsafe { (hooks_or_stubs().gil_check)() }, 0);
+        attach_runtime_execution_thread(runtime_owner);
+        let id = MOLT_THREAD_STATE.with(|slot| slot.borrow().as_deref().unwrap().id);
+        Self {
+            runtime_owner,
+            id,
+            _not_send_sync: std::marker::PhantomData,
+        }
+    }
+
+    fn is_empty_current_owner(&self) -> bool {
+        MOLT_THREAD_STATE.with(|slot| {
+            let slot = slot.borrow();
+            let Some(record) = slot.as_deref() else {
+                return false;
+            };
+            if record.runtime_owner != self.runtime_owner
+                || record.id != self.id
+                || record.attached
+                || record.tearing_down
+                || !record.state_dict.is_null()
+                || record.current_error.is_some()
+            {
+                return false;
+            }
+            record.native_deallocation.assert_idle();
+            true
+        })
+    }
+
+    pub fn drain(
+        &mut self,
+        mut cleanup_runtime_tls: impl FnMut() -> bool,
+    ) -> DrainedRuntimeShutdownThreadState<'_> {
+        assert!(!runtime_execution_thread_is_attached());
+        GILSTATE_ATTACHMENT.with(|state| {
+            assert_eq!(
+                state.get().0,
+                0,
+                "runtime shutdown thread-state cleanup crossed PyGILState custody"
+            )
+        });
+        assert!(drain_current_thread_state_managed_edges(
+            ThreadStateDropCustodyMode::RuntimeOwner,
+            &mut cleanup_runtime_tls
+        ));
+        assert!(
+            self.is_empty_current_owner(),
+            "shutdown drain lost its exact empty C owner"
         );
-    });
-    destroy_current_thread_state(
-        ThreadStatePanicBoundary::Propagate,
-        ThreadStateDropCustodyMode::RuntimeOwner,
-        cleanup_runtime_tls,
-    );
+        DrainedRuntimeShutdownThreadState { owner: self }
+    }
+
+    pub fn finish(self) {
+        assert!(
+            self.is_empty_current_owner(),
+            "shutdown C owner refilled after its final drain"
+        );
+        retire_empty_current_thread_state();
+    }
+}
+
+impl DrainedRuntimeShutdownThreadState<'_> {
+    /// Projection retirement may exclude only this exact drained record. All
+    /// other records remain conservative owners, including saved-error owners
+    /// on foreign threads and records belonging to another runtime.
+    pub fn permits_projection_retirement(&self, runtime_owner: usize, process_owner: bool) -> bool {
+        if runtime_owner != self.owner.runtime_owner || !self.owner.is_empty_current_owner() {
+            return false;
+        }
+        let retained = if process_owner {
+            runtime_retained_thread_state_count()
+        } else {
+            runtime_retained_thread_state_count_for(runtime_owner)
+        };
+        retained == 1
+    }
 }
 
 fn clear_current_thread_state_for_runtime_thread_exit() {

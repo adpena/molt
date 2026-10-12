@@ -352,14 +352,20 @@ buffer, import, or callable-closure work.
 
 **Status**: Standardized. SharedArrayBuffer support required in browsers (cross-origin isolation headers).
 
-**Current gap**: Molt's `threading` module uses custom host imports (`thread_submit`, `thread_spawn`, `thread_join`). The host manages all thread state; WASM modules are single-threaded.
+**Current boundary**: WASM runtime execution is single-threaded. The runtime
+still owns its C thread-state record for exception, deallocation and C-API
+lifetime. The [operation manifest](../../../../runtime/host_capabilities.toml)
+does not admit Python shared-thread creation on WASM; host worker adapters do
+not establish that support.
 
 **Optimization plan**:
-- **Phase 1 (current)**: Continue with host-managed threads. This is correct and portable.
+- **Phase 1 (current)**: Preserve single-thread execution and reject unsupported
+  Python shared-thread operations before spawning host work.
 - **Phase 2**: Evaluate `wasm32-unknown-unknown` + shared memory for compute-heavy workloads where host-call overhead for thread coordination dominates.
 - **Constraint**: Molt's GIL-equivalent serialization must be preserved. Shared memory introduces data races; atomic operations must protect all shared state.
 
-**Priority**: P3 -- host-managed threads are sufficient for current workloads.
+**Priority**: P3 -- shared-thread support requires its own correctness and
+performance qualification across the declared host cells.
 
 ### 3.8 1000-Year Feature Lanes
 

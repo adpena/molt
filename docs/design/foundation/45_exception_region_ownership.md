@@ -191,13 +191,16 @@ Pending-call support does not mint a permission, and capability declarations do
 not mutate target lowering. Keeping these planes separate preserves the
 Monty-style least-authority model without duplicating or merging registries.
 
-Native process exit drains the current managed CPython thread-state record
+Process exit drains the current managed CPython thread-state record
 before publishing terminal runtime shutdown, while the finalization owner still
 holds the GIL and C-extension execution custody. This ordering is explicit on
 all native platforms because Windows `ExitProcess` runs TLS destructors even
-when reached through `_exit`; WASM has no native `PyThreadState` record. The ABI
-assertion remains fail-closed and teardown ordering, rather than a late
-destructor workaround, prevents post-shutdown managed-edge destruction.
+when reached through `_exit`. WASM also owns a `PyThreadState` for C errors,
+native deallocation and C-API lifetime, despite its single-threaded execution.
+The current record remains available through the callback/projection drain;
+its empty retirement precedes the final class-identity tail. The ABI assertion
+remains fail-closed, and teardown ordering prevents post-shutdown managed-edge
+destruction.
 
 Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
 `runtime/molt-passes/src/tir/exception_regions.rs`. It recognizes the current

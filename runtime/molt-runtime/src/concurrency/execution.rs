@@ -289,12 +289,8 @@ impl Drop for ShutdownDrainExecutionCustody {
 pub(crate) struct RuntimeExecutionCustody {
     clear_worker_state: bool,
     established_cext_context: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     destroy_thread_state: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     established_attachment: bool,
-    #[cfg(target_arch = "wasm32")]
-    established_execution_depth: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -309,60 +305,12 @@ impl RuntimeExecutionCustody {
         Self {
             clear_worker_state: false,
             established_cext_context: false,
-            #[cfg(not(target_arch = "wasm32"))]
             destroy_thread_state: false,
-            #[cfg(not(target_arch = "wasm32"))]
             established_attachment: false,
-            #[cfg(target_arch = "wasm32")]
-            established_execution_depth: false,
         }
     }
 
     fn enter(acquired_outer_gil: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let attached_before =
-                molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-            if attached_before {
-                enter_c_extension_execution_context();
-                return Self {
-                    clear_worker_state: false,
-                    established_cext_context: true,
-                    destroy_thread_state: false,
-                    established_attachment: false,
-                };
-            }
-            if !crate::state::runtime_state::runtime_is_initialized() {
-                return Self {
-                    clear_worker_state: false,
-                    established_cext_context: false,
-                    destroy_thread_state: false,
-                    established_attachment: false,
-                };
-            }
-            let created_by_boundary =
-                molt_cpython_abi::api::object::attach_runtime_execution_thread(
-                    crate::state::runtime_state::runtime_state_for_gil()
-                        .expect("live runtime execution owner")
-                        .identity(),
-                );
-            let established_attachment = !attached_before
-                && molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-            let owns_outer_boundary = acquired_outer_gil || established_attachment;
-            enter_c_extension_execution_context();
-            Self {
-                clear_worker_state: cleanup_policy != ExecutionCleanupPolicy::Preserve
-                    && owns_outer_boundary,
-                destroy_thread_state: established_attachment
-                    && match cleanup_policy {
-                        ExecutionCleanupPolicy::Preserve => false,
-                        ExecutionCleanupPolicy::BoundaryCreated => created_by_boundary,
-                        ExecutionCleanupPolicy::WorkerEnd => true,
-                    },
-                established_attachment,
-                established_cext_context: true,
-            }
-        }
         #[cfg(target_arch = "wasm32")]
         {
             let was_outer = WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| {
@@ -378,12 +326,48 @@ impl RuntimeExecutionCustody {
                 acquired_outer_gil, was_outer,
                 "logical wasm GIL custody diverged from execution nesting"
             );
+        }
+        let attached_before = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+        if attached_before {
             enter_c_extension_execution_context();
-            Self {
-                clear_worker_state: cleanup_policy != ExecutionCleanupPolicy::Preserve && was_outer,
-                established_execution_depth: true,
+            return Self {
+                clear_worker_state: false,
                 established_cext_context: true,
+                destroy_thread_state: false,
+                established_attachment: false,
+            };
+        }
+        if !crate::state::runtime_state::runtime_is_initialized() {
+            // Raw WASM entries still own logical nesting, but must not create
+            // a C record or bootstrap an absent runtime.
+            if cfg!(target_arch = "wasm32") {
+                enter_c_extension_execution_context();
             }
+            return Self {
+                established_cext_context: cfg!(target_arch = "wasm32"),
+                ..Self::inherited()
+            };
+        }
+        let created_by_boundary = molt_cpython_abi::api::object::attach_runtime_execution_thread(
+            crate::state::runtime_state::runtime_state_for_gil()
+                .expect("live runtime execution owner")
+                .identity(),
+        );
+        let established_attachment =
+            molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+        let owns_outer_boundary = acquired_outer_gil || established_attachment;
+        enter_c_extension_execution_context();
+        Self {
+            clear_worker_state: cleanup_policy != ExecutionCleanupPolicy::Preserve
+                && owns_outer_boundary,
+            destroy_thread_state: established_attachment
+                && match cleanup_policy {
+                    ExecutionCleanupPolicy::Preserve => false,
+                    ExecutionCleanupPolicy::BoundaryCreated => created_by_boundary,
+                    ExecutionCleanupPolicy::WorkerEnd => true,
+                },
+            established_attachment,
+            established_cext_context: true,
         }
     }
 
@@ -400,13 +384,11 @@ impl RuntimeExecutionCustody {
                 }
                 // An owned C record and runtime TLS reach quiescence together
                 // after detach; retained-state boundaries keep their policy.
-                #[cfg(not(target_arch = "wasm32"))]
                 if self.clear_worker_state && !self.destroy_thread_state {
                     crate::state::clear_worker_thread_state(py);
                 }
             },
             || {
-                #[cfg(not(target_arch = "wasm32"))]
                 if self.established_attachment {
                     molt_cpython_abi::api::object::detach_runtime_execution_thread();
                     if self.destroy_thread_state {
@@ -421,65 +403,52 @@ impl RuntimeExecutionCustody {
                         }
                     });
                 }
-                #[cfg(target_arch = "wasm32")]
-                if self.established_execution_depth {
-                    WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| {
-                        let previous = depth.get();
-                        assert_ne!(previous, 0, "wasm runtime execution depth underflow");
-                        depth.set(previous - 1);
-                    });
-                    if self.clear_worker_state {
-                        molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
-                            crate::state::clear_worker_thread_state(py)
-                        });
-                    }
-                }
             },
             || {
-                if self.established_cext_context {
-                    leave_c_extension_execution_context();
-                }
+                let leave_context = || {
+                    if self.established_cext_context {
+                        leave_c_extension_execution_context();
+                    }
+                };
+                // C-state drain can panic. Logical WASM depth and C-extension
+                // context must still retire as independent obligations.
+                #[cfg(target_arch = "wasm32")]
+                finish_then_release(
+                    || {
+                        if self.established_cext_context {
+                            WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| {
+                                let previous = depth.get();
+                                assert_ne!(previous, 0, "wasm runtime execution depth underflow");
+                                depth.set(previous - 1);
+                            });
+                        }
+                    },
+                    leave_context,
+                );
+                #[cfg(not(target_arch = "wasm32"))]
+                leave_context();
             },
         );
     }
 
     fn encoded_bits(self) -> u64 {
-        let mut bits = u64::from(self.clear_worker_state);
-        bits |= u64::from(self.established_cext_context) << 3;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            bits |= u64::from(self.established_attachment) << 1;
-            bits |= u64::from(self.destroy_thread_state) << 2;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            bits |= u64::from(self.established_execution_depth) << 1;
-        }
-        bits
+        u64::from(self.clear_worker_state)
+            | (u64::from(self.established_attachment) << 1)
+            | (u64::from(self.destroy_thread_state) << 2)
+            | (u64::from(self.established_cext_context) << 3)
     }
 
     fn from_encoded_bits(bits: u64) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
             bits & !0b1111,
             0,
             "invalid encoded execution custody {bits}"
         );
-        #[cfg(target_arch = "wasm32")]
-        assert_eq!(
-            bits & !0b1011,
-            0,
-            "invalid encoded execution custody {bits}"
-        );
         Self {
             clear_worker_state: bits & 1 != 0,
-            established_cext_context: bits & 8 != 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            destroy_thread_state: bits & 4 != 0,
-            #[cfg(not(target_arch = "wasm32"))]
             established_attachment: bits & 2 != 0,
-            #[cfg(target_arch = "wasm32")]
-            established_execution_depth: bits & 2 != 0,
+            destroy_thread_state: bits & 4 != 0,
+            established_cext_context: bits & 8 != 0,
         }
     }
 }
@@ -1015,7 +984,8 @@ mod tests {
     fn scoped_detach_panic_revokes_c_extension_execution_capability() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         let lease_baseline = crate::state::runtime_state::active_runtime_execution_lease_count();
-        let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let token = RuntimeExecutionGuard::enter_with_worker_cleanup().into_encoded_lane();
+        let guard = unsafe { RuntimeExecutionGuard::from_encoded_lane(token) };
         assert!(current_thread_has_c_extension_execution_context());
         assert!(
             molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
@@ -1024,6 +994,11 @@ mod tests {
         RUNTIME_EXECUTION_DETACH_TEST_PANIC.with(|panic_next| panic_next.set(true));
         let outcome = crate::test_support::catch_expected_unwind(|| drop(guard));
         assert!(outcome.is_err());
+        #[cfg(target_arch = "wasm32")]
+        assert!(
+            !execution_is_nested(),
+            "detach panic must retire logical WASM depth"
+        );
         assert!(
             !current_thread_has_c_extension_execution_context(),
             "detach panic must revoke C extension execution capability"
@@ -1420,10 +1395,13 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[test]
-    fn wasm_shutdown_custody_attaches_callbacks_without_an_execution_frame_or_c_state() {
+    fn wasm_shutdown_custody_owns_c_state_without_an_execution_frame() {
         use molt_cpython_abi::hooks::{AttachedRuntimeContextKind, hooks_or_stubs};
 
         let _test = crate::test_support::RuntimeTestTransaction::new();
+        // The shared test setup now legitimately creates C state. Exercise
+        // teardown's absent-record owner admission explicitly.
+        drop(RuntimeExecutionGuard::enter_with_worker_cleanup());
         let attached_context = || unsafe { (hooks_or_stubs().attached_runtime_context)() };
         let lease_count = crate::state::runtime_state::active_runtime_execution_lease_count();
         let retained_count = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
@@ -1439,6 +1417,9 @@ mod tests {
 
         {
             let _shutdown = ShutdownDrainExecutionCustody::enter();
+            let mut owner = molt_cpython_abi::api::object::RuntimeShutdownThreadState::begin(
+                crate::runtime_state(&GilGuard::new().token()).identity(),
+            );
             assert!(current_thread_has_runtime_execution_custody());
             assert!(current_thread_has_c_extension_execution_context());
             assert!(!execution_is_nested());
@@ -1464,12 +1445,10 @@ mod tests {
                     crate::state::runtime_state::active_runtime_execution_lease_count(),
                     lease_count
                 );
-                assert!(
-                    !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
-                );
+                assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
                 assert_eq!(
                     molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
-                    retained_count
+                    retained_count + 1
                 );
                 assert_eq!(
                     attached_context(),
@@ -1482,6 +1461,12 @@ mod tests {
                 attached_context(),
                 AttachedRuntimeContextKind::WasmSingleThread as u32
             );
+            assert!(
+                !unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null()
+            );
+            molt_cpython_abi::api::object::detach_runtime_execution_thread();
+            let _drained = owner.drain(|| false);
+            owner.finish();
         }
 
         assert!(!current_thread_has_runtime_execution_custody());
@@ -1513,10 +1498,18 @@ mod tests {
             "logical always-held GIL must not fabricate an execution frame"
         );
         assert!(!current_thread_has_runtime_execution_custody());
-        let outer = RuntimeExecutionGuard::enter();
+        let outer_token = RuntimeExecutionGuard::enter().into_encoded_lane();
+        let outer = unsafe { RuntimeExecutionGuard::from_encoded_lane(outer_token) };
+        let record = unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() };
+        assert!(!record.is_null());
         assert!(execution_is_nested());
         assert!(current_thread_has_runtime_execution_custody());
-        let inner = RuntimeExecutionGuard::enter();
+        let inner_token = RuntimeExecutionGuard::enter().into_encoded_lane();
+        let inner = unsafe { RuntimeExecutionGuard::from_encoded_lane(inner_token) };
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() },
+            record
+        );
         drop(inner);
         assert!(
             execution_is_nested(),
@@ -1525,5 +1518,13 @@ mod tests {
         drop(outer);
         assert!(!execution_is_nested());
         assert!(!current_thread_has_runtime_execution_custody());
+        assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        let next = RuntimeExecutionGuard::enter_with_worker_cleanup();
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() },
+            record
+        );
+        drop(next);
+        assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
     }
 }

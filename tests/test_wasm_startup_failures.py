@@ -1280,6 +1280,139 @@ for (const status of [undefined, 0, () => 0, ignored => 0n, () => 2n, () => 0n, 
 
 
 @pytest.mark.parametrize("host", ["run_wasm", "browser_host", "browser_embed"])
+def test_pending_diagnostics_observe_owned_reference_independent_of_c_api(
+    tmp_path: Path, host: str
+) -> None:
+    source = (ROOT / f"wasm/{host}.js").read_text(encoding="utf-8")
+    start = source.index("const pendingRuntimeExceptionMessage =")
+    end = source.index("\n};", start) + 3
+    _run_node(
+        "const formatter = "
+        + json.dumps(source[start:end])
+        + ";\nconst richRenderer = "
+        + json.dumps(host != "browser_embed")
+        + ";\nconst bridgePath = "
+        + json.dumps(str(ROOT / "wasm/loader_bridge.js"))
+        + ";\nconst lifetimePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const {runtimeExceptionPending} = require(bridgePath);
+const {createRuntimeLifetime, combinedError} = require(lifetimePath);
+const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
+for (const capi of ['absent', 'fetch', 'peek', 'both']) {
+  for (const failure of ['none', 'repr', 'read']) {
+    let pending = true, acquired = 0, released = 0, reprOwners = 0;
+    const formattingFailure = new Error('formatting failed');
+    const events = [];
+    const cleanupFailure = new Error('shutdown failed');
+    const runtime = {exports: {
+      molt_exception_pending: () => pending ? 1n : 0n,
+      molt_exception_last_pending() { acquired++; return 11n; },
+      molt_exception_last() { throw new Error('handled-exception accessor used'); },
+      molt_object_repr(bits) {
+        assert.equal(bits, 11n);
+        if (failure === 'repr') throw formattingFailure;
+        reprOwners++; return 12n;
+      },
+      molt_dec_ref_obj(bits) {
+        if (bits === 11n) released++;
+        else { assert.equal(bits, 12n); reprOwners--; }
+      },
+      enter() { events.push('enter'); return 17n; },
+      leave(token) { assert.equal(token, 17n); events.push('leave'); },
+      shutdown() { events.push('shutdown'); throw cleanupFailure; },
+    }};
+    // C API fetch consumes; peek returns another owned reference. Neither is
+    // the observer protocol, even if the artifact happens to export both.
+    if (capi !== 'absent') {
+      runtime.exports.molt_err_pending = () => { throw new Error('C API status used'); };
+      if (capi !== 'peek') runtime.exports.molt_err_fetch = () => {
+        pending = false; throw new Error('consuming C API fetch used');
+      };
+      if (capi !== 'fetch') runtime.exports.molt_err_peek = () => {
+        acquired++; throw new Error('C API peek used');
+      };
+    }
+    const context = {
+      runtimeExceptionPending,
+      readRuntimeStringBits() {
+        if (failure === 'read') throw formattingFailure;
+        return "AttributeError('owned diagnostic')";
+      },
+      decRefMaybe: (instance, bits) => instance.exports.molt_dec_ref_obj(bits),
+    };
+    vm.createContext(context);
+    vm.runInContext(formatter + '\nthis.format = pendingRuntimeExceptionMessage;', context);
+    const observe = () => context.format(runtime, null);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      assert.equal(runtimeExceptionPending(runtime), true);
+      if (failure === 'none') assert.match(observe(), /AttributeError.*owned diagnostic/);
+      else assert.throws(observe, error => error === formattingFailure);
+      assert.equal(runtimeExceptionPending(runtime), true);
+      assert.equal(acquired, repeat + 1);
+      assert.equal(released, acquired, 'each diagnostic acquires and retires one owner');
+      assert.equal(reprOwners, 0, 'formatting temporaries retire on success and failure');
+    }
+    if (failure === 'none') {
+      const lifetime = createRuntimeLifetime(runtime, names, () => {
+        if (runtimeExceptionPending(runtime)) throw new Error(observe());
+      });
+      const errors = [];
+      for (let repeat = 0; repeat < 2; repeat++) {
+        try { lifetime.execute(() => assert.fail('pending exception admitted guest')); }
+        catch (error) { errors.push(error); }
+      }
+      try { lifetime.dispose(); } catch (error) { errors.push(error); }
+      assert.equal(errors.length, 3);
+      assert.match(errors[0].message, /AttributeError/);
+      assert.match(errors[1].message, /AttributeError/);
+      assert.match(errors[2].errors[0].message, /AttributeError/);
+      assert.equal(errors[2].errors[1], cleanupFailure);
+      assert.equal(combinedError(errors).cause, errors[0]);
+      assert.throws(() => lifetime.dispose(), error => error === errors[2]);
+      assert.deepEqual(events, ['enter', 'leave', 'enter', 'leave', 'shutdown']);
+      assert.equal(runtimeExceptionPending(runtime), true);
+      assert.equal(released, acquired);
+    }
+    // Rich renderers acquire kind and message separately. A later getter
+    // failure must retire the already acquired kind as well as the exception.
+    if (richRenderer) {
+      delete runtime.exports.molt_object_repr;
+      let kinds = 0;
+      runtime.exports.molt_exception_kind = bits => {
+        assert.equal(bits, 11n); kinds++; return 13n;
+      };
+      runtime.exports.molt_exception_message = () => { throw formattingFailure; };
+      const release = runtime.exports.molt_dec_ref_obj;
+      runtime.exports.molt_dec_ref_obj = bits => {
+        if (bits === 13n) kinds--;
+        else release(bits);
+      };
+      assert.throws(observe, error => error === formattingFailure);
+      assert.equal(kinds, 0, 'second acquisition failure retires the first owner');
+      assert.equal(released, acquired);
+      assert.equal(runtimeExceptionPending(runtime), true);
+    }
+    pending = false;
+    const before = acquired;
+    assert.equal(observe(), null);
+    assert.equal(acquired, before, 'no diagnostic acquisition without pending error');
+    for (const malformed of [undefined, () => 1, ignored => 1n, () => 2n]) {
+      runtime.exports.molt_exception_pending = malformed;
+      assert.throws(observe, /molt_exception_pending/);
+      assert.equal(acquired, before, 'invalid status never acquires an owner');
+    }
+  }
+}
+""",
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize("host", ["run_wasm", "browser_host", "browser_embed"])
 def test_pending_status_without_diagnostic_object_is_never_success(
     tmp_path: Path, host: str
 ) -> None:

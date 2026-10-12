@@ -270,7 +270,7 @@ pub mod lifecycle {
     /// The initial atomic projection keeps pre-init and post-shutdown callers
     /// from materializing runtime TLS. A call that observes readiness then
     /// acquires the GIL and rechecks under that custody, closing the race with
-    /// shutdown. Native callers also attach their CPython thread state for the
+    /// shutdown. Callers also attach their CPython thread state for the
     /// duration of the operation; shutdown cannot free the runtime until the
     /// attachment is detached and GIL custody is released. When this call
     /// establishes outermost execution custody, it also drains ref-owning

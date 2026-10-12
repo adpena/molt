@@ -107,6 +107,65 @@ def test_typed_operation_requirements_and_target_gates_are_generated() -> None:
     assert generated.OperationId.SELECT_POLL not in generated.OPERATION_PLATFORMS
 
 
+@pytest.mark.parametrize("target", ["wasi", "browser", "cloudflare", "fastly"])
+def test_wasm_platform_coordinates_preserve_portable_and_native_operation_boundary(target):
+    generated = _generated()
+    for operation in (
+        generated.OperationId.IO_OPEN_READ,
+        generated.OperationId.IO_OPEN_WRITE,
+        generated.OperationId.IO_OPEN_READWRITE,
+        generated.OperationId.PATH_MAKEDIRS,
+    ):
+        assert generated.operation_supports_target(
+            operation,
+            target=target,
+            platform="wasi",
+            architecture="wasm32",
+            python_version="3.12",
+        )
+        # The producer must supply a real guest platform; an unconstrained
+        # operation must never turn missing/unknown coordinates into admission.
+        for platform in ("", "unknown"):
+            assert not generated.operation_supports_target(
+                operation,
+                target=target,
+                platform=platform,
+                architecture="wasm32",
+                python_version="3.12",
+            )
+    for operation in (
+        generated.OperationId.THREAD_SPAWN_SHARED,
+        generated.OperationId.OS_GETUID,
+        generated.OperationId.SELECT_EPOLL,
+    ):
+        assert not generated.operation_supports_target(
+            operation,
+            target=target,
+            platform="wasi",
+            architecture="wasm32",
+            python_version="3.12",
+        )
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos", "windows"])
+def test_native_capability_platform_names_remain_manifest_coordinates(platform):
+    generated = _generated()
+    assert generated.operation_supports_target(
+        generated.OperationId.IO_OPEN_READWRITE,
+        target="native",
+        platform=platform,
+        architecture="aarch64",
+        python_version="3.12",
+    )
+    assert generated.operation_supports_target(
+        generated.OperationId.OS_GETUID,
+        target="native",
+        platform=platform,
+        architecture="aarch64",
+        python_version="3.12",
+    ) is (platform != "windows")
+
+
 def test_cpython_fallback_and_generated_tiers_resolve_identically(monkeypatch) -> None:
     from molt import capabilities as runtime_capabilities
 

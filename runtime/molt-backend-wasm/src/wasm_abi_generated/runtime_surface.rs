@@ -40,7 +40,7 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_err_restore",
     "molt_err_set",
     "molt_exception_kind",
-    "molt_exception_last",
+    "molt_exception_last_pending",
     "molt_exception_message",
     "molt_exception_pending_fast",
     "molt_float_as_f64",
