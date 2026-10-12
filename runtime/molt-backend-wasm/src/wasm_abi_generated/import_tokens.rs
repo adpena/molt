@@ -2516,7 +2516,6 @@ pub(crate) enum WasmRuntimeImport {
     DefaultdictDrop,
     DefaultdictFactory,
     DefaultdictMissing,
-    DefaultdictMissingMethod,
     DefaultdictNew,
     DequeAppend,
     DequeAppendleft,

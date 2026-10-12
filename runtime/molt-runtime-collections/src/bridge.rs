@@ -5,7 +5,6 @@
 //! Each function has a corresponding `#[no_mangle]` shim in
 //! `molt-runtime/src/collections_bridge.rs`.
 
-use molt_runtime_core::ErrorIndicatorSet;
 use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -138,16 +137,6 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_collections_attr_name_bits_from_bytes(
-        name_ptr: *const u8,
-        name_len: usize,
-        out: *mut u64,
-    ) -> i32;
-    fn __molt_collections_attr_lookup_ptr_allow_missing(
-        obj_ptr: *mut u8,
-        attr_bits: u64,
-        out: *mut u64,
-    ) -> i32;
     fn __molt_collections_is_truthy(bits: u64) -> i32;
     fn __molt_collections_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
     -> i32;
@@ -171,31 +160,6 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
-    }
-}
-
-pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe {
-        __molt_collections_attr_name_bits_from_bytes(name.as_ptr(), name.len(), &mut out)
-    };
-    if ok != 0 { Some(out) } else { None }
-}
-
-/// # Safety
-///
-/// `obj_ptr` must refer to a live Molt object for the duration of this call.
-pub unsafe fn attr_lookup_ptr_allow_missing(
-    _py: &CoreGilToken,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-) -> Result<Option<u64>, ErrorIndicatorSet> {
-    let mut out: u64 = 0;
-    match unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) }
-    {
-        1 => Ok(Some(out)),
-        0 => Ok(None),
-        _ => Err(ErrorIndicatorSet),
     }
 }
 
@@ -276,9 +240,6 @@ pub fn index_i64_with_overflow(
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_collections_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64)
-    -> i32;
-    fn __molt_collections_dict_like_bits_from_ptr(obj_ptr: *mut u8, out: *mut u64) -> i32;
     fn __molt_collections_seq_snapshot(
         ptr: *mut u8,
         out_ptr: *mut *const u64,
@@ -289,41 +250,6 @@ unsafe extern "C" {
         out_ptr: *mut *const u64,
         out_len: *mut usize,
     ) -> i32;
-}
-
-/// # Safety
-///
-/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
-/// this call.
-#[must_use]
-pub unsafe fn dict_set_in_place(
-    _py: &CoreGilToken,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    val_bits: u64,
-) -> bool {
-    match unsafe { __molt_collections_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
-        1 => true,
-        0 => false,
-        _ => unreachable!("invalid dictionary mutation status"),
-    }
-}
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt object for the duration of this call.
-pub unsafe fn dict_like_bits_from_ptr(
-    _py: &CoreGilToken,
-    ptr: *mut u8,
-) -> Result<Option<u64>, ErrorIndicatorSet> {
-    let mut out: u64 = 0;
-    let ok = unsafe { __molt_collections_dict_like_bits_from_ptr(ptr, &mut out) };
-    match ok {
-        1 => Ok(Some(out)),
-        0 => Ok(None),
-        -1 => Err(ErrorIndicatorSet),
-        _ => unreachable!("invalid dictionary storage status"),
-    }
 }
 
 /// # Safety

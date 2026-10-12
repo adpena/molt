@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from typing import Iterable, Iterator, cast
+import sys as _sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -75,122 +76,185 @@ def field_size_limit(new_limit: int | None = None) -> int:
     return int(_MOLT_CSV_FIELD_SIZE_LIMIT(int(new_limit)))
 
 
+_DIALECT_UNSET = object()
+
+
+class _Dialect:
+    """Validated, immutable CSV settings shared by all runtime consumers."""
+
+    __slots__ = ("_values",)
+    __module__ = "_csv"
+
+    def __new__(
+        cls,
+        dialect=None,
+        delimiter=_DIALECT_UNSET,
+        doublequote=_DIALECT_UNSET,
+        escapechar=_DIALECT_UNSET,
+        lineterminator=_DIALECT_UNSET,
+        quotechar=_DIALECT_UNSET,
+        quoting=_DIALECT_UNSET,
+        skipinitialspace=_DIALECT_UNSET,
+        strict=_DIALECT_UNSET,
+        **fmtparams,
+    ):
+        # These are the public _csv.Dialect positional arguments. Missing
+        # settings remain distinct from an explicitly supplied None.
+        for name, value in (
+            ("delimiter", delimiter),
+            ("doublequote", doublequote),
+            ("escapechar", escapechar),
+            ("lineterminator", lineterminator),
+            ("quotechar", quotechar),
+            ("quoting", quoting),
+            ("skipinitialspace", skipinitialspace),
+            ("strict", strict),
+        ):
+            if value is not _DIALECT_UNSET:
+                fmtparams[name] = value
+        return _dialect_from_obj(dialect, fmtparams, cls)
+
+    @property
+    def delimiter(self):
+        return self._values[0]
+
+    @property
+    def quotechar(self):
+        return self._values[1]
+
+    @property
+    def escapechar(self):
+        return self._values[2]
+
+    @property
+    def doublequote(self):
+        return self._values[3]
+
+    @property
+    def skipinitialspace(self):
+        return self._values[4]
+
+    @property
+    def lineterminator(self):
+        return self._values[5]
+
+    @property
+    def quoting(self):
+        return self._values[6]
+
+    @property
+    def strict(self):
+        return self._values[7]
+
+    def __setattr__(self, name, value):
+        if name in ("doublequote", "skipinitialspace", "strict"):
+            raise AttributeError("readonly attribute")
+        if isinstance(getattr(_Dialect, name, None), property):
+            raise AttributeError(
+                f"attribute '{name}' of '_csv.Dialect' objects is not writable"
+            )
+        if name == "_values":
+            raise AttributeError("readonly attribute")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        if name in ("doublequote", "skipinitialspace", "strict"):
+            raise AttributeError("readonly attribute")
+        if isinstance(getattr(_Dialect, name, None), property):
+            raise AttributeError(
+                f"attribute '{name}' of '_csv.Dialect' objects is not writable"
+            )
+        if name == "_values":
+            raise AttributeError("readonly attribute")
+        object.__delattr__(self, name)
+
+
+_Dialect.__name__ = "Dialect"
+_Dialect.__qualname__ = "Dialect"
+
+
 class Dialect:
-    __slots__ = (
-        "delimiter",
-        "quotechar",
-        "escapechar",
-        "doublequote",
-        "skipinitialspace",
-        "lineterminator",
-        "quoting",
-        "strict",
-    )
+    """Subclassable CSV configuration, validated without overwriting defaults."""
 
-    def __init__(
-        self,
-        delimiter: str = ",",
-        quotechar: str | None = '"',
-        escapechar: str | None = None,
-        doublequote: bool = True,
-        skipinitialspace: bool = False,
-        lineterminator: str = "\r\n",
-        quoting: int = QUOTE_MINIMAL,
-        strict: bool = False,
-    ) -> None:
-        self.delimiter = delimiter
-        self.quotechar = quotechar
-        self.escapechar = escapechar
-        self.doublequote = doublequote
-        self.skipinitialspace = skipinitialspace
-        self.lineterminator = lineterminator
-        self.quoting = quoting
-        self.strict = strict
+    _name = ""
+    _valid = False
+    delimiter = None
+    quotechar = None
+    escapechar = None
+    doublequote = None
+    skipinitialspace = None
+    lineterminator = None
+    quoting = None
 
-    delimiter: str = ","
-    quotechar: str | None = '"'
-    escapechar: str | None = None
-    doublequote: bool = True
-    skipinitialspace: bool = False
-    lineterminator: str = "\r\n"
-    quoting: int = QUOTE_MINIMAL
-    strict: bool = False
+    def __init__(self):
+        if self.__class__ is not Dialect:
+            self._valid = True
+        self._validate()
 
-    def clone(self, **overrides: object) -> Dialect:
-        delimiter = cast(str, overrides.get("delimiter", self.delimiter))
-        quotechar = cast(str | None, overrides.get("quotechar", self.quotechar))
-        escapechar = cast(str | None, overrides.get("escapechar", self.escapechar))
-        doublequote = cast(bool, overrides.get("doublequote", self.doublequote))
-        skipinitialspace = cast(
-            bool, overrides.get("skipinitialspace", self.skipinitialspace)
-        )
-        lineterminator = cast(str, overrides.get("lineterminator", self.lineterminator))
-        quoting = cast(int, overrides.get("quoting", self.quoting))
-        strict = cast(bool, overrides.get("strict", self.strict))
-        return Dialect(
-            delimiter,
-            quotechar,
-            escapechar,
-            doublequote,
-            skipinitialspace,
-            lineterminator,
-            quoting,
-            strict,
-        )
+    def _validate(self):
+        try:
+            _Dialect(self)
+        except TypeError as exc:
+            if _sys.version_info < (3, 13):
+                raise Error(str(exc))
+            raise Error(str(exc)) from None
 
 
-excel = Dialect()
-excel_tab = Dialect(delimiter="\t")
-unix_dialect = Dialect(lineterminator="\n", quoting=QUOTE_ALL)
+class excel(Dialect):
+    delimiter = ","
+    quotechar = '"'
+    doublequote = True
+    skipinitialspace = False
+    lineterminator = "\r\n"
+    quoting = QUOTE_MINIMAL
 
 
-_DIALECT_FMTPARAM_KEYS = frozenset(Dialect.__slots__)
+class excel_tab(excel):
+    delimiter = "\t"
 
 
-def _validate_fmtparams(fmtparams: dict[str, object]) -> None:
+class unix_dialect(Dialect):
+    delimiter = ","
+    quotechar = '"'
+    doublequote = True
+    skipinitialspace = False
+    lineterminator = "\n"
+    quoting = QUOTE_ALL
+
+
+def _dialect_from_obj(
+    obj: object, fmtparams: dict[str, object], cls: type = _Dialect
+) -> _Dialect:
     _MOLT_CSV_VALIDATE_FMTPARAMS(list(fmtparams.keys()))
+    if isinstance(obj, str):
+        obj = get_dialect(obj)
+    if isinstance(obj, _Dialect) and not fmtparams:
+        return obj
 
+    def setting(name, default):
+        if name in fmtparams:
+            return fmtparams[name]
+        # CPython's DIALECT_GETATTR clears errors from optional attributes,
+        # including errors other than AttributeError, before using a default.
+        try:
+            return getattr(obj, name)
+        except BaseException:
+            return default
 
-def _dialect_from_obj(obj: object) -> Dialect:
-    if isinstance(obj, Dialect):
-        return obj.clone()
-    return Dialect(
-        delimiter=getattr(obj, "delimiter", ","),
-        quotechar=getattr(obj, "quotechar", '"'),
-        escapechar=getattr(obj, "escapechar", None),
-        doublequote=getattr(obj, "doublequote", True),
-        skipinitialspace=getattr(obj, "skipinitialspace", False),
-        lineterminator=getattr(obj, "lineterminator", "\r\n"),
-        quoting=getattr(obj, "quoting", QUOTE_MINIMAL),
-        strict=getattr(obj, "strict", False),
-    )
-
-
-def _validate_dialect(dialect: Dialect) -> None:
-    _MOLT_CSV_VALIDATE_DIALECT(
-        dialect.delimiter,
-        dialect.quotechar,
-        dialect.escapechar,
-        dialect.lineterminator,
-        dialect.quoting,
-    )
-
-
-def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
-    _validate_fmtparams(fmtparams)
-    if isinstance(dialect, str):
-        base = get_dialect(dialect)
-    else:
-        base = dialect
-    resolved = _dialect_from_obj(base).clone(**fmtparams)
-    _validate_dialect(resolved)
-    return resolved
-
-
-def _dialect_from_intrinsic(raw: object) -> Dialect:
-    if not isinstance(raw, tuple) or len(raw) != 8:
-        raise RuntimeError("csv intrinsic returned invalid dialect payload")
-    (
+    # Attribute lookup order follows _csv; conversion and validation have one
+    # native owner. The returned tuple shares get_dialect's existing field order.
+    delimiter = setting("delimiter", ",")
+    doublequote = setting("doublequote", True)
+    escapechar = setting("escapechar", None)
+    lineterminator = setting("lineterminator", "\r\n")
+    quotechar = setting("quotechar", '"')
+    quoting = setting("quoting", _DIALECT_UNSET)
+    skipinitialspace = setting("skipinitialspace", False)
+    strict = setting("strict", False)
+    quoting_omitted = quoting is _DIALECT_UNSET
+    if quoting_omitted:
+        quoting = QUOTE_MINIMAL
+    values = _MOLT_CSV_VALIDATE_DIALECT(
         delimiter,
         quotechar,
         escapechar,
@@ -199,18 +263,17 @@ def _dialect_from_intrinsic(raw: object) -> Dialect:
         lineterminator,
         quoting,
         strict,
-    ) = raw
-    dialect = Dialect(
-        delimiter=cast(str, delimiter),
-        quotechar=cast(str | None, quotechar),
-        escapechar=cast(str | None, escapechar),
-        doublequote=bool(doublequote),
-        skipinitialspace=bool(skipinitialspace),
-        lineterminator=cast(str, lineterminator),
-        quoting=int(quoting),
-        strict=bool(strict),
+        quoting_omitted,
+        _sys.version_info[1],
     )
-    _validate_dialect(dialect)
+    return _dialect_from_intrinsic(values, cls)
+
+
+def _dialect_from_intrinsic(raw: object, cls: type = _Dialect) -> _Dialect:
+    if not isinstance(raw, tuple) or len(raw) != 8:
+        raise RuntimeError("csv intrinsic returned invalid dialect payload")
+    dialect = object.__new__(cls)
+    object.__setattr__(dialect, "_values", raw)
     return dialect
 
 
@@ -223,8 +286,7 @@ def register_dialect(
 ) -> None:
     if not isinstance(name, str):
         raise TypeError("dialect name must be a string")
-    base: object = "excel" if dialect is None else dialect
-    resolved = _resolve_dialect(base, fmtparams)
+    resolved = _dialect_from_obj(dialect, fmtparams)
     _MOLT_CSV_REGISTER_DIALECT(
         name,
         resolved.delimiter,
@@ -248,7 +310,7 @@ def unregister_dialect(name: str) -> None:
         raise
 
 
-def get_dialect(name: str) -> Dialect:
+def get_dialect(name: str) -> _Dialect:
     lookup_name = _dialect_lookup_name(name)
     try:
         return _dialect_from_intrinsic(_MOLT_CSV_GET_DIALECT(lookup_name))
@@ -311,8 +373,8 @@ def reader(*args: object, **fmtparams: object):
             raise TypeError("dialect specified both positionally and as keyword")
         dialect = fmtparams.pop("dialect")
     else:
-        dialect = args[1] if len(args) == 2 else "excel"
-    resolved = _resolve_dialect(dialect, fmtparams)
+        dialect = args[1] if len(args) == 2 else None
+    resolved = _dialect_from_obj(dialect, fmtparams)
     return _Reader(_iter_csvfile(csvfile), resolved)
 
 
@@ -327,13 +389,13 @@ def writer(*args: object, **fmtparams: object):
             raise TypeError("dialect specified both positionally and as keyword")
         dialect = fmtparams.pop("dialect")
     else:
-        dialect = args[1] if len(args) == 2 else "excel"
-    resolved = _resolve_dialect(dialect, fmtparams)
+        dialect = args[1] if len(args) == 2 else None
+    resolved = _dialect_from_obj(dialect, fmtparams)
     return _Writer(csvfile, resolved)
 
 
 class _Reader:
-    def __init__(self, csvfile: Iterable[str], dialect: Dialect) -> None:
+    def __init__(self, csvfile: Iterable[str], dialect: _Dialect) -> None:
         self.dialect = dialect
         self._iter = iter(csvfile)
         self._pending = ""
@@ -411,7 +473,7 @@ class _Reader:
 
 
 class _Writer:
-    def __init__(self, csvfile, dialect: Dialect) -> None:
+    def __init__(self, csvfile, dialect: _Dialect) -> None:
         self.dialect = dialect
         self._csvfile = csvfile
         self._handle = _MOLT_CSV_WRITER_NEW(
@@ -544,16 +606,21 @@ class DictWriter:
 
 
 class Sniffer:
-    def sniff(self, sample: str, delimiters: str | None = None) -> Dialect:
+    def sniff(self, sample: str, delimiters: str | None = None) -> type[Dialect]:
         delimiter, doublequote, quotechar, skipinitialspace = _MOLT_CSV_SNIFF(
             sample, delimiters
         )
-        return excel.clone(
-            delimiter=cast(str, delimiter),
-            quotechar=cast(str | None, quotechar),
-            doublequote=bool(doublequote),
-            skipinitialspace=bool(skipinitialspace),
-        )
+
+        class dialect(Dialect):
+            _name = "sniffed"
+            lineterminator = "\r\n"
+            quoting = QUOTE_MINIMAL
+
+        dialect.delimiter = delimiter
+        dialect.quotechar = quotechar or '"'
+        dialect.doublequote = doublequote
+        dialect.skipinitialspace = skipinitialspace
+        return dialect
 
     def has_header(self, sample: str) -> bool:
         try:

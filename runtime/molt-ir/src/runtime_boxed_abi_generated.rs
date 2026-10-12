@@ -2620,7 +2620,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_csv_validate_dialect",
-        arity: 5,
+        arity: 10,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -3380,11 +3380,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_defaultdict_missing",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_defaultdict_missing_method",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },

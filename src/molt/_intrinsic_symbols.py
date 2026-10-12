@@ -2021,7 +2021,6 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_defaultdict_drop": "molt_defaultdict_drop",
     "molt_defaultdict_factory": "molt_defaultdict_factory",
     "molt_defaultdict_missing": "molt_defaultdict_missing",
-    "molt_defaultdict_missing_method": "molt_defaultdict_missing_method",
     "molt_defaultdict_new": "molt_defaultdict_new",
     "molt_deque_append": "molt_deque_append",
     "molt_deque_appendleft": "molt_deque_appendleft",

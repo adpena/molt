@@ -10574,11 +10574,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_defaultdict_missing_method",
-        import: WasmRuntimeImport::DefaultdictMissingMethod,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_defaultdict_new",
         import: WasmRuntimeImport::DefaultdictNew,
         arity: 1,
@@ -11926,7 +11921,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_csv_validate_dialect",
         import: WasmRuntimeImport::CsvValidateDialect,
-        arity: 5,
+        arity: 10,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_csv_validate_fmtparams",
@@ -15161,7 +15156,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_defaultdict_drop" => Some(WasmRuntimeImport::DefaultdictDrop),
         "molt_defaultdict_factory" => Some(WasmRuntimeImport::DefaultdictFactory),
         "molt_defaultdict_missing" => Some(WasmRuntimeImport::DefaultdictMissing),
-        "molt_defaultdict_missing_method" => Some(WasmRuntimeImport::DefaultdictMissingMethod),
         "molt_defaultdict_new" => Some(WasmRuntimeImport::DefaultdictNew),
         "molt_deque_append" => Some(WasmRuntimeImport::DequeAppend),
         "molt_deque_appendleft" => Some(WasmRuntimeImport::DequeAppendleft),

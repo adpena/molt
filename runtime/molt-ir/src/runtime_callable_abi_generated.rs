@@ -2389,7 +2389,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_validate_dialect",
-        arity: 5,
+        arity: 10,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -3134,11 +3134,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_defaultdict_missing",
-        arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_defaultdict_missing_method",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },

@@ -1899,126 +1899,214 @@ pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
     })
 }
 
-/// Validate a dialect's field values. Returns None on success, raises TypeError on error.
-/// Args: delimiter, quotechar, escapechar, lineterminator, quoting (as int)
+fn dialect_char(
+    py: &PyToken,
+    bits: u64,
+    name: &str,
+    optional: bool,
+    python_minor: i64,
+) -> Result<Option<char>, u64> {
+    let obj = obj_from_bits(bits);
+    if optional && obj.is_none() {
+        return Ok(None);
+    }
+    let Some(text) = string_obj_to_owned(obj) else {
+        let kind = type_name(py, obj);
+        let expected = match (python_minor >= 14, optional) {
+            (true, true) => "a unicode character or None",
+            (true, false) => "a unicode character",
+            (false, true) => "string or None",
+            (false, false) => "string",
+        };
+        return Err(raise_exception::<u64>(
+            py,
+            "TypeError",
+            &format!("\"{name}\" must be {expected}, not {kind}"),
+        ));
+    };
+    let length = text.chars().count();
+    if length != 1 {
+        let message = if python_minor >= 14 {
+            let optional = if optional { " or None" } else { "" };
+            format!(
+                "\"{name}\" must be a unicode character{optional}, not a string of length {length}"
+            )
+        } else {
+            format!("\"{name}\" must be a 1-character string")
+        };
+        return Err(raise_exception::<u64>(py, "TypeError", &message));
+    }
+    Ok(text.chars().next())
+}
+
+/// Normalize all dialect fields once, in CPython conversion order. The returned
+/// tuple uses the same field order as the registry's get_dialect projection.
+/// Python supplies its existing target version and whether quoting was absent;
+/// an explicit None remains a value and is never treated as a missing setting.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_validate_dialect(
     delimiter_bits: u64,
     quotechar_bits: u64,
     escapechar_bits: u64,
+    doublequote_bits: u64,
+    skipinitialspace_bits: u64,
     lineterminator_bits: u64,
     quoting_bits: u64,
+    strict_bits: u64,
+    quoting_omitted_bits: u64,
+    python_minor_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        // Validate delimiter
-        let delimiter_obj = obj_from_bits(delimiter_bits);
-        if let Some(d) = string_obj_to_owned(delimiter_obj) {
-            if d.chars().count() != 1 {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    &format!(
-                        "\"delimiter\" must be a unicode character, not a string of length {}",
-                        d.chars().count()
-                    ),
-                );
-            }
-        } else {
-            let tname = type_name(_py, delimiter_obj);
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                &format!("\"delimiter\" must be a unicode character, not {tname}"),
-            );
-        }
-
-        // Validate quotechar (can be None)
-        let qc_obj = obj_from_bits(quotechar_bits);
-        let qc_is_none = qc_obj.is_none();
-        if !qc_is_none {
-            if let Some(q) = string_obj_to_owned(qc_obj) {
-                if q.chars().count() != 1 {
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        &format!(
-                            "\"quotechar\" must be a unicode character or None, not a string of length {}",
-                            q.chars().count()
-                        ),
-                    );
-                }
-            } else {
-                let tname = type_name(_py, qc_obj);
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    &format!("\"quotechar\" must be a unicode character or None, not {tname}"),
-                );
-            }
-        }
-
-        // Validate escapechar (can be None)
-        let ec_obj = obj_from_bits(escapechar_bits);
-        if !ec_obj.is_none() {
-            if let Some(e) = string_obj_to_owned(ec_obj) {
-                if e.chars().count() != 1 {
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        &format!(
-                            "\"escapechar\" must be a unicode character or None, not a string of length {}",
-                            e.chars().count()
-                        ),
-                    );
-                }
-            } else {
-                let tname = type_name(_py, ec_obj);
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    &format!("\"escapechar\" must be a unicode character or None, not {tname}"),
-                );
-            }
-        }
-
-        // Validate lineterminator
-        let lt_obj = obj_from_bits(lineterminator_bits);
-        if string_obj_to_owned(lt_obj).is_none() {
-            let tname = type_name(_py, lt_obj);
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                &format!("\"lineterminator\" must be a string, not {tname}"),
-            );
-        }
-
-        // Validate quoting
-        let Some(quoting) = to_i64(obj_from_bits(quoting_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+        let Some(python_minor) = to_i64(obj_from_bits(python_minor_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "Python minor version must be int");
         };
-        if ![
-            QUOTE_MINIMAL,
-            QUOTE_ALL,
-            QUOTE_NONNUMERIC,
-            QUOTE_NONE,
-            QUOTE_STRINGS,
-            QUOTE_NOTNULL,
-        ]
-        .contains(&quoting)
+        let delimiter = match dialect_char(_py, delimiter_bits, "delimiter", false, python_minor) {
+            Ok(Some(value)) => value,
+            Ok(None) => unreachable!("required delimiter"),
+            Err(error) => return error,
+        };
+        let doublequote = is_truthy(_py, obj_from_bits(doublequote_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let escapechar = match dialect_char(_py, escapechar_bits, "escapechar", true, python_minor)
         {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let lineterminator_obj = obj_from_bits(lineterminator_bits);
+        let lineterminator = string_obj_to_owned(lineterminator_obj);
+        if lineterminator.is_none() && (python_minor >= 14 || !lineterminator_obj.is_none()) {
+            let message = if python_minor >= 14 {
+                format!(
+                    "\"lineterminator\" must be a string, not {}",
+                    type_name(_py, lineterminator_obj)
+                )
+            } else {
+                "\"lineterminator\" must be a string".to_owned()
+            };
+            return raise_exception::<u64>(_py, "TypeError", &message);
+        }
+        let quotechar = match dialect_char(_py, quotechar_bits, "quotechar", true, python_minor) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let quoting_obj = obj_from_bits(quoting_bits);
+        if type_of_bits(_py, quoting_bits) != type_of_bits(_py, MoltObject::from_int(0).bits()) {
+            let message = if python_minor >= 14 {
+                format!(
+                    "\"quoting\" must be an integer, not {}",
+                    type_name(_py, quoting_obj)
+                )
+            } else {
+                "\"quoting\" must be an integer".to_owned()
+            };
+            return raise_exception::<u64>(_py, "TypeError", &message);
+        }
+        let Some(mut quoting) = to_i64(quoting_obj) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C long",
+            );
+        };
+        if i32::try_from(quoting).is_err() {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C int",
+            );
+        }
+        let skipinitialspace = is_truthy(_py, obj_from_bits(skipinitialspace_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let strict = is_truthy(_py, obj_from_bits(strict_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if !(QUOTE_MINIMAL..=QUOTE_NOTNULL).contains(&quoting) {
             return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
         }
-
-        // quotechar must be set if quoting enabled
-        if qc_is_none && quoting != QUOTE_NONE {
+        if quotechar.is_none() && obj_from_bits(quoting_omitted_bits).as_bool() == Some(true) {
+            quoting = QUOTE_NONE;
+        }
+        if quotechar.is_none() && quoting != QUOTE_NONE {
             return raise_exception::<u64>(
                 _py,
                 "TypeError",
                 "quotechar must be set if quoting enabled",
             );
         }
-
-        MoltObject::none().bits()
+        let Some(lineterminator) = lineterminator else {
+            return raise_exception::<u64>(_py, "TypeError", "lineterminator must be set");
+        };
+        if python_minor >= 13 {
+            for (name, value, allow_space) in [
+                ("delimiter", Some(delimiter), true),
+                ("escapechar", escapechar, !skipinitialspace),
+                ("quotechar", quotechar, !skipinitialspace),
+            ] {
+                if let Some(value) = value {
+                    if value == '\r' || value == '\n' || (value == ' ' && !allow_space) {
+                        return raise_exception::<u64>(
+                            _py,
+                            "ValueError",
+                            &format!("bad {name} value"),
+                        );
+                    }
+                    if lineterminator.contains(value) {
+                        return raise_exception::<u64>(
+                            _py,
+                            "ValueError",
+                            &format!("bad {name} or lineterminator value"),
+                        );
+                    }
+                }
+            }
+            for (first, second, left, right) in [
+                ("delimiter", "escapechar", Some(delimiter), escapechar),
+                ("delimiter", "quotechar", Some(delimiter), quotechar),
+                ("escapechar", "quotechar", escapechar, quotechar),
+            ] {
+                if left.is_some() && left == right {
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        &format!("bad {first} or {second} value"),
+                    );
+                }
+            }
+        }
+        let delimiter = match alloc_char_bits(_py, delimiter) {
+            Ok(bits) => unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) },
+            Err(error) => return error,
+        };
+        let quotechar = match alloc_optional_char_bits(_py, quotechar) {
+            Ok((bits, _)) => unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) },
+            Err(error) => return error,
+        };
+        let escapechar = match alloc_optional_char_bits(_py, escapechar) {
+            Ok((bits, _)) => unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) },
+            Err(error) => return error,
+        };
+        let result = alloc_tuple(
+            _py,
+            &[
+                delimiter.bits(),
+                quotechar.bits(),
+                escapechar.bits(),
+                MoltObject::from_bool(doublequote).bits(),
+                MoltObject::from_bool(skipinitialspace).bits(),
+                lineterminator_bits,
+                MoltObject::from_int(quoting).bits(),
+                MoltObject::from_bool(strict).bits(),
+            ],
+        );
+        if result.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(result).bits()
     })
 }
 

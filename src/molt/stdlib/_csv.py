@@ -1,6 +1,6 @@
 """Intrinsic-backed `_csv` compatibility surface."""
 
-from csv import Dialect
+from csv import _Dialect as Dialect
 from csv import Error
 from csv import QUOTE_ALL
 from csv import QUOTE_MINIMAL
