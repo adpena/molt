@@ -4,7 +4,6 @@
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
 use crate::object::buffer_exports::bytearray_mutate;
-use crate::object::ops_encoding::DecodeFailure;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_traits::{Signed, ToPrimitive};
@@ -563,36 +562,7 @@ fn bytes_decode_impl(
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(DecodeTextError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(DecodeTextError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(DecodeTextError::Failure(DecodeFailure::Byte { pos, message, .. }, label)) => {
-                raise_unicode_decode_error(_py, &label, hay_bits, pos, pos + 1, message)
-            }
-            Err(DecodeTextError::Failure(
-                DecodeFailure::Range {
-                    start,
-                    end,
-                    message,
-                },
-                label,
-            )) => raise_unicode_decode_error(
-                _py,
-                &label,
-                hay_bits,
-                start,
-                end.saturating_add(1),
-                message,
-            ),
-            Err(DecodeTextError::Failure(DecodeFailure::UnknownErrorHandler(name), _label)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
+            Err(error) => error.raise(_py, bytes),
         }
     }
 }

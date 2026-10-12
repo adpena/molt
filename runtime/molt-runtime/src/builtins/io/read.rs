@@ -779,39 +779,7 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                 let text_bytes =
                     match crate::object::ops::decode_bytes_text(&encoding_label, errors, &bytes) {
                         Ok((text_bytes, _label)) => text_bytes,
-                        Err(crate::object::ops::DecodeTextError::UnknownEncoding(name)) => {
-                            let msg = format!("unknown encoding: {name}");
-                            return raise_exception::<_>(_py, "LookupError", &msg);
-                        }
-                        Err(crate::object::ops::DecodeTextError::UnknownErrorHandler(name)) => {
-                            let msg = format!("unknown error handler name '{name}'");
-                            return raise_exception::<_>(_py, "LookupError", &msg);
-                        }
-                        Err(crate::object::ops::DecodeTextError::Failure(
-                            DecodeFailure::Byte { pos, byte, message },
-                            label,
-                        )) => {
-                            let msg = decode_error_byte(&label, byte, pos, message);
-                            return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
-                        }
-                        Err(crate::object::ops::DecodeTextError::Failure(
-                            DecodeFailure::Range {
-                                start,
-                                end,
-                                message,
-                            },
-                            label,
-                        )) => {
-                            let msg = decode_error_range(&label, start, end, message);
-                            return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
-                        }
-                        Err(crate::object::ops::DecodeTextError::Failure(
-                            DecodeFailure::UnknownErrorHandler(name),
-                            _label,
-                        )) => {
-                            let msg = format!("unknown error handler name '{name}'");
-                            return raise_exception::<_>(_py, "LookupError", &msg);
-                        }
+                        Err(error) => return error.raise(_py, &bytes),
                     };
                 pending_out.extend_from_slice(&text_bytes);
                 let out_ptr = alloc_string(_py, &pending_out);
@@ -1029,39 +997,7 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                             &bytes,
                         ) {
                             Ok((text_bytes, _label)) => text_bytes,
-                            Err(crate::object::ops::DecodeTextError::UnknownEncoding(name)) => {
-                                let msg = format!("unknown encoding: {name}");
-                                return raise_exception::<_>(_py, "LookupError", &msg);
-                            }
-                            Err(crate::object::ops::DecodeTextError::UnknownErrorHandler(name)) => {
-                                let msg = format!("unknown error handler name '{name}'");
-                                return raise_exception::<_>(_py, "LookupError", &msg);
-                            }
-                            Err(crate::object::ops::DecodeTextError::Failure(
-                                DecodeFailure::Byte { pos, byte, message },
-                                label,
-                            )) => {
-                                let msg = decode_error_byte(&label, byte, pos, message);
-                                return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
-                            }
-                            Err(crate::object::ops::DecodeTextError::Failure(
-                                DecodeFailure::Range {
-                                    start,
-                                    end,
-                                    message,
-                                },
-                                label,
-                            )) => {
-                                let msg = decode_error_range(&label, start, end, message);
-                                return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
-                            }
-                            Err(crate::object::ops::DecodeTextError::Failure(
-                                DecodeFailure::UnknownErrorHandler(name),
-                                _label,
-                            )) => {
-                                let msg = format!("unknown error handler name '{name}'");
-                                return raise_exception::<_>(_py, "LookupError", &msg);
-                            }
+                            Err(error) => return error.raise(_py, &bytes),
                         };
                         pending_out.extend_from_slice(&text_bytes);
                     }

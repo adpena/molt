@@ -460,38 +460,39 @@ pub(crate) fn raise_unicode_decode_error<T: ExceptionSentinel>(
     if encoding_ptr.is_null() {
         return T::exception_sentinel();
     }
+    let encoding = ExceptionValue::adopt(_py, MoltObject::from_ptr(encoding_ptr).bits());
     let reason_ptr = alloc_string(_py, reason.as_bytes());
     if reason_ptr.is_null() {
-        unsafe { molt_dec_ref(encoding_ptr) };
         return T::exception_sentinel();
     }
-    let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
-    let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
-    let start_bits = int_bits_from_i64(_py, start as i64);
-    let end_bits = int_bits_from_i64(_py, end as i64);
+    let reason = ExceptionValue::adopt(_py, MoltObject::from_ptr(reason_ptr).bits());
+    let start = ExceptionValue::adopt(_py, int_bits_from_i64(_py, start as i64));
+    if obj_from_bits(start.bits()).is_none() {
+        return T::exception_sentinel();
+    }
+    let end = ExceptionValue::adopt(_py, int_bits_from_i64(_py, end as i64));
+    if obj_from_bits(end.bits()).is_none() {
+        return T::exception_sentinel();
+    }
     let args_ptr = alloc_tuple(
         _py,
         &[
-            encoding_bits,
+            encoding.bits(),
             object_bits,
-            start_bits,
-            end_bits,
-            reason_bits,
+            start.bits(),
+            end.bits(),
+            reason.bits(),
         ],
     );
     if args_ptr.is_null() {
-        dec_ref_bits(_py, encoding_bits);
-        dec_ref_bits(_py, reason_bits);
         return T::exception_sentinel();
     }
-    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+    let args = ExceptionValue::adopt(_py, MoltObject::from_ptr(args_ptr).bits());
     let class_bits = exception_type_bits_from_name(_py, "UnicodeDecodeError");
-    let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+    let ptr = alloc_exception_from_class_bits(_py, class_bits, args.bits());
     if !ptr.is_null() {
         record_exception_owned(_py, ptr);
     }
-    dec_ref_bits(_py, encoding_bits);
-    dec_ref_bits(_py, reason_bits);
     T::exception_sentinel()
 }
 
@@ -507,38 +508,39 @@ pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
     if encoding_ptr.is_null() {
         return T::exception_sentinel();
     }
+    let encoding = ExceptionValue::adopt(_py, MoltObject::from_ptr(encoding_ptr).bits());
     let reason_ptr = alloc_string(_py, reason.as_bytes());
     if reason_ptr.is_null() {
-        unsafe { molt_dec_ref(encoding_ptr) };
         return T::exception_sentinel();
     }
-    let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
-    let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
-    let start_bits = int_bits_from_i64(_py, start as i64);
-    let end_bits = int_bits_from_i64(_py, end as i64);
+    let reason = ExceptionValue::adopt(_py, MoltObject::from_ptr(reason_ptr).bits());
+    let start = ExceptionValue::adopt(_py, int_bits_from_i64(_py, start as i64));
+    if obj_from_bits(start.bits()).is_none() {
+        return T::exception_sentinel();
+    }
+    let end = ExceptionValue::adopt(_py, int_bits_from_i64(_py, end as i64));
+    if obj_from_bits(end.bits()).is_none() {
+        return T::exception_sentinel();
+    }
     let args_ptr = alloc_tuple(
         _py,
         &[
-            encoding_bits,
+            encoding.bits(),
             object_bits,
-            start_bits,
-            end_bits,
-            reason_bits,
+            start.bits(),
+            end.bits(),
+            reason.bits(),
         ],
     );
     if args_ptr.is_null() {
-        dec_ref_bits(_py, encoding_bits);
-        dec_ref_bits(_py, reason_bits);
         return T::exception_sentinel();
     }
-    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+    let args = ExceptionValue::adopt(_py, MoltObject::from_ptr(args_ptr).bits());
     let class_bits = exception_type_bits_from_name(_py, "UnicodeEncodeError");
-    let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+    let ptr = alloc_exception_from_class_bits(_py, class_bits, args.bits());
     if !ptr.is_null() {
         record_exception_owned(_py, ptr);
     }
-    dec_ref_bits(_py, encoding_bits);
-    dec_ref_bits(_py, reason_bits);
     T::exception_sentinel()
 }
 
@@ -5866,6 +5868,149 @@ mod tests {
                 class_rc_before
             );
             dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn typed_raise_helpers_retire_temporary_owners_on_success_and_rejection() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let refcount =
+                |ptr: *mut u8| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+            for decode in [true, false] {
+                for valid_object in [true, false] {
+                    let input_ptr = if decode == valid_object {
+                        crate::alloc_bytes(_py, b"invalid utf8: \xff")
+                    } else {
+                        crate::alloc_string(_py, b"unicode ownership probe")
+                    };
+                    assert!(!input_ptr.is_null());
+                    let input =
+                        super::ExceptionValue::adopt(_py, MoltObject::from_ptr(input_ptr).bits());
+                    let baseline = refcount(input_ptr);
+                    // Wide valid scalar fields exercise boxed integers where
+                    // the target cannot represent Py_ssize_t in an inline int.
+                    let limit = isize::MAX as usize;
+                    if decode {
+                        super::raise_unicode_decode_error::<()>(
+                            _py,
+                            "utf-8",
+                            input.bits(),
+                            limit,
+                            limit,
+                            "ownership probe",
+                        );
+                    } else {
+                        super::raise_unicode_encode_error::<()>(
+                            _py,
+                            "us-ascii",
+                            input.bits(),
+                            limit,
+                            limit,
+                            "ownership probe",
+                        );
+                    }
+                    let error = super::ExceptionValue::adopt(_py, exception_last_pending_bits(_py));
+                    let kind = if !valid_object {
+                        "TypeError"
+                    } else if decode {
+                        "UnicodeDecodeError"
+                    } else {
+                        "UnicodeEncodeError"
+                    };
+                    assert!(super::exception_matches_builtin_name(
+                        _py,
+                        error.bits(),
+                        kind
+                    ));
+                    let payloads = if valid_object {
+                        let error_ptr = obj_from_bits(error.bits()).as_ptr().unwrap();
+                        let args_ptr =
+                            obj_from_bits(unsafe { super::exception_args_bits(error_ptr) })
+                                .as_ptr()
+                                .unwrap();
+                        unsafe {
+                            crate::object::seq_access::with_immutable_tuple_slice(
+                                args_ptr,
+                                |args| {
+                                    args.iter()
+                                        .copied()
+                                        .filter(|bits| {
+                                            *bits != input.bits()
+                                                && obj_from_bits(*bits).as_ptr().is_some()
+                                        })
+                                        .map(|bits| super::ExceptionValue::pin(_py, bits))
+                                        .collect::<Vec<_>>()
+                                },
+                            )
+                        }
+                        .unwrap()
+                    } else {
+                        Vec::new()
+                    };
+                    clear_exception(_py);
+                    drop(error);
+                    assert_eq!(refcount(input_ptr), baseline, "{kind} retained its input");
+                    for payload in payloads {
+                        let ptr = obj_from_bits(payload.bits()).as_ptr().unwrap();
+                        assert_eq!(refcount(ptr), 1, "{kind} retained a temporary payload");
+                    }
+                }
+            }
+
+            super::raise_os_error_errno::<()>(_py, 0, "temporary OSError ownership");
+            let error = super::ExceptionValue::adopt(_py, exception_last_pending_bits(_py));
+            assert!(super::exception_matches_builtin_name(
+                _py,
+                error.bits(),
+                "OSError"
+            ));
+            let error_ptr = obj_from_bits(error.bits()).as_ptr().unwrap();
+            let message = super::ExceptionValue::adopt(
+                _py,
+                super::exception_typed_field_get(
+                    _py,
+                    error_ptr,
+                    molt_obj_model::ExceptionTypedField::OSErrorStrError,
+                )
+                .unwrap()
+                .unwrap(),
+            );
+            clear_exception(_py);
+            drop(error);
+            assert_eq!(refcount(obj_from_bits(message.bits()).as_ptr().unwrap()), 1);
+
+            let code_ptr = crate::alloc_string(_py, b"temporary SystemExit code");
+            assert!(!code_ptr.is_null());
+            let code = super::ExceptionValue::adopt(_py, MoltObject::from_ptr(code_ptr).bits());
+            let baseline = refcount(code_ptr);
+            crate::molt_site_quitter_call(code.bits());
+            let error = super::ExceptionValue::adopt(_py, exception_last_pending_bits(_py));
+            assert!(super::exception_matches_builtin_name(
+                _py,
+                error.bits(),
+                "SystemExit"
+            ));
+            clear_exception(_py);
+            drop(error);
+            assert_eq!(refcount(code_ptr), baseline);
+
+            let mut task = Box::new(0_u8);
+            let task_ptr = &raw mut *task;
+            crate::async_rt::cancellation::task_cancel_message_set(_py, task_ptr, code.bits());
+            crate::async_rt::cancellation::raise_cancelled_with_message::<()>(_py, task_ptr);
+            let error = super::ExceptionValue::adopt(_py, exception_last_pending_bits(_py));
+            assert!(super::exception_matches_builtin_name(
+                _py,
+                error.bits(),
+                "CancelledError"
+            ));
+            clear_exception(_py);
+            drop(error);
+            // The cancellation table still owns its borrowed argument tuple.
+            assert_eq!(refcount(code_ptr), baseline + 1);
+            crate::async_rt::cancellation::task_cancel_message_clear(_py, task_ptr);
+            assert_eq!(refcount(code_ptr), baseline);
         });
     }
 

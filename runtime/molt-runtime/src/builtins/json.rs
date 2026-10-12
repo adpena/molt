@@ -1,4 +1,3 @@
-use crate::object::ops_encoding::DecodeFailure;
 use crate::resource::TempArena;
 use crate::*;
 use std::collections::HashSet;
@@ -1177,48 +1176,11 @@ fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
     "utf-8"
 }
 
-fn decode_json_text(_py: &PyToken<'_>, obj: MoltObject, data: &[u8]) -> Result<String, u64> {
+fn decode_json_text(_py: &PyToken<'_>, data: &[u8]) -> Result<String, u64> {
     let encoding = detect_json_encoding(data, data.len());
     let decoded = match crate::object::ops::decode_bytes_text(encoding, "strict", data) {
         Ok((text_bytes, _)) => text_bytes,
-        Err(crate::object::ops::DecodeTextError::Failure(failure, codec)) => match failure {
-            DecodeFailure::Byte { pos, message, .. } => {
-                return Err(raise_unicode_decode_error::<u64>(
-                    _py,
-                    &codec,
-                    obj.bits(),
-                    pos,
-                    pos + 1,
-                    message,
-                ));
-            }
-            DecodeFailure::Range {
-                start,
-                end,
-                message,
-            } => {
-                return Err(raise_unicode_decode_error::<u64>(
-                    _py,
-                    &codec,
-                    obj.bits(),
-                    start,
-                    end,
-                    message,
-                ));
-            }
-            DecodeFailure::UnknownErrorHandler(handler) => {
-                let msg = format!("unknown error handler name '{handler}'");
-                return Err(raise_exception::<u64>(_py, "LookupError", &msg));
-            }
-        },
-        Err(crate::object::ops::DecodeTextError::UnknownEncoding(codec)) => {
-            let msg = format!("unknown encoding: {codec}");
-            return Err(raise_exception::<u64>(_py, "LookupError", &msg));
-        }
-        Err(crate::object::ops::DecodeTextError::UnknownErrorHandler(handler)) => {
-            let msg = format!("unknown error handler name '{handler}'");
-            return Err(raise_exception::<u64>(_py, "LookupError", &msg));
-        }
+        Err(error) => return Err(error.raise(_py, data)),
     };
     match String::from_utf8(decoded) {
         Ok(text) => Ok(text),
@@ -2222,7 +2184,7 @@ pub extern "C" fn molt_json_loads_ex(
                 let data_ptr = bytes_data(ptr);
                 std::slice::from_raw_parts(data_ptr, len)
             };
-            match decode_json_text(_py, payload_obj, bytes) {
+            match decode_json_text(_py, bytes) {
                 Ok(text) => text,
                 Err(bits) => return bits,
             }

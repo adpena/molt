@@ -1,6 +1,4 @@
 use super::*;
-use crate::object::ops::{decode_error_byte, decode_error_range};
-use crate::object::ops_encoding::DecodeFailure;
 use molt_stdlib_text::codec_registry::{TextEncodingClass, normalize_encoding};
 
 #[derive(Clone, Copy, Debug)]
@@ -99,39 +97,7 @@ pub(in crate::builtins::io) fn decode_text_bytes(
 ) -> Result<(Vec<u8>, String), u64> {
     match crate::object::ops::decode_bytes_text(encoding_label, errors, bytes) {
         Ok((text_bytes, label)) => Ok((text_bytes, label)),
-        Err(crate::object::ops::DecodeTextError::UnknownEncoding(name)) => {
-            let msg = format!("unknown encoding: {name}");
-            Err(raise_exception::<_>(_py, "LookupError", &msg))
-        }
-        Err(crate::object::ops::DecodeTextError::UnknownErrorHandler(name)) => {
-            let msg = format!("unknown error handler name '{name}'");
-            Err(raise_exception::<_>(_py, "LookupError", &msg))
-        }
-        Err(crate::object::ops::DecodeTextError::Failure(
-            DecodeFailure::Byte { pos, byte, message },
-            label,
-        )) => {
-            let msg = decode_error_byte(&label, byte, pos, message);
-            Err(raise_exception::<_>(_py, "UnicodeDecodeError", &msg))
-        }
-        Err(crate::object::ops::DecodeTextError::Failure(
-            DecodeFailure::Range {
-                start,
-                end,
-                message,
-            },
-            label,
-        )) => {
-            let msg = decode_error_range(&label, start, end, message);
-            Err(raise_exception::<_>(_py, "UnicodeDecodeError", &msg))
-        }
-        Err(crate::object::ops::DecodeTextError::Failure(
-            DecodeFailure::UnknownErrorHandler(name),
-            _label,
-        )) => {
-            let msg = format!("unknown error handler name '{name}'");
-            Err(raise_exception::<_>(_py, "LookupError", &msg))
-        }
+        Err(error) => Err(error.raise(_py, bytes)),
     }
 }
 

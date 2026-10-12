@@ -6210,6 +6210,7 @@ mod tests {
                 class_bits,
                 MoltObject::from_ptr(args_ptr).bits(),
             );
+            dec_ref_bits(_py, MoltObject::from_ptr(args_ptr).bits());
             assert!(!exception_ptr.is_null());
             let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
             crate::builtins::exceptions::exception_typed_fields_replace_internal(
