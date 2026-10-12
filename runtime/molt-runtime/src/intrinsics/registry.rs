@@ -1037,7 +1037,6 @@ pub(crate) fn is_compiled_body_materialization(
     bits: u64,
     symbol: &str,
     arity: u64,
-    code_slot: u64,
     defaults: &[u64],
 ) -> bool {
     use crate::object::function_metadata::FunctionMetadataField;
@@ -1061,7 +1060,7 @@ pub(crate) fn is_compiled_body_materialization(
             return false;
         };
         if object_type_id(code) != crate::TYPE_ID_CODE
-            || crate::object::layout::code_frame_slot_id(code) != Some(code_slot)
+            || crate::object::layout::code_frame_slot_id(code).is_none()
         {
             return false;
         }
@@ -2767,6 +2766,108 @@ mod tests {
         } else {
             0
         }
+    }
+
+    #[test]
+    #[cfg(feature = "molt_gpu_primitives")]
+    #[cfg_attr(miri, ignore = "app resolver function address exposure")]
+    fn gpu_compiled_body_requires_registered_executable_identity_and_shape() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        struct RestoreResolver(usize);
+        impl Drop for RestoreResolver {
+            fn drop(&mut self) {
+                test_app_resolver_address().store(self.0, Ordering::SeqCst);
+            }
+        }
+        let resolver =
+            crate::provenance::abi::expose_function_address(fake_app_resolver as *const ());
+        crate::with_gil_entry_nopanic!(py, {
+            let function_class = crate::builtin_classes(py).function;
+            let _resolver = RestoreResolver(test_app_resolver_address().swap(
+                usize::try_from(resolver).expect("function address fits"),
+                Ordering::SeqCst,
+            ));
+            unsafe {
+                let function = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);
+                assert!(!function.is_null());
+                assert!(crate::object::object_init_class_edge_unpublished(
+                    py,
+                    function,
+                    function_class,
+                    crate::object::ClassEdgeOwnership::Owned,
+                ));
+                let _owner = crate::PtrDropGuard::preserving(function);
+                let bits = MoltObject::from_ptr(function).bits();
+                let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
+                    .as_ptr()
+                    .expect("published code");
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_known_intrinsic",
+                    0,
+                    &[],
+                ));
+                crate::object::layout::code_set_frame_slot_id(code, 731);
+                assert!(is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_known_intrinsic",
+                    0,
+                    &[],
+                ));
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_unknown_intrinsic_xyz",
+                    0,
+                    &[],
+                ));
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_known_intrinsic",
+                    1,
+                    &[],
+                ));
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_known_intrinsic",
+                    0,
+                    &[MoltObject::none().bits()],
+                ));
+                let other = crate::alloc_function_obj(py, 0xF00D, 0);
+                assert!(!other.is_null());
+                assert!(crate::object::object_init_class_edge_unpublished(
+                    py,
+                    other,
+                    function_class,
+                    crate::object::ClassEdgeOwnership::Owned,
+                ));
+                let _other_owner = crate::PtrDropGuard::preserving(other);
+                let other_code = obj_from_bits(crate::ensure_function_code_bits(py, other))
+                    .as_ptr()
+                    .expect("other code");
+                crate::object::layout::code_set_frame_slot_id(other_code, 732);
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    MoltObject::from_ptr(other).bits(),
+                    "molt_known_intrinsic",
+                    0,
+                    &[],
+                ));
+                crate::bump_function_mutation_version(function);
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    bits,
+                    "molt_known_intrinsic",
+                    0,
+                    &[],
+                ));
+                assert!(!crate::exception_pending(py));
+            }
+        });
     }
 
     /// When a resolver is registered, `try_app_resolve_symbol` must delegate to

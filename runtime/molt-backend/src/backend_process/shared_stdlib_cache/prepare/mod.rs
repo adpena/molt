@@ -17,6 +17,10 @@ pub(crate) fn prepare_native_application_artifact<'a>(
     request: NativeStdlibCachePrepare<'a>,
 ) -> io::Result<NativeApplicationArtifactOptions<'a>> {
     request
+        .code_slots
+        .validate_functions(&ir.functions)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    request
         .native_output_kind
         .validate_shared_stdlib(request.stdlib_archive_path.is_some())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -67,6 +71,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         app_callable_manifest,
         log_prefix: request.log_prefix,
         module_registry: request.module_registry,
+        code_slots: request.code_slots,
         module_context,
     })
 }

@@ -12,10 +12,13 @@ fn marked(kind: &str, value: i64) -> OpIR {
 }
 
 fn emit(function: FunctionIR) -> Vec<u8> {
-    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-        functions: vec![function],
-        profile: None,
-    })
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+        SimpleIR {
+            functions: vec![function],
+            profile: None,
+        },
+        Default::default(),
+    )
     .wasm
 }
 
@@ -171,33 +174,36 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         0,
         "implicit return must exit activation"
     );
-    let ready = wasm_compile_activation_fixture(SimpleIR {
-        functions: vec![wasm_test_function(
-            "molt_main",
-            vec!["task"],
-            None,
-            vec![
-                wasm_test_op("state_switch", None, vec![]),
-                marked("state_label", 1),
-                wasm_test_op("const_none", Some("future"), vec![]),
-                OpIR {
-                    value: Some(1),
-                    ..wasm_test_op("const", Some("resume"), vec![])
-                },
-                OpIR {
-                    value: Some(1),
-                    ..wasm_test_op(
-                        "state_transition",
-                        Some("awaited"),
-                        vec!["future", "resume"],
-                    )
-                },
-                marked("line", 23),
-                wasm_test_op("ret", None, vec!["awaited"]),
-            ],
-        )],
-        profile: None,
-    })
+    let ready = wasm_compile_activation_fixture(
+        SimpleIR {
+            functions: vec![wasm_test_function(
+                "molt_main",
+                vec!["task"],
+                None,
+                vec![
+                    wasm_test_op("state_switch", None, vec![]),
+                    marked("state_label", 1),
+                    wasm_test_op("const_none", Some("future"), vec![]),
+                    OpIR {
+                        value: Some(1),
+                        ..wasm_test_op("const", Some("resume"), vec![])
+                    },
+                    OpIR {
+                        value: Some(1),
+                        ..wasm_test_op(
+                            "state_transition",
+                            Some("awaited"),
+                            vec!["future", "resume"],
+                        )
+                    },
+                    marked("line", 23),
+                    wasm_test_op("ret", None, vec!["awaited"]),
+                ],
+            )],
+            profile: None,
+        },
+        Default::default(),
+    )
     .wasm;
     assert_eq!(
         direct_loop_edges(&ready),

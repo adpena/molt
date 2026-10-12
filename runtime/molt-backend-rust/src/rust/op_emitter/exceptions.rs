@@ -120,7 +120,14 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_trace_enter_slot(&mut self, op: &OpIR) {
-        let code_id = op.value.expect("admitted trace_enter_slot ID");
+        let code_id = self
+            .code_slots
+            .resolve(
+                op.s_value
+                    .as_deref()
+                    .expect("admitted trace_enter_slot symbol"),
+            )
+            .expect("admitted compiled-code slot binding");
         self.emit_line(&format!("molt_trace_enter_slot({code_id});"));
     }
 

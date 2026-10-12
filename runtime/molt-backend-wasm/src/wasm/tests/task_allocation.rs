@@ -14,26 +14,33 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
             allocation.s_value = Some("task_allocation_poll".into());
             allocation.value = Some(64);
             allocation.task_kind = (op_kind == "alloc_task").then(|| task_kind.into());
-            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![
-                    wasm_test_function(
-                        "molt_main",
-                        vec!["arg"],
-                        None,
-                        vec![
-                            allocation,
-                            wasm_test_op("ret", None, vec![if bound { "task" } else { "none" }]),
-                        ],
-                    ),
-                    wasm_test_function(
-                        "task_allocation_poll",
-                        vec!["task"],
-                        None,
-                        vec![wasm_test_op("ret", None, vec!["task"])],
-                    ),
-                ],
-                profile: None,
-            })
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![
+                        wasm_test_function(
+                            "molt_main",
+                            vec!["arg"],
+                            None,
+                            vec![
+                                allocation,
+                                wasm_test_op(
+                                    "ret",
+                                    None,
+                                    vec![if bound { "task" } else { "none" }],
+                                ),
+                            ],
+                        ),
+                        wasm_test_function(
+                            "task_allocation_poll",
+                            vec!["task"],
+                            None,
+                            vec![wasm_test_op("ret", None, vec!["task"])],
+                        ),
+                    ],
+                    profile: None,
+                },
+                Default::default(),
+            )
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let imports = wasm_function_import_indices(&wasm);

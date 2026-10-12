@@ -1079,7 +1079,7 @@ mod tests {
             "params": ["self", "keep_running", "awaitable"],
             "param_types": ["Any", "bool", "Any"],
             "ops": [
-                {"kind": "trace_enter_slot", "value": 1},
+                {"kind": "trace_enter_slot", "s_value": "frame_publication_resume"},
                 {"kind": "state_switch"},
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
                 {"kind": "check_exception", "value": 70},

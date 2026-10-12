@@ -2075,7 +2075,7 @@ value_rule = "unconstrained"
 kind = "code_slot_set"
 family = "code_metadata"
 operands = 2
-value_rule = "nonnegative"
+value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
 kind = "code_slots_init"
@@ -2087,7 +2087,7 @@ value_rule = "nonnegative"
 kind = "trace_enter_slot"
 family = "code_metadata"
 operands = 0
-value_rule = "nonnegative"
+value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
 kind = "bytearray_fill_range"

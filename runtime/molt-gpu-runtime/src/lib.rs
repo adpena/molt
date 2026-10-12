@@ -662,7 +662,6 @@ struct RuntimeKernelDescriptor {
     name: String,
     params: Vec<String>,
     ops: Vec<RuntimeKernelOp>,
-    code_slot: u64,
     query_bindings: Vec<RuntimeKernelQuery>,
     requirements: Vec<JsonValue>,
     python_bodies: BTreeMap<String, RuntimeKernelBody>,
@@ -679,7 +678,6 @@ struct RuntimeKernelDescriptor {
 struct RuntimeKernelBody {
     symbol: String,
     arity: u64,
-    code_slot: u64,
     defaults: Vec<u64>,
 }
 
@@ -705,7 +703,7 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
     let obj = root
         .as_object()
         .ok_or_else(|| "kernel descriptor must be an object".to_string())?;
-    if obj.get("schema_version").and_then(JsonValue::as_u64) != Some(3) {
+    if obj.get("schema_version").and_then(JsonValue::as_u64) != Some(4) {
         return Err("unsupported kernel descriptor schema".into());
     }
     if let Some(reason) = obj.get("unsupported").and_then(JsonValue::as_str) {
@@ -779,10 +777,6 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let code_slot = obj
-        .get("code_slot")
-        .and_then(JsonValue::as_u64)
-        .ok_or("kernel descriptor lacks a code slot")?;
     let query_bindings = obj
         .get("query_bindings")
         .and_then(JsonValue::as_array)
@@ -831,10 +825,6 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
                 .get("arity")
                 .and_then(JsonValue::as_u64)
                 .ok_or("Python body lacks arity")?;
-            let code_slot = body
-                .get("code_slot")
-                .and_then(JsonValue::as_u64)
-                .ok_or("Python body lacks code slot")?;
             let defaults = body
                 .get("defaults")
                 .and_then(JsonValue::as_array)
@@ -862,7 +852,6 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
                 RuntimeKernelBody {
                     symbol,
                     arity,
-                    code_slot,
                     defaults,
                 },
             ))
@@ -882,7 +871,6 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
         name,
         params,
         ops,
-        code_slot,
         query_bindings,
         requirements,
         python_bodies,

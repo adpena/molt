@@ -208,6 +208,7 @@ impl SimpleBackend {
             app_callable_manifest: None,
             external_function_names: std::collections::BTreeSet::new(),
             module_registry: None,
+            code_slots: None,
             module_context: None,
             partition_sources: BTreeMap::new(),
             data_pool: BTreeMap::new(),

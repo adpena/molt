@@ -2937,7 +2937,7 @@ dependencies = []
 # Pass and WASM libtests belong to their own partition, not repeated here.
 # Object-model identity and split ABI witnesses share this compiler contract.
 # Its Criterion dev dependency builds alloca target C even for libtests.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
@@ -3070,7 +3070,7 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 # Libtests belong to the implementation crate. The driver's contract target
 # additionally proves the public checked SimpleIR-to-LLVM admission boundary.
-argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection", "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"]
+argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection", "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries", "code_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]

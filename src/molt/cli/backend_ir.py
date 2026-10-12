@@ -77,7 +77,6 @@ def _python_version_display(
 
 def _build_version_info_ops(
     *,
-    register_global_code_id: Callable[[str], int],
     target_python: TargetPythonVersion,
 ) -> list[dict[str, Any]]:
     major = target_python.major
@@ -102,7 +101,6 @@ def _build_version_info_ops(
             "s_value": "molt_sys_set_version_info",
             "args": ["v3", "v4", "v5", "v6", "v7", "v8"],
             "out": "v9",
-            "value": register_global_code_id("molt_sys_set_version_info"),
         },
     ]
 
@@ -111,7 +109,6 @@ def _build_entry_main_ops(
     *,
     entry_init: str,
     version_ops: Sequence[dict[str, Any]],
-    register_global_code_id: Callable[[str], int],
 ) -> list[dict[str, Any]]:
     # NOTE: molt_runtime_init is called here for WASM targets where
     # there is no C main stub.  For native targets the C stub calls
@@ -133,7 +130,6 @@ def _build_entry_main_ops(
             "s_value": "molt_runtime_init",
             "args": [],
             "out": "v0",
-            "value": register_global_code_id("molt_runtime_init"),
         },
         *version_ops,
         # Pending startup errors are preserved. The completed wrapper is guarded
@@ -143,7 +139,6 @@ def _build_entry_main_ops(
             "s_value": entry_init,
             "args": [],
             "out": "v1",
-            "value": register_global_code_id(entry_init),
         },
         {"kind": "ret_void"},
     ]
@@ -173,7 +168,6 @@ def _append_entry_sys_init_op(
     entry_ops: list[dict[str, Any]],
     *,
     entry_init: str,
-    register_global_code_id: Callable[[str], int],
     next_var: int,
     lazy: bool = False,
 ) -> int:
@@ -205,7 +199,6 @@ def _append_entry_sys_init_op(
                 "s_value": sys_init,
                 "args": [],
                 "out": sys_out_var,
-                "value": register_global_code_id(sys_init),
             },
             {"kind": "end_if"},
         ]
@@ -219,7 +212,6 @@ def _append_entry_sys_init_op(
                 "s_value": sys_init,
                 "args": [],
                 "out": sys_out_var,
-                "value": register_global_code_id(sys_init),
             }
         ]
     return next_var
@@ -229,13 +221,10 @@ def _replace_entry_call_with_spawn_override(
     entry_ops: list[dict[str, Any]],
     *,
     entry_init: str,
-    register_global_code_id: Callable[[str], int],
     next_var: int,
 ) -> int:
     spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
-    spawn_code_id = register_global_code_id(spawn_init)
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    entry_code_id = register_global_code_id(entry_init)
     env_key_var = f"v{next_var}"
     next_var += 1
     env_default_var = f"v{next_var}"
@@ -274,7 +263,6 @@ def _replace_entry_call_with_spawn_override(
             "s_value": spawn_init,
             "args": [],
             "out": spawn_out_var,
-            "value": spawn_code_id,
         },
         {"kind": "else"},
         {
@@ -282,7 +270,6 @@ def _replace_entry_call_with_spawn_override(
             "s_value": entry_init,
             "args": [],
             "out": entry_out_var,
-            "value": entry_code_id,
         },
         {"kind": "end_if"},
     ]
@@ -358,7 +345,6 @@ def _build_isolate_import_ops(
     *,
     code_slot_count: int,
     module_init_symbols: Sequence[tuple[str, str]],
-    register_global_code_id: Callable[[str], int],
 ) -> list[dict[str, Any]]:
     # Runtime-side module imports can reach this function before either
     # `molt_main` or `molt_isolate_bootstrap` has initialized the global
@@ -417,7 +403,6 @@ def _build_isolate_import_ops(
                     "s_value": init_symbol,
                     "args": [],
                     "out": init_out,
-                    "value": register_global_code_id(init_symbol),
                 }
             )
             import_ops.append({"kind": "check_exception", "value": import_failed_label})
@@ -1079,6 +1064,7 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
         return self._result("code_new", args=list(values))
 
     def code_slot_set(self, code_symbol: str, code: str) -> None:
+        self.register_global_code_id(code_symbol)
         module_dict_name = self.const_str("__dict__")
         globals_dict = self._result(
             "module_get_attr",
@@ -1087,7 +1073,7 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
         self.ops.append(
             {
                 "kind": "code_slot_set",
-                "value": self.register_global_code_id(code_symbol),
+                "s_value": code_symbol,
                 "args": [code, globals_dict],
             }
         )
@@ -1105,9 +1091,6 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
                 "s_value": "molt_function_init_metadata_packed",
                 "args": [function, metadata, code, bind_kind],
                 "out": self.alloc(),
-                "value": self.register_global_code_id(
-                    "molt_function_init_metadata_packed"
-                ),
             }
         )
 
@@ -1237,7 +1220,6 @@ def _append_static_native_module_attr_export_ops(
     *,
     module_var: str,
     spec: _ExternalNativeModuleInitSpec,
-    register_global_code_id: Callable[[str], int],
     next_var: int,
     failure_label: int = 1,
 ) -> int:
@@ -1255,7 +1237,6 @@ def _append_static_native_module_attr_export_ops(
                     "s_value": provider_init,
                     "args": [],
                     "out": provider_init_var,
-                    "value": register_global_code_id(provider_init),
                 },
                 {"kind": "check_exception", "value": failure_label},
             ]
@@ -1325,7 +1306,6 @@ def _append_static_native_callable_publication_ops(
         ops,
         module_var=module_var,
         spec=spec,
-        register_global_code_id=register_global_code_id,
         next_var=next_var,
         failure_label=failure_label,
     )
@@ -1493,7 +1473,6 @@ def _build_static_native_module_init_ops(
                     "s_value": provider_init,
                     "args": [],
                     "out": provider_init_var,
-                    "value": register_global_code_id(provider_init),
                 },
                 {"kind": "check_exception", "value": 1},
                 {
@@ -2043,7 +2022,6 @@ def _finalize_gpu_descriptors(
         admitted[role] = {
             "symbol": function["name"],
             "arity": len(function["params"]),
-            "code_slot": global_code_ids[function["name"]],
             "defaults": evidence["defaults"],
         }
     missing = sorted((set(expected) - admitted.keys()) | ambiguous)
@@ -2052,7 +2030,6 @@ def _finalize_gpu_descriptors(
         symbol = descriptor.get("symbol")
         if symbol not in global_code_ids:
             raise ValueError("GPU metadata publication has no integrated code owner")
-        descriptor["code_slot"] = global_code_ids[symbol]
         descriptor["python_bodies"] = admitted if not missing else {}
         if missing:
             descriptor["unsupported"] = (
@@ -2116,9 +2093,6 @@ def _prepare_backend_ir(
             # module's init body directly (one init table entry, two rows).
             _entry_real_init = SimpleTIRGenerator.module_init_symbol(entry_module)
             _main_init = SimpleTIRGenerator.module_init_symbol("__main__")
-            _trampoline_code_id = _register_global_code_id_with_state(
-                integration_state, _entry_real_init
-            )
             integration_state.functions.append(
                 {
                     "name": _main_init,
@@ -2130,7 +2104,6 @@ def _prepare_backend_ir(
                             "s_value": _entry_real_init,
                             "args": [],
                             "out": "v0",
-                            "value": _trampoline_code_id,
                         },
                         {"kind": "ret_void"},
                     ],
@@ -2184,13 +2157,11 @@ def _prepare_backend_ir(
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
     version_ops = _build_version_info_ops(
-        register_global_code_id=register_global_code_id,
         target_python=target_python,
     )
     entry_ops = _build_entry_main_ops(
         entry_init=entry_init,
         version_ops=version_ops,
-        register_global_code_id=register_global_code_id,
     )
     next_var = _next_tir_var_index(entry_ops)
     # Determine whether to inject a sys init call into molt_main.
@@ -2211,7 +2182,6 @@ def _prepare_backend_ir(
         next_var = _append_entry_sys_init_op(
             entry_ops,
             entry_init=entry_init,
-            register_global_code_id=register_global_code_id,
             next_var=next_var,
             lazy=False,
         )
@@ -2220,13 +2190,11 @@ def _prepare_backend_ir(
     host_init_ops = _build_entry_main_ops(
         entry_init=entry_init,
         version_ops=version_ops,
-        register_global_code_id=register_global_code_id,
     )
     if _inject_sys_init:
         _append_entry_sys_init_op(
             host_init_ops,
             entry_init=entry_init,
-            register_global_code_id=register_global_code_id,
             next_var=next_var,
             lazy=False,
         )
@@ -2235,7 +2203,6 @@ def _prepare_backend_ir(
         _replace_entry_call_with_spawn_override(
             entry_ops,
             entry_init=entry_init,
-            register_global_code_id=register_global_code_id,
             next_var=next_var,
         )
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
@@ -2302,7 +2269,6 @@ def _prepare_backend_ir(
                 (name, SimpleTIRGenerator.module_init_symbol(name))
                 for name in legacy_module_order
             ),
-            register_global_code_id=register_global_code_id,
         )
         functions.append(
             {
@@ -2327,6 +2293,7 @@ def _prepare_backend_ir(
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
     )
+    ir["code_slots"] = dict(global_code_ids)
     if module_registry is not None:
         ir["module_registry"] = module_registry.backend_ir_payload()
     # ModuleRegistry init bodies are reached through relocation slots in

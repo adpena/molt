@@ -3516,7 +3516,7 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
         ops = data["ops"]
         failure_label = data["frame_entry_failure_label"]
         assert ops[0].kind == "TRACE_ENTER_SLOT", name
-        assert ops[0].args == [gen.func_code_ids[name]]
+        assert ops[0].args == [name]
         assert ops[1].kind == "CHECK_EXCEPTION", name
         assert ops[1].args == [failure_label]
         cleanup = next(
@@ -3541,7 +3541,7 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
             if function["name"] not in local_functions:
                 continue
             ops = function["ops"]
-            assert ops[0]["kind"] == "trace_enter_slot"
+            assert ops[0] == {"kind": "trace_enter_slot", "s_value": function["name"]}
             assert ops[1]["kind"] == "check_exception"
             entry_cleanup = next(
                 index

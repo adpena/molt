@@ -18,6 +18,7 @@ fn cache() -> StdlibObjectCache {
 
 fn job() -> NativeBatchObjectJob {
     NativeBatchObjectJob {
+        code_slots: None,
         ir: SimpleIR {
             functions: vec![FunctionIR {
                 name: "reader".into(),

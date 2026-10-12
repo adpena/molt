@@ -2011,3 +2011,53 @@ fn malformed_string_payload_remains_a_checked_refusal() {
     assert!(backend.output.is_empty());
     assert_eq!(backend.unsupported_ops.len(), 1);
 }
+
+#[test]
+fn symbolic_code_slots_resolve_only_when_emitting_the_program() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "shared_owner".into(),
+            params: vec!["code".into(), "globals".into()],
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            execution_context: molt_ir::ExecutionContextPolicy::Local,
+            ops: vec![
+                OpIR {
+                    kind: "code_slot_set".into(),
+                    s_value: Some("shared_owner".into()),
+                    args: Some(vec!["code".into(), "globals".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_enter_slot".into(),
+                    s_value: Some("shared_owner".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_exit".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    for expected_slot in [0, 1] {
+        let mut bindings = BTreeMap::from([("shared_owner".to_string(), expected_slot)]);
+        if expected_slot == 1 {
+            bindings.insert("earlier_module".to_string(), 0);
+        }
+        let bindings = molt_ir::code_slots::CodeSlotBindings::try_from(bindings).unwrap();
+        bindings.validate_functions(&ir.functions).unwrap();
+        // This exercises the existing private lowering without changing the
+        // Rust target's public refusal of Python frame/runtime semantics.
+        let source = RustBackend::new().with_code_slots(bindings).compile(&ir);
+        assert!(source.contains(&format!(
+            "molt_code_slot_set({expected_slot}, &code, &globals);"
+        )));
+        assert!(source.contains(&format!("molt_trace_enter_slot({expected_slot});")));
+    }
+}

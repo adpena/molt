@@ -369,7 +369,7 @@ fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
     let mut ops = vec![
         OpIR {
             kind: "trace_enter_slot".to_string(),
-            value: Some(5),
+            s_value: Some("native_framed_large".to_string()),
             ..OpIR::default()
         },
         OpIR {

@@ -32,6 +32,7 @@ pub(crate) use wasm::validate_wasm_module_catalog;
 
 pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) ir: SimpleIR,
+    pub(crate) code_slots: molt_ir::code_slots::CodeSlotBindings,
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
     pub(crate) output_path: Option<&'a str>,
@@ -69,7 +70,12 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
             #[cfg(feature = "luau-backend")]
             {
                 let mut ir = request.ir;
-                emit_luau_target(&mut ir, output_file, request.use_ir_pipeline)?;
+                emit_luau_target(
+                    &mut ir,
+                    request.code_slots,
+                    output_file,
+                    request.use_ir_pipeline,
+                )?;
                 Ok(())
             }
             #[cfg(not(feature = "luau-backend"))]
@@ -84,7 +90,7 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
         BackendOutputKind::Rust => {
             #[cfg(feature = "rust-backend")]
             {
-                emit_rust_target(&request.ir, output_file)?;
+                emit_rust_target(&request.ir, request.code_slots, output_file)?;
                 Ok(())
             }
             #[cfg(not(feature = "rust-backend"))]
@@ -102,6 +108,7 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                 emit_wasm_target(
                     request.ir,
                     request.module_registry,
+                    request.code_slots,
                     output_file,
                     request.wasm_options,
                 )?;
@@ -122,6 +129,7 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
                 emit_native_target(
                     request.ir,
                     request.module_registry,
+                    request.code_slots,
                     output_file,
                     request.target_triple,
                     request.native_output_kind,

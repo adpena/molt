@@ -55,7 +55,14 @@ impl LuauBackend {
             }
             "code_slot_set" => {
                 let args = op.args.as_deref().expect("admitted code_slot_set operands");
-                let slot = op.value.expect("admitted code_slot_set ID");
+                let slot = self
+                    .code_slots
+                    .resolve(
+                        op.s_value
+                            .as_deref()
+                            .expect("admitted code_slot_set symbol"),
+                    )
+                    .expect("admitted compiled-code slot binding");
                 self.emit_line(&format!(
                     "molt_code_slots[{slot}] = molt_frame_bind_code({slot}, {}, {})",
                     sanitize_ident(&args[0]),
@@ -79,7 +86,14 @@ impl LuauBackend {
                 }
             }
             "trace_enter_slot" => {
-                let code_id = op.value.expect("admitted trace_enter_slot ID");
+                let code_id = self
+                    .code_slots
+                    .resolve(
+                        op.s_value
+                            .as_deref()
+                            .expect("admitted trace_enter_slot symbol"),
+                    )
+                    .expect("admitted compiled-code slot binding");
                 self.emit_line(&format!(
                     "__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));

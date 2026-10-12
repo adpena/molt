@@ -1,4 +1,5 @@
 pub(crate) struct NativeStdlibCachePrepare<'a> {
+    pub(crate) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
     pub(crate) stdlib_archive_path: Option<&'a str>,

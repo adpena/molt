@@ -65,7 +65,7 @@ function instantiate(path) {
     trace_enter_slot(slot) {
       ensure(state.depth === state.initialDepth && state.enters === 0,
              'unexpected frame entry');
-      ensure(slot === 5n, 'wrong owner code slot ' + slot);
+      ensure(slot === 0n, 'wrong owner code slot ' + slot);
       state.enters++;
       state.attempts.push(!state.failEntry);
       if (state.failEntry) {
@@ -220,7 +220,7 @@ fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
     let mut ops = vec![
         OpIR {
             kind: "trace_enter_slot".into(),
-            value: Some(5),
+            s_value: Some(name.into()),
             ..OpIR::default()
         },
         OpIR {
@@ -338,7 +338,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         vec![
             OpIR {
                 kind: "trace_enter_slot".into(),
-                value: Some(5),
+                s_value: Some("probe____molt_globals_builtin__owned".into()),
                 ..OpIR::default()
             },
             wasm_test_op("trace_exit", None, vec![]),
@@ -427,6 +427,13 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
+        .with_code_slots(
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                case["owner"].as_str().unwrap().to_string(),
+                0,
+            )]))
+            .unwrap(),
+        )
         .compile(ir);
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let import_indices = wasm_function_import_indices(&wasm);
@@ -504,10 +511,13 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             };
             let function = wasm_test_function("molt_main", params, None, ops);
             assert_eq!(function.return_abi, molt_ir::FunctionReturnAbi::Value);
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-                functions: vec![function],
-                profile: None,
-            });
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                SimpleIR {
+                    functions: vec![function],
+                    profile: None,
+                },
+                Default::default(),
+            );
             let (pages, entries) = wasm_import_minimums(&output.wasm);
             memory_pages = memory_pages.max(pages);
             table_entries = table_entries.max(entries);
@@ -528,7 +538,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         let stateful = matches!(mode, "stateful" | "yield" | "await");
         let mut ops = vec![OpIR {
             kind: "trace_enter_slot".into(),
-            value: Some(5),
+            s_value: Some("molt_main".into()),
             ..OpIR::default()
         }];
         if stateful {
@@ -618,9 +628,23 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         };
         crate::validate_simple_ir(&ir).unwrap();
         let output = if matches!(mode, "yield" | "await") {
-            wasm_compile_activation_fixture(ir)
+            wasm_compile_activation_fixture(
+                ir,
+                molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                    "molt_main".to_string(),
+                    0,
+                )]))
+                .unwrap(),
+            )
         } else {
-            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir)
+            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+                ir,
+                molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                    "molt_main".to_string(),
+                    0,
+                )]))
+                .unwrap(),
+            )
         };
         wasmparser::Validator::new()
             .validate_all(&output.wasm)
@@ -643,7 +667,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         vec![
             OpIR {
                 kind: "trace_enter_slot".into(),
-                value: Some(5),
+                s_value: Some("molt_main".into()),
                 ..OpIR::default()
             },
             OpIR {
@@ -686,6 +710,13 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
+    .with_code_slots(
+        molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+            "molt_main".to_string(),
+            0,
+        )]))
+        .unwrap(),
+    )
     .emit_wasm_module(
         &unwind_ir,
         BTreeMap::new(),
@@ -766,4 +797,59 @@ fn exported_body_inspection_counts_import_entries_not_unique_names() {
     wasmparser::Validator::new().validate_all(&wasm).unwrap();
     assert_eq!(wasm_direct_call_indices_for_export(&wasm, "owner"), vec![1]);
     assert_eq!(wasm_operator_debug_for_export(&wasm, "owner").len(), 2);
+}
+
+#[test]
+fn symbolic_code_slots_emit_program_bound_immediates() {
+    let mut function = wasm_test_function(
+        "molt_main",
+        vec!["code", "globals"],
+        None,
+        vec![
+            OpIR {
+                s_value: Some("molt_main".into()),
+                ..wasm_test_op("code_slot_set", None, vec!["code", "globals"])
+            },
+            OpIR {
+                s_value: Some("molt_main".into()),
+                ..wasm_test_op("trace_enter_slot", None, vec![])
+            },
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    );
+    function.execution_context = ExecutionContextPolicy::Local;
+    let ir = SimpleIR {
+        functions: vec![function],
+        profile: None,
+    };
+    let error = WasmBackend::new()
+        .compile_checked(ir.clone())
+        .expect_err("an owner must have a program binding before emission");
+    assert!(matches!(
+        error.shape.violation,
+        molt_ir::ir_schema::OpShapeViolation::UnboundCodeSlot
+    ));
+    for expected_slot in [0, 1] {
+        let mut bindings = BTreeMap::from([("molt_main".to_string(), expected_slot)]);
+        if expected_slot == 1 {
+            bindings.insert("earlier_module".to_string(), 0);
+        }
+        let bindings = molt_ir::code_slots::CodeSlotBindings::try_from(bindings).unwrap();
+        bindings.validate_functions(&ir.functions).unwrap();
+        let wasm =
+            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir.clone(), bindings).wasm;
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let imports = wasm_function_import_indices(&wasm);
+        let operators = wasm_operator_debug_for_export(&wasm, "molt_main");
+        for (import, argument_distance) in [("code_slot_set", 3), ("trace_enter_slot", 1)] {
+            let call = format!("Call {{ function_index: {} }}", imports[import]);
+            let index = operators.iter().position(|op| *op == call).unwrap();
+            assert_eq!(
+                operators[index - argument_distance],
+                format!("I64Const {{ value: {expected_slot} }}"),
+                "{import} must use the final program's immediate slot binding"
+            );
+        }
+    }
 }

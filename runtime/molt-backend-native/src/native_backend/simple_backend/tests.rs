@@ -79,7 +79,13 @@ fn compile_trace_probe_object(
 ) -> Vec<u8> {
     let _guard = acquire_backend_env_lock();
     let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", emit_traces_env);
-    let ir = SimpleIR {
+    SimpleBackend::new()
+        .compile(trace_probe_ir(execution_context))
+        .bytes
+}
+
+fn trace_probe_ir(execution_context: crate::ir::ExecutionContextPolicy) -> SimpleIR {
+    SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
@@ -88,7 +94,7 @@ fn compile_trace_probe_object(
                 vec![
                     OpIR {
                         kind: "trace_enter_slot".to_string(),
-                        value: Some(7),
+                        s_value: Some("molt_main".to_string()),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -101,7 +107,7 @@ fn compile_trace_probe_object(
                         ..OpIR::default()
                     },
                     OpIR {
-                        kind: "ret".to_string(),
+                        kind: "ret_void".to_string(),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -114,7 +120,7 @@ fn compile_trace_probe_object(
                         ..OpIR::default()
                     },
                     OpIR {
-                        kind: "ret".to_string(),
+                        kind: "ret_void".to_string(),
                         ..OpIR::default()
                     },
                 ]
@@ -132,8 +138,7 @@ fn compile_trace_probe_object(
             execution_context,
         }],
         profile: None,
-    };
-    SimpleBackend::new().compile(ir).bytes
+    }
 }
 
 fn compile_function_to_clif(

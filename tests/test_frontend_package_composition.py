@@ -356,7 +356,7 @@ def test_moved_methods_resolve_on_class() -> None:
     # ownership and serialization finalization
     assert hasattr(SimpleTIRGenerator, "_emit_inc_ref")
     assert hasattr(SimpleTIRGenerator, "_emit_drop_owned_value")
-    assert hasattr(SimpleTIRGenerator, "_finalize_code_ids")
+    assert hasattr(SimpleTIRGenerator, "_register_code_symbol")
     assert hasattr(SimpleTIRGenerator, "_ensure_code_slots_init")
     assert hasattr(SimpleTIRGenerator, "to_json")
     # string formatting and template lowering

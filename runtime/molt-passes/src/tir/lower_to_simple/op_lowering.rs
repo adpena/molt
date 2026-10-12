@@ -251,7 +251,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
 
-        // Call — s_value holds the target function name, value holds the code_id.
+        // Direct calls carry the target function name in s_value. Dynamic call
+        // forms may additionally carry their diagnostic call-site ID in value.
         // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
         // if it was preserved during the SSA lift.
         OpCode::Call => {

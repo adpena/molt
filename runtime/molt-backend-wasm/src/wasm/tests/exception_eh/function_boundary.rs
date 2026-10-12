@@ -23,7 +23,7 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                 ..wasm_test_op(kind, None, vec![])
             };
             let mut ops = vec![OpIR {
-                value: Some(5),
+                s_value: Some("molt_main".into()),
                 ..wasm_test_op("trace_enter_slot", None, vec![])
             }];
             if mode == "stateful" {
@@ -100,6 +100,13 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                 reloc_enabled: false,
                 ..WasmCompileOptions::default()
             })
+            .with_code_slots(
+                molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                    "molt_main".to_string(),
+                    0,
+                )]))
+                .unwrap(),
+            )
             .emit_wasm_module(
                 &ir,
                 BTreeMap::new(),

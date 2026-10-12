@@ -134,7 +134,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_defined_funcs: set[str]
     module_elided_deleted_funcs: set[str]
     module_execution_kind: ModuleExecutionKind
-    module_frame_code_id: int | None
     module_frame_emitted: Any
     module_frame_entered: Any
     module_frame_exited: Any
@@ -873,7 +872,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_cell_set(self, cell: MoltValue, value: MoltValue) -> None: ...
 
-    def _emit_checked_frame_entry(self, code_id: int, failure_label: int) -> None: ...
+    def _emit_checked_frame_entry(
+        self, code_symbol: str, failure_label: int
+    ) -> None: ...
 
     def _emit_class_annotated_assignment(
         self, node: ast.AnnAssign, scope: _ClassNsScope
@@ -1661,8 +1662,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> ast.expr | None: ...
 
     def _fast_int_enabled(self) -> bool: ...
-
-    def _finalize_code_ids(self) -> None: ...
 
     def _find_unbound_value_uses(
         self, ops: list[MoltOp], *, params: Sequence[str] = ...

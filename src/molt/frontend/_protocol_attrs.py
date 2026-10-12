@@ -89,7 +89,6 @@ class _GeneratorProtocolAttrs(Protocol):
     class_definition_pending: set[str]
     classes: dict[str, ClassInfo]
     closure_locals: set[str]
-    code_id_counter: Any
     code_slots_emitted: Any
     comp_shadow_locals: set[str]
     compat: Any

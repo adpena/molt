@@ -815,7 +815,10 @@ mod tests {
     fn exception_transfer_family_ends_blocks_at_the_transfer_program_point() {
         for kind in ["check_exception", "async_work_poll", "try_start"] {
             let ops = vec![
-                op_val("trace_enter_slot", 0),
+                OpIR {
+                    s_value: Some("checked_entry".into()),
+                    ..op("trace_enter_slot")
+                },
                 op_val(kind, 41),
                 op("const"),
                 op_val(kind, 41),

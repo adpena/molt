@@ -525,7 +525,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 d["end_col_offset"] = op.end_col_offset
             ctx.json_ops.append(d)
         elif op.kind == "TRACE_ENTER_SLOT":
-            ctx.json_ops.append({"kind": "trace_enter_slot", "value": int(op.args[0])})
+            ctx.json_ops.append({"kind": "trace_enter_slot", "s_value": op.args[0]})
         elif op.kind == "TRACE_EXIT":
             ctx.json_ops.append({"kind": "trace_exit"})
         elif op.kind in (
@@ -583,12 +583,10 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             )
         elif op.kind == "CALL":
             target = op.args[0]
-            code_id = self.func_code_ids.get(target, 0)
             entry = {
                 "kind": ("call_internal" if target in self.funcs_map else "call"),
                 "s_value": target,
                 "args": [arg.name for arg in op.args[1:]],
-                "value": code_id,
                 "out": op.result.name,
             }
             custody = self._call_argument_custody(op, "call", target, len(op.args) - 1)
@@ -613,12 +611,10 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(entry)
         elif op.kind == "CALL_INTERNAL":
             target = op.args[0]
-            code_id = self.func_code_ids.get(target, 0)
             entry = {
                 "kind": "call_internal",
                 "s_value": target,
                 "args": [arg.name for arg in op.args[1:]],
-                "value": code_id,
                 "out": op.result.name,
             }
             custody = self._call_argument_custody(
@@ -825,14 +821,12 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "CODE_SLOT_SET":
-            code_id = 0
-            if op.metadata and "code_id" in op.metadata:
-                code_id = int(op.metadata["code_id"])
+            code_symbol = (op.metadata or {})["code_symbol"]
             code_val, globals_dict = op.args
             ctx.json_ops.append(
                 {
                     "kind": "code_slot_set",
-                    "value": code_id,
+                    "s_value": code_symbol,
                     "args": [code_val.name, globals_dict.name],
                 }
             )

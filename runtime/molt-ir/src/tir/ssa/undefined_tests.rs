@@ -177,7 +177,10 @@ fn assert_no_placeholder(output: &SsaOutput) {
 #[test]
 fn checked_entry_does_not_materialize_unused_none() {
     let ops = vec![
-        op_val("trace_enter_slot", 0),
+        OpIR {
+            s_value: Some("checked_entry".into()),
+            ..op("trace_enter_slot")
+        },
         op_val("check_exception", 1),
         op_val_out("const", 3, "result"),
         op_args("ret", &["result"]),
@@ -205,7 +208,10 @@ fn checked_entry_does_not_materialize_unused_none() {
 #[test]
 fn checked_entry_keeps_later_missing_uses_in_the_success_continuation() {
     let ops = vec![
-        op_val("trace_enter_slot", 0),
+        OpIR {
+            s_value: Some("checked_entry".into()),
+            ..op("trace_enter_slot")
+        },
         op_val("check_exception", 1),
         op_args_out("add", &["missing", "missing"], "sum"),
         op_args("ret", &["sum"]),
@@ -242,7 +248,10 @@ fn checked_entry_keeps_later_missing_uses_in_the_success_continuation() {
 #[test]
 fn later_exception_edge_materializes_its_missing_environment_locally() {
     let ops = vec![
-        op_val("trace_enter_slot", 0),
+        OpIR {
+            s_value: Some("checked_entry".into()),
+            ..op("trace_enter_slot")
+        },
         op_val("check_exception", 1),
         op_val("check_exception", 3),
         op("ret_void"),

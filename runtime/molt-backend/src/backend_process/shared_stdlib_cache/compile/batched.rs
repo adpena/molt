@@ -49,6 +49,7 @@ pub(super) fn compile_batched_stdlib_cache_archive(
             );
             let job = NativeBatchObjectJob {
                 ir,
+                code_slots: None,
                 module_context: plan.module_context.clone(),
                 codegen_environment:
                     molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,

@@ -51,7 +51,7 @@ fn compile_final_numeric_function_with_diagnostics(
         functions: vec![wasm_test_function("molt_main", params, param_types, ops)],
         profile: None,
     };
-    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir)
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default())
 }
 
 fn compile_final_numeric_ops_with_diagnostics(ops: Vec<OpIR>) -> WasmCompileOutput {

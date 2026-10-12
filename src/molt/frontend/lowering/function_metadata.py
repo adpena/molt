@@ -270,12 +270,13 @@ class _FrontendFunctionMetadataEmitter(FunctionMetadataEmitter[MoltValue]):
         return self._result("CODE_NEW", type_hint="code", args=list(values))
 
     def code_slot_set(self, code_symbol: str, code: MoltValue) -> None:
+        self._owner._register_code_symbol(code_symbol)
         self._owner.emit(
             MoltOp(
                 kind="CODE_SLOT_SET",
                 args=[code, self._owner._emit_globals_dict()],
                 result=MoltValue("none"),
-                metadata={"code_id": self._owner._register_code_symbol(code_symbol)},
+                metadata={"code_symbol": code_symbol},
             )
         )
 
@@ -490,7 +491,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     ) -> str:
         func_info = self.funcs_map[func_symbol]
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "kind": "molt_gpu_kernel",
             "symbol": func_symbol,
             "name": func_name,

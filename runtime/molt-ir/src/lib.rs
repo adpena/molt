@@ -12,6 +12,7 @@
 
 pub mod backend_environment;
 pub mod call_argument_form;
+pub mod code_slots;
 pub mod content_digest;
 pub mod debug_artifacts;
 pub mod ir;

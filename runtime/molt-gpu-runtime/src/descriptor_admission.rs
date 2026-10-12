@@ -30,7 +30,7 @@ pub(super) fn admit<'py>(
         }
     }
 
-    if !descriptor_is_current(callable, descriptor_bits, desc.code_slot) {
+    if !descriptor_is_current(callable, descriptor_bits) {
         return Err(fail(
             "GPU descriptor no longer describes the current callable code/shape",
         ));

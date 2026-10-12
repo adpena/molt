@@ -395,11 +395,23 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir_a = _ir_with_stdlib(
         user_ops=[{"kind": "const_int", "value": 1, "out": "v1"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     ir_b = _ir_with_stdlib(
         user_ops=[{"kind": "const_int", "value": 2, "out": "v1"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
 
     key_a = cli._shared_stdlib_cache_key(
@@ -422,12 +434,80 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     assert key_a == key_b
 
 
+def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload() -> (
+    None
+):
+    variant = _cache_variant()
+    stdlib_modules = _explicit_stdlib_modules("sys")
+    first = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[
+            {"kind": "trace_enter_slot", "s_value": "molt_init_sys"},
+            {"kind": "trace_exit"},
+            {"kind": "ret_void"},
+        ],
+    )
+    first["code_slots"] = {"molt_init_app": 0, "molt_init_sys": 1}
+    rebound = {
+        **first,
+        "code_slots": {"molt_init_app": 1, "molt_init_sys": 0},
+    }
+    # The same reusable bodies can link into either dense assignment, but a
+    # final application cache hit must never retain the other assignment.
+    assert first["functions"] == rebound["functions"]
+    for key_builder in (CACHE_KEYS._cache_key, CACHE_KEYS._function_cache_key):
+        keys = [
+            key_builder(
+                program,
+                "native",
+                None,
+                variant,
+                compiler_fingerprint="compiler-fixture",
+                tooling_fingerprint="tooling-fixture",
+            )
+            for program in (first, rebound)
+        ]
+        assert keys[0] != keys[1], key_builder.__name__
+
+    payloads = [
+        cli._shared_stdlib_cache_payload_ir(
+            program,
+            entry_module="app",
+            stdlib_module_symbols=stdlib_modules,
+            compiler_fingerprint="compiler-fingerprint",
+        )
+        for program in (first, rebound)
+    ]
+    assert payloads[0] == payloads[1]
+    assert payloads[0]["functions"] == [first["functions"][-1]]
+    assert "code_slots" not in payloads[0]
+    keys = [
+        cli._shared_stdlib_cache_key(
+            program,
+            **_KEY_FINGERPRINTS,
+            entry_module="app",
+            stdlib_module_symbols=stdlib_modules,
+            target_triple=None,
+            cache_variant=variant,
+            compiler_fingerprint="compiler-fingerprint",
+        )
+        for program in (first, rebound)
+    ]
+    assert keys[0] == keys[1]
+
+
 def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     payload_ir = cli._shared_stdlib_cache_payload_ir(
         ir,
@@ -457,11 +537,23 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir_a = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     ir_b = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 843}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_json",
+                "args": ["code", "globals"],
+            }
+        ],
     )
 
     key_a = cli._shared_stdlib_cache_key(
@@ -501,7 +593,13 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
         user_ops=[],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
 
     key_a = cli._shared_stdlib_cache_key(
@@ -543,7 +641,13 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
 ) -> None:
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -698,7 +802,13 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
 
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -797,7 +907,13 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     )
     ir = _ir_with_stdlib(
         user_ops=[],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -892,7 +1008,13 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     )
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -992,7 +1114,13 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
 
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -1053,11 +1181,23 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir_a = _ir_with_stdlib(
         user_ops=[],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     ir_b = _ir_with_stdlib(
         user_ops=[],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     ir_a["entry_metadata"] = {"driver": "stage5"}
     ir_b["entry_metadata"] = {"driver": "stage8"}
@@ -1098,12 +1238,24 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
             {
                 "name": "molt_init_sys",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 73}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_sys",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
             {
                 "name": "molt_init_json",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 843}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_json",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1120,12 +1272,24 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
             {
                 "name": "molt_init_sys",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 73}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_sys",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
             {
                 "name": "molt_init_json",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 843}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_json",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1164,7 +1328,13 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         {
             "name": "molt_init_json",
             "params": [],
-            "ops": [{"kind": "code_slot_set", "value": 73}],
+            "ops": [
+                {
+                    "kind": "code_slot_set",
+                    "s_value": "molt_init_sys",
+                    "args": ["code", "globals"],
+                }
+            ],
         },
     ]
     ir_a = {
@@ -1234,12 +1404,24 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
             {
                 "name": "molt_init_sys",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 73}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_sys",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
             {
                 "name": "molt_init_json",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 843}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_json",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1256,12 +1438,24 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
             {
                 "name": "molt_init_sys",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 73}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_sys",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
             {
                 "name": "molt_init_json",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 999999}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_changed",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1304,7 +1498,13 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
             {
                 "name": "molt_init_importlib_abc",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 73}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_sys",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1323,7 +1523,13 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
             {
                 "name": "molt_init_importlib_abc",
                 "params": [],
-                "ops": [{"kind": "code_slot_set", "value": 843}],
+                "ops": [
+                    {
+                        "kind": "code_slot_set",
+                        "s_value": "molt_init_json",
+                        "args": ["code", "globals"],
+                    }
+                ],
             },
         ],
     }
@@ -1352,7 +1558,13 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
     variant = _cache_variant()
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
 
     key_a = cli._shared_stdlib_cache_key(
@@ -2718,7 +2930,13 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
 
     variant_a = _cache_variant("/molt-backend|1700000000000000000|10000000")
@@ -2756,7 +2974,13 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+        stdlib_ops=[
+            {
+                "kind": "code_slot_set",
+                "s_value": "molt_init_sys",
+                "args": ["code", "globals"],
+            }
+        ],
     )
     linker_a = tmp_path / "ld-a"
     linker_b = tmp_path / "ld-b"

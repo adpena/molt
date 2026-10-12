@@ -12,53 +12,36 @@ def _register_global_code_id_with_state(
 ) -> int:
     code_id = integration_state.global_code_ids.get(symbol)
     if code_id is None:
-        code_id = integration_state.global_code_id_counter
+        code_id = len(integration_state.global_code_ids)
         integration_state.global_code_ids[symbol] = code_id
-        integration_state.global_code_id_counter += 1
     return code_id
 
 
-def _remap_module_code_ops_with_state(
+def _integrate_module_code_slots_with_state(
     integration_state: _FrontendIntegrationState,
     module_name: str,
     funcs: list[dict[str, Any]],
-    local_id_to_symbol: dict[int, str],
+    local_symbols: set[str],
 ) -> None:
+    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
     for func in funcs:
-        ops = func.get("ops", [])
-        remapped_ops: list[dict[str, Any]] = []
-        for op in ops:
+        integrated_ops: list[dict[str, Any]] = []
+        for op in func.get("ops", []):
             kind = op.get("kind")
             if kind == "code_slots_init":
                 continue
-            if kind in {"call", "call_internal"}:
+            if kind in {"code_slot_set", "trace_enter_slot"}:
                 symbol = op.get("s_value")
-                if symbol:
-                    op["value"] = _register_global_code_id_with_state(
-                        integration_state, symbol
-                    )
-            elif kind == "code_slot_set":
-                local_id = op.get("value")
-                symbol = local_id_to_symbol.get(local_id)
-                if symbol is None:
+                if symbol not in local_symbols or op.get("value") is not None:
                     raise ValueError(
-                        f"Missing code symbol for id {local_id} in module {module_name}"
+                        f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
-                op["value"] = _register_global_code_id_with_state(
-                    integration_state, symbol
-                )
-            elif kind == "trace_enter_slot":
-                local_id = op.get("value")
-                symbol = local_id_to_symbol.get(local_id)
-                if symbol is None:
-                    raise ValueError(
-                        f"Missing code symbol for id {local_id} in module {module_name}"
-                    )
-                op["value"] = _register_global_code_id_with_state(
-                    integration_state, symbol
-                )
-            remapped_ops.append(op)
-        func["ops"] = remapped_ops
+                if symbol == "molt_main":
+                    symbol = init_symbol
+                op["s_value"] = symbol
+                _register_global_code_id_with_state(integration_state, symbol)
+            integrated_ops.append(op)
+        func["ops"] = integrated_ops
 
 
 def _accumulate_midend_diagnostics_with_state(
@@ -108,16 +91,12 @@ def _integrate_module_frontend_result_with_state(
     local_classes: dict[str, Any],
 ) -> str | None:
     init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-    local_code_ids = dict(func_code_ids)
-    if "molt_main" in local_code_ids:
-        local_code_ids[init_symbol] = local_code_ids.pop("molt_main")
-    local_id_to_symbol = {code_id: symbol for symbol, code_id in local_code_ids.items()}
     try:
-        _remap_module_code_ops_with_state(
+        _integrate_module_code_slots_with_state(
             integration_state,
             module_name,
             ir_functions,
-            local_id_to_symbol,
+            set(func_code_ids),
         )
     except ValueError as exc:
         return str(exc)

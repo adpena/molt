@@ -33,7 +33,8 @@ fn iterator_result_roles_survive_absent_and_discarded_siblings() {
                 profile: None,
             };
             crate::validate_simple_ir(&ir).expect("discarded iterator results are admitted");
-            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+            let output =
+                wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
             wasmparser::Validator::new()
                 .validate_all(&output.wasm)
                 .unwrap();
@@ -226,7 +227,9 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
             crate::validate_simple_ir(&ir).expect("binding fixture is admitted SimpleIR");
             // Prove the raw final-IR consumer, not a preparatory SSA rewrite
             // that can normalize the missing-result bug away first.
-            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir).wasm;
+            let wasm =
+                wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default())
+                    .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let (pages, entries) = wasm_import_minimums(&wasm);
             memory_pages = memory_pages.max(pages);

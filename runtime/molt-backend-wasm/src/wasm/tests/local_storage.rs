@@ -23,10 +23,13 @@ fn raw_call(argument: &str, result: &str) -> OpIR {
 }
 
 fn compile_main(params: Vec<&str>, ops: Vec<OpIR>) -> Vec<u8> {
-    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-        functions: vec![wasm_test_function("molt_main", params, None, ops)],
-        profile: None,
-    })
+    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+        SimpleIR {
+            functions: vec![wasm_test_function("molt_main", params, None, ops)],
+            profile: None,
+        },
+        Default::default(),
+    )
     .wasm;
     wasmparser::Validator::new().validate_all(&wasm).unwrap();
     wasm

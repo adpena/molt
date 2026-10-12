@@ -132,6 +132,7 @@ fn identity_lowering_for_provenance(
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
 pub struct LuauBackend {
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
     output: String,
     /// Current indentation level (number of tabs).
     indent: usize,
@@ -186,8 +187,14 @@ impl Default for LuauBackend {
 }
 
 impl LuauBackend {
+    pub fn with_code_slots(mut self, code_slots: molt_ir::code_slots::CodeSlotBindings) -> Self {
+        self.code_slots = code_slots;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
+            code_slots: molt_ir::code_slots::CodeSlotBindings::default(),
             output: String::with_capacity(8192),
             indent: 0,
             uses_forward_decls: false,

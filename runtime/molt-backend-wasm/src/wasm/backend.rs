@@ -11,6 +11,7 @@ use wasm_encoder::{
 };
 
 pub struct WasmBackend {
+    pub(in crate::wasm) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(in crate::wasm) module: Module,
     pub(in crate::wasm) types: TypeSection,
     pub(in crate::wasm) funcs: FunctionSection,
@@ -134,6 +135,7 @@ impl WasmBackend {
 
     pub fn with_options(options: WasmCompileOptions) -> Self {
         Self {
+            code_slots: molt_ir::code_slots::CodeSlotBindings::default(),
             module: Module::new(),
             types: TypeSection::new(),
             funcs: FunctionSection::new(),
@@ -155,6 +157,11 @@ impl WasmBackend {
             module_registry: None,
             module_registry_segment: None,
         }
+    }
+
+    pub fn with_code_slots(mut self, code_slots: molt_ir::code_slots::CodeSlotBindings) -> Self {
+        self.code_slots = code_slots;
+        self
     }
 
     pub fn with_module_registry(mut self, module_registry: Option<ModuleRegistryIR>) -> Self {

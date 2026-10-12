@@ -798,10 +798,11 @@ impl SimpleBackend {
                         != crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
             })
             .filter(|&op_idx| func_ir.ops[op_idx].kind == "trace_enter_slot");
-        let leading_frame_code_id = leading_frame_entry_op_idx.map(|op_idx| {
+        let leading_frame_code_owner = leading_frame_entry_op_idx.map(|op_idx| {
             func_ir.ops[op_idx]
-                .value
-                .expect("admitted trace_enter_slot ID")
+                .s_value
+                .as_deref()
+                .expect("admitted trace_enter_slot owner")
         });
         let leading_frame_exception_check_idx = leading_frame_entry_op_idx.and_then(|op_idx| {
             func_ir
@@ -830,10 +831,10 @@ impl SimpleBackend {
         let (literal_hoists, literal_materialization) =
             fc::const_literals::prepare_heap_literals(&func_ir, &mut builder, representation_plan);
 
-        if let (Some(entered), Some(code_id)) = (owned_frame_entered, leading_frame_code_id) {
+        if let (Some(entered), Some(code_owner)) = (owned_frame_entered, leading_frame_code_owner) {
             emit_owned_execution_frame_enter(
                 entered,
-                code_id,
+                code_owner,
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
@@ -865,7 +866,7 @@ impl SimpleBackend {
             .filter_map(|op| op.value)
             .max()
             .map(|slot| slot + 1);
-        let enters_later = leading_frame_code_id.is_none()
+        let enters_later = leading_frame_code_owner.is_none()
             && func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
         let frame_homes = frame_home_slots.map(|slots| {
             let homes = builder.declare_var(types::I64);

@@ -216,7 +216,7 @@ fn polls_and_unknown_preserved_ops_fail_closed_but_inert_primitives_do_not() {
         copy.attrs
             .insert("_original_kind".into(), AttrValue::Str(kind.into()));
         copy.attrs
-            .insert("s_value".into(), AttrValue::Str("ignored".into()));
+            .insert("s_value".into(), AttrValue::Str(func.name.clone()));
         let position = append(&mut func, copy);
         assert_eq!(
             FunctionCallSites::for_function(&func)
@@ -318,6 +318,11 @@ fn trace_lifecycle_revokes_slot_history_and_leaf_admission() {
         trace
             .attrs
             .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        if kind == "trace_enter_slot" {
+            trace
+                .attrs
+                .insert("s_value".into(), AttrValue::Str(func.name.clone()));
+        }
         let lifecycle = append(&mut func, trace);
         let after = append(&mut func, store);
         let sites = FunctionCallSites::for_function(&func);

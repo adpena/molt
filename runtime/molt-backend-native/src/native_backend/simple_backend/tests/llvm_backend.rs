@@ -12,7 +12,6 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
             OpIR {
                 kind: "call".to_string(),
                 s_value: Some("molt_init_sys".to_string()),
-                value: Some(0),
                 ..OpIR::default()
             },
             OpIR {

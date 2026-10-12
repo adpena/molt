@@ -27,6 +27,23 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
 ];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn code_slot_id(&self, op: &TirOp) -> inkwell::values::IntValue<'ctx> {
+        let owner = match op.attrs.get("s_value") {
+            Some(AttrValue::Str(owner)) => owner.as_str(),
+            _ => panic!("admitted code-slot owner"),
+        };
+        let binding = self.backend.code_slot_binding(owner);
+        self.backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                binding.as_pointer_value(),
+                "code_slot",
+            )
+            .expect("load immutable code-slot binding")
+            .into_int_value()
+    }
+
     /// The code slots this function addresses in its frame's homes: one past
     /// its largest slot, or `None` when it touches none.
     fn frame_home_slot_count(&self) -> Option<u64> {
@@ -580,14 +597,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "code_slot_set" => {
-                let code_id = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .expect("admitted code_slot_set ID");
+                let code_id = self.code_slot_id(op);
                 let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
                 // The slot ID is a raw ABI word; the code object and globals
                 // are borrowed. Only the exception state reports failure.
@@ -595,7 +605,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     slot_set_fn,
                     &[
-                        RuntimeArg::Word(i64_ty.const_int(code_id as u64, true).into()),
+                        RuntimeArg::Word(code_id.into()),
                         RuntimeArg::Operand(op.operands[0]),
                         RuntimeArg::Operand(op.operands[1]),
                     ],
@@ -627,23 +637,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "trace_enter_slot" => {
-                let code_id = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .expect("admitted trace_enter_slot ID");
+                let code_id = self.code_slot_id(op);
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
-                        enter_fn,
-                        &[i64_ty.const_int(code_id as u64, true).into()],
-                        "trace_enter_slot",
-                    )
+                    .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
                     .unwrap();
                 // The entry took the frame's binding homes: lend them before
                 // the entry's adjacent exception check, which leaves for the

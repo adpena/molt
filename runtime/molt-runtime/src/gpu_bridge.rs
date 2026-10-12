@@ -222,11 +222,7 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_ptr.is_null() || (name_ptr.is_null() && name_len != 0) {
-            crate::raise_exception::<()>(
-                _py,
-                "TypeError",
-                "invalid attribute receiver or name",
-            );
+            crate::raise_exception::<()>(_py, "TypeError", "invalid attribute receiver or name");
             return -1;
         }
         let bytes = if name_len == 0 {
@@ -459,11 +455,7 @@ pub extern "C" fn __molt_gpu_kernel_descriptor(callable: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_descriptor_is_current(
-    callable: u64,
-    descriptor: u64,
-    slot: u64,
-) -> i32 {
+pub extern "C" fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(function) = crate::obj_from_bits(callable).as_ptr() else {
             return 0;
@@ -481,7 +473,7 @@ pub extern "C" fn __molt_gpu_descriptor_is_current(
             i32::from(
                 crate::object_type_id(code) == crate::TYPE_ID_CODE
                     && crate::object::layout::code_gpu_descriptor_bits(code) == descriptor
-                    && crate::object::layout::code_frame_slot_id(code) == Some(slot),
+                    && crate::object::layout::code_frame_slot_id(code).is_some(),
             )
         }
     })
@@ -794,7 +786,6 @@ pub extern "C" fn __molt_gpu_compiled_body_matches(
     symbol: *const u8,
     symbol_len: usize,
     arity: u64,
-    slot: u64,
     defaults: *const u64,
     defaults_len: usize,
 ) -> i32 {
@@ -814,7 +805,7 @@ pub extern "C" fn __molt_gpu_compiled_body_matches(
         };
         i32::from(
             crate::intrinsics::registry::is_compiled_body_materialization(
-                py, bits, symbol, arity, slot, defaults,
+                py, bits, symbol, arity, defaults,
             ),
         )
     })

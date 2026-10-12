@@ -13,7 +13,7 @@ _FRONTEND_INTEGRATION_NAMES = (
     "_accumulate_midend_diagnostics_with_state",
     "_integrate_module_frontend_result_with_state",
     "_register_global_code_id_with_state",
-    "_remap_module_code_ops_with_state",
+    "_integrate_module_code_slots_with_state",
 )
 
 _FRONTEND_INTEGRATION_DEFINITIONS = tuple(

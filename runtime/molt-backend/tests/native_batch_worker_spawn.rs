@@ -39,6 +39,86 @@ impl Drop for TestTempDir {
     }
 }
 
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+fn assert_linked_frame_slot(application: &Path, stdlib: &Path, expected: u64) {
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("shared-object-slot-binding")
+        .expect("retain linked observer under actual Cargo image custody");
+    let app = artifacts.path().join("app.a");
+    let shared = artifacts.path().join("stdlib.a");
+    std::fs::copy(application, &app).unwrap();
+    std::fs::copy(stdlib, &shared).unwrap();
+    let source = artifacts.path().join("slot_observer.rs");
+    let binding = molt_ir::code_slots::code_slot_symbol("molt_init_sys");
+    std::fs::write(
+        &source,
+        format!(
+            r#"
+use std::sync::atomic::{{AtomicU64, Ordering}};
+static OBSERVED: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXITS: AtomicU64 = AtomicU64::new(0);
+#[unsafe(no_mangle)] pub extern "C" fn molt_trace_enter_slot(slot: u64) -> u64 {{
+    OBSERVED.store(slot, Ordering::SeqCst); 0
+}}
+#[unsafe(no_mangle)] pub extern "C" fn molt_trace_exit() -> u64 {{
+    EXITS.fetch_add(1, Ordering::SeqCst); 0
+}}
+#[unsafe(no_mangle)] pub extern "C" fn molt_recursion_guard_enter() -> i64 {{ 1 }}
+#[unsafe(no_mangle)] pub extern "C" fn molt_recursion_guard_exit() {{}}
+#[unsafe(no_mangle)] pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
+#[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
+unsafe extern "C" {{
+    fn molt_init_sys();
+    #[link_name = "{binding}"] static BINDING: u64;
+}}
+fn main() {{
+    unsafe {{ assert_eq!(BINDING, {expected}); molt_init_sys(); }}
+    assert_eq!(OBSERVED.load(Ordering::SeqCst), {expected});
+    assert_eq!(EXITS.load(Ordering::SeqCst), 1);
+}}
+"#,
+            abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+        ),
+    )
+    .unwrap();
+    let executable = artifacts
+        .path()
+        .join(format!("slot_observer{}", std::env::consts::EXE_SUFFIX));
+    let linked = artifacts
+        .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .unwrap()
+        .args(["--edition=2024"])
+        .arg(artifacts.argument("", &source).unwrap())
+        .arg("-C")
+        .arg(artifacts.argument("link-arg=", &app).unwrap())
+        .arg("-C")
+        .arg(artifacts.argument("link-arg=", &shared).unwrap())
+        .arg("-o")
+        .arg(artifacts.argument("", &executable).unwrap())
+        .output()
+        .expect("link actual shared and application objects");
+    assert!(
+        linked.status.success(),
+        "slot observer link failed: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    let observed = artifacts
+        .command(&executable)
+        .unwrap()
+        .output()
+        .expect("execute linked slot observer");
+    assert!(
+        observed.status.success(),
+        "actual frame used wrong program binding: {}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+}
+
 #[test]
 fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     let tmp = TestTempDir::new();
@@ -168,12 +248,13 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     std::fs::write(
         &ir_path,
         r#"{
+  "code_slots": {"molt_init_sys": 0},
   "functions": [
     {"return_abi": "void",
       "name": "molt_main",
       "params": [],
       "ops": [
-        {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+        {"kind": "call", "s_value": "molt_init_demo"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -184,7 +265,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "name": "molt_host_init",
       "params": [],
       "ops": [
-        {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+        {"kind": "call", "s_value": "molt_init_demo"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -195,8 +276,8 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "name": "molt_init_demo",
       "params": [],
       "ops": [
-        {"kind": "call", "s_value": "demo__molt_module_chunk_1", "value": 0},
-        {"kind": "call", "s_value": "molt_init_sys", "value": 0},
+        {"kind": "call", "s_value": "demo__molt_module_chunk_1"},
+        {"kind": "call", "s_value": "molt_init_sys"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -238,7 +319,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "params": [],
       "execution_context": "local",
       "ops": [
-        {"kind": "trace_enter_slot", "value": 1},
+        {"kind": "trace_enter_slot", "s_value": "molt_init_sys"},
         {"kind": "call_internal", "s_value": "sys__helper", "passes_execution_context": true},
         {"kind": "trace_exit"},
         {"kind": "ret_void"}
@@ -461,6 +542,48 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             .exists()
     );
 
+    // Adding an application body shifts the dense program assignment, but
+    // unchanged stdlib objects must remain reusable and bind to the new ID.
+    let original_input = std::fs::read(&ir_path).unwrap();
+    let mut shifted: serde_json::Value = serde_json::from_slice(&original_input).unwrap();
+    shifted["code_slots"] = serde_json::json!({"app_extra": 0, "molt_init_sys": 1});
+    shifted["functions"][0]["ops"]
+        .as_array_mut()
+        .unwrap()
+        .insert(
+            0,
+            serde_json::json!({"kind": "call", "s_value": "app_extra"}),
+        );
+    shifted["functions"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "app_extra", "return_abi": "void", "params": [],
+            "ops": [{"kind": "ret_void"}]
+        }));
+    std::fs::write(&ir_path, serde_json::to_vec(&shifted).unwrap()).unwrap();
+    let shifted_output_path = tmp.path.join("shifted-program.a");
+    let shifted_key = "e".repeat(64);
+    let shifted_output = run_backend(&shifted_output_path, &shifted_key, "speed", "0");
+    let shifted_stderr = String::from_utf8_lossy(&shifted_output.stderr);
+    assert!(
+        shifted_output.status.success(),
+        "shifted program failed: {shifted_stderr}"
+    );
+    assert!(
+        shifted_stderr.contains("stdlib object reuse: 2 hits, 0 misses"),
+        "program bindings must not fragment shared object identity: {shifted_stderr}"
+    );
+    assert!(!shifted_stderr.contains("compiling stdlib object miss"));
+    let shifted_stdlib_path = required_archive_for(&shifted_output_path);
+    assert_eq!(
+        std::fs::read(&shifted_stdlib_path).unwrap(),
+        original_archive
+    );
+    assert_linked_frame_slot(&output_path, &stdlib_path, 0);
+    assert_linked_frame_slot(&shifted_output_path, &shifted_stdlib_path, 1);
+    std::fs::write(&ir_path, original_input).unwrap();
+
     // This switch was absent from the old CLI digest. Keep the same manifest
     // variant to prove that the actual inherited worker input invalidates reuse.
     let emitter_output = run_backend(
@@ -512,7 +635,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
       "name": "molt_main",
       "params": [],
       "ops": [
-        {"kind": "call", "s_value": "helper", "value": 0},
+        {"kind": "call", "s_value": "helper"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
@@ -523,7 +646,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
       "name": "helper",
       "params": [],
       "ops": [
-        {"kind": "call_internal", "value": 0},
+        {"kind": "call_internal"},
         {"kind": "ret_void"}
       ],
       "param_types": null,
