@@ -39,15 +39,21 @@ inheritance; constituent reuse does not relax or replace that admission.
 
 ## Stable bounded batches
 
-Stdlib batching orders symbols by a domain-separated SHA256 and starts with one
-radix bucket. A bucket splits on further hash bits only when the existing
-function-count or operation budget requires it. Siblings never absorb overflow
-from another bucket. Ordering within each final bucket is by exact symbol name;
-input traversal order is irrelevant. There is no fixed high worker-count floor
-or module-name classifier. A budget change is allowed to change batches. A
-reachability change can split or coalesce its bucket but does not repack all
-subsequent functions. A single oversized function remains one bounded compiler
-input under the existing megafunction authority.
+Stdlib batching first groups functions by their existing exact `source_file`
+identity. Missing source metadata forms one group; it is distinct from an empty
+source path. Each group orders symbols by a domain-separated SHA256 and starts
+with one radix bucket. A bucket splits on further hash bits only when the
+existing function-count or operation budget requires it. Siblings never absorb
+overflow from another bucket. Source groups and symbols are ordered
+deterministically, independent of input traversal. No new module classifier or
+worker scheduler is involved.
+
+Adding an unrelated source cannot change existing compilation units. A budget
+change can change batches, and a reachability change can split or coalesce
+buckets within its source group. Keeping sources separate can increase cold
+worker launches in exchange for avoiding cross-source recompilation. A single
+oversized function remains one compiler input under the existing megafunction
+authority.
 
 Even zero- and one-body archives use this same path. An empty partition emits
 one real native object containing the ABI anchor. The former direct-only
