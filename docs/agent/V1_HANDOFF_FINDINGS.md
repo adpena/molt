@@ -96,6 +96,13 @@ micro-runtime lifecycle cases through the production host. Each result retains
 its own source, image, target, profile and exclusion scope below; unchanged
 evidence is reused, not promoted into a full release result.
 
+Daemon discovery now consumes the canonical backend executable-name authority,
+including feature-qualified and Windows names. The existing birth, exact-path
+and socket checks still govern process custody. All 55 focused argv/custody
+checks pass on Darwin, and actual stale native-backend cleanup succeeds through
+the verified process boundary. This is development-side cleanup work; it adds
+no emitted-program work or cross-platform execution claim.
+
 The remaining landing work is the affected compiled public native/WASM
 consumer group and applicable lint. Native public execution is in progress;
 the full native/WASM release matrix, standalone-without-Python installed

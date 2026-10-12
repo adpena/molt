@@ -14,6 +14,7 @@ from typing import Any
 
 from molt.dx import session_artifact_component
 from molt.build_state_layout import project_build_state_root
+from molt.backend_executable_names import is_backend_executable_name
 
 IDENTITY_SCHEMA = "molt.backend_daemon.identity.v2"
 
@@ -287,10 +288,11 @@ def _command_executable_matches_backend(
     backend_bin: Path | None,
 ) -> bool:
     exe_path = Path(executable)
-    expected_name = backend_bin.name if backend_bin is not None else "molt-backend"
-    if exe_path.name != expected_name:
+    if backend_bin is None:
+        return is_backend_executable_name(exe_path.name)
+    if exe_path.name != backend_bin.name:
         return False
-    if backend_bin is None or not exe_path.is_absolute():
+    if not exe_path.is_absolute():
         return True
     try:
         return exe_path.resolve(strict=False) == backend_bin.resolve(strict=False)

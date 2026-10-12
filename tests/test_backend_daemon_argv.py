@@ -121,9 +121,27 @@ def test_posix_malformed_quote_is_not_guessed_as_signal_authority(monkeypatch):
     assert daemon._split_command('molt-backend --daemon --socket "unterminated') == ()
 
 
-def test_daemon_observation_uses_only_birth_bound_typed_vectors(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", ["", ".exe"])
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "molt-backend",
+        "molt-backend.default",
+        "molt-backend.native_backend",
+        "molt-backend.wasm_backend",
+        "molt-backend.luau_backend",
+        "molt-backend.rust_backend",
+        "molt-backend.llvm_native_backend",
+        "molt-backend.llvm_wasm_backend",
+        "molt-backend.llvm_luau_backend",
+        "molt-backend.llvm_rust_backend",
+    ],
+)
+def test_daemon_observation_uses_only_birth_bound_typed_vectors(
+    tmp_path, monkeypatch, stem, suffix
+):
     argv = (
-        str(tmp_path / "molt-backend"),
+        str(tmp_path / (stem + suffix)),
         "--daemon",
         "--socket",
         str(tmp_path / "socket with spaces"),
@@ -133,6 +151,12 @@ def test_daemon_observation_uses_only_birth_bound_typed_vectors(tmp_path, monkey
         12: valid,
         13: replace(valid, pid=13, started_at_ns=None),
         14: replace(valid, pid=14, argv=None),
+        15: replace(valid, pid=15, argv=(argv[0] + ".log", *argv[1:])),
+        16: replace(
+            valid,
+            pid=16,
+            argv=(str(tmp_path / "molt-backend.unrecognized"), *argv[1:]),
+        ),
     }
     monkeypatch.setattr(daemon, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(
