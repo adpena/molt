@@ -71,6 +71,11 @@ static EXITS: AtomicU64 = AtomicU64::new(0);
 #[unsafe(no_mangle)] pub extern "C" fn molt_recursion_guard_enter() -> i64 {{ 1 }}
 #[unsafe(no_mangle)] pub extern "C" fn molt_recursion_guard_exit() {{}}
 #[unsafe(no_mangle)] pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
+static PENDING: u8 = 0;
+#[unsafe(no_mangle)] pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+    core::ptr::addr_of!(PENDING) as u64
+}}
+#[unsafe(no_mangle)] pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
     fn molt_init_sys();
