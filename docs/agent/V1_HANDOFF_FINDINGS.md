@@ -214,13 +214,22 @@ failed-isolate reproducer and the DBM and SSL resource controls. Its sole failur
 is the new unwind test expecting the unchecked current-state accessor to expose
 a detached record. The corrected oracle separately proves retained ownership
 and attached visibility, preserving exact dictionary and pending-error identity;
-the corrected test still requires execution. The ignored actual WASI lifecycle
-consumer also lacked artifact
+the corrected candidate `f645ea9d5` passes all 1,880 optimized runtime semantic
+cases with complete process custody and no allocation observer. Seven performance
+probes remain unrun by this semantic gate. The exact executable and gate receipts
+are retained. The same candidate passes all 783 standalone ABI cases across
+56 executables, with one ignored case and complete process custody. The ignored
+actual WASI lifecycle consumer also lacked artifact
 production and handoff; its owning runtime gate now builds and binds the WASI
 libtest, native integration driver and production host together. The gate reuses
 the existing artifact decoder, allocation-feature check and test runner; its
-five-case semantic roster remains owned by the Rust consumer. Compiled
-qualification remains outstanding.
+five-case semantic roster remains owned by the Rust consumer. Its first actual
+run stops before building because a bare Cargo selector reaches a rustup proxy
+outside the admitted toolchain. All runtime gate metadata, build and version
+consumers now retain the queue-selected Cargo executable as one argument. The
+143 owning controls pass, including a distinct PATH proxy and a selected path
+containing spaces; independent review passes. Actual WASI execution remains
+outstanding until the repaired consumer runs.
 
 Both actual WASM host-boundary programs pass on `b38bf66a3` with complete
 process custody. The host-error program preserves `AttributeError`; the file
@@ -229,12 +238,18 @@ independently verifies non-mutation. The native compiled-tooling row instead
 exposes a shared fixture-output ownership mismatch and an incomplete LLVM SDK.
 Queued pytest fixtures now reuse the canonical admitted proof scratch root;
 direct guards and explicit caller roots retain their existing semantics.
-Six focused controls and independent review pass. Actual compiled consumers
-remain required after the complete authenticated SDK is available.
+Six focused controls and independent review pass. After installing the complete
+authenticated SDK, actual execution confirms the scratch repair: 61 checks pass,
+six skip, and the remaining eleven fail at the shared SDK verifier's uncaptured
+C++ prerequisite. The verifier's entire execution closure and the selected
+cross-format linker consumers must migrate together before this row qualifies.
 
 Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
 classes; all exact-source CPython reference executions pass with empty stderr.
-The remaining SemLock contract belongs to V1-34. The expanded fixture uses
+The complete public consumer union contains 68 native programs and 20 selected
+WASM programs; 41 native programs require exact stderr, while the other 27 retain
+their earlier comparison policy. These are execution obligations, not passing
+results. The remaining SemLock contract belongs to V1-34. The expanded fixture uses
 public SQLite, DBM, codecs, HTML, hashing and compression interfaces, including
 closed owners retained through module retirement. SSL evidence must bind the
 certificate actually selected from the pinned CPython source inputs. The
@@ -1938,7 +1953,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | V1-32 | Logging Filterer requires a `.filter` attribute and swallows filter exceptions; it does not implement callable filters or propagate a replacement LogRecord through handler/logger consumers. These semantics are separate from the corrected stream writer, whose tests intentionally use object filters. | Reconcile Filterer, Handler.handle and Logger.handle against the declared CPython-version matrix. Prove callable and object filters, exception propagation, replacement-record identity, false results and mutation/order across actual native/WASM execution. Stream/file admission controls do not qualify this row. |
 
-| V1-34 | Opaque-resource facades can look up native cleanup functions after module namespaces retire, leak registry owners after logical close, or detach owners before partial-construction cleanup has finished acquiring its inputs. Native execution reproduces unraisable Event finalizer errors; source review also finds closed SQLite cursor retention, DBM retention on close failure and the discarded SSL unwrap descriptor. `_multiprocessing.SemLock` exposes a value-only constructor where CPython requires the five-argument constructor protocol. | Complete the existing constructor/close/drop/finalizer family, preserving borrowed owners, reentrancy, failure identity and each original suppression boundary. The successor changes 64 owner classes; an automatic development-side census also covers already-correct siblings and ties discovered opaque cleanup owners to behavioral controls. Host controls do not qualify compiled shutdown or native registry retirement. Execute the actual native/WASM consumer matrix and real OS-resource controls. Reconcile the SemLock constructor and its callers against CPython before claiming its private-module surface; public multiprocessing programs that do not use SemLock are not evidence for that surface. Named Tcl deletion and user-visible flush/writeback are distinct ownership protocols, not covered by the opaque-handle claim. SSL graceful shutdown remains under V1-10. |
+| V1-34 | Opaque-resource facades can look up native cleanup functions after module namespaces retire, leak registry owners after logical close, or detach owners before partial-construction cleanup has finished acquiring its inputs. Native execution reproduces unraisable Event finalizer errors; source review also finds closed SQLite cursor retention, DBM retention on close failure and the discarded SSL unwrap descriptor. `_multiprocessing.SemLock` exposes a value-only constructor where CPython requires five arguments, and its intrinsic call omits the required bounded argument. Its `sem_unlink` name is incorrectly aliased to unsafe process-handle destruction: ordinary string input reaches a process-owner-only pointer boundary. This route has not been executed during review and is a security landing blocker. Public multiprocessing synchronization currently substitutes thread-local objects instead of owning interprocess synchronization. | Complete the existing constructor/close/drop/finalizer family, preserving borrowed owners, reentrancy, failure identity and each original suppression boundary. The successor changes 64 owner classes; an automatic development-side census also covers already-correct siblings and ties discovered opaque cleanup owners to behavioral controls. Host controls do not qualify compiled shutdown or native registry retirement. Execute the actual native/WASM consumer matrix and real OS-resource controls. Replace the wrong semaphore/process alias through the genuine semaphore authority; reconcile creation, naming, unlink, rebuild, export, pickling and public process synchronization against CPython. Migrate real native/WASM/platform consumers and test arity and opaque-owner role boundaries without invoking the unsafe legacy route. Thread-only substitutes or private-module mocks do not qualify interprocess behavior. Named Tcl deletion and user-visible flush/writeback are distinct ownership protocols, not covered by the opaque-handle claim. SSL graceful shutdown remains under V1-10. |
 
 ## Open: correctness and release blockers
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,33 @@ pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 # The actual runtime remainder contains the trap and cold-denial owners (and
 # the trap's child test); the process-exit owner is a mandatory isolated case.
 REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, support.COLD]
+
+
+@pytest.fixture
+def selected_cargo(monkeypatch, tmp_path):
+    from molt.cli.runtime_cargo_plan import _tool_path
+    from molt.rust_toolchain import rustup_proxy_entrypoint
+
+    suffix = ".exe" if os.name == "nt" else ""
+    selected = tmp_path / "selected toolchain with spaces" / f"cargo{suffix}"
+    proxy = tmp_path / "path proxies" / f"cargo{suffix}"
+    rustup = proxy.with_name(f"rustup{suffix}")
+    for path, data in (
+        (selected, b"selected physical Cargo"),
+        (proxy, b"different rustup proxy"),
+        (rustup, b"different rustup proxy"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o755)
+    monkeypatch.setenv("CARGO", str(selected))
+    monkeypatch.setenv("PATH", str(proxy.parent))
+    # Prove that a bare selector would choose a real proxy identity, not the
+    # queue-published physical Cargo. No compiler or proxy process is executed.
+    assert _tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
+    with rustup_proxy_entrypoint(proxy) as entrypoint:
+        assert entrypoint == rustup
+    return str(selected)
 
 
 def fixture_ledger(tmp_path):
@@ -571,7 +599,9 @@ def test_shipping_profile_rejects_assertion_overrides(environment):
 
 
 @pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
-def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path, output_owner):
+def test_default_profile_is_shipping_before_build(
+    monkeypatch, tmp_path, output_owner, selected_cargo
+):
     # Observe typed build argv without compiling or publishing a synthetic pass.
     seen = []
     source = tmp_path / "source"
@@ -597,7 +627,8 @@ def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path, output_
         def run(self, argv, **kwargs):
             from types import SimpleNamespace
 
-            if argv[:2] == ["cargo", "metadata"]:
+            assert argv[0] == selected_cargo
+            if argv[:2] == [selected_cargo, "metadata"]:
                 return SimpleNamespace(
                     stdout='{"packages":[]}', stderr="", returncode=0
                 )
@@ -764,7 +795,7 @@ OBSERVER_WITNESSES = {
     ],
 )
 def test_observer_builds_once_and_requires_isolated_source_bound_controls(
-    monkeypatch, tmp_path, mutation
+    monkeypatch, tmp_path, mutation, selected_cargo
 ):
     import json
     from types import SimpleNamespace
@@ -843,12 +874,12 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
     class Commands:
         def run(self, argv, **kwargs):
             result = SimpleNamespace(stdout="", stderr="", returncode=0)
-            if argv[:2] == ["cargo", "metadata"]:
+            if argv[:2] == [selected_cargo, "metadata"]:
                 result.stdout = json.dumps(metadata)
-            elif argv[:2] == ["cargo", "test"]:
+            elif argv[:2] == [selected_cargo, "test"]:
                 builds.append(argv)
                 result.stdout = "\n".join(json.dumps(item) for item in artifacts)
-            elif argv[0] in {"cargo", "rustc"}:
+            elif argv[0] in {selected_cargo, "rustc"}:
                 result.stdout = "fixture-toolchain"
             else:
                 # Both inventories must be admitted before any test starts.
@@ -1038,7 +1069,7 @@ def test_feature_only_performance_probes_are_unrun_without_changing_default_poli
     ],
 )
 def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
-    monkeypatch, tmp_path, mutation
+    monkeypatch, tmp_path, mutation, selected_cargo
 ):
     import json
     from types import SimpleNamespace
@@ -1138,6 +1169,18 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     def plan(
         root, *, env, cargo_command, requested_target, host_target, rustflags_transform
     ):
+        # Exercise the real planner's executable-selection boundary, while its
+        # SDK/configuration/compiler work remains outside this host unit test.
+        selected = runtime_cargo_plan._tool_path(
+            cargo_command[0], root=root, env=env, role="cargo"
+        )
+        assert selected == Path(selected_cargo)
+        assert (
+            runtime_cargo_plan.resolve_rustup_proxy(
+                selected, role="cargo", root=root, env=env
+            )
+            == selected
+        )
         assert (
             root == gate.ROOT
             and requested_target == "wasm32-wasip1"
@@ -1167,9 +1210,9 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     class Commands:
         def run(self, argv, **kwargs):
             result = SimpleNamespace(stdout="", stderr="", returncode=0)
-            if argv[:2] == ["cargo", "metadata"]:
+            if argv[:2] == [selected_cargo, "metadata"]:
                 result.stdout = json.dumps(metadata)
-            elif argv[:2] == ["cargo", "test"]:
+            elif argv[:2] == [selected_cargo, "test"]:
                 package = argv[argv.index("-p") + 1]
                 builds.append((argv, kwargs["env"]))
                 result.stdout = "\n".join(json.dumps(item) for item in records[package])

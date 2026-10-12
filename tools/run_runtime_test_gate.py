@@ -678,11 +678,12 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
     aggregate["source_identity"] = source
     host_target = truth.host_target()
     aggregate["host_target"] = host_target
+    cargo = os.environ.get("CARGO", "cargo")
     aggregate["unrun_scope"] = (
         "WASI cases outside the Rust lifecycle roster and all native runtime semantics"
     )
     metadata = COMMANDS.run(
-        ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
+        [cargo, "metadata", "--locked", "--format-version=1", "--no-deps"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -698,7 +699,7 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         ("molt-wasm-host", "wasi_runtime_lifecycle", "test", host_target),
     ):
         command = [
-            "cargo",
+            cargo,
             "test",
             "--locked",
             "--profile",
@@ -936,8 +937,9 @@ def main(argv: list[str] | None = None) -> int:
             return finish_aggregate(run, aggregate)
         source = truth.git_source_identity()
         aggregate["source_identity"] = source
+        cargo = os.environ.get("CARGO", "cargo")
         command = [
-            "cargo",
+            cargo,
             "test",
             "--locked",
             "--profile",
@@ -958,7 +960,7 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             )
         metadata = COMMANDS.run(
-            ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
+            [cargo, "metadata", "--locked", "--format-version=1", "--no-deps"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -986,7 +988,7 @@ def main(argv: list[str] | None = None) -> int:
         toolchain = {}
         for tool, flags in (("rustc", ["-vV"]), ("cargo", ["--version"])):
             version = COMMANDS.run(
-                [tool, *flags],
+                [cargo if tool == "cargo" else tool, *flags],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
