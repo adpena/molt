@@ -17,12 +17,7 @@ use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_T
 // point. -bundle passes the original object to wasm-ld; +verbatim preserves
 // the plan's exact filename in the already authenticated native search path.
 #[cfg(target_os = "wasi")]
-#[link(
-    name = env!("MOLT_WASI_TEST_COMMAND_CRT"),
-    kind = "static",
-    modifiers = "-bundle,+verbatim"
-)]
-unsafe extern "C" {}
+include!(concat!(env!("OUT_DIR"), "/molt_wasi_test_startup.rs"));
 
 #[allow(dead_code)]
 mod cargo_test_artifacts {
