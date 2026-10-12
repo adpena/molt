@@ -355,8 +355,9 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     .module
                     .verify()
                     .expect("boxed argument owner lifetime");
-                assert!(
+                assert_eq!(
                     ir.contains(&format!("call i64 @molt_int_from_i64(i64 {value})")),
+                    !inline_proven,
                     "{ir}"
                 );
                 let release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
