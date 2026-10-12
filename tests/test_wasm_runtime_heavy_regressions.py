@@ -17,7 +17,7 @@ from tests.wasm_linked_runner import (
 
 
 def _assert_no_recursive_mutex_panic(stderr: str) -> None:
-    assert "cannot recursively acquire mutex" not in stderr
+    assert "cannot recursively acquire mutex" not in stderr, stderr
 
 
 def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
@@ -70,8 +70,8 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
         "res 5",
         "main main2",
     ]
-    assert "null function or function signature mismatch" not in run.stderr
-    assert "__molt_table_ref_" not in run.stderr
+    assert "null function or function signature mismatch" not in run.stderr, run.stderr
+    assert "__molt_table_ref_" not in run.stderr, run.stderr
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
@@ -120,7 +120,7 @@ def test_wasm_zipimport_package_lookup_parity(
         },
     )
     assert run.returncode != 0
-    assert "ZipImportError: can't find module 'pkg.mod'" in run.stderr
+    assert "ZipImportError: can't find module 'pkg.mod'" in run.stderr, run.stderr
     _assert_no_recursive_mutex_panic(run.stderr)
 
 

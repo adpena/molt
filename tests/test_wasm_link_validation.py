@@ -4581,6 +4581,9 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
 def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    scratch = tmp_path / "proof-scratch"
+    monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
+    temporary_paths: list[Path] = []
     app = _build_split_runtime_app_module([])
     optimize_calls = 0
     cache_root = tmp_path / "cache"
@@ -4603,6 +4606,9 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     def fake_optimize(path: Path, **kwargs) -> bool:  # type: ignore[no-untyped-def]
         nonlocal optimize_calls
         optimize_calls += 1
+        assert path.is_relative_to(scratch)
+        assert path.read_bytes() == app
+        temporary_paths.append(path)
         kwargs["attestation"].update(
             ok=True,
             status="success",
@@ -4661,6 +4667,8 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
 
     assert warm == cold
     assert optimize_calls == 1
+    assert temporary_paths and all(not path.exists() for path in temporary_paths)
+    assert list(scratch.iterdir()) == []
     assert cold_counts["split_app_optimize_requests"] == 1
     assert cold_counts["split_app_optimize_cache_misses"] == 1
     assert cold_counts["split_app_wasm_opt_runs"] == 1
@@ -12247,3 +12255,98 @@ def test_linker_tool_and_sdk_generation_share_request_cwd(tmp_path, monkeypatch)
     assert actual.path.parent == prefix / "sdk/bin"
     assert actual.wasi_sdk_llvm_version == installation.asset.llvm_version
     assert not (ambient / "relative-tools").exists()
+
+
+@pytest.mark.parametrize("entry", ["public", "direct"])
+@pytest.mark.parametrize("queued", [False, True])
+def test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, entry: str, queued: bool
+) -> None:
+    import stat
+    import tempfile
+
+    platform_temp = tmp_path / "unadmitted-platform-temp"
+    platform_temp.mkdir()
+    artifact_root = tmp_path / "direct-artifacts"
+    scratch = tmp_path / "proof-scratch" if queued else artifact_root / "tmp"
+    scanner = tmp_path / "molt-backend.wasm_backend"
+    scanner_bytes = b"immutable scanner generation"
+    scanner.write_bytes(scanner_bytes)
+    scanner.chmod(0o755)
+    scanner_mode = stat.S_IMODE(scanner.stat().st_mode)
+    runtime, output, linked = (
+        tmp_path / name for name in ("runtime.wasm", "app.wasm", "linked.wasm")
+    )
+    module = b"\0asm\x01\0\0\0"
+    runtime.write_bytes(module)
+    output.write_bytes(module)
+    contract = _write_app_export_contract(
+        tmp_path / "contract.json", entry_module="test_app", source="", symbols=[]
+    )
+    invoked: list[Path] = []
+
+    def execute(command, **_kwargs):
+        copied = Path(command[0])
+        assert copied.is_relative_to(scratch)
+        assert copied != scanner and not copied.is_symlink()
+        assert copied.name == scanner.name
+        assert copied.read_bytes() == scanner_bytes
+        assert stat.S_IMODE(copied.stat().st_mode) == scanner_mode
+        invoked.append(copied)
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            json.dumps(
+                {
+                    "schema_version": wasm_link_fact_provider.WASM_LINK_FACTS_SCHEMA_VERSION,
+                    "ok": False,
+                    "error": "scratch-routing-witness",
+                }
+            ),
+            "",
+        )
+
+    def make_provider(selected, selected_scratch, metrics=None, **kwargs):
+        provide = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
+            selected, selected_scratch, metrics, **kwargs
+        )
+        scanner.write_bytes(b"source changed after sealing")
+        provide(module)  # Actual provider invokes its copied image before refusal.
+        raise AssertionError("the explicit scanner rejection must propagate")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "tempdir", str(platform_temp))
+        patch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+        patch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+        if queued:
+            patch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
+        else:
+            patch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
+        patch.setattr(
+            wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=execute)
+        )
+        patch.setattr(
+            wasm_link_fact_provider, "make_rust_wasm_facts_provider", make_provider
+        )
+        patch.setattr(wasm_link, "make_rust_wasm_facts_provider", make_provider)
+        runner = (
+            _REAL_RUN_WASM_LD
+            if entry == "public"
+            else wasm_link_pipeline.run_wasm_ld_with_custodied_inputs
+        )
+        result = runner(
+            "wasm-ld",
+            runtime,
+            output,
+            linked,
+            wasm_facts_scanner=scanner,
+            app_export_contract_path=contract,
+            failure_evidence_dir=tmp_path / "evidence",
+        )
+    assert result == 1
+    assert "scratch-routing-witness" in capsys.readouterr().err
+    assert len(invoked) == 1
+    assert not invoked[0].exists()
+    assert scratch.is_dir() and list(scratch.iterdir()) == []
+    assert list(platform_temp.iterdir()) == []
+    assert not linked.exists()

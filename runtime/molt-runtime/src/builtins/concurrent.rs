@@ -714,7 +714,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             }
             if pool
                 .unfinished
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                     count.checked_add(1)
                 })
                 .is_err()

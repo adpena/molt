@@ -33,6 +33,7 @@ from molt.cli.source_extension_link_requirements import (
     merge_source_extension_link_requirements,
     source_extension_link_file,
 )
+from molt.dx import proof_scratch_root
 from molt.exact_json import dumps_exact
 from molt.link_outputs import wasm_link_output_paths
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_outputs
@@ -1821,7 +1822,9 @@ def run_wasm_ld_with_custodied_inputs(
             file=sys.stderr,
         )
         return 1
-    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-link-")
+    scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-link-", dir=scratch_root)
     staged_outputs: list[Path] = []
     whole_artifact_counts = contextlib.ExitStack()
     try:
