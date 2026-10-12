@@ -133,7 +133,9 @@ show_decode_error("incremental-buffered", lambda: decoder.decode(b"\xff", True))
 
 show_decode_error("charmap-dict", lambda: codecs.charmap_decode(b"a\xffz", "strict", {97: 97, 122: 122}))
 show_decode_error("charmap-table", lambda: codecs.charmap_decode(b"a\xffz", "strict", "".join(chr(i) for i in range(255))))
-show_decode_error("json-utf16", lambda: json.loads(b'"\x00\x00\xd8'))
+# JSON deliberately permits UTF16 surrogates; an incomplete code unit must
+# fail decoding before JSON syntax is considered.
+show_decode_error("json-utf16", lambda: json.loads(b'\xff\xfe"\x00\x00'))
 
 for errors in ("strict", "replace", "backslashreplace"):
     text = "a€z"
