@@ -125,9 +125,11 @@ and performance measurement remain unqualified. This removes compiler-side
 work and adds no emitted-program checks.
 
 Canonical Clippy submission exposed a missing output-placement classification.
-Clippy now uses the same declared Cargo output authority; 26 focused controls
-pass, including direct/delegated admission and unchanged query, bypass and
-retention refusals. The registered workspace command still must execute.
+Clippy output placement landed on main as `d416b8ad0`; 26 focused controls
+pass on that checkout, including direct/delegated admission and unchanged query,
+bypass and retention refusals. The candidate retains the same repaired source.
+The registered workspace command still must execute; its first successor
+submission stopped at disk admission before launching the compiler.
 The full native/WASM release matrix, standalone-without-Python installed
 qualification, security/resource repairs and positive performance admission
 remain open in their owning buckets. Do not grow this migration with unrelated
