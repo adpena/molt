@@ -237,7 +237,10 @@ compile on WASI. Final executable linking then exposes a missing startup object
 under the non-self-contained SDK link plan. The runtime's test-only support now
 links the command CRT selected by the existing authenticated C-ABI projection;
 production libraries do not receive a startup declaration. Actual linking and
-the five lifecycle cases remain unverified for this successor.
+the five lifecycle cases remain unverified for this successor. The generated
+declaration uses the raw WASM linker's exact-filename syntax: Rust's WASM linker
+does not implement the native `+verbatim` modifier. Earlier rejected attribute
+and library-name attempts remain failed compilation evidence.
 
 Both actual WASM host-boundary programs pass on `b38bf66a3` with complete
 process custody. The host-error program preserves `AttributeError`; the file
@@ -262,6 +265,16 @@ retains an incomplete journal and closes all observed native custody; this is
 not a compiler-consumer pass. Creation-event refusal now retains the task ID,
 wait status and admitted process owner needed to distinguish the failing
 transition. Its cause remains open; no timeout or admission rule is weakened.
+Live observation of the next bounded run shows an exited linker leader with a
+new thread retained in a tracing stop. Linux permits fatal group termination to
+supersede a creation stop and deliver a new thread's EXIT before its creator's
+notification. The successor releases only kernel-proven exiting threads of an
+existing process owner and rechecks creation/exec payloads against the current
+kernel stop tag. It neither turns an exit status into a child PID nor resumes
+unadmitted user code. A deterministic real-kernel control holds both initial
+stops, kills the owned group, and challenges both transitions. Compilation,
+kernel execution, the actual linker consumer and independent review remain
+required; a disappearing unadmitted process still fails closed.
 
 Thirty strict-stderr public fixtures cover 63 of the 64 changed opaque-owner
 classes; all exact-source CPython reference executions pass with empty stderr.
