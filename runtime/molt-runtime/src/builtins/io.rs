@@ -11,7 +11,6 @@ use crate::windows_abi::{
 #[allow(unused_imports)]
 pub use super::io_path::*;
 pub(crate) use super::io_path_utils::*;
-use crate::object::ops_encoding::DecodeFailure;
 use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,

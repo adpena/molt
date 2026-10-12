@@ -204,8 +204,8 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     }
     let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
     let args_ptr = alloc_tuple(_py, &[errno_bits, msg_bits]);
+    dec_ref_bits(_py, msg_bits);
     if args_ptr.is_null() {
-        dec_ref_bits(_py, msg_bits);
         return T::exception_sentinel();
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();

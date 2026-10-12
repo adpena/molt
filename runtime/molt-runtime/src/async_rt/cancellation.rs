@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::builtins::exceptions::record_exception_owned;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -10,9 +11,9 @@ use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
     MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits,
     exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits, raise_exception,
-    record_exception, runtime_state, string_obj_to_owned, task_exception_baseline_drop,
-    task_exception_depth_drop, task_exception_handler_stack_drop, task_exception_stack_drop,
-    task_last_exception_drop, type_name,
+    runtime_state, string_obj_to_owned, task_exception_baseline_drop, task_exception_depth_drop,
+    task_exception_handler_stack_drop, task_exception_stack_drop, task_last_exception_drop,
+    type_name,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr};
@@ -484,7 +485,7 @@ pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
         let class_bits = exception_type_bits_from_name(_py, "CancelledError");
         let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
         if !ptr.is_null() {
-            record_exception(_py, ptr);
+            record_exception_owned(_py, ptr);
             return T::exception_sentinel();
         }
     }

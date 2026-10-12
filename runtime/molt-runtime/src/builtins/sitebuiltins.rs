@@ -1,8 +1,9 @@
+use crate::builtins::exceptions::record_exception_owned;
 use crate::molt_print_builtin;
 use crate::object::ops::type_name;
 use crate::{
     MoltObject, PyToken, alloc_exception_from_class_bits, alloc_string, alloc_tuple, dec_ref_bits,
-    exception_pending, exception_type_bits_from_name, obj_from_bits, record_exception,
+    exception_pending, exception_type_bits_from_name, obj_from_bits,
 };
 
 const MOLT_CREDITS_TEXT: &str = concat!(
@@ -105,10 +106,11 @@ pub extern "C" fn molt_site_quitter_call(code_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let exc_ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+        dec_ref_bits(_py, args_bits);
         if exc_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        record_exception(_py, exc_ptr);
+        record_exception_owned(_py, exc_ptr);
         // Raising is communicated via the exception state; `None` is the sentinel.
         MoltObject::none().bits()
     })

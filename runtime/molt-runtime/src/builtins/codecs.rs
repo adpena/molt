@@ -1,8 +1,4 @@
-use crate::object::ops::{
-    DecodeTextError as OpsDecodeTextError, decode_error_byte,
-    decode_error_range,
-};
-use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
+use crate::object::ops::DecodeTextError as OpsDecodeTextError;
 use crate::*;
 use molt_stdlib_text::codec_registry::PYTHON_ENCODING_ALIASES;
 
@@ -84,7 +80,7 @@ pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_b
                 let msg = format!("unknown error handler name '{name}'");
                 return raise_exception::<_>(_py, "LookupError", &msg);
             }
-            Err(OpsDecodeTextError::Failure(_failure, _label)) => {}
+            Err(OpsDecodeTextError::Failure(_failure, _label, _input_start)) => {}
         }
 
         let obj = obj_from_bits(obj_bits);
@@ -107,39 +103,7 @@ pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_b
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(OpsDecodeTextError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsDecodeTextError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::Byte { pos, byte, message },
-                label,
-            )) => {
-                let msg = decode_error_byte(&label, byte, pos, message);
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::Range {
-                    start,
-                    end,
-                    message,
-                },
-                label,
-            )) => {
-                let msg = decode_error_range(&label, start, end, message);
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::UnknownErrorHandler(name),
-                _label,
-            )) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
+            Err(error) => error.raise(_py, bytes),
         }
     })
 }

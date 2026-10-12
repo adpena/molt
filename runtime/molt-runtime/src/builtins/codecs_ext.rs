@@ -122,6 +122,38 @@ pub(crate) fn codecs_clear_error_handlers(_py: &PyToken<'_>, state: &RuntimeStat
 mod error_handler_tests {
     use super::*;
 
+    #[test]
+    fn charmap_result_tuple_is_the_only_payload_owner() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // Spaces prevent string interning; the bytes payload is nonempty.
+            let payload = b"charmap result ownership";
+            for tuple in [
+                charmap_decode_tuple(py, payload, payload.len()),
+                charmap_encode_tuple(py, payload, payload.len()),
+            ] {
+                let values = decode_value_list(obj_from_bits(tuple)).unwrap();
+                assert_eq!(values.len(), 2);
+                assert_eq!(to_i64(obj_from_bits(values[1])), Some(payload.len() as i64));
+                let child = values[0];
+                let ptr = obj_from_bits(child).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                    1
+                );
+                inc_ref_bits(py, child);
+                dec_ref_bits(py, tuple);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                    1,
+                    "retiring the tuple must leave only the independently held payload"
+                );
+                dec_ref_bits(py, child);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
+
     extern "C" fn test_error_handler(_error_bits: u64) -> i64 {
         MoltObject::none().bits() as i64
     }
@@ -375,7 +407,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors
                 let msg = format!("unknown error handler name '{name}'");
                 return raise_exception::<_>(_py, "LookupError", &msg);
             }
-            Err(OpsDecodeTextError::Failure(_, _)) => {}
+            Err(OpsDecodeTextError::Failure(_, _, _)) => {}
         }
 
         let id = next_inc_dec_handle();
@@ -412,36 +444,50 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
         let Some(input_bytes) = (unsafe { bytes_like_slice(ptr) }) else {
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
         };
-        let is_final = is_truthy(_py, obj_from_bits(final_bits));
-
-        // Copy input bytes into a local vec to avoid borrow lifetime conflicts.
-        let input_vec = input_bytes.to_vec();
-
-        let (encoding, errors, mut buffer) = INC_DEC_HANDLES.with(|h| {
-            let s = h.borrow();
-            if let Some(state) = s.get(&id) {
-                (
-                    state.encoding.clone(),
-                    state.errors.clone(),
-                    state.buffer.clone(),
-                )
-            } else {
-                (String::new(), String::new(), Vec::new())
-            }
+        // Match BufferedIncrementalDecoder: combine the owned prefix and input
+        // before final.__bool__ can mutate the input or reenter this decoder.
+        // No borrowed Python buffer or registry borrow crosses that callback.
+        let captured = INC_DEC_HANDLES.with(|h| {
+            let states = h.borrow();
+            states.get(&id).map(|state| {
+                let mut combined = Vec::with_capacity(state.buffer.len() + input_bytes.len());
+                combined.extend_from_slice(&state.buffer);
+                combined.extend_from_slice(input_bytes);
+                (state.encoding.clone(), state.errors.clone(), combined)
+            })
         });
-        if encoding.is_empty() {
+        let Some((encoding, errors, decode_input)) = captured else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid decoder handle");
+        };
+        let is_final = is_truthy(_py, obj_from_bits(final_bits));
+        if exception_pending(_py) {
+            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
 
-        buffer.extend_from_slice(&input_vec);
-
-        let decode_input = if is_final {
-            buffer.clone()
-        } else {
-            // For incremental: try to decode all available bytes; on failure,
-            // leave up to 3 trailing bytes buffered (max multi-byte seq length).
-            buffer.clone()
-        };
+        if crate::object::ops_encoding::normalize_encoding(&encoding).is_some_and(|kind| {
+            kind.runtime_class() == crate::object::ops_encoding::CodecRuntimeClass::Utf8
+        }) {
+            return match crate::object::ops_encoding::decode_utf8_incremental(
+                &decode_input,
+                &errors,
+                is_final,
+            ) {
+                Ok((text_bytes, consumed)) => {
+                    let ptr = alloc_string(_py, &text_bytes);
+                    if ptr.is_null() {
+                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
+                        );
+                    }
+                    INC_DEC_HANDLES.with(|h| {
+                        if let Some(state) = h.borrow_mut().get_mut(&id) {
+                            state.buffer = decode_input[consumed..].to_vec();
+                        }
+                    });
+                    MoltObject::from_ptr(ptr).bits()
+                }
+                Err(error) => error.raise(_py, &decode_input),
+            };
+        }
 
         let result = decode_bytes_text(&encoding, &errors, &decode_input);
         match result {
@@ -458,7 +504,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(OpsDecodeTextError::Failure(OpsDecodeFailure::Byte { pos, .. }, _))
+            Err(OpsDecodeTextError::Failure(OpsDecodeFailure::Byte { pos, .. }, _, _))
                 if !is_final =>
             {
                 // Buffer bytes from pos onward; return decoded prefix.
@@ -478,43 +524,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(OpsDecodeTextError::UnknownEncoding(name)) => {
-                let msg = format!("unknown encoding: {name}");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsDecodeTextError::UnknownErrorHandler(name)) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::Byte { pos, byte, message },
-                label,
-            )) => {
-                let msg = format!(
-                    "'{label}' codec can't decode byte 0x{byte:02x} in position {pos}: {message}"
-                );
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::Range {
-                    start,
-                    end,
-                    message,
-                },
-                label,
-            )) => {
-                let msg = format!(
-                    "'{label}' codec can't decode bytes in position {start}-{end}: {message}"
-                );
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
-            }
-            Err(OpsDecodeTextError::Failure(
-                OpsDecodeFailure::UnknownErrorHandler(name),
-                _label,
-            )) => {
-                let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
-            }
+            Err(error) => error.raise(_py, &decode_input),
         }
     })
 }
@@ -691,7 +701,7 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(e) => stream_decode_error(_py, e),
+            Err(error) => error.raise(_py, &combined),
         }
     })
 }
@@ -748,7 +758,7 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(e) => stream_decode_error(_py, e),
+            Err(error) => error.raise(_py, &raw_vec),
         }
     })
 }
@@ -763,41 +773,6 @@ pub extern "C" fn molt_codecs_stream_reader_drop(handle_bits: u64) -> u64 {
         STREAM_RDR_HANDLES.with(|h| h.borrow_mut().remove(&id));
         MoltObject::none().bits()
     })
-}
-
-fn stream_decode_error(_py: &PyToken<'_>, e: OpsDecodeTextError) -> u64 {
-    match e {
-        OpsDecodeTextError::UnknownEncoding(name) => {
-            let msg = format!("unknown encoding: {name}");
-            raise_exception::<u64>(_py, "LookupError", &msg)
-        }
-        OpsDecodeTextError::UnknownErrorHandler(name) => {
-            let msg = format!("unknown error handler name '{name}'");
-            raise_exception::<u64>(_py, "LookupError", &msg)
-        }
-        OpsDecodeTextError::Failure(OpsDecodeFailure::Byte { pos, byte, message }, label) => {
-            let msg = format!(
-                "'{label}' codec can't decode byte 0x{byte:02x} in position {pos}: {message}"
-            );
-            raise_exception::<u64>(_py, "UnicodeDecodeError", &msg)
-        }
-        OpsDecodeTextError::Failure(
-            OpsDecodeFailure::Range {
-                start,
-                end,
-                message,
-            },
-            label,
-        ) => {
-            let msg =
-                format!("'{label}' codec can't decode bytes in position {start}-{end}: {message}");
-            raise_exception::<u64>(_py, "UnicodeDecodeError", &msg)
-        }
-        OpsDecodeTextError::Failure(OpsDecodeFailure::UnknownErrorHandler(name), _label) => {
-            let msg = format!("unknown error handler name '{name}'");
-            raise_exception::<u64>(_py, "LookupError", &msg)
-        }
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -905,9 +880,12 @@ fn charmap_decode_tuple(_py: &PyToken<'_>, decoded: &[u8], consumed: usize) -> u
     if str_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
-    let str_bits = MoltObject::from_ptr(str_ptr).bits();
+    let text = crate::builtins::exceptions::ExceptionValue::adopt(
+        _py,
+        MoltObject::from_ptr(str_ptr).bits(),
+    );
     let len_bits = MoltObject::from_int(consumed as i64).bits();
-    let elems = [str_bits, len_bits];
+    let elems = [text.bits(), len_bits];
     let tuple_ptr = crate::alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -917,6 +895,7 @@ fn charmap_decode_tuple(_py: &PyToken<'_>, decoded: &[u8], consumed: usize) -> u
 
 fn charmap_decode_undefined(
     _py: &PyToken<'_>,
+    input: &[u8],
     out: &mut Vec<u8>,
     errors: &str,
     byte: u8,
@@ -941,12 +920,16 @@ fn charmap_decode_undefined(
             "TypeError",
             "don't know how to handle UnicodeDecodeError in error callback",
         )),
-        "strict" | "surrogatepass" => {
-            let msg = format!(
-                "'charmap' codec can't decode byte 0x{byte:02x} in position {pos}: character maps to <undefined>"
-            );
-            Err(raise_exception::<_>(_py, "UnicodeDecodeError", &msg))
-        }
+        "strict" | "surrogatepass" => Err(OpsDecodeTextError::Failure(
+            OpsDecodeFailure::Byte {
+                pos,
+                byte,
+                message: "character maps to <undefined>",
+            },
+            "charmap".to_owned(),
+            0,
+        )
+        .raise(_py, input)),
         other => {
             let msg = format!("unknown error handler name '{other}'");
             Err(raise_exception::<_>(_py, "LookupError", &msg))
@@ -988,7 +971,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                 match table_chars.get(byte as usize).copied() {
                     Some('\u{FFFE}') | None => {
                         if let Err(bits) =
-                            charmap_decode_undefined(_py, &mut out, &errors, byte, pos)
+                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, byte, pos)
                         {
                             return bits;
                         }
@@ -1018,7 +1001,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                     Some(mapped) => push_wtf8_codepoint(&mut out, mapped as u32),
                     None => {
                         if let Err(bits) =
-                            charmap_decode_undefined(_py, &mut out, &errors, byte, pos)
+                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, byte, pos)
                         {
                             return bits;
                         }
@@ -1047,7 +1030,8 @@ pub extern "C" fn molt_codecs_charmap_decode(
                 Some(val) => {
                     let val_obj = obj_from_bits(val);
                     if val_obj.is_none() {
-                        if let Err(bits) = charmap_decode_undefined(_py, &mut out, &errors, b, pos)
+                        if let Err(bits) =
+                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, b, pos)
                         {
                             return bits;
                         }
@@ -1091,7 +1075,9 @@ pub extern "C" fn molt_codecs_charmap_decode(
                     }
                 }
                 None => {
-                    if let Err(bits) = charmap_decode_undefined(_py, &mut out, &errors, b, pos) {
+                    if let Err(bits) =
+                        charmap_decode_undefined(_py, &input_vec, &mut out, &errors, b, pos)
+                    {
                         return bits;
                     }
                 }
@@ -1111,9 +1097,12 @@ fn charmap_encode_tuple(_py: &PyToken<'_>, encoded: &[u8], consumed: usize) -> u
     if bytes_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
-    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+    let bytes = crate::builtins::exceptions::ExceptionValue::adopt(
+        _py,
+        MoltObject::from_ptr(bytes_ptr).bits(),
+    );
     let len_bits = MoltObject::from_int(consumed as i64).bits();
-    let elems = [bytes_bits, len_bits];
+    let elems = [bytes.bits(), len_bits];
     let tuple_ptr = crate::alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -1189,6 +1178,7 @@ fn charmap_lookup_encode_char(
 
 fn charmap_encode_replacement(
     _py: &PyToken<'_>,
+    input_bits: u64,
     map_ptr: *mut u8,
     out: &mut Vec<u8>,
     replacement: &str,
@@ -1196,24 +1186,20 @@ fn charmap_encode_replacement(
 ) -> Result<(), u64> {
     for repl in replacement.chars() {
         if !charmap_lookup_encode_char(_py, map_ptr, out, repl as u32)? {
-            return Err(charmap_encode_undefined(_py, repl as u32, pos));
+            return Err(charmap_encode_undefined(_py, input_bits, pos));
         }
     }
     Ok(())
 }
 
-fn charmap_encode_undefined(_py: &PyToken<'_>, code: u32, pos: usize) -> u64 {
-    let escaped = if code <= 0xFF {
-        format!("\\x{code:02x}")
-    } else if code <= 0xFFFF {
-        format!("\\u{code:04x}")
-    } else {
-        format!("\\U{code:08x}")
-    };
-    let msg = format!(
-        "'charmap' codec can't encode character '{escaped}' in position {pos}: character maps to <undefined>"
-    );
-    raise_exception::<_>(_py, "UnicodeEncodeError", &msg)
+fn charmap_encode_undefined(_py: &PyToken<'_>, input_bits: u64, pos: usize) -> u64 {
+    crate::object::ops_encoding::EncodeError::InvalidSequence {
+        encoding: "charmap",
+        start: pos,
+        end: pos + 1,
+        reason: "character maps to <undefined>",
+    }
+    .raise(_py, input_bits)
 }
 
 #[unsafe(no_mangle)]
@@ -1270,7 +1256,8 @@ pub extern "C" fn molt_codecs_charmap_encode(
             match errors.as_str() {
                 "ignore" => continue,
                 "replace" => {
-                    if let Err(bits) = charmap_encode_replacement(_py, map_ptr, &mut out, "?", idx)
+                    if let Err(bits) =
+                        charmap_encode_replacement(_py, input_bits, map_ptr, &mut out, "?", idx)
                     {
                         return bits;
                     }
@@ -1279,30 +1266,45 @@ pub extern "C" fn molt_codecs_charmap_encode(
                     let mut replacement = Vec::new();
                     push_xmlcharref_ascii(&mut replacement, ch as u32);
                     let replacement = String::from_utf8(replacement).unwrap_or_default();
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
+                    if let Err(bits) = charmap_encode_replacement(
+                        _py,
+                        input_bits,
+                        map_ptr,
+                        &mut out,
+                        &replacement,
+                        idx,
+                    ) {
                         return bits;
                     }
                 }
                 "backslashreplace" => {
                     let replacement = unicode_escape_codepoint(ch as u32);
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
+                    if let Err(bits) = charmap_encode_replacement(
+                        _py,
+                        input_bits,
+                        map_ptr,
+                        &mut out,
+                        &replacement,
+                        idx,
+                    ) {
                         return bits;
                     }
                 }
                 "namereplace" => {
                     let replacement = unicode_name_escape(ch as u32);
-                    if let Err(bits) =
-                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
-                    {
+                    if let Err(bits) = charmap_encode_replacement(
+                        _py,
+                        input_bits,
+                        map_ptr,
+                        &mut out,
+                        &replacement,
+                        idx,
+                    ) {
                         return bits;
                     }
                 }
                 "strict" | "surrogatepass" | "surrogateescape" => {
-                    return charmap_encode_undefined(_py, ch as u32, idx);
+                    return charmap_encode_undefined(_py, input_bits, idx);
                 }
                 other => {
                     let msg = format!("unknown error handler name '{other}'");
