@@ -408,7 +408,7 @@ fn logarithm(_py: &PyToken, bits: u64, function: fn(f64) -> f64) -> u64 {
                 return float_result_bits(_py, log_bigint(&value, function));
             }
             Ok(None) => {}
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         }
     }
     let Some(value) = float_as_double(_py, bits) else {
@@ -1349,7 +1349,7 @@ fn round_number(_py: &PyToken, bits: u64, mode: RoundMode, name: &'static [u8]) 
             return round_float_bits(_py, value, mode).unwrap_or(MoltObject::none().bits());
         }
         Ok(None) => {}
-        Err(()) => return MoltObject::none().bits(),
+        Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
     }
     if let Some(ptr) = maybe_ptr_from_bits(bits) {
         let name_bits = intern_static_name(_py, name);
@@ -1359,7 +1359,7 @@ fn round_number(_py: &PyToken, bits: u64, mode: RoundMode, name: &'static [u8]) 
                 return call_callable0(_py, method.bits());
             }
             Ok(None) => {}
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         }
     }
     if matches!(mode, RoundMode::Trunc) {
@@ -2283,7 +2283,7 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
             let current = match dict_get_in_place(_py, counts_ptr, value_bits) {
                 Ok(Some(bits)) => to_i64(obj_from_bits(bits)).unwrap_or(0),
                 Ok(None) => 0,
-                Err(()) => {
+                Err(molt_runtime_core::ErrorIndicatorSet) => {
                     if maybe_ptr_from_bits(counts_bits).is_some() {
                         dec_ref_bits(_py, counts_bits);
                     }
@@ -2342,7 +2342,7 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
                     first_seen.push(value_bits);
                     0
                 }
-                Err(()) => {
+                Err(molt_runtime_core::ErrorIndicatorSet) => {
                     if maybe_ptr_from_bits(counts_bits).is_some() {
                         dec_ref_bits(_py, counts_bits);
                     }
@@ -2379,7 +2379,7 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
             let count_bits = match dict_get_in_place(_py, counts_ptr, value_bits) {
                 Ok(Some(bits)) => bits,
                 Ok(None) => continue,
-                Err(()) => {
+                Err(molt_runtime_core::ErrorIndicatorSet) => {
                     if maybe_ptr_from_bits(counts_bits).is_some() {
                         dec_ref_bits(_py, counts_bits);
                     }

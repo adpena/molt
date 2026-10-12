@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::ErrorIndicatorSet;
 
 // ---------------------------------------------------------------------------
 // Match object helpers — .group(), .groups(), .groupdict()
@@ -51,7 +52,7 @@ pub extern "C" fn molt_re_match_group(
         let group_spans = unsafe { seq_snapshot(groups_ptr) };
 
         // Helper: resolve a group index from an int or string selector.
-        let resolve_group = |sel_bits: u64| -> Result<Option<usize>, ()> {
+        let resolve_group = |sel_bits: u64| -> Result<Option<usize>, ErrorIndicatorSet> {
             if let Some(idx) = to_i64(obj_from_bits(sel_bits)) {
                 return Ok(Some(idx as usize));
             }
@@ -62,7 +63,8 @@ pub extern "C" fn molt_re_match_group(
                 let gn_ty = unsafe { object_type_id(gn_ptr) };
                 if gn_ty == TYPE_ID_DICT {
                     // Look up name in the dict.
-                    let name_key_bits = attr_name_bits_from_bytes(_py, name.as_bytes()).ok_or(())?;
+                    let name_key_bits =
+                        attr_name_bits_from_bytes(_py, name.as_bytes()).ok_or(ErrorIndicatorSet)?;
                     let value = unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) };
                     dec_ref_bits(_py, name_key_bits);
                     if let Some(val_bits) = value? {
@@ -145,7 +147,7 @@ pub extern "C" fn molt_re_match_group(
             let idx = match resolve_group(indices[0]) {
                 Ok(Some(idx)) => idx,
                 Ok(None) => return raise_exception::<_>(_py, "IndexError", "no such group"),
-                Err(()) => return MoltObject::none().bits(),
+                Err(ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             return group_text_bits(idx);
         }
@@ -161,7 +163,7 @@ pub extern "C" fn molt_re_match_group(
                     }
                     return match outcome {
                         Ok(None) => raise_exception::<_>(_py, "IndexError", "no such group"),
-                        Err(()) => MoltObject::none().bits(),
+                        Err(ErrorIndicatorSet) => MoltObject::none().bits(),
                         Ok(Some(_)) => unreachable!(),
                     };
                 }

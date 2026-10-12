@@ -613,13 +613,13 @@ pub unsafe fn dict_get_in_place(
     _py: &PyToken,
     dict_ptr: *mut u8,
     key_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
     let mut out: u64 = 0;
     let ok = unsafe { (vt().dict_get_in_place)(dict_ptr, key_bits, &mut out) };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
-        -1 => Err(()),
+        -1 => Err(molt_runtime_core::ErrorIndicatorSet),
         _ => unreachable!("invalid dictionary lookup status"),
     }
 }

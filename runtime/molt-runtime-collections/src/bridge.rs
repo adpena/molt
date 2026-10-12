@@ -5,6 +5,7 @@
 //! Each function has a corresponding `#[no_mangle]` shim in
 //! `molt-runtime/src/collections_bridge.rs`.
 
+use molt_runtime_core::ErrorIndicatorSet;
 use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -188,12 +189,13 @@ pub unsafe fn attr_lookup_ptr_allow_missing(
     _py: &CoreGilToken,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut out: u64 = 0;
-    match unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) } {
+    match unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) }
+    {
         1 => Ok(Some(out)),
         0 => Ok(None),
-        _ => Err(()),
+        _ => Err(ErrorIndicatorSet),
     }
 }
 
@@ -310,13 +312,16 @@ pub unsafe fn dict_set_in_place(
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt object for the duration of this call.
-pub unsafe fn dict_like_bits_from_ptr(_py: &CoreGilToken, ptr: *mut u8) -> Result<Option<u64>, ()> {
+pub unsafe fn dict_like_bits_from_ptr(
+    _py: &CoreGilToken,
+    ptr: *mut u8,
+) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_collections_dict_like_bits_from_ptr(ptr, &mut out) };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
-        -1 => Err(()),
+        -1 => Err(ErrorIndicatorSet),
         _ => unreachable!("invalid dictionary storage status"),
     }
 }

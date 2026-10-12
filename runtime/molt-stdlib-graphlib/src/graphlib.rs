@@ -71,7 +71,7 @@ impl GraphState {
             .node_map_ptr()
             .ok_or_else(|| raise_exception::<u64>(_py, "RuntimeError", "graph state lost"))?;
         let found = unsafe { dict_get_in_place(_py, dict_ptr, node_bits) }
-            .map_err(|()| MoltObject::none().bits())?;
+            .map_err(|molt_runtime_core::ErrorIndicatorSet| MoltObject::none().bits())?;
         let Some(idx_bits) = found else {
             return Ok(None);
         };

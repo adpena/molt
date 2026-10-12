@@ -1781,7 +1781,7 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
         dec_ref_bits(_py, handle_name_bits);
         let handle_bits = match handle_bits {
             Ok(handle) => handle,
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let Some(handle_bits) = handle_bits else {
             return raise_exception::<_>(_py, "RuntimeError", "defaultdict handle is missing");
@@ -1794,7 +1794,7 @@ pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64)
         let Some(dict_bits) = (unsafe {
             match dict_like_bits_from_ptr(_py, self_ptr) {
                 Ok(storage) => storage,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             }
         }) else {
             return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
