@@ -2546,23 +2546,22 @@ pub(crate) unsafe fn replace_current_with_system_error(message: &str) {
         drop(original);
         return;
     };
-    if let Some(original) = original.as_ref() {
-        if !replacement.value.is_null()
-            && !original.value.is_null()
-            && !std::ptr::eq(replacement.value, original.value)
-        {
-            unsafe {
-                crate::api::refcount::Py_INCREF(original.value);
-                PyException_SetContext(replacement.value, original.value);
-                crate::api::refcount::Py_INCREF(original.value);
-                PyException_SetCause(replacement.value, original.value);
-            }
-            // The generic field authority should accept both normalized
-            // instances. If it cannot, retain the SystemError rather than let
-            // the attachment failure replace the boundary diagnosis.
-            if current_exc_type_ptr().is_some() {
-                replace_current_error(None);
-            }
+    if let Some(original) = original.as_ref()
+        && !replacement.value.is_null()
+        && !original.value.is_null()
+        && !std::ptr::eq(replacement.value, original.value)
+    {
+        unsafe {
+            crate::api::refcount::Py_INCREF(original.value);
+            PyException_SetContext(replacement.value, original.value);
+            crate::api::refcount::Py_INCREF(original.value);
+            PyException_SetCause(replacement.value, original.value);
+        }
+        // The generic field authority should accept both normalized
+        // instances. If it cannot, retain the SystemError rather than let
+        // the attachment failure replace the boundary diagnosis.
+        if current_exc_type_ptr().is_some() {
+            replace_current_error(None);
         }
     }
     replace_current_error(Some(replacement));
@@ -3604,10 +3603,10 @@ unsafe fn managed_exception_set_field(
     if let Some(bits) = value_bits {
         unsafe { (hooks.dec_ref)(bits) };
     }
-    if status != 0 || !published {
-        if let Some(error) = take_runtime_pending_error() {
-            replace_current_error(Some(error));
-        }
+    if (status != 0 || !published)
+        && let Some(error) = take_runtime_pending_error()
+    {
+        replace_current_error(Some(error));
     }
     Some(if published { status } else { -1 })
 }

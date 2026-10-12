@@ -133,7 +133,7 @@ pub fn calibrate_timed_iterations(
     seed_iterations: usize,
     mut measure: impl FnMut(usize) -> u128,
 ) -> usize {
-    let mut iterations = seed_iterations.max(1).min(MAX_TIMED_ITERATIONS);
+    let mut iterations = seed_iterations.clamp(1, MAX_TIMED_ITERATIONS);
     loop {
         let elapsed_ns = measure(iterations).max(1);
         if elapsed_ns >= CALIBRATION_TARGET_NS || iterations == MAX_TIMED_ITERATIONS {

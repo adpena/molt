@@ -151,17 +151,16 @@ unsafe extern "C" fn assign_subscript(
         if step == 1 {
             return set_list_slice(&read, start, stop, replacement.as_ref());
         }
-        if let Some(items) = &replacement {
-            if items.len() != count {
-                errors::PyErr_Format(
-                    (&raw mut crate::abi_types::PyExc_ValueError).cast(),
-                    c"attempt to assign sequence of size %zd to extended slice of size %zd"
-                        .as_ptr(),
-                    items.len() as Py_ssize_t,
-                    count as Py_ssize_t,
-                );
-                return -1;
-            }
+        if let Some(items) = &replacement
+            && items.len() != count
+        {
+            errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"attempt to assign sequence of size %zd to extended slice of size %zd".as_ptr(),
+                items.len() as Py_ssize_t,
+                count as Py_ssize_t,
+            );
+            return -1;
         }
         if count == 0 {
             return 0;

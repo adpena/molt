@@ -309,8 +309,8 @@ pub(super) unsafe fn replace_extended(
         if replacement.is_empty() {
             return true;
         }
-        let garbage = memory::PyMem_Malloc(replacement.len() * size_of::<*mut PyObject>())
-            .cast::<*mut PyObject>();
+        let garbage =
+            memory::PyMem_Malloc(std::mem::size_of_val(replacement)).cast::<*mut PyObject>();
         if garbage.is_null() {
             return false;
         }
