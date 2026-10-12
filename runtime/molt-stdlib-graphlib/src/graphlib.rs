@@ -130,10 +130,7 @@ impl GraphHandle {
 }
 
 fn graph_from_bits(bits: u64) -> Option<Arc<GraphHandle>> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     unsafe {
         let arc = Arc::from_raw(ptr as *const GraphHandle);
         let cloned = arc.clone();
@@ -504,10 +501,11 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
-        }
+        };
+        // Retire the public handle before releasing Python edges, which can reenter.
+        molt_obj_model::release_ptr(ptr);
         unsafe {
             let arc = Arc::from_raw(ptr as *const GraphHandle);
             if let Ok(mut state) = arc.state.lock() {

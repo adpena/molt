@@ -249,6 +249,47 @@ def _handle_finalizer_class(relative_path, class_name, drop_name, drop, forget=N
     return namespace["FinalizerOwner"], namespace
 
 
+def test_email_message_import_then_retired_globals_releases_handle_once():
+    import importlib.util
+
+    from tests.stdlib_intrinsic_registry import intrinsic_registry
+
+    calls = []
+    message = None
+
+    def drop(handle):
+        calls.append(handle)
+        message.__del__()
+
+    # Load the entire real module in source order: extracting only __del__ and
+    # prebinding its defaults cannot detect a definition-time missing intrinsic.
+    path = Path(__file__).resolve().parents[1] / "src/molt/stdlib/email/message.py"
+    with intrinsic_registry(
+        {
+            "molt_email_message_new": lambda: 0,
+            "molt_email_message_set": lambda *_: None,
+            "molt_email_message_set_content": lambda *_: None,
+            "molt_email_message_add_alternative": lambda *_: None,
+            "molt_email_message_add_attachment": lambda *_: None,
+            "molt_email_message_drop": drop,
+        }
+    ):
+        spec = importlib.util.spec_from_file_location("molt_test_email_message", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        owner = module.Message
+        message = owner()
+        assert message._handle == 0
+        assert calls == []
+        module.__dict__.clear()
+        message.__del__()
+        message.__del__()
+        assert calls == [0]
+        owner.__new__(owner).__del__()  # construction failed before handle publication
+        assert calls == [0]
+
+
 @pytest.mark.parametrize("relative_path,class_name,field,drop_name", _HANDLE_FINALIZERS)
 def test_handle_finalizer_survives_retired_globals_exactly_once(
     relative_path, class_name, field, drop_name

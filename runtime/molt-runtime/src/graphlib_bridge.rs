@@ -170,3 +170,66 @@ pub extern "C" fn __molt_graphlib_seq_snapshot(
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn graph_handle_roundtrip_and_retirement_use_the_opaque_registry() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::concurrency::gil::with_gil(|py| {
+            let py = &py;
+            let handle = molt_graphlib_new();
+            assert!(!exception_pending(py));
+            let token = obj_from_bits(handle).as_int().unwrap() as u64;
+            assert!(molt_obj_model::resolve_opaque_ptr(token).is_some());
+            let predecessors = alloc_tuple(py, &[]);
+            assert!(!predecessors.is_null());
+            let predecessors = MoltObject::from_ptr(predecessors).bits();
+            let node = MoltObject::from_int(42).bits();
+            molt_graphlib_add(handle, node, predecessors);
+            assert!(!exception_pending(py));
+            assert!(obj_from_bits(molt_graphlib_prepare(handle)).is_none());
+            assert!(!exception_pending(py));
+            let ready = molt_graphlib_get_ready(handle);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                molt_tuple_getitem_borrowed(ready, MoltObject::from_int(0).bits()),
+                node
+            );
+            molt_graphlib_done(handle, ready);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                molt_graphlib_is_active(handle),
+                MoltObject::from_bool(false).bits()
+            );
+            dec_ref_bits(py, ready);
+
+            molt_graphlib_drop(handle);
+            assert!(!exception_pending(py));
+            assert!(molt_obj_model::resolve_opaque_ptr(token).is_none());
+            molt_graphlib_drop(handle);
+            assert!(!exception_pending(py));
+            let replacement = molt_graphlib_new();
+            assert!(!exception_pending(py));
+            assert_ne!(replacement, handle);
+            molt_graphlib_add(handle, node, predecessors);
+            assert!(exception_pending(py));
+            let error = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            molt_exception_clear();
+            dec_ref_bits(py, error);
+            // A retired token cannot alias the new graph, which remains usable.
+            molt_graphlib_add(replacement, node, predecessors);
+            assert!(!exception_pending(py));
+            molt_graphlib_drop(replacement);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, predecessors);
+        });
+    }
+}

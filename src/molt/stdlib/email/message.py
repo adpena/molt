@@ -18,6 +18,21 @@ from email._policybase import compat32
 from email import charset as _charset
 from email._encoded_words import decode_b
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_EMAIL_MESSAGE_NEW = _require_intrinsic("molt_email_message_new")
+_MOLT_EMAIL_MESSAGE_SET = _require_intrinsic("molt_email_message_set")
+_MOLT_EMAIL_MESSAGE_SET_CONTENT = _require_intrinsic("molt_email_message_set_content")
+_MOLT_EMAIL_MESSAGE_ADD_ALTERNATIVE = _require_intrinsic(
+    "molt_email_message_add_alternative"
+)
+_MOLT_EMAIL_MESSAGE_ADD_ATTACHMENT = _require_intrinsic(
+    "molt_email_message_add_attachment"
+)
+_MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop")
+
+globals().pop("_require_intrinsic", None)
+
 Charset = _charset.Charset
 
 SEMISPACE = "; "
@@ -1253,19 +1268,3 @@ class EmailMessage(MIMEPart):
         super().set_content(*args, **kw)
         if "MIME-Version" not in self:
             self["MIME-Version"] = "1.0"
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_EMAIL_MESSAGE_NEW = _require_intrinsic("molt_email_message_new")
-_MOLT_EMAIL_MESSAGE_SET = _require_intrinsic("molt_email_message_set")
-_MOLT_EMAIL_MESSAGE_SET_CONTENT = _require_intrinsic("molt_email_message_set_content")
-_MOLT_EMAIL_MESSAGE_ADD_ALTERNATIVE = _require_intrinsic(
-    "molt_email_message_add_alternative"
-)
-_MOLT_EMAIL_MESSAGE_ADD_ATTACHMENT = _require_intrinsic(
-    "molt_email_message_add_attachment"
-)
-_MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop")
-
-globals().pop("_require_intrinsic", None)
