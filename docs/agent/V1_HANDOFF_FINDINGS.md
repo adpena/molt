@@ -96,7 +96,8 @@ micro-runtime lifecycle cases through the production host. Each result retains
 its own source, image, target, profile and exclusion scope below; unchanged
 evidence is reused, not promoted into a full release result.
 
-Daemon discovery now consumes the canonical backend executable-name authority,
+Daemon discovery landed on main as `a95e62c8a` and now consumes the canonical
+backend executable-name authority,
 including feature-qualified and Windows names. The existing birth, exact-path
 and socket checks still govern process custody. All 55 focused argv/custody
 checks pass on Darwin, and actual stale native-backend cleanup succeeds through
