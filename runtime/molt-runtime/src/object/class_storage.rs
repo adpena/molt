@@ -725,9 +725,17 @@ impl RuntimeClassRetirement {
     /// Retire C aliases only after both thread-state owner domains have drained.
     /// Native owners and saved C errors cannot be indexed through ManagedView;
     /// their ordinary release must finish before any C identity is invalidated.
-    pub(crate) fn retire_projections(&self, py: &PyToken<'_>) -> bool {
+    pub(crate) fn retire_projections(
+        &self,
+        py: &PyToken<'_>,
+        drained: &molt_cpython_abi::api::object::DrainedRuntimeShutdownThreadState<'_>,
+    ) -> bool {
+        let state = crate::runtime_state(py);
         if self.has_native_owners(py)
-            || self.retained_thread_states(py) != 0
+            || !drained.permits_projection_retirement(
+                state.identity(),
+                crate::state::runtime_state::owns_process_cpython_state(state),
+            )
             || self.has_isolate_owners(py)
         {
             return false;

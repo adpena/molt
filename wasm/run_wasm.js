@@ -629,34 +629,14 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
   if (!exports) {
     return null;
   }
-  let excBits = 0n;
-  let fetched = null;
-  let shouldDecRefFetched = false;
-  const errPending =
-    typeof exports.molt_err_pending === 'function' && Number(exports.molt_err_pending()) !== 0;
-  const exceptionPending = runtimeExceptionPending(instance);
-  const exceptionPendingFast =
-    typeof exports.molt_exception_pending_fast === 'function' &&
-    Number(exports.molt_exception_pending_fast()) !== 0;
-  const hasPendingException = errPending || exceptionPending || exceptionPendingFast;
-  if (errPending) {
-    fetched =
-      typeof exports.molt_err_fetch === 'function'
-        ? exports.molt_err_fetch.bind(exports)
-        : null;
-    const peeked =
-      typeof exports.molt_err_peek === 'function'
-        ? exports.molt_err_peek.bind(exports)
-        : null;
-    excBits = fetched ? fetched() : peeked ? peeked() : 0n;
-    shouldDecRefFetched = Boolean(fetched);
-  } else if (hasPendingException && typeof exports.molt_exception_last === 'function') {
-    excBits = exports.molt_exception_last();
-    shouldDecRefFetched = true;
-  }
+  if (!runtimeExceptionPending(instance)) return null;
+  // Diagnostics observe the raised owner. Optional C API exports must not
+  // change pending state or the ownership of the acquired diagnostic reference.
+  const excBits = typeof exports.molt_exception_last_pending === 'function'
+    ? exports.molt_exception_last_pending() : 0n;
   try {
     if (!excBits || excBits === 0n) {
-      return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
+      return 'Unhandled Molt exception (diagnostic object unavailable)';
     }
     if (
       typeof exports.molt_traceback_format_exc === 'function' &&
@@ -691,8 +671,9 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
       typeof exports.molt_exception_message === 'function'
     ) {
       const kindBits = exports.molt_exception_kind(excBits);
-      const messageBits = exports.molt_exception_message(excBits);
+      let messageBits = 0n;
       try {
+        messageBits = exports.molt_exception_message(excBits);
         const kind = kindBits ? readRuntimeStringBits(instance, kindBits) : null;
         const message = messageBits ? readRuntimeStringBits(instance, messageBits) : null;
         if (kind && message) {
@@ -724,7 +705,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
           const repr = readRuntimeStringBits(instance, reprBits);
           if (repr) {
             if (repr === 'None') {
-              return hasPendingException ? 'Unhandled Molt exception (diagnostic object unavailable)' : null;
+              return 'Unhandled Molt exception (diagnostic object unavailable)';
             }
             return `Unhandled Molt exception: ${repr}`;
           }
@@ -736,7 +717,6 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
     return 'Unhandled Molt exception';
   } finally {
     if (
-      shouldDecRefFetched &&
       excBits &&
       excBits !== 0n &&
       typeof exports.molt_dec_ref_obj === 'function'

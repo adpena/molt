@@ -1330,7 +1330,6 @@ fn close_process_retirement_admission(allow_current_execution: bool, operation: 
     if joined != 0 {
         return true;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
         let own_attachment = usize::from(
@@ -1657,7 +1656,6 @@ fn runtime_exit(code_bits: u64) -> u64 {
             }
         };
         if let Some(ptr) = ptr {
-            #[cfg(not(target_arch = "wasm32"))]
             molt_cpython_abi::api::object::attach_runtime_execution_thread(
                 runtime_state_for_gil()
                     .expect("live runtime execution owner")
@@ -1941,7 +1939,6 @@ fn runtime_shutdown() -> u64 {
     lifecycle.changed.notify_all();
     drop(phase);
 
-    #[cfg(not(target_arch = "wasm32"))]
     {
         // Preserve the existing embedding record for the one final drain.
         // No callback-capable destruction may run while the lifecycle phase
@@ -1957,7 +1954,6 @@ fn runtime_shutdown() -> u64 {
     let state = unsafe { &*ptr };
     let py = gil.token();
     runtime_teardown(&py, state);
-    #[cfg(not(target_arch = "wasm32"))]
     {
         // Callback-capable teardown belongs before static-class retirement,
         // never here after their builtin graph and singleton pools are gone.

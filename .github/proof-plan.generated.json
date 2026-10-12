@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0aa477376e70a9ebe83447f867a531d57d75bf46816299be47baacdfebf7554d",
+  "authority_sha256": "e1b3bd0c369665dd53bac58f9abe51bffd4a92ea054a48b666a962a3acada7d6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5775,7 +5775,8 @@
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
         "tests/cli/test_link_selection_admission.py",
-        "tests/cli/test_c_api_headers.py"
+        "tests/cli/test_c_api_headers.py",
+        "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",

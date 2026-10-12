@@ -359,33 +359,11 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   if (!runtime) {
     return null;
   }
-  const errPending =
-    typeof runtime.exports?.molt_err_pending === 'function' &&
-    Number(runtime.exports.molt_err_pending()) !== 0;
-  const exceptionPending = runtimeExceptionPending(runtime);
-  const exceptionPendingFast =
-    typeof runtime.exports?.molt_exception_pending_fast === 'function' &&
-    Number(runtime.exports.molt_exception_pending_fast()) !== 0;
-  if (!errPending && !exceptionPending && !exceptionPendingFast) {
-    return null;
-  }
-  let excBits = 0n;
-  let shouldDecRefFetched = false;
-  if (errPending) {
-    const fetched =
-      typeof runtime.exports.molt_err_fetch === 'function'
-        ? runtime.exports.molt_err_fetch.bind(runtime.exports)
-        : null;
-    const peeked =
-      typeof runtime.exports.molt_err_peek === 'function'
-        ? runtime.exports.molt_err_peek.bind(runtime.exports)
-        : null;
-    excBits = fetched ? fetched() : peeked ? peeked() : 0n;
-    shouldDecRefFetched = Boolean(fetched);
-  } else if (typeof runtime.exports?.molt_exception_last === 'function') {
-    excBits = runtime.exports.molt_exception_last();
-    shouldDecRefFetched = true;
-  }
+  if (!runtimeExceptionPending(runtime)) return null;
+  // Diagnostics observe the raised owner. Optional C API exports must not
+  // change pending state or the ownership of the acquired diagnostic reference.
+  const excBits = typeof runtime.exports.molt_exception_last_pending === 'function'
+    ? runtime.exports.molt_exception_last_pending() : 0n;
   try {
     if (
       excBits &&
@@ -407,7 +385,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
     }
     return 'Unhandled Molt exception';
   } finally {
-    if (shouldDecRefFetched && excBits && excBits !== 0n) {
+    if (excBits && excBits !== 0n) {
       decRefMaybe(runtime, excBits);
     }
   }

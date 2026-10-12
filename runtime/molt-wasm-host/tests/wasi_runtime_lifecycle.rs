@@ -16,9 +16,12 @@ mod support;
 
 use support::host;
 
-const CASES: [&str; 2] = [
-    "concurrency::execution::tests::wasm_shutdown_custody_attaches_callbacks_without_an_execution_frame_or_c_state",
+const CASES: [&str; 5] = [
+    "concurrency::execution::tests::wasm_shutdown_custody_owns_c_state_without_an_execution_frame",
     "concurrency::execution::tests::wasm_logical_gil_and_execution_nesting_are_distinct",
+    "concurrency::execution::tests::scoped_detach_panic_revokes_c_extension_execution_capability",
+    "concurrency::execution::tests::ordinary_scoped_entries_preserve_the_c_error_indicator",
+    "cpython_abi_hooks::native_deallocation_tests::shutdown_record_survives_post_drain_native_deallocation_and_republished_c_owners",
 ];
 
 // Keep the production phase breakdown without per-function compiler traces.
@@ -74,7 +77,7 @@ fn actual_wasi_runtime_lifecycle_cases_through_production_host() {
     drop(native_bytes);
     println!("wasi-lifecycle precompile_receipt={receipt}");
     let precompile_elapsed = started.elapsed();
-    // Rust libtest accepts multiple exact filters, so both cases share one
+    // Rust libtest accepts multiple exact filters, so all cases share one
     // loader and one runtime instance. Stderr stays live for failure evidence.
     let output = host()
         .env("MOLT_WASM_HOST_LOG", PHASE_LOG)

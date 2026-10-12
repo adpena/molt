@@ -513,3 +513,122 @@ fn native_deallocation_resurrects_a_deferred_heap_list_before_releasing_its_payl
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
+
+unsafe extern "C" fn republish_shutdown_dictionary(_capsule: *mut PyObject) {
+    unsafe {
+        let dict = molt_cpython_abi::api::sys::PyThreadState_GetDict();
+        assert!(!dict.is_null());
+        let value = molt_cpython_abi::api::numbers::PyLong_FromLong(37);
+        assert!(!value.is_null());
+        assert_eq!(
+            molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                dict,
+                c"republished-by-deallocation".as_ptr(),
+                value
+            ),
+            0
+        );
+        refcount::Py_DECREF(value);
+    }
+}
+
+#[test]
+fn shutdown_record_survives_post_drain_native_deallocation_and_republished_c_owners() {
+    let _test = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    for retire_before_shutdown in [false, true] {
+        let entry = if retire_before_shutdown {
+            crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup()
+        } else {
+            crate::concurrency::RuntimeExecutionGuard::enter()
+        };
+        let identity = crate::runtime_state(&entry.token()).identity();
+        let root = unsafe {
+            let payload = OwnedPyObject::from_owned(molt_cpython_abi::api::capsule::PyCapsule_New(
+                std::ptr::dangling_mut::<c_void>(),
+                ptr::null(),
+                Some(republish_shutdown_dictionary),
+            ));
+            assert!(!payload.as_ptr().is_null());
+            native_container(&raw mut PyList_Type, false, payload)
+        };
+        let address = root.as_ptr().addr();
+        drop(entry);
+        assert_eq!(
+            object::current_thread_has_retained_runtime_state(),
+            !retire_before_shutdown
+        );
+        let _gil = crate::concurrency::GilGuard::new();
+        let _shutdown = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
+        let mut state = object::RuntimeShutdownThreadState::begin(identity);
+        assert!(
+            !unsafe { object::PyThreadState_Get() }.is_null(),
+            "the first shutdown callback must have a real attached C state"
+        );
+        object::detach_runtime_execution_thread();
+        let mut record = 0;
+        {
+            let drained = state.drain(|| {
+                record = unsafe { object::_PyThreadState_UncheckedGet() }.addr();
+                false
+            });
+            assert_ne!(record, 0);
+            assert!(drained.permits_projection_retirement(identity, true));
+            assert!(!drained.permits_projection_retirement(identity.wrapping_add(1), true));
+            // This is the projection-release interval: no attached execution
+            // frame or managed-edge drain, and a real participating native list.
+            drop(root);
+            assert!(!crate::object::gc::native_gc_is_enrolled(address));
+            assert!(
+                !drained.permits_projection_retirement(identity, true),
+                "a destructor's newly published C dictionary must revoke admission"
+            );
+        }
+        let record_identity = object::retained_thread_state_identity_for_test(record);
+        assert!(record_identity.is_some());
+        {
+            let drained = state.drain(|| false);
+            assert!(drained.permits_projection_retirement(identity, true));
+            assert_eq!(
+                object::retained_thread_state_identity_for_test(record),
+                record_identity,
+                "the fixed point must retain one actual deallocation owner"
+            );
+        }
+        state.finish();
+        assert!(!object::current_thread_has_retained_runtime_state());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn shutdown_drained_witness_does_not_exempt_foreign_retained_records() {
+    let _test = crate::test_support::RuntimeTestTransaction::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let entry = crate::concurrency::RuntimeExecutionGuard::enter();
+        drop(entry);
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let gil = crate::concurrency::GilGuard::new();
+    let _shutdown = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
+    let identity = crate::runtime_state(&gil.token()).identity();
+    let mut state = object::RuntimeShutdownThreadState::begin(identity);
+    object::detach_runtime_execution_thread();
+    {
+        let drained = state.drain(|| false);
+        assert!(!drained.permits_projection_retirement(identity, true));
+        assert!(!drained.permits_projection_retirement(identity, false));
+        {
+            let _release = crate::concurrency::GilReleaseGuard::suspend();
+            release_tx.send(()).unwrap();
+            worker.join().unwrap();
+        }
+        assert!(drained.permits_projection_retirement(identity, true));
+    }
+    state.finish();
+}

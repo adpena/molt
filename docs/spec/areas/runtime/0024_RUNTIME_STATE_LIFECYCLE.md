@@ -176,6 +176,10 @@ The lifecycle publishes a single ready-state pointer for the fast path:
   callback-capable operation, or inherits an actual ordinary lifecycle lease or
   existing drain capability. A raw GIL or C-extension context is not that
   capability. It remains held through the final callback-free release tail.
+- That boundary retains the current C thread-state record through callback and
+  projection retirement. A legitimately absent record after worker cleanup or
+  partial isolate initialization is admitted once before the first callback;
+  individual deallocators never create state to recover from missing custody.
 - The boundary includes process-exit profiling, shared mixed cycle collection,
   pending calls, worker/task owner destruction, `atexit`, live stdio flushing,
   class retirement and the C/Molt TLS fixed-point drain. Embedding, process exit,
@@ -1040,13 +1044,17 @@ through that same physical owner inventory after their semantic sources become
 empty. Its detached resource releases them outside locks; identity remains live
 until ordinary RC runs after native clear/deallocation and collector-pin release.
 GC never forcibly revokes a Type or pulls in an externally rooted alias. Shutdown
-waits for the existing native allocation registry and retained C thread-state
-count to empty before its forced projection cohort retirement. Retirement runs
+waits for the existing native allocation registry and foreign retained C
+thread-state owners to empty before its forced projection cohort retirement.
+The exact current shutdown record remains available for native deallocation;
+only a completed two-domain drain can authorize its presence at the projection
+gate, which rechecks its owner, managed edges and deallocation queue. Retirement runs
 after the combined runtime/C TLS drain returns, never in its cleanup callback:
 the callback precedes C error/context/dict release, and preserved errors can own
 off-record aliases. Projection release repeats the existing outer owner drain
-before module retirement advances. Final-tail assertions reject remaining native
-or C thread-state owners before any canonical class metadata is destroyed. Direct extension-held
+before module retirement advances. Final empty-record retirement and final-tail
+assertions reject remaining native or C thread-state owners before any canonical
+class metadata is destroyed. Direct extension-held
 C pointers have interpreter lifetime and are invalid after successful shutdown.
 Managed owning aliases participate in the component, and native owners must
 complete their callbacks first. Ordinary rc-zero removal checks zero incoming

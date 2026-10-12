@@ -56,7 +56,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "bd8ecb652c74f2e52a8c91c0b6e4d516b59f013ac5a608d06c6ee0a85cdfe74d",
+      "sha256": "450660a593f98b9cf93e22bdd87165fe47c1eea552bebe7f6f2dbb7bedcb10f8",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -151,7 +151,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "72e3492894c33d7b30142e4caf07cfcc4ecd4199f24c0e2a714d20eed858e00a",
+      "sha256": "dc9712e2567d11cef1fdda9d7acd1212f8cf9efaaf49a104d75e969a6f4513ef",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "3dc87826572a9b8ab5ba25d2b054d738de35b986fbebe0d571e201f614e50167",
+      "sha256": "6b3fc429d0f4f5011fff067176ddbd784402424b1d09ab927294954fb12c0f62",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "47dd4a2988ba2569f724a081edaebed6ef485d276499290d6ade66e4879e61c3",
+      "sha256": "d16202623b8051f2ae750a7117d3669d92eac86e3030971332e0d68073340511",
       "source_type": "data"
     }
   },

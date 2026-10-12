@@ -257,6 +257,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     // through the callback-free release tail. A public caller may already own
     // an ordinary lease; raw GIL or C-extension context alone is insufficient.
     let _custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
+    // Isolate and WASM teardown can begin without an ordinary attached frame.
+    // Establish the same queue/error owner before the first cleanup callback.
+    let mut shutdown_thread_state =
+        molt_cpython_abi::api::object::RuntimeShutdownThreadState::begin(state.identity());
     trace_shutdown("start");
     crate::builtins::exceptions::memory_error::begin_shutdown(_py);
     // Close process-service launch and prove every retained OS worker finished
@@ -342,23 +346,23 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
             changed |= clear_runtime_static_names(_py, state);
             changed
         };
-        // Every runtime owner must close both current-thread domains: either
-        // domain's callbacks can repopulate the other. This includes native
-        // isolates and WASM instances; no absent C record is fabricated by draining.
-        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown(&mut drain);
+        // Keep one actual C record through the whole fixed point. Its queue is
+        // needed by native decrefs after each managed-edge drain returns.
+        let drained = shutdown_thread_state.drain(&mut drain);
         // Forced C-view retirement must not run inside the TLS cleanup callback:
         // the C error/context/dict owners are still live there, and error
         // preservation temporarily moves those owners off the visible record.
-        // The completed drain has dropped the record and emptied runtime TLS.
+        // The completed drain has emptied both managed ownership domains.
         // Projection release can publish fresh owners, so repeat both domains
         // before advancing module retirement or destroying class metadata.
-        if retirement.retire_projections(_py) {
+        if retirement.retire_projections(_py, &drained) {
             continue;
         }
         if !modules.advance() {
             break;
         }
     }
+    shutdown_thread_state.finish();
     if mode == RuntimeTeardownMode::Embedding {
         assert_eq!(
             molt_cpython_abi::api::object::runtime_retained_thread_state_count(),

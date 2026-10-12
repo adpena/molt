@@ -184,9 +184,36 @@ existing scratch authority, with scanner byte custody unchanged. Their complete
 host consumer modules pass 326 checks with one skip and eight slow cases unrun.
 The final threadpool atomic call uses the pinned compiler's current `try_update`
 spelling; the deprecated spelling is a direct alias in pinned Rust source.
-Full stderr
-assertion diagnostics retain the next semantic failure; they do not weaken the
-expected error. Standalone native and corrected WASM execution remain required.
+Full stderr assertion diagnostics preserve the expected-error oracle. Candidate
+`85423eba8` executes both direct WASM programs with complete process custody:
+the scanner scratch correction is accepted, but both semantic checks fail.
+Host-error execution reaches native deallocation without the current runtime
+thread state; compound file admission receives an empty platform coordinate
+and reports an unavailable operation before checking the missing grants.
+These expose runtime-lifetime and target-fact consumer obligations, respectively.
+Both must be corrected through their complete producer/consumer families and
+re-executed before the WASM boundary is qualified. The complete failed-run evidence
+is retained; canonical retirement reclaims 868 MB of its sealed build output.
+
+The reviewed successor uses the existing runtime platform authority for WASM
+operation coordinates, shares the C thread-state owner across native and WASM
+execution, and retains its deallocation queue through shutdown projection
+retirement. Native and all three JavaScript diagnostic hosts now observe the
+pending exception through the same canonical runtime operation and release
+every acquired reference. Optional C-API exports no longer select a consuming
+or leaking diagnostic path. ABI retention, tree shaking and generated browser
+assets migrate with these consumers. Joined host checks pass 527 cases with
+one skip and ten compiled cases unrun; 64 capability controls also pass.
+Actual compiled qualification of this successor remains outstanding.
+
+The native public run on candidate `85423eba8` passes three cases, then fails
+the executor case because `threading.Event.__del__` looks up a cleanup function
+after its module namespace retires. Output and exit status match CPython, but
+two unraisable shutdown exceptions violate the strict stderr contract.
+The remaining 35 selected programs are not reached. Process custody is complete;
+the evidence is retained and canonical retirement reclaims 1.28 GB of sealed
+build output. The repair must cover the sibling native resource finalizers,
+their constructor and reentrant cleanup paths, and actual compiled shutdown.
 
 The selected public consumer rosters include 39 native and 20 WASM programs,
 plus the direct WASM admission boundary. Ten existing async/executor fixtures now
