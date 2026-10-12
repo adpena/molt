@@ -67,13 +67,13 @@ coordination records retain active worker scope and exact donor custody; the
 ledger remains the single release-status index. Complete semantic families must
 be qualified and landed together, with replaced internal lanes deleted.
 
-The comprehensive review of candidate `d69e99530` projects 98 open finding
+The comprehensive review of the integration candidate projects 98 open finding
 records through `tools/finding_status.py`, with no ledger identity defects.
 This is a dated inventory, not 98 independent bugs or a completion percentage:
 the rows include implementation defects, incomplete migrations and missing
-acceptance evidence. The candidate is 65 commits ahead of fetched main and
-changes 941 paths. Finish its actual public native/WASM consumer and applicable
-lint obligations, resolve exposed migration failures, and land the coherent
+acceptance evidence. The preserved runtime/ABI migration spans 941 paths.
+Finish its actual public native/WASM consumer obligations, resolve exposed
+migration failures, and land the coherent
 runtime/ABI family before expanding it with another broad implementation.
 Runtime unit/ABI passes and two WASM boundary programs do not qualify those
 remaining consumers or the release. Independent source review covers the runtime-policy/cache boundary and the
@@ -106,7 +106,8 @@ the verified process boundary. This is development-side cleanup work; it adds
 no emitted-program work or cross-platform execution claim.
 
 The remaining landing work is the affected compiled public native/WASM
-consumer group and applicable lint. The native run stopped after six passes
+consumer group and changed mutation-result consumers in default and reduced
+runtime profiles. The native run stopped after six passes
 at the subprocess path-conversion fixture: its missing `process.exec` grant
 prevented the callback oracle from running. The five affected asyncio spawn
 fixtures now declare that capability through the existing test-header authority;
@@ -128,12 +129,39 @@ Canonical Clippy submission exposed a missing output-placement classification.
 Clippy output placement landed on main as `d416b8ad0`; 26 focused controls
 pass on that checkout, including direct/delegated admission and unchanged query,
 bypass and retention refusals. The candidate retains the same repaired source.
-The registered workspace command still must execute; its first successor
-submission stopped at disk admission before launching the compiler.
+The registered all-target workspace Clippy command now passes with warnings
+denied on Linux/aarch64 at `7172eb10f`. Its complete diagnostic batch exposed
+ignored mutation results in production and fixtures. Those consumers now inspect
+the operation result, unpublished builtin metadata uses the existing rollback
+owner, and the reduced-profile logging bridge shares the public error marker.
+An independent allocation-denial regression checks metadata ownership and
+preservation of a prior error. Its runtime execution and the changed default/
+reduced-profile consumer families remain required; the Clippy pass is compile
+and lint evidence only.
 The full native/WASM release matrix, standalone-without-Python installed
 qualification, security/resource repairs and positive performance admission
 remain open in their owning buckets. Do not grow this migration with unrelated
 features while those concrete integration gaps remain.
+
+Determinism authority cleanup landed on main as `599a81c57`: the unused
+container-spelling heuristic is deleted, and the owning build contract requires
+stable actual emission order while preserving efficient lookup representations.
+The existing IR seed, artifact-byte and runtime-observation authorities retain
+their separate proof scopes. No runtime code or release qualification changed.
+
+The compiler comparison reinforces those existing authorities. Microsoft's
+[TypeScript port](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/)
+reuses its reference implementation and test corpus. Vercel scriptc's
+[pinned static-only regression](https://github.com/vercel-labs/scriptc/blob/054eb04220095c3fcff5201e0816918c6e0367bb/tests/harness/static-only.test.ts)
+checks a real compiled program and rejects the retired engine mode; its
+[workload protocol](https://github.com/vercel-labs/scriptc/blob/054eb04220095c3fcff5201e0816918c6e0367bb/benchmarks/runtime/README.md)
+requires reference-output agreement before timing and interleaves contenders.
+For Molt, retain pinned CPython observations, perturb irrelevant compiler inputs
+in the existing determinism lanes, and finish the existing positive performance
+producer/receiver path. These are development-side obligations, not a new
+registry or emitted-program instrumentation requirement. Empirical conformance
+does not claim formal compiler verification or justify narrowing admitted Python
+semantics to currently passing examples.
 
 ## Release dependency and landing order
 
