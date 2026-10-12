@@ -76,8 +76,9 @@ changes 941 paths. Finish its actual public native/WASM consumer and applicable
 lint obligations, resolve exposed migration failures, and land the coherent
 runtime/ABI family before expanding it with another broad implementation.
 Runtime unit/ABI passes and two WASM boundary programs do not qualify those
-remaining consumers or the release. Independent current-review capacity is
-unavailable; retain that limitation rather than crediting a review that did not run.
+remaining consumers or the release. Independent source review covers the runtime-policy/cache boundary and the
+subprocess admission family; it does not qualify the complete candidate or
+replace the still-unavailable broad Astra/Opus release assessment.
 
 The release work below is organized by complete product outcomes. Security and
 correctness repairs, the installed positive acceptance path, and measured
@@ -105,8 +106,29 @@ the verified process boundary. This is development-side cleanup work; it adds
 no emitted-program work or cross-platform execution claim.
 
 The remaining landing work is the affected compiled public native/WASM
-consumer group and applicable lint. Native public execution is in progress;
-the full native/WASM release matrix, standalone-without-Python installed
+consumer group and applicable lint. The native run stopped after six passes
+at the subprocess path-conversion fixture: its missing `process.exec` grant
+prevented the callback oracle from running. The five affected asyncio spawn
+fixtures now declare that capability through the existing test-header authority;
+their bodies and the pre-spawn invalid-stdio case are unchanged. The canonical
+header and override controls pass; compiled re-execution remains required.
+
+That run also produced three byte-identical 85,931,996-byte stdlib archives
+under different runtime-policy cache keys, with roughly 400 seconds per build.
+Runtime policy no longer partitions source scans, module analysis or compiled
+objects; every producer, record and consumer of that retired key input is
+migrated. Native final entrypoints/link identities, WASM deployments and complete
+wrapper binaries retain their current resolved policy. The focused cache and
+consumer controls pass 140 checks, with four additional WASM final-output
+controls passing. Actual warm compiled-code reuse with changed-policy execution
+and performance measurement remain unqualified. This removes compiler-side
+work and adds no emitted-program checks.
+
+Canonical Clippy submission exposed a missing output-placement classification.
+Clippy now uses the same declared Cargo output authority; 26 focused controls
+pass, including direct/delegated admission and unchanged query, bypass and
+retention refusals. The registered workspace command still must execute.
+The full native/WASM release matrix, standalone-without-Python installed
 qualification, security/resource repairs and positive performance admission
 remain open in their owning buckets. Do not grow this migration with unrelated
 features while those concrete integration gaps remain.
