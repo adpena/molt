@@ -1,3 +1,5 @@
+# MOLT_META: stderr=exact
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,process.exec
 """Purpose: differential coverage for subprocess.run, subprocess.PIPE,
 subprocess.DEVNULL, subprocess.check_call, subprocess.getstatusoutput,
 subprocess.getoutput."""
