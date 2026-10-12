@@ -313,7 +313,9 @@ fn malformed_frame_module() -> Vec<u8> {
         let mut body = Function::new([]);
         for callee in calls {
             if callee == 0 {
-                body.instruction(&Instruction::I64Const(5));
+                // Keep the observer's admitted owner; each control changes
+                // only frame lifecycle, never code identity.
+                body.instruction(&Instruction::I64Const(0));
             }
             body.instruction(&Instruction::Call(callee));
             body.instruction(&Instruction::Drop);
