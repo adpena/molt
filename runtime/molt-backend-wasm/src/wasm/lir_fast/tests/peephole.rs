@@ -41,6 +41,41 @@ fn peephole_preserves_mismatched_set_get() {
 }
 
 #[test]
+fn peephole_preserves_symbolic_slots_without_crossing_them() {
+    use crate::wasm::body::WasmBodyOp;
+    use molt_ir::code_slots::ProgramSlotKind;
+
+    let input = WasmBodyOps {
+        ops: vec![
+            WasmBodyOp::Instruction(Instruction::I64Const(42)),
+            WasmBodyOp::Instruction(Instruction::LocalSet(3)),
+            WasmBodyOp::ProgramSlot(ProgramSlotKind::Module, "pkg.same".into()),
+            WasmBodyOp::Instruction(Instruction::LocalGet(3)),
+            WasmBodyOp::ProgramSlot(ProgramSlotKind::Code, "pkg.same".into()),
+            WasmBodyOp::Instruction(Instruction::LocalSet(4)),
+            WasmBodyOp::Instruction(Instruction::LocalGet(4)),
+            WasmBodyOp::Instruction(Instruction::End),
+        ],
+    };
+    let output = peephole_set_get_to_tee(input).into_vec();
+    assert!(
+        matches!(
+            output.as_slice(),
+            [
+                WasmBodyOp::Instruction(Instruction::I64Const(42)),
+                WasmBodyOp::Instruction(Instruction::LocalSet(3)),
+                WasmBodyOp::ProgramSlot(ProgramSlotKind::Module, module),
+                WasmBodyOp::Instruction(Instruction::LocalGet(3)),
+                WasmBodyOp::ProgramSlot(ProgramSlotKind::Code, code),
+                WasmBodyOp::Instruction(Instruction::LocalTee(4)),
+                WasmBodyOp::Instruction(Instruction::End),
+            ] if module == "pkg.same" && code == "pkg.same"
+        ),
+        "slot payloads and order must survive while the adjacent set/get still optimizes: {output:?}"
+    );
+}
+
+#[test]
 fn peephole_handles_consecutive_tee_chains() {
     // Pattern: set(1) get(1) set(2) get(2) → tee(1) tee(2)
     let input = vec![
