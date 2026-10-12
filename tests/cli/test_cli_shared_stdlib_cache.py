@@ -14,7 +14,8 @@ from molt.cli import native_symbol_inspection
 import pytest
 
 import molt.cli as cli
-from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
+from molt.capability_manifest import resolve_runtime_policy_from_env
+from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -525,62 +526,20 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
     assert key_a != key_b
 
 
-def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
-    stdlib_modules = _explicit_stdlib_modules("sys")
-    ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
-    )
-    base_variant = _cache_variant()
-    caps_digest = (
-        CapabilityManifest(allow=["fs.read"]).resolve().digest().removeprefix("sha256:")
-    )
-    variant_with_caps = cli_backend_cache_setup._build_cache_variant(
-        profile="dev",
-        runtime_cargo="dev-fast",
-        backend_cargo="dev-fast",
-        emit="native",
-        stdlib_split=True,
-        codegen_env="codegen=v1",
-        linked=False,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
-        capability_config_digest=caps_digest,
-    )
-
-    key_base = cli._shared_stdlib_cache_key(
-        ir,
-        **_KEY_FINGERPRINTS,
-        entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
-        target_triple=None,
-        cache_variant=base_variant,
-    )
-    key_caps = cli._shared_stdlib_cache_key(
-        ir,
-        **_KEY_FINGERPRINTS,
-        entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
-        target_triple=None,
-        cache_variant=variant_with_caps,
-    )
-
-    assert key_base != key_caps
-    assert "capability_config=" in variant_with_caps
-
-
-def test_capability_config_digest_changes_with_ambient_capability_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read")
-    digest_fs = resolve_runtime_policy_from_env(os.environ).digest()
-    monkeypatch.setenv("MOLT_CAPABILITIES", "env.read")
-    digest_env = resolve_runtime_policy_from_env(os.environ).digest()
-
-    assert digest_fs != digest_env
-
-
-def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
+@pytest.mark.parametrize(
+    "changed_env",
+    [
+        {"MOLT_CAPABILITIES": "fs.read"},
+        {"MOLT_CAPABILITY_TIER": "full"},
+        {"MOLT_RESOURCE_MAX_MEMORY": "1MB"},
+        {"MOLT_AUDIT_ENABLED": "1", "MOLT_AUDIT_SINK": "jsonl"},
+        {"MOLT_IO_MODE": "virtual"},
+    ],
+)
+def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_env: dict[str, str],
 ) -> None:
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
@@ -616,26 +575,38 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
-        # The key under test is the capability config's; a fixed compiler
-        # identity keeps the test off the host's Rust toolchain.
+        # Compiler identity is an independent input, fixed here to avoid the
+        # Rust toolchain while exercising the real backend cache setup.
         backend_compiler_fingerprint="test-compiler",
     )
 
+    base_env = {"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""}
+    base_policy = resolve_runtime_policy_from_env(base_env)
+    changed_policy = resolve_runtime_policy_from_env({**base_env, **changed_env})
+    assert base_policy != changed_policy
+    for key, value in base_policy.to_env_vars().items():
+        monkeypatch.setenv(key, value)
     setup_base = cli_backend_cache_setup._prepare_backend_cache_setup(
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "base.o",
         **common,
     )
+    for key, value in changed_policy.to_env_vars().items():
+        monkeypatch.setenv(key, value)
     setup_caps = cli_backend_cache_setup._prepare_backend_cache_setup(
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "caps.o",
-        resolved_capability_policy=CapabilityManifest(allow=["fs.read"]).resolve(),
         **common,
     )
 
-    assert setup_base.stdlib_object_cache_key is not None
-    assert setup_caps.stdlib_object_cache_key is not None
-    assert setup_base.stdlib_object_cache_key != setup_caps.stdlib_object_cache_key
+    for field in ("cache_key", "function_cache_key", "stdlib_object_cache_key"):
+        assert getattr(setup_base, field) is not None
+        assert getattr(setup_base, field) == getattr(setup_caps, field)
+    # A cache hit never freezes the policy into shared machine code. The final
+    # native link consumes the freshly rendered entrypoint, with current policy.
+    assert _render_native_main_stub(
+        resolved_capability_policy=base_policy,
+    ) != _render_native_main_stub(resolved_capability_policy=changed_policy)
 
 
 def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
@@ -780,7 +751,6 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     assert {
         "backend_cache_stdlib_symbols",
         "backend_cache_backend_binary_identity",
-        "backend_cache_capability_config_digest",
         "backend_cache_variant",
         "backend_cache_payload_digest",
         "backend_cache_fingerprint_inputs",
@@ -1076,67 +1046,6 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
     assert setup_b.stdlib_object_cache_key is not None
     assert setup_a.cache_key != setup_b.cache_key
     assert setup_a.stdlib_object_cache_key != setup_b.stdlib_object_cache_key
-
-
-def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_key(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
-        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
-    )
-    module_graph_metadata = cli._ModuleGraphMetadata(
-        logical_source_path_by_module={},
-        entry_override_by_module={},
-        module_is_namespace_by_module={},
-        module_is_package_by_module={},
-        module_execution_kind_by_module={},
-        frontend_module_costs=None,
-        stdlib_like_by_module={"sys": True},
-    )
-    common = dict(
-        codegen=CodegenSelection(),
-        cache_enabled=True,
-        ir=ir,
-        target="native",
-        artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
-        ),
-        profile="dev",
-        runtime_cargo_profile="dev-fast",
-        backend_cargo_profile="dev-fast",
-        emit_mode="bin",
-        is_wasm=False,
-        linked=False,
-        project_root=ROOT,
-        cache_dir=str(tmp_path / "cache"),
-        warnings=[],
-        entry_module="app",
-        module_graph_metadata=module_graph_metadata,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
-        stdlib_profile="micro",
-    )
-
-    monkeypatch.delenv("MOLT_CAPABILITIES", raising=False)
-    setup_without_env = cli_backend_cache_setup._prepare_backend_cache_setup(
-        backend_bin=tmp_path / "molt-backend",
-        output_artifact=tmp_path / "without-env.o",
-        **common,
-    )
-    monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,fs.write,env.read")
-    setup_with_env = cli_backend_cache_setup._prepare_backend_cache_setup(
-        backend_bin=tmp_path / "molt-backend",
-        output_artifact=tmp_path / "with-env.o",
-        **common,
-    )
-
-    assert setup_without_env.stdlib_object_cache_key is not None
-    assert setup_with_env.stdlib_object_cache_key is not None
-    assert (
-        setup_without_env.stdlib_object_cache_key
-        != setup_with_env.stdlib_object_cache_key
-    )
 
 
 def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:

@@ -14427,52 +14427,77 @@ def test_module_analysis_cache_path_tracks_import_scan_mode(tmp_path: Path) -> N
     assert full != module_init
 
 
-def test_module_analysis_cache_path_tracks_capability_config_digest(
+@pytest.mark.parametrize(
+    "first_grants,second_grants", [("fs.read", ""), ("", "fs.read")]
+)
+def test_source_caches_reuse_across_runtime_grants(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_grants: str,
+    second_grants: str,
 ) -> None:
-    module_path = tmp_path / "pkg" / "mod.py"
-    base = cli._module_analysis_cache_path(
+    module_path = tmp_path / "mod.py"
+    module_path.write_text(
+        "import os\ndef f(value=7): return value\n", encoding="utf-8"
+    )
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    common = dict(module_name="mod", is_package=False, import_scan_mode="full")
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "none")
+    monkeypatch.setenv("MOLT_CAPABILITIES", first_grants)
+    scan = _ImportScanRequests(("os",), ())
+    cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
         module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-        capability_config_digest="capability-a",
+        **common,
+        scan=scan,
+        snapshot=snapshot,
     )
-    changed = cli._module_analysis_cache_path(
+    cli._write_persisted_module_analysis(
         tmp_path,
         module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-        capability_config_digest="capability-b",
+        **common,
+        func_defaults={"f": _func_metadata(params=1)},
+        func_kinds={"f": "sync"},
+        snapshot=snapshot,
     )
 
-    assert base != changed
-
-
-def test_import_scan_cache_path_tracks_capability_config_digest(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg" / "mod.py"
-    base = cli_module_graph_cache._import_scan_cache_path(
+    monkeypatch.setenv("MOLT_CAPABILITIES", second_grants)
+    assert cli_module_graph_cache._read_persisted_import_scan_record(
         tmp_path,
         module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-        capability_config_digest="capability-a",
-    )
-    changed = cli_module_graph_cache._import_scan_cache_path(
+        **common,
+        snapshot=snapshot,
+    ) == _ImportScanRequests(("os",), ())
+    assert cli._read_persisted_module_analysis(
         tmp_path,
         module_path,
-        module_name="pkg.mod",
-        is_package=False,
-        import_scan_mode="full",
-        capability_config_digest="capability-b",
-    )
+        **common,
+        snapshot=snapshot,
+    ) == ({"f": _func_metadata(params=1)}, {"f": "sync"})
 
-    assert base != changed
+    # Policy independence never admits stale source under either grant set.
+    module_path.write_text(
+        "import sys\ndef f(value=9): return value\n", encoding="utf-8"
+    )
+    changed = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path,
+            module_path,
+            **common,
+            snapshot=changed,
+        )
+        is None
+    )
+    assert (
+        cli._read_persisted_module_analysis(
+            tmp_path,
+            module_path,
+            **common,
+            snapshot=changed,
+        )
+        is None
+    )
 
 
 def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(

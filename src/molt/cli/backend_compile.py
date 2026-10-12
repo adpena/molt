@@ -11,7 +11,6 @@ from typing import Any, Callable, ContextManager, Mapping
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import CodegenBackend
-from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -212,7 +211,6 @@ def _prepare_backend_setup(
     ),
     resolved_modules: set[str] | frozenset[str] | None = None,
     codegen: CodegenSelection,
-    resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
@@ -345,7 +343,6 @@ def _prepare_backend_setup(
             native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
-            resolved_capability_policy=resolved_capability_policy,
             codegen=codegen,
             stage_timings_ms=stage_timings_ms,
         )

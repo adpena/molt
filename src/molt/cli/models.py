@@ -228,7 +228,6 @@ class _PrecomputedModuleImportScan:
     authority: _ModuleSourceScanAuthority
     source_sha256: str
     target_python_tag: str
-    capability_config_digest: str
     scan: _CompleteImportScan
 
 
@@ -1903,7 +1902,6 @@ class _PreparedEntryModuleGraph:
     target_python: TargetPythonVersion
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
     project_root: Path | None = None
-    capability_config_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -2094,10 +2092,6 @@ class _PreparedBuildConfig:
     @property
     def manifest_env_vars(self) -> dict[str, str]:
         return self.resolved_capability_policy.to_env_vars()
-
-    @property
-    def capability_config_cache_digest(self) -> str:
-        return self.resolved_capability_policy.digest().removeprefix("sha256:")
 
 
 @dataclass(frozen=True)

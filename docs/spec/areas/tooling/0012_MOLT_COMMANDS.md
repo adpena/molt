@@ -74,6 +74,10 @@ Outputs:
   [the IR specification](../compiler/0100_MOLT_IR.md).
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
 - Cache keys are computed from the IR payload plus backend/runtime/tooling source fingerprints, rustc/RUSTFLAGS metadata, and source-tree metadata (path, size, mtime, ctime). Source metadata changes intentionally invalidate object caches so long-lived CLI/batch processes cannot reuse stale compiler outputs after local source edits.
+- Runtime grants, resource limits and audit settings do not partition source
+  analysis or compiled-object caches. Native entrypoints, final-link fingerprints,
+  WASM deployment manifests and complete-binary wrapper caches retain the current
+  resolved policy; reusing compiled code never reuses a previous grant.
 - Backend executable bytes additionally bind probe receipts, object-cache keys,
   daemon selection and the compile-local fingerprint supplied to the Rust TIR
   cache. A same-size rewrite with a restored timestamp is not the same compiler.

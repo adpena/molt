@@ -215,7 +215,6 @@ def _prepare_frontend_analysis(
     entry_module: str,
     json_output: bool,
     target_python: TargetPythonVersion,
-    capability_config_digest: str = "",
     dependency_known_modules: Collection[str] = (),
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
@@ -257,7 +256,6 @@ def _prepare_frontend_analysis(
                 stdlib_root=stdlib_root,
                 stdlib_allowlist=stdlib_allowlist,
                 target_python=target_python,
-                capability_config_digest=capability_config_digest,
             )
             module_path_stats[module_name] = path_stat
             module_source_leases[module_name] = _ModuleSourceLease.path_backed(
@@ -737,7 +735,6 @@ def _prepare_frontend_stage_state(
         target=target,
         import_admission_policy=import_admission_policy,
         target_python=prepared_build_config.target_python,
-        capability_config_digest=prepared_build_config.capability_config_cache_digest,
         image_scope=resolved_build_entry.image_scope,
         stdlib_profile=stdlib_profile,
     )
@@ -890,7 +887,6 @@ def _prepare_frontend_stage_state(
             entry_module=entry_module,
             json_output=json_output,
             target_python=prepared_build_config.target_python,
-            capability_config_digest=prepared_build_config.capability_config_cache_digest,
             dependency_known_modules=set(import_plan.known_modules),
             runtime_import_scan_custody=import_plan.runtime_import_scan_custody,
         )

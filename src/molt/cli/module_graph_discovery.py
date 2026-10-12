@@ -59,7 +59,6 @@ def _bind_precomputed_module_import_scan(
     snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
     target_python: TargetPythonVersion,
-    capability_config_digest: str = "",
 ) -> _PrecomputedModuleImportScan:
     if snapshot.path != path:
         raise ValueError(f"cannot bind source scan snapshot: {path}")
@@ -73,7 +72,6 @@ def _bind_precomputed_module_import_scan(
         ),
         snapshot.sha256,
         target_python.tag,
-        capability_config_digest,
         scan,
     )
 
@@ -85,7 +83,6 @@ def _validate_precomputed_module_import_scan(
     module_name: str,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
-    capability_config_digest: str,
 ) -> None:
     record.authority.validate(module_name, path)
     if (
@@ -93,7 +90,6 @@ def _validate_precomputed_module_import_scan(
         or record.authority.requires_runtime_package_anchor
         != record.scan.requires_runtime_package_anchor
         or record.target_python_tag != target_python.tag
-        or record.capability_config_digest != capability_config_digest
     ):
         raise ValueError(f"precomputed source scan lost custody: {module_name!r}")
     if _module_source._source_content_sha256(path) != record.source_sha256:
@@ -201,7 +197,6 @@ def _extend_module_graph_with_closure(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> _DiscoveredModuleGraph:
     if not entry_paths:
@@ -236,7 +231,6 @@ def _extend_module_graph_with_closure(
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
         runtime_import_custody=runtime_import_custody,
         enclosing_scan_authority=_ModuleGraphScanAuthority(
             tuple(scan_authorities.values())
@@ -307,7 +301,6 @@ def _extend_module_graph_with_static_import_modules(
     module_reasons: MutableMapping[str, set[str]],
     import_admission_policy: _ImportAdmissionPolicy | None,
     target_python: TargetPythonVersion,
-    capability_config_digest: str = "",
 ) -> list[str]:
     if not module_names:
         return []
@@ -339,7 +332,6 @@ def _extend_module_graph_with_static_import_modules(
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=False,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     explicit_imports.update(closure.explicit_imports)
     return []
@@ -375,7 +367,6 @@ def _discover_module_graph_from_paths(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     *,
     full_scan_roots: bool,
@@ -530,7 +521,6 @@ def _discover_module_graph_from_paths(
                     module_name=module_name,
                     import_scan_mode=import_scan_mode,
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                 )
             source_executions = (
                 precomputed_scan.scan.source_executions if precomputed_scan else ()
@@ -555,7 +545,6 @@ def _discover_module_graph_from_paths(
                     stdlib_root=stdlib_root,
                     stdlib_allowlist=stdlib_allowlist,
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                     runtime_import_custody=runtime_import_custody,
                     precomputed_scan=precomputed_scan,
                 )
@@ -678,7 +667,6 @@ def _discover_module_graph(
     precomputed_scan: _PrecomputedModuleImportScan | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> _DiscoveredModuleGraph:
     return _discover_module_graph_from_paths(
         (entry_path,),
@@ -698,7 +686,6 @@ def _discover_module_graph(
         ),
         import_admission_policy=import_admission_policy,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
         full_scan_roots=True,
     )
 
@@ -717,7 +704,6 @@ def _load_module_imports(
     stdlib_root: Path | None = None,
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[str, ...]:
     return _load_module_import_scan(
@@ -732,7 +718,6 @@ def _load_module_imports(
         stdlib_root=stdlib_root,
         stdlib_allowlist=stdlib_allowlist,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
         runtime_import_custody=runtime_import_custody,
     ).scan.imports
 
@@ -756,7 +741,6 @@ def _load_module_import_scan(
     stdlib_root: Path | None = None,
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     precomputed_scan: _PrecomputedModuleImportScan | None = None,
 ) -> _LoadedModuleImportScan:
@@ -786,7 +770,6 @@ def _load_module_import_scan(
             module_name=module_name,
             import_scan_mode=import_scan_mode,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         return _LoadedModuleImportScan(
             precomputed_scan.scan, False, False, source, tree
@@ -826,7 +809,6 @@ def _load_module_import_scan(
             import_scan_mode=import_scan_mode,
             snapshot=snapshot,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -878,7 +860,6 @@ def _load_module_import_scan(
                 scan=requests,
                 snapshot=snapshot,
                 target_python=target_python,
-                capability_config_digest=capability_config_digest,
             )
     return _LoadedModuleImportScan(
         complete(requests), False, source_parsed, source, tree, snapshot

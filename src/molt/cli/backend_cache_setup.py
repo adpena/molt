@@ -9,10 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from molt.backend_environment import CodegenSelection
-from molt.capability_manifest import (
-    ResolvedRuntimePolicy,
-    resolve_runtime_policy_from_env,
-)
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
@@ -215,7 +211,6 @@ def _build_cache_variant(
     external_static_packages_digest: str = "",
     runtime_callable_symbols_digest: str = "",
     runtime_wasm_codegen_digest: str = "",
-    capability_config_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
 
@@ -279,8 +274,6 @@ def _build_cache_variant(
         parts.append(f"runtime_callables={runtime_callable_symbols_digest}")
     if runtime_wasm_codegen_digest:
         parts.append(f"wasm_runtime={runtime_wasm_codegen_digest}")
-    if capability_config_digest:
-        parts.append(f"capability_config={capability_config_digest}")
     return ";".join(parts)
 
 
@@ -310,7 +303,6 @@ def _prepare_backend_cache_setup(
     ),
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
-    resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
     codegen: CodegenSelection,
     stage_timings_ms: dict[str, float] | None = None,
@@ -351,21 +343,6 @@ def _prepare_backend_cache_setup(
         stage_start,
     )
 
-    stage_start = time.perf_counter()
-    capability_config_digest = (
-        (
-            resolved_capability_policy
-            if resolved_capability_policy is not None
-            else resolve_runtime_policy_from_env(os.environ)
-        )
-        .digest()
-        .removeprefix("sha256:")
-    )
-    _record_backend_cache_stage_ms(
-        stage_timings_ms,
-        "backend_cache_capability_config_digest",
-        stage_start,
-    )
     cache_fingerprint_inputs: tuple[str, str, str] | None = None
 
     def backend_cache_fingerprint_inputs() -> tuple[str, str, str]:
@@ -435,7 +412,6 @@ def _prepare_backend_cache_setup(
             else ""
         ),
         runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
-        capability_config_digest=capability_config_digest,
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,

@@ -323,7 +323,6 @@ def _run_backend_pipeline(
                 stdlib_profile=runtime_stdlib_profile,
                 native_artifact_plan=native_artifact_plan,
                 resolved_modules=resolved_modules,
-                resolved_capability_policy=prepared_build_config.resolved_capability_policy,
                 codegen=prepared_build_config.codegen,
                 stage_timings_ms=pipeline_stage_ms,
             )

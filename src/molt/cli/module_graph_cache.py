@@ -373,7 +373,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 23
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 24
 
 
 def _import_scan_cache_path(
@@ -384,7 +384,6 @@ def _import_scan_cache_path(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -397,8 +396,6 @@ def _import_scan_cache_path(
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
     ]
-    if capability_config_digest:
-        key_parts.append(f"capability_config={capability_config_digest}")
     cache_key = _resolved_module_cache_key(
         os.fspath(path),
         *key_parts,
@@ -456,7 +453,6 @@ def _read_persisted_import_scan_record(
     path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> _ImportScanRequests | None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -465,7 +461,6 @@ def _read_persisted_import_scan_record(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
@@ -478,7 +473,6 @@ def _read_persisted_import_scan_record(
         or payload.get("is_package") != is_package
         or payload.get("target_python") != target_python.tag
         or payload.get("import_scan_mode") != import_scan_mode
-        or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
     if snapshot is not None:
@@ -545,7 +539,6 @@ def _write_persisted_import_scan(
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> None:
     if snapshot.path != path:
         raise ValueError("source scan snapshot path mismatch")
@@ -556,7 +549,6 @@ def _write_persisted_import_scan(
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
-        "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
@@ -581,7 +573,6 @@ def _write_persisted_import_scan(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload)

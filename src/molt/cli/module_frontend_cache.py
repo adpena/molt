@@ -6,9 +6,8 @@ the module source content plus the frontend/tooling identity that produced them.
 Their correctness identity is already fully captured:
 
 * Analysis entries key on ``_resolved_module_cache_key(path, module_name, pkg,
-  import_scan_mode, kind, target_python.tag, _cache_tooling_fingerprint(),
-  capability_config=...)`` and re-validate ``compiler_fingerprint``,
-  ``import_scan_mode``, ``capability_config_digest`` and the real source content
+  import_scan_mode, kind, target_python.tag, _cache_tooling_fingerprint())``
+  and re-validate ``compiler_fingerprint``, ``import_scan_mode`` and the real source content
   sha256 on read (:func:`_read_persisted_module_analysis`).
 * Lowering entries re-validate a ``context_digest`` -- a sha256 over the full
   lowering context payload, which embeds ``_cache_tooling_fingerprint()``,
@@ -105,7 +104,7 @@ def _shared_module_analysis_cache_path(stem: str, content_key: str) -> Path | No
 
     ``content_key`` is exactly the ``_resolved_module_cache_key(...)`` digest the
     session-local analysis filename is built from, so an identical source +
-    tooling + target + scan-mode + capability identity resolves to the *same*
+    tooling + target + scan-mode identity resolves to the *same*
     shared slot regardless of session.
     """
     if _CONTENT_KEY_RE.match(content_key) is None:

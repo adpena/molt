@@ -537,7 +537,6 @@ def _extend_native_support_source_closure(
     stdlib_allowlist: set[str],
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
-    capability_config_digest: str,
     slice_cache: MutableMapping[
         tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
     ],
@@ -558,7 +557,6 @@ def _extend_native_support_source_closure(
         slice_cache=slice_cache,
         operation_counts=operation_counts,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     explicit_imports: set[str] = set()
     for (
@@ -604,7 +602,6 @@ def _extend_native_support_source_closure(
                     module_name=module_name,
                     import_scan_mode="full",
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                 )
                 source_replacements[module_name] = previous[1].scan.authority
         requested_mode = support_slice.scan.authority.mode
@@ -629,7 +626,6 @@ def _extend_native_support_source_closure(
             ),
             allow_entry_external_imports=False,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         _graph_discovery._merge_discovered_module_graph(
             module_graph,
@@ -664,7 +660,6 @@ def _extend_native_runtime_python_import_closure(
     stdlib_allowlist: set[str],
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
-    capability_config_digest: str,
 ) -> frozenset[str]:
     """Admit modules that native extensions import dynamically at runtime.
 
@@ -702,7 +697,6 @@ def _extend_native_runtime_python_import_closure(
         retain_source=False,
         retain_tree=False,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     assert loaded_scan.snapshot is not None
     entry_scan = _graph_discovery._bind_precomputed_module_import_scan(
@@ -712,7 +706,6 @@ def _extend_native_runtime_python_import_closure(
         scan=loaded_scan.scan,
         snapshot=loaded_scan.snapshot,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     del loaded_scan
     module_roots = [
@@ -738,7 +731,6 @@ def _extend_native_runtime_python_import_closure(
         ),
         allow_entry_external_imports=True,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     retained_graph = {
         name: path
@@ -959,7 +951,6 @@ def _native_support_source_slices(
     ],
     operation_counts: MutableMapping[str, int],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
 ) -> dict[Path, _NativeSupportSourceSlice]:
     support_slices: dict[Path, _NativeSupportSourceSlice] = {}
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
@@ -993,7 +984,6 @@ def _native_support_source_slices(
                     stdlib_root=stdlib_root,
                     stdlib_allowlist=stdlib_allowlist,
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                     retain_source=False,
                     retain_tree=False,
                 )
@@ -1022,7 +1012,6 @@ def _native_support_source_slices(
                     scan=loaded_scan.scan,
                     snapshot=loaded_scan.snapshot,
                     target_python=target_python,
-                    capability_config_digest=capability_config_digest,
                 ),
                 generated_path=None,
             )
@@ -1069,7 +1058,6 @@ def _native_support_source_slices(
             retain_source=False,
             retain_tree=False,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         operation_counts["native_support_source_parses"] += int(
             loaded_scan.source_parsed
@@ -1084,7 +1072,6 @@ def _native_support_source_slices(
                 scan=loaded_scan.scan,
                 snapshot=loaded_scan.snapshot,
                 target_python=target_python,
-                capability_config_digest=capability_config_digest,
             ),
             generated_path=generated_path,
         )
@@ -1450,7 +1437,6 @@ def _finalize_runtime_import_closure(
     entry_tree: ast.AST | None = None,
     previous_custody: _RuntimeImportScanCustody | None = None,
     project_root: Path | None = None,
-    capability_config_digest: str = "",
 ) -> _RuntimeImportClosure:
     """Seal source custody independently of the backend's dispatch representation.
 
@@ -1591,7 +1577,6 @@ def _finalize_runtime_import_closure(
             reason="runtime_import_support",
             import_admission_policy=import_admission_policy,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
             runtime_import_custody=custody,
         )
         runtime_roots.update(closure.graph)
@@ -1679,7 +1664,6 @@ def _materialize_import_plan(
                 stdlib_allowlist=stdlib_allowlist,
                 resolver_cache=prepared_module_graph.module_resolution_cache,
                 target_python=prepared_module_graph.target_python,
-                capability_config_digest=prepared_module_graph.capability_config_digest,
             )
         )
         support_explicit_imports.update(
@@ -1694,14 +1678,12 @@ def _materialize_import_plan(
                 stdlib_allowlist=stdlib_allowlist,
                 resolver_cache=prepared_module_graph.module_resolution_cache,
                 target_python=prepared_module_graph.target_python,
-                capability_config_digest=prepared_module_graph.capability_config_digest,
                 slice_cache=native_support_slice_cache,
                 operation_counts=module_graph_operation_counts,
             )
         )
         runtime_closure = _finalize_runtime_import_closure(
             project_root=prepared_module_graph.project_root,
-            capability_config_digest=prepared_module_graph.capability_config_digest,
             module_graph=module_graph,
             scan_authorities=scan_authorities,
             module_reasons=module_reasons,
@@ -1894,7 +1876,6 @@ def _augment_module_graph_for_entry_and_runtime(
     target: str,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     roots = list(roots)
@@ -1927,7 +1908,6 @@ def _augment_module_graph_for_entry_and_runtime(
         stub_parents=stub_parents,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     explicit_imports.update(core_closure.explicit_imports)
     # Inventory custody does not imply executable admission. Core modules and
@@ -1979,7 +1959,6 @@ def _augment_module_graph_for_entry_and_runtime(
             stub_parents=stub_parents,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         explicit_imports.update(spawn_closure.explicit_imports)
         dispatch_roots.add(ENTRY_OVERRIDE_SPAWN)
@@ -2007,7 +1986,6 @@ def _prepare_entry_module_graph(
     target: str,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
     image_scope: _BinaryImageScope | None = None,
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
@@ -2038,7 +2016,6 @@ def _prepare_entry_module_graph(
         stdlib_root=stdlib_root,
         stdlib_allowlist=stdlib_allowlist,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     discovery = _graph_discovery._discover_module_graph(
         source_path,
@@ -2056,11 +2033,9 @@ def _prepare_entry_module_graph(
             scan=loaded_entry.scan,
             snapshot=entry_snapshot,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         ),
         import_admission_policy=import_admission_policy,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
     module_graph = discovery.graph
     explicit_imports = discovery.explicit_imports
@@ -2089,7 +2064,6 @@ def _prepare_entry_module_graph(
             module_reasons=module_reasons,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
     )
     if static_import_errors:
@@ -2140,7 +2114,6 @@ def _prepare_entry_module_graph(
             import_admission_policy=import_admission_policy,
             allow_entry_external_imports=False,
             target_python=target_python,
-            capability_config_digest=capability_config_digest,
         )
         explicit_imports.update(parent_closure.explicit_imports)
         _graph_discovery._record_new_module_reasons(
@@ -2185,7 +2158,6 @@ def _prepare_entry_module_graph(
         target=target,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
         stdlib_profile=stdlib_profile,
     )
     if augmentation_error is not None:
@@ -2193,7 +2165,6 @@ def _prepare_entry_module_graph(
     try:
         runtime_closure = _finalize_runtime_import_closure(
             project_root=project_root,
-            capability_config_digest=capability_config_digest,
             module_graph=module_graph,
             scan_authorities=scan_authorities,
             module_reasons=module_reasons,
@@ -2227,7 +2198,6 @@ def _prepare_entry_module_graph(
     )
     return _PreparedEntryModuleGraph(
         project_root=project_root,
-        capability_config_digest=capability_config_digest,
         image_scope=image_scope,
         declared_root_modules=frozenset(
             name for name in image_scope.root_modules if name in module_graph
