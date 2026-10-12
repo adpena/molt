@@ -728,7 +728,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 module,
                 builder,
             );
-            let out = simple_ir_out_result(op).expect("admitted module_slot result");
+            let out = crate::tir::simple_def_use::simple_ir_out_result(op)
+                .expect("admitted module_slot result");
             // ModuleId is a dense u32, so its boxed representation is always inline.
             let value = if representation_plan.is_raw_int_carrier_name(out) {
                 raw

@@ -97,14 +97,9 @@ pub(super) fn peephole_set_get_to_tee(instructions: WasmBodyOps) -> WasmBodyOps 
         // Floating arithmetic is not a copy identity: adding zero can change
         // its sign, and arithmetic quiets signaling NaNs. This instruction-only
         // pass has no exactness or fast-math authority to erase those effects.
-        match &instructions[i] {
-            WasmBodyOp::Instruction(instruction) => out.push(instruction.clone()),
-            WasmBodyOp::Call(call) => out.ops.push(WasmBodyOp::Call(*call)),
-            WasmBodyOp::ConstMaterialization(materialization) => out
-                .ops
-                .push(WasmBodyOp::ConstMaterialization(materialization.clone())),
-            WasmBodyOp::DataPtrI32(bytes) => out.ops.push(WasmBodyOp::DataPtrI32(bytes.clone())),
-        }
+        // Unmatched body operations are opaque to this instruction pass.
+        // Preserve the complete operation, including late-bound slot payloads.
+        out.ops.push(instructions[i].clone());
         i += 1;
     }
     out
