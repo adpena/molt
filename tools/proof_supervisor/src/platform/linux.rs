@@ -1175,7 +1175,10 @@ fn handle_trace_event(
         libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE => {
             let child = event_message(pid)?;
             if child <= 0 {
-                return Err("creation event returned an invalid child id".to_owned());
+                return Err(format!(
+                    "creation event returned invalid child id {child}: task {pid}, wait status {status:#x}, process owner {:?}",
+                    trace.tasks.get(&pid).and_then(|task| task.process)
+                ));
             }
             trace.retain_task(child, None)?;
             *generation = generation

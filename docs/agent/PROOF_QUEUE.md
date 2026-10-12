@@ -167,6 +167,13 @@ resource generation separately from the native LLVM compiler. Selection,
 resource capture, identity checks and proof instrumentation run in development
 and compiler tooling, outside emitted guest execution.
 
+The runtime's WASI libtest is a command executable. Its test-only support module
+links the command CRT filename projected by the existing authenticated C-ABI
+plan. The selected native search context resolves the original SDK object;
+neither dependency flags nor production runtime libraries acquire that entry
+point. The lifecycle gate must link and execute this image through the actual
+production host before claiming a passing WASI lifecycle cell.
+
 Compiler-producing commands declare the helpers their target and profile can
 execute. Native stripping and WASM optimization reuse the compiler's existing
 selectors. Their identities bind both the selected entrypoint and resolved

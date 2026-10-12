@@ -190,6 +190,18 @@ fn emit_wasm_long_double_link_policy(target_arch: &str) {
             .1
             .as_path()
     };
+    // Only the cfg(test) WASI command image consumes this object. Keeping its
+    // selection in the admitted C-ABI plan avoids a second SDK path authority;
+    // a Cargo-wide link argument would also reach unrelated final artifacts.
+    if target_os == "wasi" {
+        println!(
+            "cargo:rustc-env=MOLT_WASI_TEST_COMMAND_CRT={}",
+            member("crt_command")
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("WASI command CRT filename")
+        );
+    }
     // SDK filenames already follow the target's lib<name>.a grammar.
     // Keep the original admitted bytes in place; no OUT_DIR copies or aliases.
     for (source, library) in [
