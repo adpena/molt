@@ -135,12 +135,8 @@ fn build_command(
 
     // cwd
     if !obj_from_bits(cwd_bits).is_none() {
-        match path_from_bits(_py, cwd_bits) {
-            Ok(p) => {
-                cmd.current_dir(p);
-            }
-            Err(error) => return Err(error),
-        }
+        let path = path_from_bits(_py, cwd_bits)?;
+        cmd.current_dir(path);
     }
 
     // env

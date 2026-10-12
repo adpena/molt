@@ -184,12 +184,11 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
                         deleter: MoltObject::none().bits(),
                     },
                 );
-                if !exception_pending(py) {
-                    dict_set_in_place(py, dictionary, name, descriptor);
-                }
+                let installed =
+                    !exception_pending(py) && dict_set_in_place(py, dictionary, name, descriptor);
                 dec_ref_bits(py, descriptor);
                 dec_ref_bits(py, name);
-                if exception_pending(py) {
+                if !installed || exception_pending(py) {
                     return false;
                 }
             }
@@ -413,10 +412,8 @@ pub(crate) unsafe fn read_type_annotations(
         if let Some(value) = existing {
             // descriptor_bind owns the borrowed entry across __get__, passes
             // Python None as instance and the actual class as descriptor owner.
-            return match crate::builtins::attr::descriptor_bind(py, value, Some(class_bits), None) {
-                Ok(value) => value,
-                Err(()) => None,
-            };
+            return crate::builtins::attr::descriptor_bind(py, value, Some(class_bits), None)
+                .unwrap_or_default();
         }
         if field == Field::Annotate {
             if !deferred {

@@ -1185,21 +1185,17 @@ pub(super) fn importlib_stabilize_module_state_impl(
             if let Some(module_path_attr_bits) =
                 importlib_module_dict_get_optional_owned_bits(_py, module_bits, dunder_path_name)?
             {
+                let module_path_attr =
+                    crate::builtins::exceptions::ExceptionValue::adopt(_py, module_path_attr_bits);
+                let module_path_attr_bits = module_path_attr.bits();
                 let should_delete = match obj_from_bits(module_path_attr_bits).as_ptr() {
                     Some(path_ptr) => unsafe { object_type_id(path_ptr) == TYPE_ID_OBJECT },
                     None => false,
                 };
                 if should_delete {
                     let module_dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
-                    unsafe {
-                        dict_del_in_place(_py, module_dict_ptr, dunder_path_name);
-                    }
-                    if exception_pending(_py) {
-                        return Err(MoltObject::none().bits());
-                    }
-                }
-                if !obj_from_bits(module_path_attr_bits).is_none() {
-                    dec_ref_bits(_py, module_path_attr_bits);
+                    unsafe { dict_del_in_place(_py, module_dict_ptr, dunder_path_name) }
+                        .map_err(|()| MoltObject::none().bits())?;
                 }
             }
         }

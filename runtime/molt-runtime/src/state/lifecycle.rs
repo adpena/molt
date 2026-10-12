@@ -1482,9 +1482,8 @@ pub(crate) mod tests {
         // Always settle both real native handles, including the regression case.
         release_tx.send(()).unwrap();
         assert!(owner.join());
-        assert_eq!(
-            result_before_sibling_release.unwrap(),
-            false,
+        assert!(
+            !result_before_sibling_release.unwrap(),
             "service member joined an earlier sibling before refusing itself"
         );
     }
@@ -1611,10 +1610,8 @@ pub(crate) mod tests {
                     .is_none()
             );
             if cleanup_panic {
-                assert!(
-                    cfg!(panic = "unwind"),
-                    "cleanup panic control requires unwind"
-                );
+                #[cfg(panic = "abort")]
+                panic!("cleanup panic control requires unwind");
                 #[cfg(panic = "unwind")]
                 crate::concurrency::execution::inject_shutdown_drain_drop_panic();
             }

@@ -485,19 +485,18 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
             if !builtin_only
                 && crate::object::ops_list::list_storage_ptr(seq_bits).is_some()
                 && !crate::object::iterable::builtin_receiver(_py, ptr)
-            {
-                if let Some(method) = match crate::builtins::attr::lookup_special_method(
+                && let Some(method) = match crate::builtins::attr::lookup_special_method(
                     _py,
                     seq_bits,
                     b"__reversed__",
                 ) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
-                } {
-                    let result = call_callable0(_py, method);
-                    dec_ref_bits(_py, method);
-                    return result;
                 }
+            {
+                let result = call_callable0(_py, method);
+                dec_ref_bits(_py, method);
+                return result;
             }
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_RANGE {
@@ -866,61 +865,61 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         return MoltObject::from_ptr(iter_ptr).bits();
                     }
                 }
-                if !builtin_only {
-                    if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
+                if !builtin_only
+                    && let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         iter_bits,
                         b"__iter__",
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
-                    } {
-                        let res = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
+                    }
+                {
+                    let res = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, res);
+                        return MoltObject::none().bits();
+                    }
+                    if !match is_iterator_bits(_py, res) {
+                        Ok(valid) => valid,
+                        Err(()) => {
                             dec_ref_bits(_py, res);
                             return MoltObject::none().bits();
                         }
-                        if !match is_iterator_bits(_py, res) {
-                            Ok(valid) => valid,
-                            Err(()) => {
-                                dec_ref_bits(_py, res);
-                                return MoltObject::none().bits();
-                            }
-                        } {
-                            let msg = format!(
-                                "iter() returned non-iterator of type '{}'",
-                                type_name(_py, obj_from_bits(res))
-                            );
-                            dec_ref_bits(_py, res);
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        return res;
+                    } {
+                        let msg = format!(
+                            "iter() returned non-iterator of type '{}'",
+                            type_name(_py, obj_from_bits(res))
+                        );
+                        dec_ref_bits(_py, res);
+                        return raise_exception::<_>(_py, "TypeError", &msg);
                     }
+                    return res;
                 }
-                if !builtin_only {
-                    if match crate::builtins::attr::has_special_method(
+                if !builtin_only
+                    && match crate::builtins::attr::has_special_method(
                         _py,
                         iter_bits,
                         b"__getitem__",
                     ) {
                         Ok(present) => present,
                         Err(()) => return MoltObject::none().bits(),
-                    } {
-                        let total = std::mem::size_of::<MoltHeader>()
-                            + std::mem::size_of::<u64>()
-                            + std::mem::size_of::<usize>()
-                            + std::mem::size_of::<*mut u8>();
-                        let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
-                        if iter_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        inc_ref_bits(_py, iter_bits);
-                        *(iter_ptr as *mut u64) = iter_bits;
-                        iter_set_index(iter_ptr, 0);
-                        iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-                        return MoltObject::from_ptr(iter_ptr).bits();
                     }
+                {
+                    let total = std::mem::size_of::<MoltHeader>()
+                        + std::mem::size_of::<u64>()
+                        + std::mem::size_of::<usize>()
+                        + std::mem::size_of::<*mut u8>();
+                    let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                    if iter_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, iter_bits);
+                    *(iter_ptr as *mut u64) = iter_bits;
+                    iter_set_index(iter_ptr, 0);
+                    iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                    return MoltObject::from_ptr(iter_ptr).bits();
                 }
             }
         }

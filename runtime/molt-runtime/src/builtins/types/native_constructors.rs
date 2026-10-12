@@ -507,10 +507,10 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
         }
         inc_ref_bits(py, storage);
         let _storage = PtrDropGuard::new(obj_from_bits(storage).as_ptr().unwrap());
-        if let Some(&value) = call.values().first() {
-            if !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, value) } {
-                return MoltObject::none().bits();
-            }
+        if let Some(&value) = call.values().first()
+            && !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, value) }
+        {
+            return MoltObject::none().bits();
         }
         for (key, value) in call.keyword_pairs() {
             if !unsafe { dict_update_set_in_place(py, storage, key, value) } {

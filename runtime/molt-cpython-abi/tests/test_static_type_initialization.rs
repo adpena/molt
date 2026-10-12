@@ -13,14 +13,10 @@ fn concurrent_and_repeated_bootstrap_preserves_live_builtin_shells() {
                 for _ in 0..256 {
                     unsafe {
                         molt_cpython_abi_init();
-                        assert_eq!(
-                            (*(&raw const Py_EllipsisObject)).ob_type,
-                            &raw mut PyEllipsis_Type
-                        );
-                        assert_eq!(
-                            (*(&raw const Py_NotImplementedSentinel)).ob_type,
-                            &raw mut PyNotImplemented_Type
-                        );
+                        let ellipsis_type = Py_EllipsisObject.ob_type;
+                        assert_eq!(ellipsis_type, &raw mut PyEllipsis_Type);
+                        let not_implemented_type = Py_NotImplementedSentinel.ob_type;
+                        assert_eq!(not_implemented_type, &raw mut PyNotImplemented_Type);
                         for (kind, name) in [
                             (&raw const PyEllipsis_Type, c"ellipsis"),
                             (&raw const PyNotImplemented_Type, c"NotImplementedType"),

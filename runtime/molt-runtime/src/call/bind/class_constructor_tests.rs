@@ -72,8 +72,18 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                 let dict_cell = crate::object::cells::alloc_cell(_py, prepared_bits);
                 let class_cell_bits = MoltObject::from_ptr(class_cell).bits();
                 let dict_cell_bits = MoltObject::from_ptr(dict_cell).bits();
-                crate::dict_set_in_place(_py, prepared, class_key, class_cell_bits);
-                crate::dict_set_in_place(_py, prepared, dict_key, dict_cell_bits);
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    prepared,
+                    class_key,
+                    class_cell_bits
+                ));
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    prepared,
+                    dict_key,
+                    dict_cell_bits
+                ));
                 let bases = alloc_tuple(_py, &[base]);
                 let bases_bits = MoltObject::from_ptr(bases).bits();
                 let class_bits = call_type(_py, name, bases_bits, prepared_bits);
@@ -103,12 +113,22 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                         "type construction must not mutate the supplied namespace"
                     );
                 }
-                crate::dict_set_in_place(_py, prepared, value_key, MoltObject::from_int(2).bits());
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    prepared,
+                    value_key,
+                    MoltObject::from_int(2).bits()
+                ));
                 assert_eq!(
                     dict_get_in_place(_py, copied, value_key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(1).bits())
                 );
-                crate::dict_set_in_place(_py, copied, value_key, MoltObject::from_int(3).bits());
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    copied,
+                    value_key,
+                    MoltObject::from_int(3).bits()
+                ));
                 assert_eq!(
                     dict_get_in_place(_py, copied, value_key).expect("dictionary lookup succeeds"),
                     Some(MoltObject::from_int(3).bits())
@@ -434,12 +454,12 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
                 let hook = crate::molt_classmethod_new(bits);
                 assert!(!obj_from_bits(hook).is_none());
                 let dictionary = crate::class_dict_bits(obj_from_bits(owner).as_ptr().unwrap());
-                crate::dict_set_in_place(
+                assert!(crate::dict_set_in_place(
                     _py,
                     obj_from_bits(dictionary).as_ptr().unwrap(),
                     hook_key,
                     hook,
-                );
+                ));
                 dec_ref_bits(_py, hook);
                 dec_ref_bits(_py, bits);
             }
@@ -452,12 +472,12 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             let bits = MoltObject::from_ptr(ptr).bits();
             let dictionary =
                 crate::class_dict_bits(obj_from_bits(descriptor_type).as_ptr().unwrap());
-            crate::dict_set_in_place(
+            assert!(crate::dict_set_in_place(
                 _py,
                 obj_from_bits(dictionary).as_ptr().unwrap(),
                 set_key,
                 bits,
-            );
+            ));
             dec_ref_bits(_py, bits);
             let first = crate::alloc_instance_for_class(
                 _py,
@@ -480,8 +500,18 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             let namespace_cell_bits = MoltObject::from_ptr(namespace_cell).bits();
             let class_key = crate::attr_name_bits_from_bytes(_py, b"__classcell__").unwrap();
             let dict_key = crate::attr_name_bits_from_bytes(_py, b"__classdictcell__").unwrap();
-            crate::dict_set_in_place(_py, ns, class_key, class_cell_bits);
-            crate::dict_set_in_place(_py, ns, dict_key, namespace_cell_bits);
+            assert!(crate::dict_set_in_place(
+                _py,
+                ns,
+                class_key,
+                class_cell_bits
+            ));
+            assert!(crate::dict_set_in_place(
+                _py,
+                ns,
+                dict_key,
+                namespace_cell_bits
+            ));
             CALLBACKS.with(|state| {
                 let mut state = state.borrow_mut();
                 state.prepared = ns_bits;

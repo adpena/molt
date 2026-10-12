@@ -9832,13 +9832,13 @@ mod tests {
             let value =
                 MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(17).bits()]))
                     .bits();
-            crate::object::ops::dict_set_with_hash_in_place(
+            assert!(crate::object::ops::dict_set_with_hash_in_place(
                 &py,
                 dict,
                 key,
                 value,
                 crate::object::ops_hash::hash_string_bytes(&py, b"molt_sys_probe") as u64,
-            );
+            ));
             dec_ref_bits(&py, value);
             dec_ref_bits(&py, sys);
             SYS_LOOKUP_CALLS.store(0, AtomicOrdering::SeqCst);
@@ -9894,13 +9894,13 @@ mod tests {
             .as_ptr()
             .unwrap();
             let (key, class) = sys_lookup_key(&py);
-            crate::object::ops::dict_set_with_hash_in_place(
+            assert!(crate::object::ops::dict_set_with_hash_in_place(
                 &py,
                 dict,
                 key,
                 MoltObject::from_int(17).bits(),
                 crate::object::ops_hash::hash_string_bytes(&py, b"molt_sys_probe") as u64,
-            );
+            ));
             let hook_name = crate::attr_name_bits_from_bytes(&py, b"unraisablehook").unwrap();
             let hook = sys_lookup_function(&py, sys_lookup_unraisable as *const (), 1);
             crate::builtins::modules::molt_module_set_attr(sys, hook_name, hook);
@@ -9966,13 +9966,13 @@ mod tests {
             crate::dict_del_in_place(&py, dict, modules_name)
                 .expect("sys namespace deletion must succeed whether or not modules is present");
             let (modules_key, modules_class) = sys_lookup_key(&py);
-            crate::object::ops::dict_set_with_hash_in_place(
+            assert!(crate::object::ops::dict_set_with_hash_in_place(
                 &py,
                 dict,
                 modules_key,
                 MoltObject::from_int(0).bits(),
                 crate::object::ops_hash::hash_string_bytes(&py, b"modules") as u64,
-            );
+            ));
             SYS_LOOKUP_MODE.store(1, AtomicOrdering::SeqCst);
             let reports = SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst);
             assert!(molt_cpython_abi::api::imports::PyImport_GetModuleDict().is_null());

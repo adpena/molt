@@ -1376,12 +1376,12 @@ mod tests {
             let captured = MoltObject::from_ptr(captured_ptr).bits();
             let getattr_name = string_bits(py, b"getattr");
             unsafe {
-                crate::dict_set_in_place(
+                assert!(crate::dict_set_in_place(
                     py,
                     captured_ptr,
                     getattr_name,
                     MoltObject::from_int(37).bits(),
-                );
+                ));
             }
             inc_ref_bits(py, globals);
             inc_ref_bits(py, captured);

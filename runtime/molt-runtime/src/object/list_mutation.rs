@@ -616,10 +616,6 @@ pub(crate) unsafe fn replace_one_transferring_displaced(
 
 /// Replace one item with a pre-staged delta projection. The displaced runtime
 /// and C edges are released only after the new generation is published.
-pub(crate) unsafe fn replace_one(py: &PyToken<'_>, ptr: *mut u8, index: usize, item: u64) -> bool {
-    unsafe { replace_one_with_projection(py, ptr, index, item, std::ptr::null_mut()) }
-}
-
 pub(crate) unsafe fn replace_one_with_projection(
     py: &PyToken<'_>,
     ptr: *mut u8,

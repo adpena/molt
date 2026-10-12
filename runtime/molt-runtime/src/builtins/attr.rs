@@ -284,7 +284,14 @@ mod tests {
             let namespace = obj_from_bits(unsafe { crate::class_dict_bits(class_ptr) })
                 .as_ptr()
                 .unwrap();
-            unsafe { crate::dict_set_in_place(_py, namespace, offsets_name, rebound) };
+            unsafe {
+                assert!(crate::dict_set_in_place(
+                    _py,
+                    namespace,
+                    offsets_name,
+                    rebound
+                ))
+            };
             assert_eq!(
                 unsafe { super::class_field_offset(_py, class_ptr, field) },
                 Some(0)

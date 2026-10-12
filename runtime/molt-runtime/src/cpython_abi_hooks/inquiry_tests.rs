@@ -2633,13 +2633,13 @@ extern "C" fn known_hash_equality(_receiver: u64, query: u64) -> u64 {
                     .as_ptr()
                     .unwrap();
                 crate::object::ops::dict_clear_in_place(&py, dict);
-                crate::object::ops::dict_set_with_hash_in_place(
+                assert!(crate::object::ops::dict_set_with_hash_in_place(
                     &py,
                     dict,
                     query,
                     KNOWN_REPLACEMENT.load(Relaxed),
                     KNOWN_HASH as u64,
-                );
+                ));
                 MoltObject::from_bool(true).bits()
             }
             _ => MoltObject::from_bool(false).bits(),

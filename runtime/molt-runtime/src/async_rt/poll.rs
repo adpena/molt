@@ -891,12 +891,12 @@ mod tests {
             ] {
                 crate::molt_code_slot_set(0, code_bits, lexical);
                 unsafe {
-                    crate::dict_set_in_place(
+                    assert!(crate::dict_set_in_place(
                         py,
                         crate::obj_from_bits(rebound).as_ptr().unwrap(),
                         builtins_key,
                         builtins,
-                    );
+                    ));
                 }
                 let creation = FrameInvocationGuard::for_namespace(py, code_bits, rebound).unwrap();
                 let task = crate::molt_task_new(poll, crate::GEN_CONTROL_SIZE as u64, kind);
@@ -910,12 +910,12 @@ mod tests {
                 );
                 crate::molt_code_slot_set(0, replacement_code_bits, lexical);
                 unsafe {
-                    crate::dict_set_in_place(
+                    assert!(crate::dict_set_in_place(
                         py,
                         crate::obj_from_bits(rebound).as_ptr().unwrap(),
                         builtins_key,
                         replacement,
-                    );
+                    ));
                 }
                 let mut visited = Vec::new();
                 unsafe {

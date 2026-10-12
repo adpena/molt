@@ -127,17 +127,17 @@ unsafe fn type_attr_lookup_ptr_inner(
             inc_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             crate::PtrDropGuard::new(ptr)
         });
-        if let Some(meta_ptr) = meta_ptr {
-            if allow_meta_custom_getattribute {
-                return attribute_lookup_transaction(
-                    _py,
-                    obj_ptr,
-                    meta_ptr,
-                    attr_bits,
-                    type_method_bits(_py, "__getattribute__")?,
-                    || type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
-                );
-            }
+        if let Some(meta_ptr) = meta_ptr
+            && allow_meta_custom_getattribute
+        {
+            return attribute_lookup_transaction(
+                _py,
+                obj_ptr,
+                meta_ptr,
+                attr_bits,
+                type_method_bits(_py, "__getattribute__")?,
+                || type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
+            );
         }
         // Capture one metaclass selection before descriptor classification or
         // class-namespace equality can replace its only namespace reference.

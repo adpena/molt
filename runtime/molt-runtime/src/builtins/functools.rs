@@ -1626,15 +1626,14 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
         if !order_ptr.is_null() {
             let order = unsafe { &mut *order_ptr };
             order.touch(key_bits);
-            if let Some(maxsize) = maxsize {
-                if order
+            if let Some(maxsize) = maxsize
+                && order
                     .evict_over_limit(_py, cache_ptr, maxsize.max(0) as usize)
                     .is_err()
-                {
-                    dec_ref_bits(_py, key_bits);
-                    dec_ref_bits(_py, result_bits);
-                    return MoltObject::none().bits();
-                }
+            {
+                dec_ref_bits(_py, key_bits);
+                dec_ref_bits(_py, result_bits);
+                return MoltObject::none().bits();
             }
         }
         dec_ref_bits(_py, key_bits);

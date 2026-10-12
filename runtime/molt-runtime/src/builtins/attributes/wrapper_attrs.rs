@@ -412,10 +412,9 @@ pub(crate) fn prepare_wrapper_members(
                         && layout::native_descriptor_operation(ptr) == Some(member.operation.tag())
                         && layout::native_descriptor_owner_bits(ptr) == class_bits
                         && layout::native_descriptor_getter_bits(ptr) == getter
+                        && dict_del_in_place(py, staged, name_bits).is_err()
                     {
-                        if dict_del_in_place(py, staged, name_bits).is_err() {
-                            return None;
-                        }
+                        return None;
                     }
                     if exception_pending(py) {
                         return None;
@@ -1209,7 +1208,9 @@ mod tests {
                                     } else {
                                         assert_eq!((*member).ob_type, &raw mut PyWrapperDescr_Type);
                                         assert_eq!(
-                                            (*member.cast::<PyWrapperDescrObject>()).d_common.d_type,
+                                            (*member.cast::<PyWrapperDescrObject>())
+                                                .d_common
+                                                .d_type,
                                             kind
                                         );
                                     }
@@ -1599,7 +1600,7 @@ mod tests {
             let namespace_bits = MoltObject::from_ptr(namespace).bits();
             for &(key, value) in attrs {
                 let key = attr_name_bits_from_bytes(py, key).unwrap();
-                dict_set_in_place(py, namespace, key, value);
+                assert!(dict_set_in_place(py, namespace, key, value));
                 dec_ref_bits(py, key);
             }
             let bases = alloc_tuple(py, &[base]);
@@ -1887,7 +1888,12 @@ mod tests {
                     let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                     for name in [b"__func__".as_slice(), b"__wrapped__".as_slice()] {
                         let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
-                        dict_set_in_place(py, dictionary_ptr, name_bits, MoltObject::none().bits());
+                        assert!(dict_set_in_place(
+                            py,
+                            dictionary_ptr,
+                            name_bits,
+                            MoltObject::none().bits()
+                        ));
                         let actual =
                             molt_get_attr_name(MoltObject::from_ptr(object).bits(), name_bits);
                         assert_eq!(actual, target);

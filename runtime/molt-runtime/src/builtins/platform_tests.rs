@@ -1646,7 +1646,12 @@ fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
                 pending_exception_kind_and_message(_py)
             );
             unsafe {
-                dict_set_in_place(_py, module_dict_ptr, path_name_bits, placeholder_bits);
+                assert!(dict_set_in_place(
+                    _py,
+                    module_dict_ptr,
+                    path_name_bits,
+                    placeholder_bits
+                ));
             }
             assert!(
                 !exception_pending(_py),
@@ -2511,7 +2516,7 @@ fn loader_identity_class_namespace(py: &PyToken<'_>, class: u64, name: &[u8], va
         let dict = obj_from_bits(crate::object::layout::class_dict_bits(ptr))
             .as_ptr()
             .unwrap();
-        dict_set_in_place(py, dict, name_bits, value);
+        assert!(dict_set_in_place(py, dict, name_bits, value));
         crate::object::layout::class_bump_layout_version(ptr);
     }
     dec_ref_bits(py, name_bits);
@@ -2818,7 +2823,7 @@ mod resolver_admission_tests {
                 let _finder = owner(finder);
                 loader_identity_setattr(py, util, b"find_spec", finder);
                 unsafe {
-                    dict_set_in_place(py, modules_ptr, util_name, util);
+                    assert!(dict_set_in_place(py, modules_ptr, util_name, util));
                 }
                 assert!(!exception_pending(py));
                 let _ = raise_exception::<u64>(py, "RuntimeError", "finder's exact exception");
@@ -2896,7 +2901,7 @@ mod resolver_admission_tests {
                     let cached = crate::molt_module_new(name);
                     let _cached = owner(cached);
                     unsafe {
-                        dict_set_in_place(py, modules_ptr, name, cached);
+                        assert!(dict_set_in_place(py, modules_ptr, name, cached));
                     }
                     assert!(!exception_pending(py));
                     let cached_refs = refs(cached);

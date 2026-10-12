@@ -858,7 +858,10 @@ mod tests {
                         "no second runtime cache retains a helper"
                     );
                     inc_ref_bits(_py, first_helper);
-                    dict_del_in_place(_py, first_ptr, key_bits);
+                    assert!(
+                        dict_del_in_place(_py, first_ptr, key_bits)
+                            .expect("payload dictionary deletion succeeds")
+                    );
                     assert_eq!(
                         ref_count(first_helper),
                         1,

@@ -1682,7 +1682,7 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
         let x = OwnedPyObject::from_owned(raw_fixture(b"xyz"));
         let seven = OwnedPyObject::from_owned(numbers::PyLong_FromLong(7));
         let ff = OwnedPyObject::from_owned(numbers::PyLong_FromLong(255));
-        let pi = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(3.14159));
+        let pi = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble("3.14159".parse().unwrap()));
         let hundred = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(100.0));
         let half = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(0.5));
         for native in [None, Some(&raw mut PyTuple_Type)] {

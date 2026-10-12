@@ -6,7 +6,7 @@ pub(crate) mod runtime_state;
 pub(crate) mod tls;
 pub(crate) mod traceback;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use lifecycle::run_runtime_worker;
 pub(crate) use lifecycle::{
     clear_worker_thread_state, runtime_reset_for_init, runtime_teardown,

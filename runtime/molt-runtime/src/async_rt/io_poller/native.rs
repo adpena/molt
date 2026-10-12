@@ -189,11 +189,6 @@ impl IoPoller {
         self.worker.join()
     }
 
-    pub(crate) fn shutdown(&self) {
-        self.stop();
-        assert!(self.join(), "runtime I/O worker failed; origin retained");
-    }
-
     fn rollback_wait_registration(&self, rollback: IoRegistrationRollback) {
         {
             let mut waiters = self.waiters.lock().unwrap();

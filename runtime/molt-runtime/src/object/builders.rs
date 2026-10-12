@@ -337,11 +337,9 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
     }
     unsafe {
         for pair in pairs.chunks(2) {
-            if pair.len() == 2 {
-                if !dict_set_in_place(_py, ptr, pair[0], pair[1]) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return std::ptr::null_mut();
-                }
+            if pair.len() == 2 && !dict_set_in_place(_py, ptr, pair[0], pair[1]) {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
             }
         }
         crate::object::gc::gc_publish_initialized(_py, ptr);
@@ -1256,7 +1254,7 @@ fn canonical_singleton(
         return ptr;
     }
     let mut candidate = PtrDropGuard::new(ptr);
-    let published = {
+    {
         let _init = runtime_state(py)
             .canonical_objects
             .singleton_init
@@ -1271,8 +1269,7 @@ fn canonical_singleton(
         } else {
             cached
         }
-    };
-    published
+    }
 }
 
 #[cfg(test)]
@@ -2118,7 +2115,7 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
         );
     }
     let key = bytes.to_vec().into_boxed_slice();
-    let published = {
+    {
         let mut pool = cache
             .interned_strings
             .lock()
@@ -2131,8 +2128,7 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
             candidate.release();
             ptr
         }
-    };
-    published
+    }
 }
 
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
@@ -2294,11 +2290,10 @@ pub(crate) unsafe fn alloc_native_set(
     let ptr = alloc_hash_aggregate_for_class_unpublished(py, 0, kind.type_id(), Some(class));
     if !ptr.is_null()
         && let Some(source) = source
+        && !unsafe { super::ops::set_copy_into_empty(py, source, ptr) }
     {
-        if !unsafe { super::ops::set_copy_into_empty(py, source, ptr) } {
-            dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        }
+        dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+        return std::ptr::null_mut();
     }
     unsafe { super::native_instance::publish(py, ptr, class) }
 }

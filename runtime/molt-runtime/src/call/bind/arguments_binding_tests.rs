@@ -150,7 +150,12 @@ fn keyword_admission_reads_replacements_and_retains_a_shared_mapping() {
             let dict = obj_from_bits(dict_bits).as_ptr().unwrap();
             // Both a stateful __eq__ during insertion and foreign mutation
             // can replace an existing value without growing dictionary order.
-            crate::dict_set_in_place(_py, dict, key_bits, replacement_bits);
+            assert!(crate::dict_set_in_place(
+                _py,
+                dict,
+                key_bits,
+                replacement_bits
+            ));
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 refs(old),
@@ -180,7 +185,7 @@ fn keyword_admission_reads_replacements_and_retains_a_shared_mapping() {
             assert_eq!(refs(key), key_before + 2);
             assert_eq!(refs(replacement), replacement_before + 2);
             // The other owner's later mutation cannot change what binding reads.
-            crate::dict_set_in_place(_py, dict, key_bits, later_bits);
+            assert!(crate::dict_set_in_place(_py, dict, key_bits, later_bits));
             crate::dict_clear_in_place(_py, dict);
             assert!(!crate::exception_pending(_py));
             let view = arguments.unpacked_view().unwrap();
@@ -217,7 +222,12 @@ fn callargs_clone_and_ic_read_the_live_keyword_dictionary() {
             );
             let args = crate::call::bind::arguments::callargs_ptr(ptr_from_bits(builder));
             let dict = obj_from_bits((*args).keywords).as_ptr().unwrap();
-            crate::dict_set_in_place(_py, dict, key_bits, MoltObject::from_int(2).bits());
+            assert!(crate::dict_set_in_place(
+                _py,
+                dict,
+                key_bits,
+                MoltObject::from_int(2).bits()
+            ));
             let clone =
                 crate::call::bind::arguments::clone_callargs_builder_bits(_py, builder).unwrap();
             let cloned_args = crate::call::bind::arguments::callargs_ptr(ptr_from_bits(clone));

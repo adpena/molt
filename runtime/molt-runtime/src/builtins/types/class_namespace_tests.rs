@@ -60,20 +60,35 @@ fn class_namespace_cell_publishes_actual_copied_dictionary() {
         unsafe {
             let copied_bits = class_dict_bits(class);
             let copied = obj_from_bits(copied_bits).as_ptr().unwrap();
-            dict_set_in_place(_py, copied, key, MoltObject::from_int(2).bits());
-            dict_set_in_place(_py, copied, cell_key, cell_bits);
+            assert!(dict_set_in_place(
+                _py,
+                copied,
+                key,
+                MoltObject::from_int(2).bits()
+            ));
+            assert!(dict_set_in_place(_py, copied, cell_key, cell_bits));
             assert!(class_finalize_namespace_metadata(_py, class, name));
             assert_eq!(crate::object::cells::cell_value_bits(cell), copied_bits);
             assert_eq!(
                 dict_get_in_place(_py, copied, cell_key).expect("dictionary lookup succeeds"),
                 None
             );
-            dict_set_in_place(_py, prepared, key, MoltObject::from_int(3).bits());
+            assert!(dict_set_in_place(
+                _py,
+                prepared,
+                key,
+                MoltObject::from_int(3).bits()
+            ));
             assert_eq!(
                 dict_get_in_place(_py, copied, key).expect("dictionary lookup succeeds"),
                 Some(MoltObject::from_int(2).bits())
             );
-            dict_set_in_place(_py, copied, key, MoltObject::from_int(4).bits());
+            assert!(dict_set_in_place(
+                _py,
+                copied,
+                key,
+                MoltObject::from_int(4).bits()
+            ));
             let captured = crate::object::cells::cell_value_bits(cell);
             assert_eq!(
                 dict_get_in_place(_py, obj_from_bits(captured).as_ptr().unwrap(), key)

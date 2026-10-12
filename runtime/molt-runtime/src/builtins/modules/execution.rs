@@ -520,7 +520,9 @@ fn restore_sys_modules_swap(_py: &PyToken<'_>, swap: Option<SysModulesSwap>) {
     };
     unsafe {
         if let Some(bits) = swap.previous_bits {
-            dict_set_in_place(_py, swap.modules_ptr, swap.key_bits, bits);
+            // Restoration reports through the pending exception captured by
+            // the caller after all swap references have been retired.
+            let _ = dict_set_in_place(_py, swap.modules_ptr, swap.key_bits, bits);
             dec_ref_bits(_py, bits);
         } else {
             // The caller captures any cleanup failure after this restoration.

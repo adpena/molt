@@ -493,9 +493,13 @@ pub(crate) fn concurrent_clear_runtime_state(
     }
     let closed = {
         let _release = GilReleaseGuard::suspend();
-        pools
-            .values()
-            .fold(true, |closed, pool| pool.workers.join() && closed)
+        let mut closed = true;
+        for pool in pools.values() {
+            // Every pool must join even after an earlier worker failed.
+            let joined = pool.workers.join();
+            closed = joined && closed;
+        }
+        closed
     };
     assert!(closed, "runtime executor workers failed; origin retained");
     {
@@ -2994,6 +2998,8 @@ mod tests {
             })
         }
 
+        // Debug images must compile this ignored probe, but must not run it.
+        #[allow(clippy::assertions_on_constants)]
         assert!(
             !cfg!(debug_assertions),
             "lifecycle cost probe requires an optimized image"

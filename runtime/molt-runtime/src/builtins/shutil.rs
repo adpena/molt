@@ -60,10 +60,7 @@ fn audit_src_dst_arg(src_bits: u64, dst_bits: u64) -> AuditArgs {
 }
 
 fn require_path_local(_py: &PyToken<'_>, bits: u64, _label: &str) -> Result<PathBuf, u64> {
-    match path_from_bits(_py, bits) {
-        Ok(p) => Ok(p),
-        Err(error) => Err(error),
-    }
+    path_from_bits(_py, bits)
 }
 
 #[inline]

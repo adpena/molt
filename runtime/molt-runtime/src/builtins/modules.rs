@@ -2380,10 +2380,7 @@ pub(crate) fn module_cache_remove(name_bits: u64, expected: Option<u64>) -> u64 
                     Ok(_) | Err(()) => return None,
                 }
             }
-            match crate::object::ops::dict_del_deferred(py, ptr, name_bits) {
-                Ok(retired) => retired,
-                Err(()) => None,
-            }
+            crate::object::ops::dict_del_deferred(py, ptr, name_bits).unwrap_or_default()
         });
         let private = {
             let cache = crate::builtins::exceptions::internals::module_cache(py);
@@ -3695,7 +3692,7 @@ mod tests {
             let set = |receiver: *mut u8, key: &[u8], value: u64| unsafe {
                 let key = string(key);
                 let dict = ptr_from_bits(module_dict_bits(receiver));
-                dict_set_in_place(py, dict, key.bits(), value);
+                assert!(dict_set_in_place(py, dict, key.bits(), value));
                 assert!(!exception_pending(py));
             };
             set(module_ptr, b"__file__", file.bits());
@@ -3888,13 +3885,18 @@ mod tests {
                 dec_ref_bits(py, owner);
                 // Model the runtime initializer's exact alias publication;
                 // this unit fixture deliberately has no generated module table.
-                dict_set_in_place(py, builtin_dict, open_name, open);
+                assert!(dict_set_in_place(py, builtin_dict, open_name, open));
                 let alias = crate::builtins::functions::lookup_builtin_name(py, "open")
                     .expect("operation succeeds")
                     .unwrap();
                 assert_eq!(alias, open);
                 dec_ref_bits(py, alias);
-                dict_set_in_place(py, builtin_dict, open_name, MoltObject::from_int(37).bits());
+                assert!(dict_set_in_place(
+                    py,
+                    builtin_dict,
+                    open_name,
+                    MoltObject::from_int(37).bits()
+                ));
                 assert_eq!(
                     crate::builtins::functions::lookup_builtin_name(py, "open")
                         .expect("operation succeeds"),
@@ -3953,18 +3955,53 @@ mod tests {
             let module_ptr = alloc_module_obj(py, module_name);
             let module = MoltObject::from_ptr(module_ptr).bits();
             unsafe {
-                dict_set_in_place(py, globals_ptr, answer, MoltObject::from_int(42).bits());
-                dict_set_in_place(py, captured_ptr, len, MoltObject::from_int(11).bits());
-                dict_set_in_place(py, captured_ptr, custom, MoltObject::from_int(1).bits());
+                assert!(dict_set_in_place(
+                    py,
+                    globals_ptr,
+                    answer,
+                    MoltObject::from_int(42).bits()
+                ));
+                assert!(dict_set_in_place(
+                    py,
+                    captured_ptr,
+                    len,
+                    MoltObject::from_int(11).bits()
+                ));
+                assert!(dict_set_in_place(
+                    py,
+                    captured_ptr,
+                    custom,
+                    MoltObject::from_int(1).bits()
+                ));
                 let cached_ptr = obj_from_bits(cached_dict).as_ptr().unwrap();
-                dict_set_in_place(py, cached_ptr, len, MoltObject::from_int(33).bits());
-                dict_set_in_place(py, cached_ptr, runtime_only, MoltObject::from_int(1).bits());
+                assert!(dict_set_in_place(
+                    py,
+                    cached_ptr,
+                    len,
+                    MoltObject::from_int(33).bits()
+                ));
+                assert!(dict_set_in_place(
+                    py,
+                    cached_ptr,
+                    runtime_only,
+                    MoltObject::from_int(1).bits()
+                ));
                 let unrelated = obj_from_bits(module_dict_bits(module_ptr))
                     .as_ptr()
                     .unwrap();
-                dict_set_in_place(py, unrelated, answer, MoltObject::from_int(99).bits());
+                assert!(dict_set_in_place(
+                    py,
+                    unrelated,
+                    answer,
+                    MoltObject::from_int(99).bits()
+                ));
                 // A replaced __builtins__ entry must not reinterpret this activation.
-                dict_set_in_place(py, globals_ptr, builtins_key, cached_dict);
+                assert!(dict_set_in_place(
+                    py,
+                    globals_ptr,
+                    builtins_key,
+                    cached_dict
+                ));
             }
             inc_ref_bits(py, globals);
             inc_ref_bits(py, captured);
@@ -4070,7 +4107,12 @@ mod tests {
                     let dictionary = obj_from_bits(module_dict_bits(module_ptr))
                         .as_ptr()
                         .unwrap();
-                    dict_set_in_place(py, dictionary, name, MoltObject::from_int(73).bits());
+                    assert!(dict_set_in_place(
+                        py,
+                        dictionary,
+                        name,
+                        MoltObject::from_int(73).bits()
+                    ));
                 }
                 let found = molt_module_get_global(MoltObject::none().bits(), name);
                 assert!(obj_from_bits(found).is_none());
@@ -4165,7 +4207,12 @@ mod tests {
                 let name_bits = MoltObject::from_ptr(name_ptr).bits();
                 let published_bits = MoltObject::from_int(index as i64 + 1).bits();
                 unsafe {
-                    dict_set_in_place(_py, builtins_dict_ptr, name_bits, published_bits);
+                    assert!(dict_set_in_place(
+                        _py,
+                        builtins_dict_ptr,
+                        name_bits,
+                        published_bits
+                    ));
                 }
                 assert!(!exception_pending(_py));
 
@@ -4344,7 +4391,7 @@ mod tests {
             let module = molt_module_new(name);
             let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
             for value in [MoltObject::from_int(42).bits(), module, dictionary] {
-                unsafe { dict_set_in_place(py, modules, name, value) };
+                unsafe { assert!(dict_set_in_place(py, modules, name, value)) };
                 let cached = molt_module_cache_get(name);
                 assert_eq!(cached, value);
                 dec_ref_bits(py, cached);
@@ -4397,7 +4444,7 @@ mod tests {
                         Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
                     assert!(!exception_pending(py));
                     let replacement = MoltObject::from_int(42).bits();
-                    unsafe { dict_set_in_place(py, modules, name, replacement) };
+                    unsafe { assert!(dict_set_in_place(py, modules, name, replacement)) };
                     assert!(matches!(module_import_attempt(name),
                         Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
                     assert!(unsafe { dict_del_in_place(py, modules, name).expect("operation succeeds") });

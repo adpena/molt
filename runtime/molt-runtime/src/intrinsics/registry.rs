@@ -2308,13 +2308,13 @@ mod tests {
                 let forged = MoltObject::from_int(9).bits();
                 let marker = MoltObject::from_int(42).bits();
                 unsafe {
-                    crate::object::ops::dict_set_with_hash_in_place(
+                    assert!(crate::object::ops::dict_set_with_hash_in_place(
                         _py,
                         registry,
                         forged,
                         marker,
                         hash_string_bytes(_py, canonical.as_bytes()) as u64,
-                    );
+                    ));
                     assert_eq!(
                         exact_name_value(_py, registry, canonical.as_bytes()),
                         Err(())

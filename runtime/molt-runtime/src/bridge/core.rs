@@ -157,9 +157,10 @@ pub unsafe fn dict_get_in_place(
     _py: &CoreGilToken,
     ptr: *mut u8,
     key_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
     crate::with_gil_entry_nopanic!(py, {
         unsafe { crate::dict_get_in_place(py, ptr, key_bits) }
+            .map_err(|()| molt_runtime_core::ErrorIndicatorSet)
     })
 }
 

@@ -2729,7 +2729,12 @@ mod super_cache_tests {
                     let dictionary = crate::molt_get_attr_name(receiver, dict_name);
                     let dict_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                     assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
-                    crate::dict_set_in_place(py, dict_ptr, key, MoltObject::none().bits());
+                    assert!(crate::dict_set_in_place(
+                        py,
+                        dict_ptr,
+                        key,
+                        MoltObject::none().bits()
+                    ));
                     assert!(!exception_pending(py));
                     let call = || {
                         molt_call_method_ic0(
@@ -3025,7 +3030,7 @@ mod super_cache_tests {
             let function_bits = MoltObject::from_ptr(function).bits();
             let method_name = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
             unsafe {
-                crate::dict_set_in_place(py, ns, method_name, function_bits);
+                assert!(crate::dict_set_in_place(py, ns, method_name, function_bits));
             }
             dec_ref_bits(py, method_name);
             dec_ref_bits(py, function_bits);

@@ -112,7 +112,7 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
         let storage = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals)
             .expect("dictionary storage resolution succeeds")
             .expect("dict subclass backing");
-        unsafe { dict_set_in_place(_py, storage, package_key, empty) };
+        unsafe { assert!(dict_set_in_place(_py, storage, package_key, empty)) };
         LOOKUP_MODE.store(LOOKUP_VALUE_ERROR, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
         let result = crate::builtins::platform::molt_importlib_import_transaction(
