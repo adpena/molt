@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,process.exec
 """Process path conversion must finish or fail before starting a child."""
 
 import asyncio
