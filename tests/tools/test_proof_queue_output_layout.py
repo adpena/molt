@@ -317,10 +317,59 @@ def test_placement_is_independent_of_retention_and_preserves_historical_default(
     assert envelope["cargo_output_root"] == layout.declare_root(str(root))
 
 
+@pytest.mark.parametrize("delegated", [False, True])
+def test_registered_workspace_clippy_places_outputs_without_disposal_permission(
+    tmp_path, delegated
+):
+    command = list(
+        next(
+            row.argv
+            for row in admission.proof_plan.ProofPlan.load().commands
+            if row.id == "portability.rust.linux-aarch64.clippy-workspace"
+        )
+    )
+    if delegated:
+        command = policy._canonical_cargo_proof_command(command[1:])
+    original = admission.envelope_for_command(command)
+    root = _root(tmp_path)
+    envelope = admission.envelope_for_command(command, cargo_output_root=str(root))
+    assert envelope == {**original, "cargo_output_root": layout.declare_root(str(root))}
+    assert (
+        admission.admission_envelope(command, cargo_output_root=str(root)) == envelope
+    )
+    admission.validate_envelope(envelope, command)
+    assert admission.validated_cargo_output_lifetime(envelope) == "retain"
+    assert list(root.iterdir()) == []
+
+    outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
+    target = root / "leased-target"
+    target.mkdir()
+    bound = outputs.bind({"CARGO_TARGET_DIR": str(root / "old-target")}, target=target)
+    assert bound["CARGO_TARGET_DIR"] == str(target)
+    outputs.validate(bound, target=target)
+    with pytest.raises(ValueError, match="differs"):
+        outputs.validate({**bound, "CARGO_TARGET_DIR": str(root)}, target=target)
+    with pytest.raises(ValueError, match="terminal-success"):
+        admission.envelope_for_command(
+            command,
+            cargo_output_root=str(root),
+            cargo_output_lifetime="terminal-success",
+        )
+    with pytest.raises(ValueError, match="terminal-success"):
+        admission.validate_envelope(
+            {**envelope, "cargo_output_lifetime": "terminal-success"}, command
+        )
+
+
 @pytest.mark.parametrize(
     "command",
     [
         ["cargo", "--version"],
+        ["cargo", "check", "--help"],
+        ["cargo", "clippy", "--target-dir", "elsewhere"],
+        ["cargo", "clippy", "--target-dir=elsewhere"],
+        ["cargo", "clippy", "--artifact-dir", "elsewhere"],
+        ["cargo", "clippy", "--artifact-dir=elsewhere"],
         ["cargo", "check", "--target-dir", "elsewhere"],
         ["cargo", "check", "--target-dir=elsewhere"],
         ["cargo", "test", "--artifact-dir", "elsewhere"],
