@@ -1840,7 +1840,17 @@ def _bind_output_root_declaration(
         return
     if (
         invocation.subcommand
-        not in {"check", "test", "build", "bench", "doc", "rustdoc", "rustc", "run"}
+        not in {
+            "check",
+            "clippy",
+            "test",
+            "build",
+            "bench",
+            "doc",
+            "rustdoc",
+            "rustc",
+            "run",
+        }
         or invocation.is_cargo_query
     ):
         raise ValueError(
