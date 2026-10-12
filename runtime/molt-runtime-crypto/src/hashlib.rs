@@ -327,7 +327,7 @@ fn parse_blake2_options(
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let value = unsafe { dict_get_in_place(_py, ptr, key_bits) };
         dec_ref_bits(_py, key_bits);
-        value.map_err(|()| MoltObject::none().bits())
+        value.map_err(|molt_runtime_core::ErrorIndicatorSet| MoltObject::none().bits())
     };
     if let Some(bits) = get_opt("digest_size")? {
         let val = int_from_bits(_py, bits, "digest_size")?;

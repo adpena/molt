@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use molt_obj_model::MoltObject;
 
-use molt_runtime_core::{OwnedRuntimeValue, obj_from_bits};
+use molt_runtime_core::{ErrorIndicatorSet, OwnedRuntimeValue, obj_from_bits};
 
 use crate::bridge::{
     alloc_string, alloc_string_bits, attr_name_bits_from_bytes, attr_optional, builtin_classes,
@@ -15,10 +15,10 @@ fn logging_percent_lookup_mapping_value(
     _py: &molt_runtime_core::CoreGilToken,
     mapping_ptr: *mut u8,
     key: &str,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, ErrorIndicatorSet> {
     let key_ptr = alloc_string(_py, key.as_bytes());
     if key_ptr.is_null() {
-        return Err(());
+        return Err(ErrorIndicatorSet);
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let value = unsafe { dict_get_in_place(_py, mapping_ptr, key_bits) };
@@ -105,7 +105,7 @@ fn logging_config_dict_lookup(
     };
     let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
     dec_ref_bits(_py, key_bits);
-    value.map_err(|()| MoltObject::none().bits())
+    value.map_err(|ErrorIndicatorSet| MoltObject::none().bits())
 }
 
 fn logging_config_dict_items<'py>(
@@ -762,7 +762,7 @@ pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits:
                         idx = close + 2;
                         continue;
                     }
-                    Err(()) => return MoltObject::none().bits(),
+                    Err(ErrorIndicatorSet) => return MoltObject::none().bits(),
                 };
 
             let Some(rendered) = logging_percent_render_value(_py, spec, value_bits) else {

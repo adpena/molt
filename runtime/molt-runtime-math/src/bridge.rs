@@ -5,6 +5,7 @@
 //! Each function has a corresponding `#[no_mangle]` shim in
 //! `molt-runtime/src/math_bridge.rs`.
 
+use molt_runtime_core::ErrorIndicatorSet;
 use molt_runtime_core::prelude::*;
 pub use molt_runtime_core::prelude::{opaque_handle_bits, opaque_handle_ptr_from_bits};
 use std::borrow::Cow;
@@ -331,7 +332,7 @@ pub fn float_as_double(_py: &PyToken, bits: u64) -> Option<f64> {
 
 /// Exact floats only. Subclasses must reach the rounding special-method lookup.
 #[inline]
-pub fn exact_float_value(_py: &PyToken, bits: u64) -> Result<Option<f64>, ()> {
+pub fn exact_float_value(_py: &PyToken, bits: u64) -> Result<Option<f64>, ErrorIndicatorSet> {
     if let Some(value) = obj_from_bits(bits).as_float() {
         return Ok(Some(value));
     }
@@ -339,13 +340,16 @@ pub fn exact_float_value(_py: &PyToken, bits: u64) -> Result<Option<f64>, ()> {
     match unsafe { __molt_math_exact_float_value(bits, &mut value) } {
         1 => Ok(Some(value)),
         0 => Ok(None),
-        _ => Err(()),
+        _ => Err(ErrorIndicatorSet),
     }
 }
 
 /// Actual integer storage, including subtypes, never an __index__ conversion.
 /// Logarithm callers handle immediate int/bool before this arbitrary-width path.
-pub fn integer_storage(_py: &PyToken, bits: u64) -> Result<Option<num_bigint::BigInt>, ()> {
+pub fn integer_storage(
+    _py: &PyToken,
+    bits: u64,
+) -> Result<Option<num_bigint::BigInt>, ErrorIndicatorSet> {
     use num_bigint::{BigInt, Sign};
     let mut sign = 0;
     let mut ptr = std::ptr::null();
@@ -361,7 +365,7 @@ pub fn integer_storage(_py: &PyToken, bits: u64) -> Result<Option<num_bigint::Bi
             };
             Ok(Some(BigInt::from_bytes_be(sign, &bytes)))
         }
-        _ => Err(()),
+        _ => Err(ErrorIndicatorSet),
     }
 }
 
@@ -585,12 +589,12 @@ pub unsafe fn lookup_special_method(
     _py: &PyToken,
     ptr: *mut u8,
     name_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut result = 0;
     match unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) } {
         1 => Ok(Some(result)),
         0 => Ok(None),
-        _ => Err(()),
+        _ => Err(ErrorIndicatorSet),
     }
 }
 
@@ -673,13 +677,13 @@ pub unsafe fn dict_get_in_place(
     _py: &PyToken,
     dict_ptr: *mut u8,
     key_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_math_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
-        -1 => Err(()),
+        -1 => Err(ErrorIndicatorSet),
         _ => unreachable!("invalid dictionary lookup status"),
     }
 }
