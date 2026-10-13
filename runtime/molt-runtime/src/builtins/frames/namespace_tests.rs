@@ -1011,7 +1011,7 @@ mod task_growth_refusal {
             );
             crate::molt_set_attr_name(class.bits(), method_name.bits(), method.bits());
             assert!(!crate::exception_pending(py));
-            let iterator = ExceptionValue::adopt(py, crate::molt_object_new(class.bits()));
+            let iterator = ExceptionValue::adopt(py, crate::molt_object_new_bound(class.bits()));
             assert!(obj_from_bits(iterator.bits()).as_ptr().is_some());
             let default = ExceptionValue::adopt(
                 py,
