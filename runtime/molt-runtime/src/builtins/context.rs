@@ -3,10 +3,9 @@ use crate::builtins::exceptions::{
     ExceptionValue, exception_class, exception_is_instance, exception_traceback,
 };
 use crate::{
-    CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
-    alloc_object, call_callable0, call_callable3, dec_ref_bits, exception_pending,
-    file_handle_enter, file_handle_exit, inc_ref_bits, intern_static_name, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, to_i64,
+    CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, alloc_object,
+    call_callable0, call_callable3, dec_ref_bits, exception_pending, inc_ref_bits,
+    intern_static_name, obj_from_bits, object_type_id, raise_exception, runtime_state, to_i64,
 };
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -213,10 +212,6 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
             exit_fn(context_payload_bits(ptr), exc_bits);
             return;
         }
-        if type_id == TYPE_ID_FILE_HANDLE {
-            file_handle_exit(_py, ptr, exc_bits);
-            return;
-        }
         let exit_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
         let Ok(Some(exit_bits)) =
@@ -320,14 +315,6 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                     context_stack_push(_py, ctx_bits);
                     res
                 }
-                TYPE_ID_FILE_HANDLE => {
-                    let res = file_handle_enter(_py, ptr);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    context_stack_push(_py, ctx_bits);
-                    res
-                }
                 _ => {
                     let enter_name_bits = intern_static_name(
                         _py,
@@ -394,10 +381,6 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     );
                     context_stack_pop(_py, ctx_bits);
                     exit_fn(context_payload_bits(ptr), exc_bits)
-                }
-                TYPE_ID_FILE_HANDLE => {
-                    context_stack_pop(_py, ctx_bits);
-                    file_handle_exit(_py, ptr, exc_bits)
                 }
                 _ => {
                     let exit_name_bits = intern_static_name(

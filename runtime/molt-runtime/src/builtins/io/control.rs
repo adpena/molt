@@ -1,5 +1,93 @@
 use super::*;
 
+pub(crate) extern "C" fn io_base_check_closed(object: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(name) = attr_name_bits_from_bytes(py, b"closed") else {
+            return MoltObject::none().bits();
+        };
+        let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+        let value = match crate::builtins::platform::getattr_optional_bits(py, object, name) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        if let Some(value) = value {
+            let closed = is_truthy(py, obj_from_bits(value));
+            dec_ref_bits(py, value);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            if closed {
+                return raise_exception::<_>(py, "ValueError", "I/O operation on closed file.");
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+pub(crate) extern "C" fn io_base_exit(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) =
+            crate::builtins::native_arguments::NativeArguments::read(py, "__exit__", args, kwargs)
+        else {
+            return MoltObject::none().bits();
+        };
+        if !call.keyword_view().is_empty() {
+            return raise_exception::<_>(py, "TypeError", "__exit__() takes no keyword arguments");
+        }
+        let Some(&object) = call.positional.first() else {
+            return raise_exception::<_>(py, "TypeError", "__exit__() needs an argument");
+        };
+        molt_file_exit(object, MoltObject::none().bits())
+    })
+}
+
+pub(crate) extern "C" fn io_base_finalize(object: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // The generic finalizer owns once-only execution and resurrection.
+        // This also preserves incoming errors on an explicit __del__ call.
+        crate::builtins::exceptions::run_unraisable(py, object, None, || {
+            let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
+            let Some(name) = attr_name_bits_from_bytes(py, b"closed") else {
+                clear_exception(py);
+                return;
+            };
+            let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+            let value = crate::builtins::platform::getattr_optional_bits(py, object, name);
+            let closed = match value {
+                Ok(Some(value)) => {
+                    let closed = is_truthy(py, obj_from_bits(value));
+                    dec_ref_bits(py, value);
+                    closed
+                }
+                Ok(None) | Err(_) => {
+                    clear_exception(py);
+                    return;
+                }
+            };
+            if exception_pending(py) {
+                clear_exception(py);
+                return;
+            }
+            if closed {
+                return;
+            }
+            if let Some(name) = attr_name_bits_from_bytes(py, b"_finalizing") {
+                let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+                molt_setattr_builtin(object, name, MoltObject::from_bool(true).bits());
+            }
+            clear_exception(py);
+            let result = io_call_noargs(py, object, b"close");
+            dec_ref_bits(py, result);
+            if exception_pending(py)
+                && crate::object::ops_sys::env_flag_bool("PYTHONDEVMODE").unwrap_or(0) == 0
+            {
+                clear_exception(py);
+            }
+        });
+        MoltObject::none().bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -832,35 +920,20 @@ pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle_obj = obj_from_bits(handle_bits);
-        let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
-            }
-            file_handle_enter(_py, ptr)
+pub extern "C" fn molt_file_enter(object: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        io_base_check_closed(object);
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
+        inc_ref_bits(py, object);
+        object
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_file_exit(handle_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle_obj = obj_from_bits(handle_bits);
-        let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
-            }
-            file_handle_exit(_py, ptr, exc_bits)
-        }
-    })
+pub extern "C" fn molt_file_exit(handle_bits: u64, _exc_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { io_call_noargs(_py, handle_bits, b"close") })
 }
 
 #[unsafe(no_mangle)]

@@ -1393,6 +1393,18 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         unsafe { crate::builtins::attributes::callable_metadata::publish(&py) },
         "builtin callable metadata publication failed"
     );
+    // Finalizer discovery consults declarations without materializing methods.
+    // Publish the one IOBase declaration before any stream can be retired.
+    assert!(
+        crate::builtins::methods::publish_builtin_class_methods(&py, published.io_base),
+        "builtin IOBase namespace publication failed"
+    );
+    unsafe {
+        crate::object::class_refresh_declared_finalizer_flag(
+            &py,
+            obj_from_bits(published.io_base).as_ptr().unwrap(),
+        );
+    }
     for class in [
         published.base_exception,
         published.exception,

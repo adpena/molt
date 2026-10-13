@@ -1,4 +1,6 @@
-use super::common::{builtin_func_bits, builtin_func_bits_with_defaults_tuple};
+use super::common::{
+    builtin_func_bits, builtin_func_bits_with_defaults_tuple, builtin_variadic_func_bits,
+};
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 
@@ -7,7 +9,12 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
     let owners = [classes.file, classes.file_io, classes.buffered_reader,
         classes.buffered_writer, classes.buffered_random, classes.text_io_wrapper,
         classes.bytes_io, classes.string_io];
+    let base_only = matches!(name, "__enter__" | "__exit__" | "__del__" | "_checkClosed");
+    if base_only && owner != classes.io_base {
+        return Ok(None);
+    }
     let owner = if owners.contains(&owner)
+        || (owner == classes.io_base && (base_only || matches!(name, "close" | "flush")))
         || (name == "detach" && [classes.buffered_io_base, classes.text_io_base].contains(&owner))
     { owner } else {
         let Some(pointer) = obj_from_bits(owner).as_ptr() else {
@@ -92,16 +99,16 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             fn_addr!(molt_file_writelines),
             2,
         )),
-        "flush" => Some(builtin_func_bits(
+        "flush" if ![builtin_classes(_py).file_io, builtin_classes(_py).string_io].contains(&owner) => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "flush"),
-            fn_addr!(molt_file_flush),
+            if owner == builtin_classes(_py).io_base { fn_addr!(crate::builtins::io::io_base_flush) } else { fn_addr!(molt_file_flush) },
             1,
         )),
         "close" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "close"),
-            fn_addr!(molt_file_close),
+            if owner == builtin_classes(_py).io_base { fn_addr!(crate::builtins::io::io_base_close) } else { fn_addr!(molt_file_close) },
             1,
         )),
         "detach" if owner != builtin_classes(_py).file && owner != builtin_classes(_py).file_io => Some(builtin_func_bits(
@@ -190,11 +197,22 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             fn_addr!(molt_file_enter),
             1,
         )),
-        "__exit__" => Some(builtin_func_bits(
+        "__exit__" => Some(builtin_variadic_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "__exit__"),
-            fn_addr!(molt_file_exit_method),
-            4,
+            fn_addr!(crate::builtins::io::io_base_exit),
+        )),
+        "__del__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, "__del__"),
+            fn_addr!(crate::builtins::io::io_base_finalize),
+            1,
+        )),
+        "_checkClosed" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "_checkClosed"),
+            fn_addr!(crate::builtins::io::io_base_check_closed),
+            1,
         )),
         "peek" => {
             let neg_one = MoltObject::from_int(-1).bits();

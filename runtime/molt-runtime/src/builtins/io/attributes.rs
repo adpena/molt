@@ -44,7 +44,7 @@ impl IoClass {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-enum IoOperation {
+pub(super) enum IoOperation {
     Dictionary = 1,
     Closed,
     Name,
@@ -288,9 +288,10 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
     }
 }
 
-unsafe fn io_member_value(
+pub(super) unsafe fn io_member_value(
     py: &PyToken<'_>,
     object: *mut u8,
+    owner: u64,
     operation: IoOperation,
 ) -> Option<u64> {
     unsafe {
@@ -299,23 +300,15 @@ unsafe fn io_member_value(
             inc_ref_bits(py, dictionary);
             return Some(dictionary);
         }
-        // The abstract IO base classes use managed instance storage. Their
-        // default text properties are None and their closed flag is an ordinary
-        // internal attribute, as in CPython's IOBase implementation.
+        // Explicit IOBase.closed on a concrete file still observes the base
+        // marker. The descriptor's declaring owner, not its receiver storage,
+        // determines which closed protocol it exposes.
+        if operation == IoOperation::Closed && owner == builtin_classes(py).io_base {
+            return io_base_is_closed(py, MoltObject::from_ptr(object).bits())
+                .ok()
+                .map(|closed| MoltObject::from_bool(closed).bits());
+        }
         if object_type_id(object) != TYPE_ID_FILE_HANDLE {
-            if operation == IoOperation::Closed {
-                let key = attr_name_bits_from_bytes(py, b"__IOBase_closed")?;
-                let missing = missing_bits(py);
-                let value = molt_getattr_builtin(MoltObject::from_ptr(object).bits(), key, missing);
-                dec_ref_bits(py, key);
-                let closed = !is_missing_bits(py, value);
-                dec_ref_bits(py, value);
-                return if exception_pending(py) {
-                    None
-                } else {
-                    Some(MoltObject::from_bool(closed).bits())
-                };
-            }
             return matches!(
                 operation,
                 IoOperation::Encoding | IoOperation::Errors | IoOperation::Newlines
@@ -329,7 +322,10 @@ unsafe fn io_member_value(
         if operation == IoOperation::Raw {
             return file_handle_raw_bits(py, object);
         }
-        if matches!(operation, IoOperation::Name | IoOperation::Mode) {
+        if matches!(
+            operation,
+            IoOperation::Name | IoOperation::Mode | IoOperation::Closed
+        ) {
             let underlying = {
                 let handle = &*handle_ptr;
                 if handle.detached {
@@ -355,10 +351,11 @@ unsafe fn io_member_value(
                     py.core_token(),
                     underlying,
                 );
-                let name = if operation == IoOperation::Name {
-                    b"name".as_slice()
-                } else {
-                    b"mode".as_slice()
+                let name = match operation {
+                    IoOperation::Name => b"name".as_slice(),
+                    IoOperation::Mode => b"mode".as_slice(),
+                    IoOperation::Closed => b"closed".as_slice(),
+                    _ => unreachable!(),
                 };
                 let name = attr_name_bits_from_bytes(py, name)?;
                 let _name =
@@ -494,7 +491,7 @@ pub(super) unsafe fn io_initialize_dictionary_members(py: &PyToken<'_>, object: 
             }) {
                 continue;
             }
-            let Some(value) = io_member_value(py, object, member.operation) else {
+            let Some(value) = io_member_value(py, object, class, member.operation) else {
                 if exception_pending(py) {
                     return false;
                 }
@@ -555,7 +552,7 @@ pub extern "C" fn molt_io_member_get(descriptor: u64, instance: u64) -> u64 {
             if !crate::object::class_layout::is_real_subtype(py, actual, owner) {
                 return raise_exception::<_>(py, "TypeError", "invalid IO member receiver");
             }
-            if let Some(value) = io_member_value(py, object, operation) {
+            if let Some(value) = io_member_value(py, object, owner, operation) {
                 return value;
             }
             if exception_pending(py) {
