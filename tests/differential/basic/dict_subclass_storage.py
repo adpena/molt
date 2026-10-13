@@ -154,3 +154,97 @@ try:
     dict.__eq__(D(key=BadEquality()), {"key": object()})
 except RuntimeError as error:
     print("dict-equality-error", error is comparison_error)
+
+
+# The declaring dict repr slot is inherited independently of physical storage.
+class AliasedReprDict(D):
+    __repr__ = dict.__repr__
+
+
+print(
+    "dict-repr-declaration",
+    "__repr__" in dict.__dict__,
+    type(dict.__repr__).__name__,
+    dict.__str__ is object.__str__,
+)
+for mapping_type in (dict, D, AliasedReprDict):
+    mapping = mapping_type(first=1, second=2)
+    print("dict-repr-inherited", mapping_type.__name__, repr(mapping), str(mapping))
+    mapping["self"] = mapping
+    print("dict-repr-recursion", repr(mapping), dict.__repr__(mapping))
+    del mapping["self"]
+
+
+class ReprOverrideDict(D):
+    def __repr__(self):
+        return "custom repr"
+
+    def __iter__(self):
+        raise AssertionError("iteration override")
+
+    def items(self):
+        raise AssertionError("items override")
+
+    def __getitem__(self, key):
+        raise AssertionError("lookup override")
+
+
+overridden = ReprOverrideDict(a=1)
+print(
+    "dict-repr-override", repr(overridden), str(overridden), dict.__repr__(overridden)
+)
+overridden.__repr__ = lambda: "instance shadow"
+print("dict-repr-special-lookup", repr(overridden), str(overridden))
+
+
+class SuperReprDict(D):
+    def __repr__(self):
+        return "super:" + super().__repr__()
+
+
+print("dict-repr-super", repr(SuperReprDict(a=1)))
+for foreign_repr in (None, [], MerelyHasDict()):
+    try:
+        dict.__repr__(foreign_repr)
+    except TypeError:
+        print("dict-repr-receiver-refusal", type(foreign_repr).__name__)
+
+# The current key/value stay alive if key repr empties their owning dictionary.
+# Rendering must continue with that pinned pair, not invoke mapping protocols.
+for mapping_type in (dict, D, AliasedReprDict):
+    repr_retirement = []
+    owner = mapping_type()
+
+    class ClearingKey:
+        def __repr__(self):
+            owner.clear()
+            owner["new"] = "replacement"
+            return "clearing-key"
+
+    class RetainedValue:
+        def __repr__(self):
+            return "retained-value"
+
+        def __del__(self):
+            repr_retirement.append("value")
+
+    owner[ClearingKey()] = RetainedValue()
+    print(
+        "dict-repr-reentry", mapping_type.__name__, repr(owner), repr_retirement, owner
+    )
+
+    repr_error = RuntimeError("element repr")
+
+    class BrokenRepr:
+        def __repr__(self):
+            raise repr_error
+
+    owner.clear()
+    owner["broken"] = BrokenRepr()
+    for render in (repr, dict.__repr__):
+        try:
+            render(owner)
+        except RuntimeError as error:
+            print("dict-repr-error", error is repr_error)
+    owner.clear()
+    print("dict-repr-after-error", repr(owner))

@@ -41,6 +41,12 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::dict_init),
         )),
+        "__repr__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__repr__").with_text_signature("($self, /)"),
+            fn_addr!(crate::object::ops_format::dict_repr_slot),
+            1,
+        )),
         "__or__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
                 builtin_classes(_py).dict, "__or__"),
