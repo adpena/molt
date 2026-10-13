@@ -1,12 +1,15 @@
 //! Shared cached SimpleIR -> TIR optimization runner.
 //!
-//! Native and WASM both need the same authority for cache keys, batching, hit
-//! restoration, miss optimization, artifact encoding, and index persistence.
+//! Every backend uses this authority for cache keys, batching, hit restoration,
+//! miss optimization, artifact encoding, and index persistence. SimpleIR consumers
+//! request a bounded parallel projection; owned-TIR consumers borrow their input
+//! and never materialize that unused projection.
 //! Backend-specific code may prepare a function before lowering or consume the
 //! optimized [`TirFunction`] afterward, but it must not open `CompilationCache`
 //! directly for this pipeline.
 
 use rayon::prelude::*;
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{FunctionIR, OpIR};
@@ -96,6 +99,33 @@ impl CachedTirCustody {
 pub struct TirPipelineRun {
     pub cached_tir: CachedTirCustody,
     pub uncached_count: usize,
+}
+
+/// The representation required after per-function optimization.
+///
+/// Both variants retain the same optimized TIR and cache identity. Only
+/// `SimpleIr` replaces source bodies with a SimpleIR projection, within each
+/// bounded optimization wave. `TirOnly` leaves the borrowed input untouched.
+pub enum TirPipelineInput<'a> {
+    SimpleIr(&'a mut [FunctionIR]),
+    TirOnly(&'a [FunctionIR]),
+}
+
+impl TirPipelineInput<'_> {
+    fn functions(&self) -> &[FunctionIR] {
+        match self {
+            Self::SimpleIr(functions) => functions,
+            Self::TirOnly(functions) => functions,
+        }
+    }
+
+    fn install_simple_ops(&mut self, index: usize, ops: Option<Vec<OpIR>>) {
+        match (self, ops) {
+            (Self::SimpleIr(functions), Some(ops)) => functions[index].ops = ops,
+            (Self::TirOnly(_), None) => {}
+            _ => unreachable!("TIR output must match the requested representation"),
+        }
+    }
 }
 
 pub struct TirPipelineRunOptions<'a> {
@@ -193,7 +223,7 @@ struct TirOptimizationInput {
 struct TirOptimizationOutput {
     index: usize,
     content_hash: String,
-    simple_ops: Vec<OpIR>,
+    simple_ops: Option<Vec<OpIR>>,
     tir_func: TirFunction,
 }
 
@@ -438,13 +468,14 @@ pub fn trace_tir_function_stage(name: &str, stage: &str, simple_ops: usize) {
 }
 
 pub fn run_cached_tir_pipeline<F>(
-    functions: &mut [FunctionIR],
+    mut input: TirPipelineInput<'_>,
     options: TirPipelineRunOptions<'_>,
     preprocess_before_lowering: F,
 ) -> TirPipelineRun
 where
     F: Fn(&mut FunctionIR) + Sync,
 {
+    let project_simple_ir = matches!(input, TirPipelineInput::SimpleIr(_));
     // Reusing optimized TIR would suppress pass dumps, audits and instruments.
     let cache_reuse_allowed = !options.tir_dump
         && !options.tir_stats
@@ -452,7 +483,8 @@ where
     let mut cached_tir_custody = CachedTirCustody::new();
     let mut tir_cache =
         CompilationCache::open(options.cache_dir.clone().unwrap_or_else(backend_cache_dir));
-    let work_items: Vec<TirPreparationWorkItem> = functions
+    let work_items: Vec<TirPreparationWorkItem> = input
+        .functions()
         .iter()
         .enumerate()
         .filter(|(_, function)| options.process_externs || !function.is_extern)
@@ -483,7 +515,7 @@ where
                     .map(|work_item| TirOptimizationInput {
                         index: work_item.index,
                         prepared_function: PreparedTirFunction::new(
-                            &functions[work_item.index],
+                            &input.functions()[work_item.index],
                             options.cache_flavor,
                             &options.target_info,
                             &preprocess_before_lowering,
@@ -497,30 +529,34 @@ where
                 .sum::<usize>();
             let prepared_count = inputs.len();
             let mut misses = Vec::new();
-            for input in inputs {
-                let index = input.index;
-                let content_hash = &input.prepared_function.content_hash;
+            for prepared in inputs {
+                let index = prepared.index;
+                let content_hash = &prepared.prepared_function.content_hash;
                 if cache_reuse_allowed
                     && let Some(cached_bytes) = tir_cache.get(content_hash)
                     && let Some(cached_tir_func) =
                         super::serialize::deserialize_tir_function(&cached_bytes)
                 {
                     verify_lir_if_requested(&cached_tir_func, options.verify_lir);
-                    let cached_ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
-                    assert!(
-                        super::lower_to_simple::validate_labels(&cached_ops),
-                        "cached TIR back-conversion emitted invalid labels for '{}'",
-                        cached_tir_func.name
-                    );
-                    let func_ir = &mut functions[index];
+                    let cached_ops = project_simple_ir.then(|| {
+                        let ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
+                        assert!(
+                            super::lower_to_simple::validate_labels(&ops),
+                            "cached TIR back-conversion emitted invalid labels for '{}'",
+                            cached_tir_func.name
+                        );
+                        ops
+                    });
+                    let func_ir = &input.functions()[index];
                     assert_eq!(
                         func_ir.return_abi, cached_tir_func.return_abi,
                         "cached TIR must preserve the authored function return ABI"
                     );
-                    func_ir.ops = cached_ops;
-                    cached_tir_custody.insert(func_ir.name.clone(), cached_tir_func);
+                    let name = func_ir.name.clone();
+                    input.install_simple_ops(index, cached_ops);
+                    cached_tir_custody.insert(name, cached_tir_func);
                 } else {
-                    misses.push(input);
+                    misses.push(prepared);
                 }
             }
 
@@ -556,18 +592,20 @@ where
                             options.tir_dump,
                             options.tir_stats,
                             options.verify_lir,
+                            project_simple_ir,
                         )
                     })
                     .collect()
             });
 
             for output in results {
-                let func_ir = &mut functions[output.index];
+                let func_ir = &input.functions()[output.index];
                 assert_eq!(
                     func_ir.return_abi, output.tir_func.return_abi,
                     "optimized TIR must preserve the authored function return ABI"
                 );
-                func_ir.ops = output.simple_ops;
+                let name = func_ir.name.clone();
+                input.install_simple_ops(output.index, output.simple_ops);
                 let bytes = super::serialize::serialize_tir_function(&output.tir_func)
                     .unwrap_or_else(|error| {
                         panic!(
@@ -580,18 +618,15 @@ where
                         CompilationCacheWriteError::Integrity(error) => {
                             panic!(
                                 "persistent TIR cache rejected artifact for '{}': {error}",
-                                func_ir.name
+                                name
                             )
                         }
                         CompilationCacheWriteError::Unavailable(error) => {
-                            eprintln!(
-                                "MOLT_CACHE: TIR cache unavailable for '{}': {error}",
-                                func_ir.name
-                            );
+                            eprintln!("MOLT_CACHE: TIR cache unavailable for '{}': {error}", name);
                         }
                     }
                 }
-                cached_tir_custody.insert(func_ir.name.clone(), output.tir_func);
+                cached_tir_custody.insert(name, output.tir_func);
             }
         }
 
@@ -720,8 +755,10 @@ pub fn finalize_simple_ir_drops_from_cached_tir(
     );
 }
 
-pub fn run_owned_module_pipeline_from_cached_tir(
-    functions: &[FunctionIR],
+/// Consume source bodies during assembly when the caller owns them; borrowed
+/// sources (for diagnostics) stay untouched. No local SimpleIR ops are read.
+pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
+    functions: impl IntoIterator<Item = F>,
     cached_tir: &mut CachedTirCustody,
     options: TirOwnedModulePipelineOptions<'_>,
 ) -> Vec<(bool, TirFunction)> {
@@ -799,14 +836,15 @@ fn take_local_tir_module_from_cached_tir(
     )
 }
 
-fn take_ordered_tir_functions_from_cached_tir(
-    functions: &[FunctionIR],
+fn take_ordered_tir_functions_from_cached_tir<F: Borrow<FunctionIR>>(
+    functions: impl IntoIterator<Item = F>,
     cached_tir: &mut CachedTirCustody,
     missing_tir_context: &str,
 ) -> Vec<(bool, TirFunction)> {
     functions
-        .iter()
-        .map(|func_ir| {
+        .into_iter()
+        .map(|source| {
+            let func_ir = source.borrow();
             let tir_func = if func_ir.is_extern {
                 super::lower_from_simple::lower_to_tir(func_ir)
             } else {
@@ -859,6 +897,7 @@ fn optimize_tir_input(
     tir_dump: bool,
     tir_stats: bool,
     verify_lir: bool,
+    project_simple_ir: bool,
 ) -> TirOptimizationOutput {
     let idx = input.index;
     let PreparedTirFunction {
@@ -868,6 +907,7 @@ fn optimize_tir_input(
 
     let func_name = tmp_func.name.clone();
     let mut tir_func = super::lower_from_simple::lower_to_tir_for_target(&tmp_func, target_info);
+    drop(tmp_func);
     if trace_tir_function_enabled(&func_name) {
         trace_tir_blocks(&func_name, "after_lower_to_tir", &tir_func);
     }
@@ -895,13 +935,16 @@ fn optimize_tir_input(
         }
     }
     verify_lir_if_requested(&tir_func, verify_lir);
-    let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
-    trace_tir_function_stage(&func_name, "after_lower_to_simple", ops.len());
-    assert!(
-        super::lower_to_simple::validate_labels(&ops),
-        "TIR roundtrip emitted invalid labels for '{}'",
-        func_name
-    );
+    let ops = project_simple_ir.then(|| {
+        let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
+        trace_tir_function_stage(&func_name, "after_lower_to_simple", ops.len());
+        assert!(
+            super::lower_to_simple::validate_labels(&ops),
+            "TIR roundtrip emitted invalid labels for '{}'",
+            func_name
+        );
+        ops
+    });
     TirOptimizationOutput {
         index: idx,
         content_hash,
@@ -962,6 +1005,321 @@ fn trace_tir_blocks(name: &str, stage: &str, tir_func: &TirFunction) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projection_fixture() -> Vec<FunctionIR> {
+        let constant = |name: &str, value| FunctionIR {
+            name: name.into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            source_file: Some("projection.py".into()),
+            execution_context: crate::ExecutionContextPolicy::Inherited,
+            ops: vec![
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(value),
+                    out: Some("authored".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["authored".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        vec![
+            constant("first", 41),
+            FunctionIR {
+                name: "external".into(),
+                is_extern: true,
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ..FunctionIR::default()
+            },
+            constant("last", 23),
+        ]
+    }
+
+    fn projection_test_options(cache_dir: &std::path::Path) -> TirPipelineRunOptions<'static> {
+        TirPipelineRunOptions {
+            target_info: TargetInfo::native_release_fast(),
+            cache_flavor: TirPipelineCacheFlavor::FactGraph,
+            cache_dir: Some(cache_dir.to_path_buf()),
+            process_externs: false,
+            verify_lir: false,
+            tir_dump: false,
+            tir_stats: false,
+            progress_prefix: None,
+            resource_plan: TirOptimizationResourcePlan {
+                threads: 2,
+                wave_function_limit: 2,
+                wave_op_budget: 16,
+            },
+        }
+    }
+
+    fn cached_body_bytes(run: &TirPipelineRun) -> Vec<(String, Vec<u8>)> {
+        run.cached_tir
+            .optimized_tir_by_name
+            .iter()
+            .map(|(name, tir)| {
+                (
+                    name.clone(),
+                    super::super::serialize::serialize_tir_function(tir).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tir_only_and_simple_ir_share_cache_results_without_mutating_borrowed_input() {
+        let cache_dir =
+            std::env::temp_dir().join(format!("molt-tir-projection-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let source = projection_fixture();
+        let source_bytes = serde_json::to_vec(&source).unwrap();
+        let direct = run_cached_tir_pipeline(
+            TirPipelineInput::TirOnly(&source),
+            projection_test_options(&cache_dir),
+            |_| {},
+        );
+        assert_eq!(direct.uncached_count, 2);
+        assert_eq!(
+            direct
+                .cached_tir
+                .optimized_tir_by_name
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["first", "last"]
+        );
+        let expected_tir = cached_body_bytes(&direct);
+        let mut projected = source.clone();
+        let projected_hit = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut projected),
+            projection_test_options(&cache_dir),
+            |_| {},
+        );
+        assert_eq!(
+            projected_hit.uncached_count, 0,
+            "representation demand must not partition the cache"
+        );
+        assert_eq!(cached_body_bytes(&projected_hit), expected_tir);
+        assert_eq!(
+            serde_json::to_vec(&projected[1]).unwrap(),
+            serde_json::to_vec(&source[1]).unwrap(),
+            "extern is unchanged"
+        );
+        for (before, after) in source.iter().zip(&projected) {
+            assert_eq!(
+                before.function_signature().unwrap(),
+                after.function_signature().unwrap()
+            );
+            assert_eq!(before.source_file, after.source_file);
+        }
+        let direct_hit = run_cached_tir_pipeline(
+            TirPipelineInput::TirOnly(&source),
+            projection_test_options(&cache_dir),
+            |_| {},
+        );
+        assert_eq!(direct_hit.uncached_count, 0);
+        assert_eq!(cached_body_bytes(&direct_hit), expected_tir);
+        // A diagnostic request must execute even though both representation
+        // consumers can use the already-populated cache on ordinary requests.
+        let mut diagnostics = projection_test_options(&cache_dir);
+        diagnostics.tir_stats = true;
+        let diagnostic =
+            run_cached_tir_pipeline(TirPipelineInput::TirOnly(&source), diagnostics, |_| {});
+        assert_eq!(diagnostic.uncached_count, 2);
+        assert_eq!(cached_body_bytes(&diagnostic), expected_tir);
+        // An independently cold projection must produce the same typed bodies.
+        let cold_dir = cache_dir.join("cold-projection");
+        let mut cold_source = source.clone();
+        let projected_miss = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut cold_source),
+            projection_test_options(&cold_dir),
+            |_| {},
+        );
+        assert_eq!(projected_miss.uncached_count, 2);
+        assert_eq!(cached_body_bytes(&projected_miss), expected_tir);
+        assert_eq!(
+            serde_json::to_vec(&cold_source).unwrap(),
+            serde_json::to_vec(&projected).unwrap()
+        );
+        assert_eq!(serde_json::to_vec(&source).unwrap(), source_bytes);
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn every_representation_refuses_cached_and_optimized_return_abi_changes() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        for projected in [false, true] {
+            for cached in [false, true] {
+                let cache_dir = std::env::temp_dir().join(format!(
+                    "molt-tir-projection-abi-{}-{projected}-{cached}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&cache_dir);
+                let mut source = vec![FunctionIR {
+                    name: "authored_void".into(),
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
+                    ops: vec![OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    }],
+                    ..FunctionIR::default()
+                }];
+                let before = serde_json::to_vec(&source).unwrap();
+                if cached {
+                    let options = projection_test_options(&cache_dir);
+                    let key = content_hash_for_function(
+                        &source[0],
+                        options.cache_flavor,
+                        &options.target_info,
+                    );
+                    let mut other_source = projection_fixture().remove(0);
+                    other_source.name = source[0].name.clone();
+                    let wrong = super::super::lower_from_simple::lower_to_tir(&other_source);
+                    let mut cache = CompilationCache::open(cache_dir.clone());
+                    cache
+                        .put(
+                            &key,
+                            &super::super::serialize::serialize_tir_function(&wrong).unwrap(),
+                        )
+                        .unwrap();
+                    cache.save_index().unwrap();
+                }
+                let error = catch_unwind(AssertUnwindSafe(|| {
+                    let input = if projected {
+                        TirPipelineInput::SimpleIr(&mut source)
+                    } else {
+                        TirPipelineInput::TirOnly(&source)
+                    };
+                    run_cached_tir_pipeline(
+                        input,
+                        projection_test_options(&cache_dir),
+                        |function| {
+                            if !cached {
+                                function.return_abi = molt_ir::FunctionReturnAbi::Value;
+                                function.ops = projection_fixture().remove(0).ops;
+                            }
+                        },
+                    )
+                }))
+                .expect_err("an optimized or cached body must not replace the authored ABI");
+                let message = error
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| error.downcast_ref::<&str>().copied())
+                    .unwrap();
+                let expected = if cached {
+                    "cached TIR must preserve the authored function return ABI"
+                } else {
+                    "optimized TIR must preserve the authored function return ABI"
+                };
+                assert!(message.contains(expected), "{message}");
+                assert_eq!(
+                    serde_json::to_vec(&source).unwrap(),
+                    before,
+                    "refusal must precede replacement"
+                );
+                let _ = std::fs::remove_dir_all(cache_dir);
+            }
+        }
+    }
+
+    #[test]
+    fn owned_module_assembly_retires_each_source_and_matches_borrowed_order_and_metadata() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Source {
+            function: FunctionIR,
+            drops: Rc<Cell<usize>>,
+        }
+        impl Borrow<FunctionIR> for Source {
+            fn borrow(&self) -> &FunctionIR {
+                &self.function
+            }
+        }
+        impl Drop for Source {
+            fn drop(&mut self) {
+                self.drops.set(self.drops.get() + 1);
+            }
+        }
+        let functions = projection_fixture();
+        let original = serde_json::to_vec(&functions).unwrap();
+        let target_info = TargetInfo::native_release_fast();
+        let non_inlinable = HashSet::new();
+        let cache = || {
+            let mut cache = CachedTirCustody::new();
+            for f in functions.iter().filter(|f| !f.is_extern) {
+                cache.insert(
+                    f.name.clone(),
+                    super::super::lower_from_simple::lower_to_tir(f),
+                );
+            }
+            cache
+        };
+        let bytes = |functions: &[(bool, TirFunction)]| {
+            functions
+                .iter()
+                .map(|(external, f)| {
+                    (
+                        *external,
+                        super::super::serialize::serialize_tir_function(f).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for mode in [
+            TirOwnedModulePipelineMode::TerminalDropsOnly,
+            TirOwnedModulePipelineMode::ModulePhase,
+        ] {
+            let options = || TirOwnedModulePipelineOptions {
+                target_info: &target_info,
+                module_name: "owned_source",
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "owned source test",
+                mode,
+            };
+            let borrowed =
+                run_owned_module_pipeline_from_cached_tir(&functions, &mut cache(), options());
+            let drops = Rc::new(Cell::new(0));
+            let sources = functions
+                .clone()
+                .into_iter()
+                .enumerate()
+                .map(|(index, function)| {
+                    assert_eq!(
+                        drops.get(),
+                        index,
+                        "previous source must retire before the next is requested"
+                    );
+                    Source {
+                        function,
+                        drops: Rc::clone(&drops),
+                    }
+                });
+            let owned = run_owned_module_pipeline_from_cached_tir(sources, &mut cache(), options());
+            assert_eq!(drops.get(), 3);
+            assert_eq!(bytes(&owned), bytes(&borrowed));
+            let expected = match mode {
+                TirOwnedModulePipelineMode::TerminalDropsOnly => vec!["first", "external", "last"],
+                TirOwnedModulePipelineMode::ModulePhase => vec!["external", "first", "last"],
+            };
+            assert_eq!(
+                owned
+                    .iter()
+                    .map(|(_, f)| f.name.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(owned.iter().filter(|(external, _)| *external).count(), 1);
+            for (_, function) in &owned {
+                assert_eq!(function.return_abi, molt_ir::FunctionReturnAbi::Value);
+            }
+        }
+        assert_eq!(serde_json::to_vec(&functions).unwrap(), original);
+    }
 
     #[test]
     fn module_backconversion_preserves_selective_bodies_metadata_and_extern_indices() {
@@ -1543,10 +1901,14 @@ mod tests {
         let preprocessing_calls = AtomicUsize::new(0);
         let run_with_source = |source_file: &'static str| {
             let mut functions = vec![base.clone()];
-            run_cached_tir_pipeline(&mut functions, options(&cache_dir), |function| {
-                preprocessing_calls.fetch_add(1, Ordering::Relaxed);
-                function.source_file = Some(source_file.to_string());
-            })
+            run_cached_tir_pipeline(
+                TirPipelineInput::SimpleIr(&mut functions),
+                options(&cache_dir),
+                |function| {
+                    preprocessing_calls.fetch_add(1, Ordering::Relaxed);
+                    function.source_file = Some(source_file.to_string());
+                },
+            )
         };
         let cached_source = |run: &TirPipelineRun| {
             run.cached_tir
@@ -1589,10 +1951,11 @@ mod tests {
             diagnostic_options.tir_dump = tir_dump;
             diagnostic_options.tir_stats = tir_stats;
             let mut functions = vec![base.clone()];
-            let diagnostic_run =
-                run_cached_tir_pipeline(&mut functions, diagnostic_options, |function| {
-                    function.source_file = Some("second.py".to_string())
-                });
+            let diagnostic_run = run_cached_tir_pipeline(
+                TirPipelineInput::SimpleIr(&mut functions),
+                diagnostic_options,
+                |function| function.source_file = Some("second.py".to_string()),
+            );
             assert_eq!(
                 diagnostic_run.uncached_count, 1,
                 "requested pass diagnostics must execute even with matching cached TIR"
@@ -1667,19 +2030,31 @@ mod tests {
             },
         };
         let mut wrong_policy = vec![base.clone()];
-        let seeded = run_cached_tir_pipeline(&mut wrong_policy, options(&cache_dir), |_| {});
+        let seeded = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut wrong_policy),
+            options(&cache_dir),
+            |_| {},
+        );
         assert_eq!(seeded.uncached_count, 1);
 
         let mut requested = vec![FunctionIR {
             execution_context: crate::ExecutionContextPolicy::Inherited,
             ..base.clone()
         }];
-        let miss = run_cached_tir_pipeline(&mut requested, options(&cache_dir), |_| {});
+        let miss = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut requested),
+            options(&cache_dir),
+            |_| {},
+        );
         assert_eq!(
             miss.uncached_count, 1,
             "a cache artifact preseeded under the wrong execution policy must not hit"
         );
-        let hit = run_cached_tir_pipeline(&mut requested, options(&cache_dir), |_| {});
+        let hit = run_cached_tir_pipeline(
+            TirPipelineInput::SimpleIr(&mut requested),
+            options(&cache_dir),
+            |_| {},
+        );
         assert_eq!(hit.uncached_count, 0);
         let _ = std::fs::remove_dir_all(cache_dir);
     }
@@ -1706,7 +2081,7 @@ mod tests {
             std::env::temp_dir().join(format!("molt-tir-source-file-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache_dir);
         let mut run = run_cached_tir_pipeline(
-            &mut functions,
+            TirPipelineInput::SimpleIr(&mut functions),
             TirPipelineRunOptions {
                 target_info: target_info.clone(),
                 cache_flavor: TirPipelineCacheFlavor::FactGraph,
