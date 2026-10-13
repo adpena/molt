@@ -1043,9 +1043,16 @@ mod request_serialization_tests {
                         let check_error = || {
                             assert!(exception_pending(py));
                             let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                            // Rendering is an ordinary Python operation; retain the error before
+                            // clearing its raised state, then inspect the owned exception.
+                            clear_exception(py);
                             let message = ExceptionValue::adopt(
                                 py,
                                 crate::builtins::exceptions::molt_exception_message(error.bits()),
+                            );
+                            assert!(
+                                !exception_pending(py),
+                                "exception rendering unexpectedly raised"
                             );
                             assert_eq!(
                                 crate::type_name(py, obj_from_bits(error.bits())).as_ref(),
@@ -1055,7 +1062,6 @@ mod request_serialization_tests {
                                 string_obj_to_owned(obj_from_bits(message.bits())).unwrap(),
                                 expected.1
                             );
-                            clear_exception(py);
                         };
                         molt_http_client_connection_getresponse(handle);
                         check_error();
@@ -1194,9 +1200,16 @@ mod request_serialization_tests {
                 molt_urllib_request_open(opener.bits(), request.bits());
                 assert!(exception_pending(py));
                 let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                // Rendering is an ordinary Python operation; retain the error before
+                // clearing its raised state, then inspect the owned exception.
+                clear_exception(py);
                 let message = ExceptionValue::adopt(
                     py,
                     crate::builtins::exceptions::molt_exception_message(error.bits()),
+                );
+                assert!(
+                    !exception_pending(py),
+                    "exception rendering unexpectedly raised"
                 );
                 assert_eq!(
                     crate::type_name(py, obj_from_bits(error.bits())).as_ref(),
@@ -1206,7 +1219,6 @@ mod request_serialization_tests {
                     string_obj_to_owned(obj_from_bits(message.bits())).unwrap(),
                     "missing [ssl.connect, ssl.read, ssl.write] capabilities for 'https.request'"
                 );
-                clear_exception(py);
                 assert_eq!(LOCAL_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst), 1);
             },
         );
