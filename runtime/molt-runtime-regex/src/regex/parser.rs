@@ -655,28 +655,38 @@ impl ReParser {
             self.raw_next()?;
             negated = true;
         }
-        // A ']' immediately after '[' or '[^' is a literal ']'.
-        if self.raw_peek() == Some(']') {
-            let c = self.raw_next()?;
-            chars.push(c.to_string());
-        }
-
+        let mut first = true;
         loop {
             match self.raw_peek() {
                 None => {
                     self.in_class = false;
                     return Err("unterminated character class".to_string());
                 }
-                Some(']') => {
+                Some(']') if !first => {
                     self.raw_next()?;
                     break;
                 }
                 _ => {}
             }
-            match self.class_item()? {
-                ClassItem::Range(s, e) => ranges.push((s, e)),
-                ClassItem::Category(cat) => categories.push(cat),
-                ClassItem::Char(c) => chars.push(c),
+            first = false;
+            // Decode each endpoint before composing a range. Escaped literals
+            // participate exactly like ordinary literals; the upper endpoint
+            // must not recursively consume another range (e.g. [a-b-c]).
+            let item = self.class_atom()?;
+            if self.raw_peek() == Some('-') && self.chars.get(self.pos + 1) != Some(&']') {
+                self.raw_next()?;
+                let end = self.class_atom()?;
+                match (item, end) {
+                    (ClassItem::Char(start), ClassItem::Char(end)) if start <= end => {
+                        ranges.push((start, end));
+                    }
+                    _ => return Err("bad character range".to_string()),
+                }
+            } else {
+                match item {
+                    ClassItem::Category(cat) => categories.push(cat),
+                    ClassItem::Char(c) => chars.push(c),
+                }
             }
         }
         self.in_class = false;
@@ -688,7 +698,7 @@ impl ReParser {
         })
     }
 
-    pub(super) fn class_item(&mut self) -> Result<ClassItem, String> {
+    pub(super) fn class_atom(&mut self) -> Result<ClassItem, String> {
         let ch = self.raw_next()?;
         match ch {
             '\\' => {
@@ -753,30 +763,7 @@ impl ReParser {
                 }
                 Ok(ClassItem::Category(format!("posix:{name}")))
             }
-            '-' | ']' => Ok(ClassItem::Char(ch.to_string())),
-            _ => {
-                // Maybe a range: X-Y
-                if self.raw_peek() == Some('-') {
-                    let saved_pos = self.pos;
-                    self.raw_next()?; // consume '-'
-                    match self.raw_peek() {
-                        None | Some(']') => {
-                            // Not a range â€” backtrack the '-'.
-                            self.pos = saved_pos;
-                            Ok(ClassItem::Char(ch.to_string()))
-                        }
-                        _ => {
-                            let end_item = self.class_item()?;
-                            match end_item {
-                                ClassItem::Char(end) => Ok(ClassItem::Range(ch.to_string(), end)),
-                                _ => Err("ranges over categories are not supported".to_string()),
-                            }
-                        }
-                    }
-                } else {
-                    Ok(ClassItem::Char(ch.to_string()))
-                }
-            }
+            _ => Ok(ClassItem::Char(ch.to_string())),
         }
     }
 }
@@ -787,7 +774,6 @@ impl ReParser {
 
 pub(super) enum ClassItem {
     Char(String),
-    Range(String, String),
     Category(String),
 }
 
