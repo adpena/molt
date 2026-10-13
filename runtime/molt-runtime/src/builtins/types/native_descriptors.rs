@@ -33,11 +33,10 @@ pub(crate) struct NativeDescriptorSpec {
 impl NativeDescriptorFlavor {
     fn type_name(self) -> &'static str {
         match self {
-            Self::Member | Self::ManagedSlot => "member_descriptor",
-            Self::GetSet
-            | Self::InstanceDictionary
-            | Self::CallableMetadata
-            | Self::RootMetadata => "getset_descriptor",
+            Self::Member | Self::ManagedSlot | Self::CallableMember => "member_descriptor",
+            Self::GetSet | Self::InstanceDictionary | Self::CallableGetSet | Self::RootMetadata => {
+                "getset_descriptor"
+            }
         }
     }
 }
@@ -167,12 +166,12 @@ pub(crate) fn getset_descriptor_class(py: &PyToken<'_>) -> u64 {
 
 pub(crate) fn native_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor) -> u64 {
     match flavor {
-        NativeDescriptorFlavor::Member | NativeDescriptorFlavor::ManagedSlot => {
-            member_descriptor_class(py)
-        }
+        NativeDescriptorFlavor::Member
+        | NativeDescriptorFlavor::ManagedSlot
+        | NativeDescriptorFlavor::CallableMember => member_descriptor_class(py),
         NativeDescriptorFlavor::GetSet
         | NativeDescriptorFlavor::InstanceDictionary
-        | NativeDescriptorFlavor::CallableMetadata
+        | NativeDescriptorFlavor::CallableGetSet
         | NativeDescriptorFlavor::RootMetadata => getset_descriptor_class(py),
     }
 }
@@ -503,7 +502,10 @@ pub(crate) unsafe fn native_descriptor_get(
         inc_ref_bits(py, value);
         return Ok(value);
     }
-    if flavor == NativeDescriptorFlavor::CallableMetadata {
+    if matches!(
+        flavor,
+        NativeDescriptorFlavor::CallableGetSet | NativeDescriptorFlavor::CallableMember
+    ) {
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
         let field = crate::builtins::functions::native_callable::CallableMetadata::from_operation(
             unsafe { crate::object::layout::native_descriptor_operation(ptr) }.unwrap(),
@@ -598,7 +600,10 @@ pub(crate) unsafe fn native_descriptor_mutate(
         }
         return unsafe { crate::object::field_storage::replace_dictionary(py, object, value) };
     }
-    if flavor == NativeDescriptorFlavor::CallableMetadata {
+    if matches!(
+        flavor,
+        NativeDescriptorFlavor::CallableGetSet | NativeDescriptorFlavor::CallableMember
+    ) {
         let _inputs = DescriptorInputs::new(
             py,
             [
@@ -735,10 +740,12 @@ pub(crate) unsafe fn native_descriptor_repr(py: &PyToken<'_>, descriptor: u64) -
     };
     let (name, owner) = unsafe { descriptor_text(ptr) };
     let label = match flavor {
-        NativeDescriptorFlavor::Member | NativeDescriptorFlavor::ManagedSlot => "member",
+        NativeDescriptorFlavor::Member
+        | NativeDescriptorFlavor::ManagedSlot
+        | NativeDescriptorFlavor::CallableMember => "member",
         NativeDescriptorFlavor::GetSet
         | NativeDescriptorFlavor::InstanceDictionary
-        | NativeDescriptorFlavor::CallableMetadata
+        | NativeDescriptorFlavor::CallableGetSet
         | NativeDescriptorFlavor::RootMetadata => "attribute",
     };
     let text = format!("<{label} '{name}' of '{owner}' objects>");
@@ -1269,6 +1276,93 @@ mod tests {
                 assert_eq!(value.ob_refcnt, 1);
                 assert_eq!(class.ob_base.ob_base.ob_refcnt, 1);
             }
+        });
+    }
+
+    #[test]
+    fn callable_metadata_declaration_kinds_match_cpython() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let classes = builtin_classes(py);
+            // Independent declarations from CPython's methodobject.c,
+            // descrobject.c and funcobject.c, stable in 3.12 through 3.14.
+            let native_function = [
+                ("__name__", false),
+                ("__qualname__", false),
+                ("__doc__", false),
+                ("__text_signature__", false),
+                ("__module__", true),
+                ("__self__", false),
+            ];
+            let descriptor = [
+                ("__name__", true),
+                ("__qualname__", false),
+                ("__doc__", false),
+                ("__text_signature__", false),
+                ("__objclass__", true),
+            ];
+            let wrapper = [
+                ("__name__", false),
+                ("__qualname__", false),
+                ("__doc__", false),
+                ("__text_signature__", false),
+                ("__objclass__", false),
+                ("__self__", true),
+            ];
+            let function = [
+                ("__name__", false),
+                ("__qualname__", false),
+                ("__doc__", true),
+                ("__module__", true),
+                ("__defaults__", false),
+                ("__kwdefaults__", false),
+            ];
+            let declarations: &[(u64, &[(&str, bool)])] = &[
+                (classes.builtin_function_or_method, &native_function),
+                (classes.builtin_method, &native_function),
+                (classes.method_descriptor, &descriptor),
+                (classes.wrapper_descriptor, &descriptor),
+                (classes.classmethod_descriptor, &descriptor),
+                (classes.method_wrapper, &wrapper),
+                (classes.function, &function),
+            ];
+            for &(owner, fields) in declarations {
+                let owner_ptr = obj_from_bits(owner).as_ptr().unwrap();
+                let dictionary = obj_from_bits(unsafe { class_dict_bits(owner_ptr) })
+                    .as_ptr()
+                    .unwrap();
+                for &(name, member) in fields {
+                    let key = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                    let descriptor = unsafe { dict_get_in_place(py, dictionary, key) }
+                        .unwrap()
+                        .unwrap();
+                    dec_ref_bits(py, key);
+                    assert_eq!(
+                        type_of_bits(py, descriptor),
+                        if member {
+                            member_descriptor_class(py)
+                        } else {
+                            getset_descriptor_class(py)
+                        },
+                        "{name} on {}",
+                        class_name_for_error(owner),
+                    );
+                    let unbound =
+                        unsafe { native_descriptor_get(py, descriptor, None, Some(owner)) }
+                            .unwrap();
+                    assert_eq!(unbound, descriptor);
+                    dec_ref_bits(py, unbound);
+                    let representation = unsafe { native_descriptor_repr(py, descriptor) };
+                    assert!(
+                        string_obj_to_owned(obj_from_bits(representation))
+                            .unwrap()
+                            .starts_with(if member { "<member '" } else { "<attribute '" }),
+                        "{name}",
+                    );
+                    dec_ref_bits(py, representation);
+                }
+            }
+            assert!(!exception_pending(py));
         });
     }
 
