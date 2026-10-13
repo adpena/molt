@@ -247,17 +247,6 @@ pub(crate) fn path_sequence_from_bits(
     Ok(out)
 }
 
-/// Extract raw byte slice from a bytes object bits value.  Returns `None` if not bytes.
-pub(crate) fn bytes_slice_from_bits(bits: u64) -> Option<Vec<u8>> {
-    let ptr = obj_from_bits(bits).as_ptr()?;
-    if unsafe { object_type_id(ptr) } != TYPE_ID_BYTES {
-        return None;
-    }
-    let len = unsafe { bytes_len(ptr) };
-    let data = unsafe { std::slice::from_raw_parts(bytes_data(ptr), len) };
-    Some(data.to_vec())
-}
-
 pub(crate) fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {
     let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
