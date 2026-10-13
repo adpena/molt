@@ -2863,21 +2863,57 @@ pub unsafe extern "C" fn PyObject_AsFileDescriptor(o: *mut PyObject) -> c_int {
         }
         return -1;
     }
-    if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
-        return unsafe { crate::api::numbers::PyLong_AsLong(o) as c_int };
-    }
-
-    let fileno = unsafe { PyObject_GetAttrString(o, c"fileno".as_ptr()) };
-    if fileno.is_null() {
+    // CPython Objects/fileobject.c admits integers, not arbitrary __index__
+    // values, and checks the C int range on both routes before accepting an fd.
+    let fd = if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
+        unsafe { crate::api::numbers::_PyLong_AsInt(o) }
+    } else {
+        let mut fileno = ptr::null_mut();
+        match unsafe { PyObject_GetOptionalAttrString(o, c"fileno".as_ptr(), &raw mut fileno) } {
+            -1 => return -1,
+            0 => {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                        c"argument must be an int, or have a fileno() method.".as_ptr(),
+                    );
+                }
+                return -1;
+            }
+            _ => {}
+        }
+        let result = unsafe { PyObject_CallNoArgs(fileno) };
+        unsafe { crate::api::refcount::Py_DECREF(fileno) };
+        if result.is_null() {
+            return -1;
+        }
+        let fd = if unsafe { crate::api::numbers::PyLong_Check(result) } != 0 {
+            unsafe { crate::api::numbers::_PyLong_AsInt(result) }
+        } else {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                    c"fileno() returned a non-integer".as_ptr(),
+                );
+            }
+            -1
+        };
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+        fd
+    };
+    if fd == -1 && exception_already_pending() {
         return -1;
     }
-    let result = unsafe { PyObject_CallNoArgs(fileno) };
-    unsafe { crate::api::refcount::Py_DECREF(fileno) };
-    if result.is_null() {
+    if fd < 0 {
+        unsafe {
+            crate::api::errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"file descriptor cannot be a negative integer (%i)".as_ptr(),
+                fd,
+            );
+        }
         return -1;
     }
-    let fd = unsafe { crate::api::numbers::PyLong_AsLong(result) as c_int };
-    unsafe { crate::api::refcount::Py_DECREF(result) };
     fd
 }
 

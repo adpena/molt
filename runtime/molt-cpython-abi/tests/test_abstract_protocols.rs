@@ -32,6 +32,211 @@ fn assert_type_error() {
     unsafe { errors::PyErr_Clear() };
 }
 
+// Independent oracle: CPython v3.12.15 Objects/fileobject.c and the actual
+// pythonapi.PyObject_AsFileDescriptor boundary, including its C int width.
+#[test]
+fn file_descriptor_integer_admission_rejects_negative_and_narrowing_aliases() {
+    use molt_cpython_abi::abi_types::{PyExc_OverflowError, PyExc_ValueError};
+    use molt_cpython_abi::api::numbers;
+    let _transaction = install();
+    for (value, expected, error) in [
+        (0, 0, std::ptr::null_mut()),
+        (2, 2, std::ptr::null_mut()),
+        (i32::MAX as i64, i32::MAX, std::ptr::null_mut()),
+        (-1, -1, (&raw mut PyExc_ValueError).cast()),
+        (-2, -1, (&raw mut PyExc_ValueError).cast()),
+        (
+            i32::MAX as i64 + 1,
+            -1,
+            (&raw mut PyExc_OverflowError).cast(),
+        ),
+        (
+            i32::MIN as i64 - 1,
+            -1,
+            (&raw mut PyExc_OverflowError).cast(),
+        ),
+        ((1_i64 << 32) + 2, -1, (&raw mut PyExc_OverflowError).cast()),
+    ] {
+        let input = unsafe { OwnedPyObject::from_owned(numbers::PyLong_FromLongLong(value)) };
+        assert!(!input.as_ptr().is_null());
+        assert_eq!(
+            unsafe { object::PyObject_AsFileDescriptor(input.as_ptr()) },
+            expected
+        );
+        if error.is_null() {
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+        } else {
+            assert_eq!(
+                unsafe { errors::PyErr_ExceptionMatches(error) },
+                1,
+                "{value}"
+            );
+            unsafe { errors::PyErr_Clear() };
+        }
+    }
+    for value in [false, true] {
+        let input = register(MoltObject::from_bool(value).bits());
+        assert_eq!(
+            unsafe { object::PyObject_AsFileDescriptor(input.as_ptr()) },
+            i32::from(value)
+        );
+        assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+    }
+}
+
+#[repr(C)]
+struct DescriptorReceiver {
+    base: molt_cpython_abi::abi_types::PyObject,
+    method: *mut molt_cpython_abi::abi_types::PyObject,
+    lookup_error: *mut molt_cpython_abi::abi_types::PyObject,
+}
+
+unsafe extern "C" fn descriptor_getattr(
+    receiver: *mut molt_cpython_abi::abi_types::PyObject,
+    name: *mut molt_cpython_abi::abi_types::PyObject,
+) -> *mut molt_cpython_abi::abi_types::PyObject {
+    use molt_cpython_abi::abi_types::PyExc_AttributeError;
+    let name = unsafe { strings::PyUnicode_AsUTF8(name) };
+    assert!(!name.is_null());
+    assert_eq!(unsafe { std::ffi::CStr::from_ptr(name) }, c"fileno");
+    let receiver = unsafe { &*receiver.cast::<DescriptorReceiver>() };
+    if !receiver.lookup_error.is_null() || receiver.method.is_null() {
+        let error = if receiver.lookup_error.is_null() {
+            (&raw mut PyExc_AttributeError).cast()
+        } else {
+            receiver.lookup_error
+        };
+        unsafe { errors::PyErr_SetString(error, c"descriptor lookup".as_ptr()) };
+        return std::ptr::null_mut();
+    }
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(receiver.method) };
+    receiver.method
+}
+
+unsafe extern "C" fn descriptor_return_value(
+    value: *mut molt_cpython_abi::abi_types::PyObject,
+    args: *mut molt_cpython_abi::abi_types::PyObject,
+) -> *mut molt_cpython_abi::abi_types::PyObject {
+    assert!(args.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(value) };
+    value
+}
+
+unsafe extern "C" fn descriptor_index_only(
+    _value: *mut molt_cpython_abi::abi_types::PyObject,
+) -> *mut molt_cpython_abi::abi_types::PyObject {
+    unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(37) }
+}
+
+#[test]
+fn file_descriptor_fileno_preserves_type_width_errors_and_return_ownership() {
+    use molt_cpython_abi::abi_types::{
+        METH_NOARGS, PyExc_OverflowError, PyExc_RuntimeError, PyExc_ValueError, PyMethodDef,
+        PyNumberMethods, PyObject, PyType_Type, PyTypeObject,
+    };
+    use molt_cpython_abi::api::numbers;
+    let _transaction = install();
+    let mut kind: PyTypeObject = unsafe { std::mem::zeroed() };
+    kind.ob_base.ob_base.ob_refcnt = 1;
+    kind.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+    kind.tp_name = c"DescriptorReceiver".as_ptr();
+    kind.tp_basicsize = std::mem::size_of::<DescriptorReceiver>() as isize;
+    kind.tp_getattro = Some(descriptor_getattr);
+    let mut receiver = DescriptorReceiver {
+        base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut kind,
+        },
+        method: std::ptr::null_mut(),
+        lookup_error: std::ptr::null_mut(),
+    };
+    let mut definition = PyMethodDef {
+        ml_name: c"fileno".as_ptr(),
+        ml_meth: Some(descriptor_return_value),
+        ml_flags: METH_NOARGS,
+        ml_doc: std::ptr::null(),
+    };
+    for (value, expected, error) in [
+        (Some(1000), 1000, std::ptr::null_mut()),
+        (Some(-2), -1, (&raw mut PyExc_ValueError).cast()),
+        (
+            Some((1_i64 << 32) + 2),
+            -1,
+            (&raw mut PyExc_OverflowError).cast(),
+        ),
+        (None, -1, (&raw mut PyExc_TypeError).cast()),
+    ] {
+        let value = if let Some(value) = value {
+            unsafe { OwnedPyObject::from_owned(numbers::PyLong_FromLongLong(value)) }
+        } else {
+            register(MoltObject::none().bits())
+        };
+        let method = unsafe {
+            OwnedPyObject::from_owned(object::PyCFunction_New(&raw mut definition, value.as_ptr()))
+        };
+        assert!(!method.as_ptr().is_null());
+        receiver.method = method.as_ptr();
+        let before = unsafe { (*value.as_ptr()).ob_refcnt };
+        assert_eq!(
+            unsafe { object::PyObject_AsFileDescriptor(&raw mut receiver.base) },
+            expected
+        );
+        assert_eq!(unsafe { (*value.as_ptr()).ob_refcnt }, before);
+        if error.is_null() {
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+        } else {
+            assert_eq!(unsafe { errors::PyErr_ExceptionMatches(error) }, 1);
+            unsafe { errors::PyErr_Clear() };
+        }
+        receiver.method = std::ptr::null_mut();
+    }
+    // A fileno result may not use __index__, even when that protocol would
+    // produce an in-range descriptor. PyLong_AsLong alone over-admits this.
+    let mut index_methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+    index_methods.nb_index = descriptor_index_only as *mut std::ffi::c_void;
+    let mut index_kind: PyTypeObject = unsafe { std::mem::zeroed() };
+    index_kind.ob_base.ob_base.ob_refcnt = 1;
+    index_kind.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+    index_kind.tp_name = c"IndexOnly".as_ptr();
+    index_kind.tp_as_number = (&raw mut index_methods).cast();
+    let mut index_only = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut index_kind,
+    };
+    {
+        let method = unsafe {
+            OwnedPyObject::from_owned(object::PyCFunction_New(
+                &raw mut definition,
+                &raw mut index_only,
+            ))
+        };
+        assert!(!method.as_ptr().is_null());
+        receiver.method = method.as_ptr();
+        assert_eq!(
+            unsafe { object::PyObject_AsFileDescriptor(&raw mut receiver.base) },
+            -1
+        );
+        assert_type_error();
+        receiver.method = std::ptr::null_mut();
+    }
+    assert_eq!(index_only.ob_refcnt, 1);
+    for (lookup_error, expected) in [
+        (std::ptr::null_mut(), (&raw mut PyExc_TypeError).cast()),
+        (
+            (&raw mut PyExc_RuntimeError).cast(),
+            (&raw mut PyExc_RuntimeError).cast(),
+        ),
+    ] {
+        receiver.lookup_error = lookup_error;
+        assert_eq!(
+            unsafe { object::PyObject_AsFileDescriptor(&raw mut receiver.base) },
+            -1
+        );
+        assert_eq!(unsafe { errors::PyErr_ExceptionMatches(expected) }, 1);
+        unsafe { errors::PyErr_Clear() };
+    }
+}
+
 // Contains/count/index use the real runtime in cpython_abi_hooks/inquiry_tests.rs,
 // through both compiled C header transports.
 #[test]
