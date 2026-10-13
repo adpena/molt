@@ -251,8 +251,7 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
     assert env["MOLT_EXT_ROOT"] == str(selected_root)
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_artifact_root(
-            selected_root,
-            env["MOLT_SESSION_ID"],
+            selected_root, env["MOLT_SESSION_ID"], source_root=bench_tool.REPO_ROOT
         )
     )
     assert env["MOLT_CACHE"] == str(selected_root / ".molt_cache")

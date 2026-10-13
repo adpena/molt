@@ -46,10 +46,15 @@ def test_target_root_defaults_to_the_canonical_artifact_root(monkeypatch) -> Non
     for key in ("CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
-    # The checkout family root, not the worktree, and no per-process session:
-    # every run shares the family's warm target (HF-144).
-    family = translation_validate.artifact_root(translation_validate._REPO_ROOT, {})
-    assert translation_validate._cargo_target_root({}) == family / "target"
+    # Repeat processes reuse one checkout's target, not a sibling's intermediates.
+    from molt.dx import checkout_component
+
+    repo = translation_validate._REPO_ROOT.resolve()
+    family = translation_validate.artifact_root(repo, {})
+    expected = family / "target"
+    if family != repo:
+        expected = expected / "checkouts" / checkout_component(repo)
+    assert translation_validate._cargo_target_root({}) == expected
 
 
 def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
@@ -63,18 +68,22 @@ def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
     assert translation_validate._cargo_target_root(env) == cargo_target_dir
 
     env.pop("CARGO_TARGET_DIR")
-    assert translation_validate._cargo_target_root(env) == (
-        ext_root.resolve() / "target"
+    from molt.dx import checkout_component
+
+    target = (
+        ext_root.resolve()
+        / "target"
+        / "checkouts"
+        / checkout_component(translation_validate._REPO_ROOT)
     )
+    assert translation_validate._cargo_target_root(env) == target
     # A pinned session scopes the target; a generated one does not.
     env["MOLT_SESSION_ID"] = "lane-a"
     assert translation_validate._cargo_target_root(env) == (
-        ext_root.resolve() / "target" / "sessions" / "lane-a"
+        target / "sessions" / "lane-a"
     )
     env["MOLT_SESSION_ID_GENERATED"] = "1"
-    assert translation_validate._cargo_target_root(env) == (
-        ext_root.resolve() / "target"
-    )
+    assert translation_validate._cargo_target_root(env) == target
 
 
 def test_resolve_target_python_uses_project_floor(tmp_path: Path) -> None:

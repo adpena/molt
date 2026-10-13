@@ -90,8 +90,7 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     )
     assert call["env"]["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
-            Path(call["env"]["MOLT_EXT_ROOT"]),
-            call["env"],
+            Path(call["env"]["MOLT_EXT_ROOT"]), call["env"], source_root=REPO_ROOT
         )
     )
     # Scratch is <root>/tmp unless that lies in the source tree (a checkout
@@ -115,8 +114,7 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
     assert env["MOLT_EXT_ROOT"] == str(molt_dx.canonical_molt_root(demo_bench.ROOT))
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
-            Path(env["MOLT_EXT_ROOT"]),
-            env,
+            Path(env["MOLT_EXT_ROOT"]), env, source_root=REPO_ROOT
         )
     )
 
@@ -125,8 +123,7 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
     assert explicit["MOLT_EXT_ROOT"] == str(explicit_root.resolve())
     assert explicit["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
-            explicit_root.resolve(),
-            explicit,
+            explicit_root.resolve(), explicit, source_root=REPO_ROOT
         )
     )
 
