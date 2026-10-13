@@ -785,7 +785,7 @@ def _closed_intrinsic_statuses(
     changed = True
     while changed:
         changed = False
-        for module_name, imports in imports_by_module.items():
+        for module_name in imports_by_module:
             if _is_intrinsic_status(closed.get(module_name)):
                 continue
             if closed.get(module_name) != STATUS_PYTHON_COMPILED:
@@ -802,27 +802,6 @@ def _closed_intrinsic_statuses(
                 # Pure forwarding has one all-owner authority. Falling through
                 # to an any-edge rule would admit mixed owners or bootstrap a
                 # forwarding cycle without an independently intrinsic anchor.
-                continue
-            package_root = module_name.split(".", 1)[0]
-            # Top-level public wrappers can use their exact private native
-            # provider (io -> _io), just as package wrappers use their siblings.
-            # A spelling alone proves nothing: the source import must resolve
-            # and the provider must already have intrinsic backing. Do not
-            # extend this relation to private names, prefixes or child modules.
-            if any(
-                _is_intrinsic_status(closed.get(imported))
-                and (
-                    imported.split(".", 1)[0] == package_root
-                    or (
-                        "." not in module_name
-                        and not module_name.startswith("_")
-                        and imported == f"_{module_name}"
-                    )
-                )
-                for imported in imports
-            ):
-                closed[module_name] = STATUS_INTRINSIC
-                changed = True
                 continue
             if _is_private_support_module(module_name) and any(
                 _is_intrinsic_status(closed.get(owner))

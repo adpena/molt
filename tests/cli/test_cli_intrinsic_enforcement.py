@@ -444,7 +444,7 @@ def test_same_package_wrapper_reads_the_package_intrinsic_binding(
     # The package never loads its binding; the sibling's import is the read.
     assert classification.statuses == {
         "pkg": stdlib_intrinsic_policy.STATUS_INTRINSIC,
-        "pkg.widgets": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "pkg.widgets": stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED,
     }
     assert classification.used_intrinsics["pkg"] == {
         "molt_tk_widget_bind_callback_register"
@@ -511,14 +511,14 @@ def test_real_weakref_facade_uses_shared_intrinsic_classification() -> None:
     assert classification.facades_payload()[0]["owners"] == ["weakref"]
 
 
-def test_real_io_wrapper_projects_its_native_provider_without_marker_loads() -> None:
+def test_real_io_wrapper_keeps_python_ownership_without_marker_loads() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     graph = {name: root / f"{name}.py" for name in ("io", "_io")}
     classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
         graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert classification.statuses == {
-        "io": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "io": stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED,
         "_io": stdlib_intrinsic_policy.STATUS_INTRINSIC,
     }
     assert classification.import_evidence["io"].facade is None
@@ -604,7 +604,7 @@ def test_relative_facade_requires_metadata_proof_for_every_owner(tmp_path):
     )
 
 
-def test_asyncio_reporting_belongs_to_the_runtime_backed_event_loop_owner():
+def test_asyncio_reporting_keeps_python_ownership_with_native_event_loop():
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     events = root / "asyncio" / "events.py"
     owner = root / "asyncio" / "__init__.py"
@@ -615,7 +615,7 @@ def test_asyncio_reporting_belongs_to_the_runtime_backed_event_loop_owner():
     )
     assert (
         classification.statuses["asyncio.events"]
-        == stdlib_intrinsic_policy.STATUS_INTRINSIC
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
     assert "asyncio" in classification.import_evidence["asyncio.events"].proven_modules
     assert (
@@ -646,7 +646,7 @@ def test_python_stream_protocol_does_not_manufacture_an_intrinsic_provider(tmp_p
 
 
 @pytest.mark.parametrize("provider", ["real", "missing", "python-compiled"])
-def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, provider):
+def test_real_tk_widgets_keep_python_ownership_across_callable_providers(tmp_path, provider):
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     graph = {
         "tkinter": root / "tkinter" / "__init__.py",
@@ -668,11 +668,15 @@ def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, prov
     assert "tkinter._support" in evidence.proven_modules
     assert evidence.unresolved_sites  # relative operands still require runtime custody
     assert "tkinter" not in evidence.proven_modules
-    assert classification.statuses["tkinter.widgets"] == (
-        stdlib_intrinsic_policy.STATUS_INTRINSIC
-        if provider == "real"
-        else stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
+    assert (
+        classification.statuses["tkinter.widgets"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
+    if provider == "real":
+        assert (
+            classification.statuses["tkinter._support"]
+            == stdlib_intrinsic_policy.STATUS_INTRINSIC
+        )
 
 
 def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(

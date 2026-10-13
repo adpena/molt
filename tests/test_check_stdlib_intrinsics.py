@@ -775,7 +775,7 @@ def test_unread_intrinsic_requirement_is_not_backing(
     assert unread == [("anchored_mod", "molt_capabilities_has")]
 
 
-def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
+def test_same_package_import_preserves_python_implementation_in_audit(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_gate_module()
@@ -823,8 +823,9 @@ def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
         "### Intrinsic-backed modules (partial lowering pending)\n- `pkg`" in audit_text
     )
     assert "- `pkg.widgets`" in audit_text
-    # The package's binding is read only by the sibling that imports it.
-    assert "### Compiled pure-Python modules\n\n" in audit_text
+    # The package owns the requirement; importing it does not replace the
+    # sibling's own compiled Python implementation.
+    assert "### Compiled pure-Python modules\n- `pkg.widgets`" in audit_text
 
 
 def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_in_audit(
