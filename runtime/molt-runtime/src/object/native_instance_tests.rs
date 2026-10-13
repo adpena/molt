@@ -13,13 +13,10 @@ fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
                 .unwrap()
                 .allows_dict
         };
+        let fields = [field, dict];
         let names = MoltObject::from_ptr(alloc_tuple(
             py,
-            if inherited_dictionary {
-                &[field]
-            } else {
-                &[field, dict]
-            },
+            &fields[..if inherited_dictionary { 1 } else { 2 }],
         ))
         .bits();
         let key = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
