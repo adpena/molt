@@ -40,21 +40,12 @@ pub(crate) fn asyncio_exception_escapes_callback(py: &PyToken<'_>, exception: u6
 }
 
 unsafe fn asyncio_required_method(py: &PyToken<'_>, object: u64, name: &[u8]) -> Option<u64> {
-    unsafe {
-        let Some(ptr) = obj_from_bits(object).as_ptr() else {
-            return raise_exception::<Option<u64>>(py, "TypeError", "object is not awaitable");
-        };
-        let name = attr_name_bits_from_bytes(py, name)?;
-        // Required lookup must preserve descriptor failures, including an
-        // AttributeError deliberately raised by the descriptor itself.
-        let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name);
-        dec_ref_bits(py, name);
-        match method {
-            Ok(Some(method)) => Some(method),
-            Ok(None) => raise_exception::<Option<u64>>(py, "TypeError", "object is not awaitable"),
-            Err(()) => None,
-        }
-    }
+    let name = attr_name_bits_from_bytes(py, name)?;
+    // Use ordinary required lookup for every receiver and preserve the exact
+    // descriptor failure or canonical missing-attribute name/object payload.
+    let method = crate::builtins::attributes::get_attr_name(py, object, name);
+    dec_ref_bits(py, name);
+    method.ok()
 }
 
 pub(crate) unsafe fn asyncio_call_method0(_py: &PyToken<'_>, obj_bits: u64, method: &[u8]) -> u64 {
@@ -321,6 +312,59 @@ mod exception_dispatch_tests {
                 dec_ref_bits(py, exception);
             }
             for bits in [instance, name, descriptor, getter, class] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn required_async_methods_preserve_missing_attribute_payload_at_every_arity() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = class(py, b"MissingMethodOwner", builtin_classes(py).object);
+            let instance = unsafe {
+                crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+            };
+            let none = MoltObject::none().bits();
+            let name_field = attr_name_bits_from_bytes(py, b"name").unwrap();
+            let object_field = attr_name_bits_from_bytes(py, b"obj").unwrap();
+            for receiver in [instance, MoltObject::from_int(17).bits(), none] {
+                for arity in 0..=3 {
+                    let result = unsafe {
+                        match arity {
+                            0 => asyncio_call_method0(py, receiver, b"probe"),
+                            1 => asyncio_call_method1(py, receiver, b"probe", none),
+                            2 => asyncio_call_method2(py, receiver, b"probe", none, none),
+                            _ => asyncio_call_method3(py, receiver, b"probe", none, none, none),
+                        }
+                    };
+                    assert_eq!(result, none);
+                    assert!(exception_pending(py));
+                    let exception = molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "AttributeError"
+                    ));
+                    clear_exception(py);
+                    let actual_name =
+                        crate::builtins::attributes::get_attr_name(py, exception, name_field)
+                            .unwrap();
+                    let actual_object =
+                        crate::builtins::attributes::get_attr_name(py, exception, object_field)
+                            .unwrap();
+                    assert_eq!(
+                        string_obj_to_owned(obj_from_bits(actual_name)).as_deref(),
+                        Some("probe")
+                    );
+                    assert_eq!(actual_object, receiver);
+                    for bits in [actual_name, actual_object, exception] {
+                        dec_ref_bits(py, bits);
+                    }
+                    assert!(!exception_pending(py));
+                }
+            }
+            for bits in [instance, class, name_field, object_field] {
                 dec_ref_bits(py, bits);
             }
         });

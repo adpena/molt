@@ -1480,8 +1480,6 @@ pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) ->
             let _ = raise_attr_name_type_error(_py, name_bits);
             return Err(());
         }
-        let attr_name =
-            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
         if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
             // Foreign (C-extension) objects are handled inside the shared
             // `attr_lookup_ptr` (below) so every getattr entry point routes
@@ -1489,6 +1487,8 @@ pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) ->
             if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits)? {
                 return Ok(val);
             }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
             let type_id = object_type_id(obj_ptr);
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(obj_ptr);
@@ -1530,6 +1530,8 @@ pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) ->
             );
             return Err(());
         }
+        let attr_name =
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
         if let Some(val) = resolve_scalar_attr(_py, obj_bits, &attr_name)? {
             return Ok(val);
         }
