@@ -346,8 +346,9 @@ only failed terminal runs. An explicitly audited older successful run may be
 selected with `--allow-passed`; this does not admit reusable output or weaken any
 custody check. Select exact run IDs, preserve current proof/replay artifacts, and
 inspect the complete cohort before applying it. There is no age/LRU sweep;
-[run evidence retention](#run-evidence-retention) keeps a run whose Cargo
-generation target still exists and never reclaims a generation.
+[run evidence retention](#run-evidence-retention) keeps the current Cargo owner and never reclaims a generation. A superseded,
+physically closed development-workspace run may enter the ordinary whole-run
+window after its original terminal custody and later owner are verified.
 Retained generations require explicit release; an admitted `terminal-success`
 output lifetime uses this same retirement authority after successful proof.
 `--apply` first
@@ -1877,11 +1878,22 @@ Retention keeps all files of these runs:
 - `failed` rows, whose logs diagnosis and `tools/apparatus_ledger.py` read;
 - runs pinned by a `retain` note;
 - parents of an unresolved row;
-- runs whose Cargo generation target still exists, or whose Cargo output
+- runs whose Cargo generation target still exists without a verified closed
+  successor workspace owner, or whose Cargo output
   disposition is unresolved. The Cargo authority decides about those first;
 - rows whose custody retention cannot prove: a log or summary outside this
   result root, a file stem that another row also names, a directory or link
   where a file belongs, or an unavailable payload root.
+
+A historical development-workspace run can enter this window only when its
+immutable terminal CAS binds the exact run, nonce, inputs and target with safe
+physical closure, and the same workspace target has a distinct, coherent,
+closed successor owner. Admission is rechecked at the DB claim under the
+existing nonblocking Cargo target lease. Current, busy, isolated, ambiguous or
+blocked generations stay protected. Retention removes the old run's complete
+evidence set through the existing reclamation record; it never removes Cargo
+target bytes or immutable custody CAS. Failed and explicitly pinned runs retain
+their existing protection, so this window is not a total-disk usage cap.
 
 Of the other terminal runs (`passed`, `non-evidence` and `blocked`), retention
 keeps the newest runs that fit the bound and reclaims the rest. The bound is a

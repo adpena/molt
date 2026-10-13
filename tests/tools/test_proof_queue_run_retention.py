@@ -607,3 +607,332 @@ def test_policy_comes_from_option_then_environment_then_default() -> None:
     ):
         with pytest.raises(ValueError):
             run_retention.configured_policy(bad)
+
+
+@pytest.fixture
+def workspace_runs(queue, tmp_path, monkeypatch):
+    """Actual acquire/publication/terminal producers, without invoking Cargo."""
+    from tests.tools import test_proof_queue_cargo_cache_custody as fixture
+    from tools.proof_queue_pkg import execution_environment
+
+    monkeypatch.setattr(
+        execution_environment,
+        "_git_source_paths",
+        lambda root, env, **kw: [root / "main.rs"],
+    )
+    monkeypatch.setattr(
+        cargo_cache_custody.disk_capacity,
+        "_default_measure_free_bytes",
+        lambda path: 1 << 50,
+    )
+    cargo = tmp_path / "cargo"
+    cargo.mkdir()
+    inputs = fixture._workspace_inputs(cargo)
+    inputs["result_root"] = queue.runs
+    fixture._capture(inputs)
+    leases = []
+    projections = []
+    for order, name in enumerate(("workspace-old", "workspace-current")):
+        inputs.update(
+            run_id=name,
+            execution_nonce_sha256=hashlib.sha256(_nonce(name).encode()).hexdigest(),
+        )
+        lease = cargo_cache_custody.acquire(**inputs)
+        leases.append(lease)
+        (lease.target / "artifact").write_bytes(b"warm Cargo bytes")
+        publication = lease.publish(fixture._completed(lease))
+        lease.close()
+        receipt = fixture._terminal_receipt(lease, publication)
+        receipt["command_returncode"] = 0
+        receipt["queue_terminal"].update(
+            status="passed", returncode=0, command_returncode=0
+        )
+        projection = cargo_cache_custody.record_terminal_receipt(
+            result_root=queue.runs,
+            provenance=lease.provenance,
+            terminal_receipt=receipt,
+        )
+        projections.append(projection)
+        add_run(queue, name, order=order, scratch_bytes=128)
+        with closing(state._connect(queue.db)) as conn:
+            context = json.loads(
+                conn.execute(
+                    "SELECT receipt_context_json FROM proof_runs WHERE run_id=?",
+                    (name,),
+                ).fetchone()[0]
+            )
+            context["derived_root_custody"]["prelaunch"].append(lease.provenance)
+            context["cargo_generation_lifecycle"] = projection
+            conn.execute(
+                "UPDATE proof_runs SET receipt_context_json=? WHERE run_id=?",
+                (json.dumps(context), name),
+            )
+            conn.commit()
+    assert leases[0].target == leases[1].target
+    assert leases[1].provenance["state"] == "reused"
+    add_run(queue, "newest", order=2)
+    return inputs, leases, projections
+
+
+def test_superseded_workspace_enters_whole_run_window_and_stays_warm(
+    queue, workspace_runs
+):
+    inputs, (old, current), projections = workspace_runs
+    cas = snapshot(queue.runs / "custody-cas")
+    report = run_retention.run_pass(
+        db=queue.db,
+        result_root=queue.runs,
+        policy=ScratchRetention(count=1, bytes=1 << 30),
+        apply=True,
+    )
+    assert {item["run_id"] for item in report["reclaimed"]} == {"workspace-old"}
+    assert not (queue.runs / "workspace-old.log").exists()
+    assert not (queue.runs / "derived" / _nonce("workspace-old")).exists()
+    assert (queue.runs / "workspace-current.log").exists()
+    assert (queue.runs / "derived" / _nonce("workspace-current")).exists()
+    assert snapshot(queue.runs / "custody-cas") == cas
+    cargo_cache_custody.validate_terminal_receipt(
+        result_root=queue.runs,
+        projection=projections[0],
+        provenance=old.provenance,
+        run_id="workspace-old",
+        execution_nonce_sha256=old.provenance["execution_nonce_sha256"],
+    )
+    with pytest.raises(ValueError, match="owner/provenance"):
+        cargo_cache_custody._validate_terminal_generation_authority(
+            result_root=queue.runs,
+            provenance=old.provenance,
+            projection=projections[0],
+            target=old.target,
+            owner_path=old.owner_path,
+        )
+    inputs.update(run_id="next", execution_nonce_sha256="e" * 64)
+    third = cargo_cache_custody.acquire(**inputs)
+    try:
+        assert third.target == current.target
+        assert third.provenance["state"] == "reused"
+        assert (third.target / "artifact").read_bytes() == b"warm Cargo bytes"
+    finally:
+        third.close()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "busy",
+        "leased",
+        "blocked",
+        "missing-owner",
+        "wrong-owner",
+        "same-nonce",
+        "wrong-nonce",
+        "pointer",
+        "unsafe",
+        "unclosed",
+        "missing-cas",
+        "isolated",
+        "old-run",
+        "old-nonce",
+        "old-outcome",
+    ],
+)
+def test_superseded_workspace_refuses_uncertain_authority(queue, workspace_runs, fault):
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    inputs, (old, current), projections = workspace_runs
+    owner = json.loads(current.owner_path.read_text())
+    lock = None
+    if fault == "busy":
+        lock = _try_acquire_file_lock(
+            current.owner_path.parent.parent / "target.lock", create=False
+        )
+        assert lock is not None
+    elif fault == "missing-owner":
+        current.owner_path.unlink()
+    elif fault == "pointer":
+        pointer = current.owner_path.parent.parent / "state.json"
+        payload = json.loads(pointer.read_text())
+        payload["run_id"] = "foreign"
+        write_exact(pointer, payload)
+    elif fault in {"leased", "blocked", "wrong-owner", "same-nonce", "wrong-nonce"}:
+        if fault in {"leased", "blocked"}:
+            owner["lifecycle"] = "leased" if fault == "leased" else "reclaim-blocked"
+        elif fault == "wrong-owner":
+            owner["target"] = str(queue.root / "foreign")
+        else:
+            owner["execution_nonce_sha256"] = (
+                old.provenance["execution_nonce_sha256"]
+                if fault == "same-nonce"
+                else "f" * 64
+            )
+        write_exact(current.owner_path, owner)
+    elif fault == "missing-cas":
+        Path(projections[0]["terminal_receipt"]["path"]).unlink()
+    else:
+        with closing(state._connect(queue.db)) as conn:
+            context = json.loads(
+                conn.execute(
+                    "SELECT receipt_context_json FROM proof_runs WHERE run_id='workspace-old'"
+                ).fetchone()[0]
+            )
+            provenance = context["derived_root_custody"]["prelaunch"][-1]
+            if fault == "isolated":
+                provenance.pop("workspace_sha256")
+            elif fault == "old-run":
+                provenance["generation_run_id"] = "other"
+            elif fault == "old-nonce":
+                context["execution_nonce_sha256"] = "f" * 64
+            elif fault == "old-outcome":
+                conn.execute(
+                    "UPDATE proof_runs SET returncode=7 WHERE run_id='workspace-old'"
+                )
+            else:
+                ref = projections[0]["terminal_receipt"]
+                payload = cargo_cache_custody._read(
+                    ref,
+                    queue.runs / "custody-cas",
+                    cargo_cache_custody._TERMINAL_RECEIPT_KIND,
+                )
+                receipt = payload["receipt"]
+                if fault == "unsafe":
+                    receipt["process_cleanup_safe"] = False
+                else:
+                    receipt["process_supervisor"] = None
+                new_ref = cargo_cache_custody._artifact(
+                    queue.runs / "custody-cas",
+                    cargo_cache_custody._TERMINAL_RECEIPT_KIND,
+                    receipt=receipt,
+                )
+                context["cargo_generation_lifecycle"] = (
+                    cargo_cache_custody._lifecycle_projection(
+                        state="terminal-indeterminate-retained"
+                        if fault == "unsafe"
+                        else "terminal-unsealed-reclaimable",
+                        provenance=provenance,
+                        terminal_receipt=new_ref,
+                    )
+                )
+            conn.execute(
+                "UPDATE proof_runs SET receipt_context_json=? WHERE run_id='workspace-old'",
+                (json.dumps(context),),
+            )
+            conn.commit()
+    try:
+        report = run_retention.run_pass(
+            db=queue.db,
+            result_root=queue.runs,
+            policy=ScratchRetention(count=1, bytes=1 << 30),
+            apply=True,
+        )
+        assert not report["reclaimed"]
+        assert (queue.runs / "workspace-old.log").exists()
+        assert old.target.exists()
+    finally:
+        if lock is not None:
+            _release_file_lock(lock)
+
+
+def test_workspace_owner_is_rechecked_at_retention_claim(
+    queue, workspace_runs, monkeypatch
+):
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    _, (_, current), _ = workspace_runs
+    original = run_retention._claim_and_reclaim
+
+    def raced(*args, **kwargs):
+        lock = _try_acquire_file_lock(
+            current.owner_path.parent.parent / "target.lock", create=False
+        )
+        assert lock is not None
+        try:
+            return original(*args, **kwargs)
+        finally:
+            _release_file_lock(lock)
+
+    monkeypatch.setattr(run_retention, "_claim_and_reclaim", raced)
+    report = run_retention.run_pass(
+        db=queue.db,
+        result_root=queue.runs,
+        policy=ScratchRetention(count=1, bytes=1 << 30),
+        apply=True,
+    )
+    assert report["skipped"] == ["workspace-old"]
+    assert (queue.runs / "workspace-old.log").exists()
+
+
+def test_workspace_planning_reads_only_bounded_terminal_custody(
+    queue, workspace_runs, monkeypatch
+):
+    import time
+    from collections import Counter
+
+    original = cargo_cache_custody._read
+    reads = Counter()
+
+    def read(reference, root, kind):
+        reads[kind] += 1
+        return original(reference, root, kind)
+
+    monkeypatch.setattr(cargo_cache_custody, "_read", read)
+    start = time.perf_counter()
+    with closing(state._connect(queue.db)) as conn:
+        for _ in range(32):
+            rows, _ = run_retention.plan(
+                conn,
+                result_root=queue.runs,
+                policy=ScratchRetention(count=1, bytes=1 << 30),
+                measure_all=False,
+            )
+            assert {
+                row.run_id for row in rows if row.disposition == run_retention.RECLAIM
+            } == {"workspace-old"}
+            current = next(row for row in rows if row.run_id == "workspace-current")
+            assert current.bytes is None
+            assert current.disposition == run_retention.KEEP_CARGO
+    elapsed = time.perf_counter() - start
+    assert reads == {cargo_cache_custody._TERMINAL_RECEIPT_KIND: 96}
+    print(
+        json.dumps(
+            {
+                "planning_passes": 32,
+                "rows_per_pass": 3,
+                "terminal_cas_reads": sum(reads.values()),
+                "elapsed_s": elapsed,
+                "protected_bytes_measured": False,
+            }
+        )
+    )
+
+
+def test_workspace_postclaim_error_is_not_an_admission_skip(
+    queue, workspace_runs, monkeypatch
+):
+    original = run_retention._finish
+
+    def fail(*args, **kwargs):
+        raise OSError("independent deletion failure")
+
+    monkeypatch.setattr(run_retention, "_finish", fail)
+    with pytest.raises(OSError, match="independent deletion failure"):
+        run_retention.run_pass(
+            db=queue.db,
+            result_root=queue.runs,
+            policy=ScratchRetention(count=1, bytes=1 << 30),
+            apply=True,
+        )
+    with closing(state._connect(queue.db)) as conn:
+        record = json.loads(
+            conn.execute(
+                "SELECT evidence_retention_json FROM proof_runs WHERE run_id='workspace-old'"
+            ).fetchone()[0]
+        )
+    assert record["state"] == run_retention.RECLAIMING
+    monkeypatch.setattr(run_retention, "_finish", original)
+    report = run_retention.run_pass(
+        db=queue.db,
+        result_root=queue.runs,
+        policy=ScratchRetention(count=1, bytes=1 << 30),
+        apply=True,
+    )
+    assert report["recovered"] == ["workspace-old"]
