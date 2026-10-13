@@ -398,6 +398,8 @@ pub(crate) fn configure_runtime_class_methods(
                 spec,
                 method.fn_ptr,
                 method.arity,
+                &[],
+                0,
                 signature.arg_names,
                 signature.has_vararg,
                 signature.has_varkw,

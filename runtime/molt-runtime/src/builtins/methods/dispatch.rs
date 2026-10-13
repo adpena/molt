@@ -1,4 +1,6 @@
-use super::common::{builtin_func_bits, builtin_func_bits_with_defaults_tuple};
+use super::common::{
+    builtin_func_bits, builtin_func_bits_with_defaults_tuple, builtin_func_bits_with_signature,
+};
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 
@@ -19,33 +21,93 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
             Some(builtin_func_bits(py, spec, fn_addr!(molt_generic_alias_type_new), 3))
         } else if class_bits == builtins.reference_type {
             Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_addr!(crate::builtins::weakref_type::weakref_new_method)))
-        } else if class_bits == builtins.file_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_file_io_new), 5, &[none, none, none]))
-        } else if [builtins.buffered_reader, builtins.buffered_writer, builtins.buffered_random].contains(&class_bits) {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_buffered_new), 3, &[MoltObject::from_int(-1).bits()]))
-        } else if class_bits == builtins.text_io_wrapper {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_text_io_wrapper_new), 7, &[none, none, none, MoltObject::from_bool(false).bits(), MoltObject::from_bool(false).bits()]))
-        } else if class_bits == builtins.bytes_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_bytesio_new), 2, &[none]))
-        } else if class_bits == builtins.string_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_stringio_new), 3, &[none, none]))
-        } else { None }
+        } else { io_constructor_bits(py, class_bits, true) }
     },
-    "__init__" => {
-        let spec = NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, "__init__");
-        if class_bits == builtins.file_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_file_io_init), 5, &[none, none, none]))
-        } else if [builtins.buffered_reader, builtins.buffered_writer, builtins.buffered_random].contains(&class_bits) {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_buffered_init), 3, &[MoltObject::from_int(-1).bits()]))
-        } else if class_bits == builtins.text_io_wrapper {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_text_io_wrapper_init), 7, &[none, none, none, MoltObject::from_bool(false).bits(), MoltObject::from_bool(false).bits()]))
-        } else if class_bits == builtins.bytes_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_bytesio_init), 2, &[none]))
-        } else if class_bits == builtins.string_io {
-            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_stringio_init), 3, &[none, none]))
-        } else { None }
-    },
+    "__init__" => io_constructor_bits(py, class_bits, false),
 });
+
+// Both descriptor phases share one signature declaration. Exact IO classes and
+// subclasses enter the ordinary type-call binder; no class-local keyword parser.
+fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64> {
+    let b = builtin_classes(py);
+    let none = MoltObject::none().bits();
+    let receiver: &[u8] = if is_new { b"cls" } else { b"self" };
+    let spec = if is_new {
+        NativeCallableSpec::constructor(class)
+    } else {
+        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__init__")
+    };
+    let bind = |new, init, names: &[&[u8]], defaults: &[u64]| {
+        Some(builtin_func_bits_with_signature(
+            py,
+            spec,
+            if is_new { new } else { init },
+            names.len() as u64,
+            defaults,
+            1,
+            names,
+            false,
+            false,
+        ))
+    };
+    if class == b.file_io {
+        // The internal missing singleton distinguishes omission from explicit None.
+        let mode = missing_bits(py);
+        if obj_from_bits(mode).is_none() {
+            return Some(0);
+        }
+        bind(
+            fn_addr!(molt_file_io_new),
+            fn_addr!(molt_file_io_init),
+            &[receiver, b"file", b"mode", b"closefd", b"opener"],
+            &[mode, MoltObject::from_bool(true).bits(), none],
+        )
+    } else if [b.buffered_reader, b.buffered_writer, b.buffered_random].contains(&class) {
+        bind(
+            fn_addr!(molt_buffered_new),
+            fn_addr!(molt_buffered_init),
+            &[receiver, b"raw", b"buffer_size"],
+            &[MoltObject::from_int(-1).bits()],
+        )
+    } else if class == b.text_io_wrapper {
+        bind(
+            fn_addr!(molt_text_io_wrapper_new),
+            fn_addr!(molt_text_io_wrapper_init),
+            &[
+                receiver,
+                b"buffer",
+                b"encoding",
+                b"errors",
+                b"newline",
+                b"line_buffering",
+                b"write_through",
+            ],
+            &[
+                none,
+                none,
+                none,
+                MoltObject::from_bool(false).bits(),
+                MoltObject::from_bool(false).bits(),
+            ],
+        )
+    } else if class == b.bytes_io {
+        bind(
+            fn_addr!(molt_bytesio_new),
+            fn_addr!(molt_bytesio_init),
+            &[receiver, b"initial_bytes"],
+            &[none],
+        )
+    } else if class == b.string_io {
+        bind(
+            fn_addr!(molt_stringio_new),
+            fn_addr!(molt_stringio_init),
+            &[receiver, b"initial_value", b"newline"],
+            &[none, none],
+        )
+    } else {
+        None
+    }
+}
 
 /// Routing is shared by direct lookup and requested-owner namespace publication.
 /// The method arms, not a second list of spellings, define each public surface.
