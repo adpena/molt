@@ -38,8 +38,6 @@ PATHLIB_HOOKS = (
     "molt_path_isdir",
     "molt_path_isfile",
     "molt_path_islink",
-    "molt_path_join",
-    "molt_path_join_many",
     "molt_path_makedirs",
     "molt_path_match",
     "molt_path_mkdir",

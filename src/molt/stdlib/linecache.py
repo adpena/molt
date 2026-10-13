@@ -8,13 +8,13 @@ that name.
 from __future__ import annotations
 
 import sys
+import os
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex")
 _MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists")
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs")
-_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join")
 _MOLT_LINECACHE_LOADER_GET_SOURCE = _require_intrinsic(
     "molt_linecache_loader_get_source"
 )
@@ -184,7 +184,7 @@ def updatecache(filename: str, module_globals: dict | None = None) -> list[str]:
             if not isinstance(dirname, str):
                 continue
             try:
-                candidate = _MOLT_PATH_JOIN(dirname, filename)
+                candidate = os.path.join(dirname, filename)
             except Exception:
                 continue
             result = _try_open_source(candidate)

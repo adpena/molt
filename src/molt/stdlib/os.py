@@ -70,7 +70,6 @@ _MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count")
 _MOLT_OS_LINK = _require_intrinsic("molt_os_link")
 _MOLT_OS_ENVIRON = _require_intrinsic("molt_os_environ")
 _MOLT_OS_MAKEDIRS = _require_intrinsic("molt_os_makedirs")
-_MOLT_OS_PATH_JOIN = _require_intrinsic("molt_os_path_join")
 _MOLT_OS_PATH_EXISTS = _require_intrinsic("molt_os_path_exists")
 _MOLT_OS_PATH_ISFILE = _require_intrinsic("molt_os_path_isfile")
 _MOLT_OS_PATH_ISDIR = _require_intrinsic("molt_os_path_isdir")
@@ -857,6 +856,34 @@ def _fscodec():
 fsencode, fsdecode = _fscodec()
 del _fscodec
 
+
+def _path_join_splitroot(value):
+    # CPython 3.12 ntpath.splitroot. Preserve subclass operations and original
+    # separator spelling; exact paths use the shared native root parser.
+    value = fspath(value)
+    if isinstance(value, bytes):
+        slash, alt, colon, unc, empty = b"\\", b"/", b":", b"\\\\?\\UNC\\", b""
+    else:
+        slash, alt, colon, unc, empty = "\\", "/", ":", "\\\\?\\UNC\\", ""
+    normalized = value.replace(alt, slash)
+    if normalized[:1] == slash:
+        if normalized[1:2] == slash:
+            start = 8 if normalized[:8].upper() == unc else 2
+            end = normalized.find(slash, start)
+            if end == -1:
+                return value, empty, empty
+            end = normalized.find(slash, end + 1)
+            if end == -1:
+                return value, empty, empty
+            return value[:end], value[end : end + 1], value[end + 1 :]
+        return empty, value[:1], value[1:]
+    if normalized[1:2] == colon:
+        if normalized[2:3] == slash:
+            return value[:2], value[2:3], value[3:]
+        return value[:2], empty, value[2:]
+    return empty, empty, value
+
+
 class _Path:
     sep = sep
     pathsep = pathsep
@@ -867,18 +894,84 @@ class _Path:
 
     @staticmethod
     def join(first: Any, *rest: Any) -> Any:
-        parts: list[Any] = [first]
-        parts.extend(rest)
-        # Fast path: use the new 2-arg intrinsic for the common case.
-        if len(parts) == 2 and callable(_MOLT_OS_PATH_JOIN):
-            result = _MOLT_OS_PATH_JOIN(parts[0], parts[1])
-            if isinstance(parts[0], bytes):
+        # CPython 3.12 posixpath/ntpath ordering. Native accumulation handles
+        # exact values, including lazily resolved PathLike operands, in linear
+        # time. A subclass resumes here once, before any observable operation.
+        first = fspath(first)
+        slash = (
+            (b"/" if isinstance(first, bytes) else "/")
+            if sep == "/"
+            else (b"\\" if isinstance(first, bytes) else "\\")
+        )
+        try:
+            result = _MOLT_PATH_JOIN_MANY(first, rest)
+            if not isinstance(result, tuple):
                 return result
-            return _expect_str(result, "os_path_join")
-        result = _MOLT_PATH_JOIN_MANY(parts[0], tuple(parts[1:]))
-        if isinstance(parts[0], bytes):
-            return result
-        return _expect_str(result, "path_join_many")
+            resume, b, state = result
+            del result  # Do not keep a second owner of callback-bearing values.
+            if sep == "/":
+                path = first if state is None else state
+                del state
+                if not rest:
+                    path[:0] + slash
+                for index in range(resume, len(rest)):
+                    if index != resume or b is None:
+                        b = fspath(rest[index])
+                    if b.startswith(slash):
+                        path = b
+                    elif not path or path.endswith(slash):
+                        path += b
+                    else:
+                        path += slash + b
+                return path
+            seps = b"\\/" if isinstance(first, bytes) else "\\/"
+            colon = b":" if isinstance(first, bytes) else ":"
+            if state is None:
+                if not rest:
+                    first[:0] + slash
+                drive, root, tail = _path_join_splitroot(first)
+            else:
+                drive, root, tail = state
+            del state
+            for index in range(resume, len(rest)):
+                if index != resume or b is None:
+                    b = fspath(rest[index])
+                p_drive, p_root, p_tail = _path_join_splitroot(b)
+                if p_root:
+                    if p_drive or not drive:
+                        drive = p_drive
+                    root = p_root
+                    tail = p_tail
+                    continue
+                elif p_drive and p_drive != drive:
+                    if p_drive.lower() != drive.lower():
+                        drive, root, tail = p_drive, p_root, p_tail
+                        continue
+                    drive = p_drive
+                if tail and tail[-1] not in seps:
+                    tail = tail + slash
+                tail = tail + p_tail
+            if tail and not root and drive and drive[-1:] not in colon + seps:
+                return drive + slash + tail
+            return drive + root + tail
+        except (TypeError, AttributeError, BytesWarning):
+            # Inspect originals, as CPython does; never repeat __fspath__ calls.
+            has_str = has_bytes = False
+            for value in (first, *rest):
+                if isinstance(value, str):
+                    has_str = True
+                elif isinstance(value, bytes):
+                    has_bytes = True
+                else:
+                    raise TypeError(
+                        "join() argument must be str, bytes, or os.PathLike object, "
+                        f"not {value.__class__.__name__!r}"
+                    ) from None
+            if has_str and has_bytes:
+                raise TypeError(
+                    "Can't mix strings and bytes in path components"
+                ) from None
+            raise
 
     @staticmethod
     def isabs(path: str) -> bool:
@@ -1437,6 +1530,7 @@ def setsid() -> int:
 
 
 if _sysconf_names_raw is not None:
+
     def sysconf(name: int | str) -> int:
         if isinstance(name, str):
             _name = sysconf_names.get(name, -1)
@@ -1444,6 +1538,7 @@ if _sysconf_names_raw is not None:
                 raise ValueError("unrecognized configuration name")
             name = _name
         return int(_MOLT_OS_SYSCONF(int(name)))
+
 
 del _sysconf_names_raw
 

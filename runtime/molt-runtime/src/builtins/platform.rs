@@ -19,7 +19,7 @@ pub(crate) use molt_runtime_platform::importlib_support::{
     append_unique_path, append_unique_path_hashed, split_nonempty_paths,
 };
 use molt_runtime_platform::path_text::{
-    path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
+    path_basename_text, path_dirname_text, path_join_many_text, path_join_text, path_normpath_text,
 };
 use molt_runtime_platform::uuid_support::{
     uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,

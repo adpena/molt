@@ -2894,38 +2894,6 @@ pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits
     })
 }
 
-/// `os.path.join(a, *p)` → str
-///
-/// Joins one or more path components. Accepts exactly two args at the intrinsic
-/// level; the Python wrapper folds over `*p` by repeated calls.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_join(base_bits: u64, part_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let base_str = match string_obj_to_owned(obj_from_bits(base_bits)) {
-            Some(s) => s,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "expected str, bytes or os.PathLike object",
-                );
-            }
-        };
-        let part_str = match string_obj_to_owned(obj_from_bits(part_bits)) {
-            Some(s) => s,
-            None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "expected str, bytes or os.PathLike object",
-                );
-            }
-        };
-        let result = Path::new(&base_str).join(&part_str);
-        str_bits(_py, &result.to_string_lossy())
-    })
-}
-
 /// `os.path.exists(path)` → bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_exists(path_bits: u64) -> u64 {

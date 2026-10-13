@@ -1569,11 +1569,8 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 ascii_lower_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
-            let lowered = hay_str.to_lowercase();
-            let ptr = alloc_string_nointern(_py, lowered.as_bytes());
+            let lowered = molt_runtime_platform::utils::python_lowercase(hay_bytes);
+            let ptr = alloc_string_nointern(_py, &lowered);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }

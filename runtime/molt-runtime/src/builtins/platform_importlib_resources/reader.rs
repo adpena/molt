@@ -145,15 +145,11 @@ pub(super) fn importlib_reader_files_root_path(
     Ok(out)
 }
 pub(super) fn importlib_reader_join_parts_path(root: &str, parts: &[String]) -> String {
-    let sep = bootstrap_path_sep();
-    let mut path = root.to_string();
-    for part in parts {
-        if part.is_empty() {
-            continue;
-        }
-        path = path_join_text(path, part, sep);
-    }
-    path
+    path_join_many_text(
+        root.to_string(),
+        parts.iter().filter(|part| !part.is_empty()),
+        bootstrap_path_sep(),
+    )
 }
 pub(super) fn importlib_reader_root_payload_for_parts(
     _py: &PyToken<'_>,

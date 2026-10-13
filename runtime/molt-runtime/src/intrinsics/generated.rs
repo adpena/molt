@@ -4348,13 +4348,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_path_join",
-        symbol: "molt_path_join",
-        arity: 2,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_path_join_many",
         symbol: "molt_path_join_many",
         arity: 2,
@@ -15663,13 +15656,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_os_makedirs",
         symbol: "molt_os_makedirs",
         arity: 3,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_os_path_join",
-        symbol: "molt_os_path_join",
-        arity: 2,
         defaults: &[],
         python_name: None,
     },

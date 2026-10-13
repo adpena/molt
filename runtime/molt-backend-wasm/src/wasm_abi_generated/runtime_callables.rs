@@ -5489,11 +5489,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_path_join",
-        import: WasmRuntimeImport::PathJoin,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_path_join_many",
         import: WasmRuntimeImport::PathJoinMany,
         arity: 2,
@@ -11599,11 +11594,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_os_path_join",
-        import: WasmRuntimeImport::OsPathJoin,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_os_path_exists",
         import: WasmRuntimeImport::OsPathExists,
         arity: 1,
@@ -13994,7 +13984,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_path_islink" => Some(WasmRuntimeImport::PathIslink),
         "molt_path_readlink" => Some(WasmRuntimeImport::PathReadlink),
         "molt_path_symlink" => Some(WasmRuntimeImport::PathSymlink),
-        "molt_path_join" => Some(WasmRuntimeImport::PathJoin),
         "molt_path_join_many" => Some(WasmRuntimeImport::PathJoinMany),
         "molt_path_isabs" => Some(WasmRuntimeImport::PathIsabs),
         "molt_path_dirname" => Some(WasmRuntimeImport::PathDirname),
@@ -15344,7 +15333,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
         "molt_os_environ" => Some(WasmRuntimeImport::OsEnviron),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
-        "molt_os_path_join" => Some(WasmRuntimeImport::OsPathJoin),
         "molt_os_path_exists" => Some(WasmRuntimeImport::OsPathExists),
         "molt_os_path_isfile" => Some(WasmRuntimeImport::OsPathIsfile),
         "molt_os_path_isdir" => Some(WasmRuntimeImport::OsPathIsdir),
