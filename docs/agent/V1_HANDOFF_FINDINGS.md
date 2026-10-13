@@ -252,8 +252,35 @@ grows from 622,341 to 2,274,441 operations through the function/module pipeline;
 final function reachability removes no bodies in this case. These measurements
 identify a compiler resource failure, not a passing target comparison. The
 exact input, backend image, stage log and live limits are retained. Compiler
-representation lifetime and expansion remain V1-07 work. The
-corrected native consumers below pass at their recorded source coordinates;
+representation lifetime and expansion remain V1-07 work. Consuming each IR
+body at its final representation boundary lowers overlap, but the matched
+`0a77f0c94` build still reaches the same allocation failure; it is not a
+successful compile-time result.
+
+At `053db5b30`, shared SSA construction deletes complete per-block exit
+variable snapshots and their redundant repair pass. The live definition stacks
+already contain every value that repair could recover. Cleanup also reuses
+immutable block arguments and the canonical definition visitor, deleting the
+quadratic push-count search and its bookkeeping entirely. Sixteen old/new
+canonical SSA comparisons are byte-identical, including the retained original
+9,858-operation asyncio function, diamonds, backedges, exception transfers,
+repeated definitions and aliases. In the private Linux aarch64 System-allocator
+probe, that real function's measured SSA peak falls from 640,970,781 to
+13,535,123 bytes and cumulative requested allocation from 1,228,032,430 to
+25,792,708 bytes. These measurements exclude CFG construction and serialization;
+they are not whole-program RSS or a claim that every SSA phase is linear.
+The existing allocation-test owner now bounds a no-phi dead-name chain: old
+source fails at 146,895 allocations against a 65,536 limit, while the successor
+passes. All 104 focused SSA, IR-lifetime, WASM and Luau controls pass. The full
+async-anext WASM program also passes its CPython comparison at the same source,
+with complete process custody, identical retained input and the unchanged
+4,364,671,393-byte allocation cap. Sampled compiler peak RSS is 3,165,954,048
+bytes; the full comparison takes 502.33 seconds, so compilation latency and the
+remaining WASM consumers are still open. Repeated exception-label lookup and
+module-pipeline expansion retain their V1-07 obligations; a resume
+edge scan runs only once for an admitted function and is not a dispatch-count
+multiplier. All instrumentation and checks stay in development apparatus.
+The corrected native consumers below pass at their recorded source coordinates;
 these bounded Linux aarch64 results do not qualify the full release matrix.
 Earlier failed programs and their source/toolchain/process evidence are retained.
 
