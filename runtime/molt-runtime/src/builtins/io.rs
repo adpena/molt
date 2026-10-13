@@ -390,14 +390,16 @@ mod tests {
         );
     }
 
-    fn open_entry(entry: usize, path: u64, mode: u64, opener: u64) -> u64 {
+    fn open_entry(py: &crate::PyToken<'_>, entry: usize, path: u64, mode: u64, opener: u64) -> u64 {
         let none = crate::MoltObject::none().bits();
         let yes = crate::MoltObject::from_bool(true).bits();
         let buffering = crate::MoltObject::from_int(0).bits();
         match entry {
             0 => super::molt_file_open(path, mode),
             1 => super::molt_file_open_ex(path, mode, buffering, none, none, none, yes, opener),
-            2 => super::molt_file_io_new(none, path, mode, yes, opener),
+            2 => {
+                super::molt_file_io_new(crate::builtin_classes(py).file_io, path, mode, yes, opener)
+            }
             3 => super::molt_open_builtin(path, mode, buffering, none, none, none, yes, opener),
             _ => unreachable!(),
         }
@@ -432,6 +434,7 @@ mod tests {
                             let path_bits = io_string(py, path.to_str().unwrap());
                             let mode_bits = io_string(py, mode);
                             let handle = open_entry(
+                                py,
                                 entry,
                                 path_bits,
                                 mode_bits,
@@ -594,7 +597,8 @@ mod tests {
                             io_string(py, "/tmp/selected")
                         };
                         let mode = io_string(py, "r+b");
-                        let handle = open_entry(3, path, mode, crate::MoltObject::none().bits());
+                        let handle =
+                            open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
                         assert_eq!(FSPATH_CALLS.load(Ordering::Relaxed), usize::from(pathlike));
                         let missing = required
                             .iter()
@@ -833,7 +837,7 @@ mod tests {
                     let mode = io_string(py, "r+b");
                     let opener = test_callable(py, forbidden_opener as *const (), 2);
                     OPENER_CALLS.store(0, Ordering::Relaxed);
-                    open_entry(3, path, mode, opener);
+                    open_entry(py, 3, path, mode, opener);
                     let required = ["fs.read", "fs.write"];
                     let missing = required
                         .iter()
@@ -873,7 +877,7 @@ mod tests {
                     );
                     let path = io_string(py, "/bundle/selected");
                     let mode = io_string(py, "r+b");
-                    open_entry(3, path, mode, crate::MoltObject::none().bits());
+                    open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
                     let missing = required
                         .iter()
                         .enumerate()
@@ -891,7 +895,7 @@ mod tests {
                         assert_missing(py, "io.open.readwrite", &missing);
                     }
                     let invalid = io_string(py, "rw");
-                    open_entry(3, path, invalid, crate::MoltObject::none().bits());
+                    open_entry(py, 3, path, invalid, crate::MoltObject::none().bits());
                     assert_eq!(io_error(py).0, "ValueError");
                     for bits in [path, mode, invalid] {
                         dec_ref_bits(py, bits);
@@ -923,7 +927,7 @@ mod tests {
                 ] {
                     let path = io_string(py, path_name);
                     let mode = io_string(py, mode_name);
-                    let handle = open_entry(3, path, mode, crate::MoltObject::none().bits());
+                    let handle = open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
                     if let Some(kind) = expected_error {
                         assert_eq!(io_error(py).0, kind);
                     } else {
@@ -946,7 +950,7 @@ mod tests {
                 for mode_name in ["r+b", "a+b"] {
                     let path = io_string(py, "/dev/stdout");
                     let mode = io_string(py, mode_name);
-                    open_entry(3, path, mode, crate::MoltObject::none().bits());
+                    open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
                     if grants == "fs.write" {
                         assert_missing(py, "io.open.readwrite", &["fs.read"]);
                     } else {
@@ -988,7 +992,8 @@ mod tests {
                     }
                     let path = io_string(py, "/tmp/selected");
                     let mode_bits = io_string(py, mode);
-                    let handle = open_entry(3, path, mode_bits, crate::MoltObject::none().bits());
+                    let handle =
+                        open_entry(py, 3, path, mode_bits, crate::MoltObject::none().bits());
                     assert!(!crate::exception_pending(py), "{mode}");
                     assert_eq!(
                         super::molt_file_readable(handle),
@@ -1005,7 +1010,7 @@ mod tests {
                 }
                 let path = io_string(py, "/tmp/selected");
                 let mode = io_string(py, "xb");
-                open_entry(3, path, mode, crate::MoltObject::none().bits());
+                open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
                 assert_eq!(io_error(py).0, "FileExistsError");
                 assert_eq!(backend.open_read("selected").unwrap(), b"new");
                 for bits in [path, mode] {

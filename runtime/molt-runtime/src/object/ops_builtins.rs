@@ -2599,7 +2599,7 @@ mod print_stream_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let none = MoltObject::none().bits();
-            let stream = molt_stringio_new(none, none, none);
+            let stream = molt_stringio_new(builtin_classes(_py).string_io, none, none);
             assert!(!exception_pending(_py));
             let args_ptr = alloc_tuple(
                 _py,
@@ -2630,7 +2630,7 @@ mod print_stream_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let none = MoltObject::none().bits();
-            let stream = molt_stringio_new(none, none, none);
+            let stream = molt_stringio_new(builtin_classes(_py).string_io, none, none);
             assert!(!exception_pending(_py));
             dec_ref_bits(_py, molt_file_close(stream));
             let sep_ptr = alloc_string(_py, b"unique-print-test-separator");
