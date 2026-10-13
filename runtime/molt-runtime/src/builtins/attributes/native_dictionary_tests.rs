@@ -558,6 +558,235 @@ fn native_bound_callable_module_has_one_independent_traced_edge() {
 }
 
 #[test]
+fn native_spec_constructors_publish_own_module_separately_from_defining_module() {
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{errors, mapping, modules, object, strings, typeobj};
+    use std::ptr;
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let provider = OwnedPyObject::from_owned(modules::PyModule_New(c"provider".as_ptr()));
+            assert!(!provider.as_ptr().is_null());
+            for constructor in 0..4 {
+                let mut slots = [PyType_Slot {
+                    slot: 0,
+                    pfunc: ptr::null_mut(),
+                }];
+                let mut spec = PyType_Spec {
+                    name: c"package.sub.SpecType".as_ptr(),
+                    basicsize: std::mem::size_of::<PyObject>() as i32,
+                    itemsize: 0,
+                    flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
+                    slots: slots.as_mut_ptr(),
+                };
+                let class = OwnedPyObject::from_owned(match constructor {
+                    0 => typeobj::PyType_FromSpec(&mut spec),
+                    1 => typeobj::PyType_FromSpecWithBases(&mut spec, ptr::null_mut()),
+                    2 => typeobj::PyType_FromModuleAndSpec(
+                        provider.as_ptr(),
+                        &mut spec,
+                        ptr::null_mut(),
+                    ),
+                    _ => typeobj::PyType_FromMetaclass(
+                        ptr::null_mut(),
+                        provider.as_ptr(),
+                        &mut spec,
+                        ptr::null_mut(),
+                    ),
+                });
+                assert!(!class.as_ptr().is_null(), "constructor {constructor}");
+                let class_ptr = class.as_ptr().cast::<PyTypeObject>();
+                let module = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                    class.as_ptr(),
+                    c"__module__".as_ptr(),
+                ));
+                assert!(!module.as_ptr().is_null(), "constructor {constructor}");
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(module.as_ptr())).to_bytes(),
+                    b"package.sub"
+                );
+                assert_eq!(
+                    mapping::_PyDict_GetItemStringWithError(
+                        (*class_ptr).tp_dict,
+                        c"__module__".as_ptr(),
+                    ),
+                    module.as_ptr(),
+                    "the constructor publishes an own namespace value"
+                );
+                if constructor >= 2 {
+                    assert_eq!(typeobj::PyType_GetModule(class_ptr), provider.as_ptr());
+                } else {
+                    assert!(typeobj::PyType_GetModule(class_ptr).is_null());
+                    assert_ne!(
+                        errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                        0
+                    );
+                    errors::PyErr_Clear();
+                }
+                assert!(errors::PyErr_Occurred().is_null());
+            }
+        }
+    });
+}
+
+#[test]
+fn native_spec_module_preserves_descriptors_and_retires_warning_failures() {
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{errors, mapping, modules, object, strings, typeobj};
+    use std::ptr;
+
+    struct ResetWarnings;
+    impl Drop for ResetWarnings {
+        fn drop(&mut self) {
+            crate::molt_warnings_resetwarnings();
+        }
+    }
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    let _reset = ResetWarnings;
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            static GETSETS: [PyGetSetDef; 2] = [
+                PyGetSetDef {
+                    name: c"__module__".as_ptr(),
+                    get: None,
+                    set: None,
+                    doc: ptr::null(),
+                    closure: ptr::null_mut(),
+                },
+                PyGetSetDef {
+                    name: ptr::null(),
+                    get: None,
+                    set: None,
+                    doc: ptr::null(),
+                    closure: ptr::null_mut(),
+                },
+            ];
+            let mut slots = [
+                PyType_Slot {
+                    slot: molt_cpython_abi::type_slots::Py_tp_getset,
+                    pfunc: GETSETS.as_ptr().cast_mut().cast(),
+                },
+                PyType_Slot {
+                    slot: 0,
+                    pfunc: ptr::null_mut(),
+                },
+            ];
+            let mut spec = PyType_Spec {
+                name: c"package.DescriptorModule".as_ptr(),
+                basicsize: std::mem::size_of::<PyObject>() as i32,
+                itemsize: 0,
+                flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
+                slots: slots.as_mut_ptr(),
+            };
+            let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));
+            assert!(!class.as_ptr().is_null());
+            let raw = mapping::_PyDict_GetItemStringWithError(
+                (*class.as_ptr().cast::<PyTypeObject>()).tp_dict,
+                c"__module__".as_ptr(),
+            );
+            assert!(!raw.is_null());
+            assert_eq!((*raw).ob_type, &raw mut PyGetSetDescr_Type);
+            let observed = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                class.as_ptr(),
+                c"__module__".as_ptr(),
+            ));
+            assert_eq!(
+                observed.as_ptr(),
+                raw,
+                "an own descriptor remains raw and is neither replaced nor invoked"
+            );
+
+            let provider = OwnedPyObject::from_owned(modules::PyModule_New(c"provider".as_ptr()));
+            assert!(!provider.as_ptr().is_null());
+            let provider_refs = (*provider.as_ptr()).ob_refcnt;
+            let mut no_slots = [PyType_Slot {
+                slot: 0,
+                pfunc: ptr::null_mut(),
+            }];
+            let mut undotted = PyType_Spec {
+                name: c"NoModule".as_ptr(),
+                basicsize: std::mem::size_of::<PyObject>() as i32,
+                itemsize: 0,
+                flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
+                slots: no_slots.as_mut_ptr(),
+            };
+            for action in [b"error".as_slice(), b"ignore".as_slice()] {
+                crate::molt_warnings_resetwarnings();
+                let action_bits = crate::attr_name_bits_from_bytes(py, action).unwrap();
+                let category = crate::builtins::exceptions::exception_type_bits_from_name(
+                    py,
+                    "DeprecationWarning",
+                );
+                let filtered = crate::molt_warnings_simplefilter(
+                    action_bits,
+                    category,
+                    MoltObject::from_int(0).bits(),
+                    MoltObject::from_bool(false).bits(),
+                );
+                dec_ref_bits(py, filtered);
+                dec_ref_bits(py, action_bits);
+                assert!(!exception_pending(py));
+                let result = OwnedPyObject::from_owned(typeobj::PyType_FromModuleAndSpec(
+                    provider.as_ptr(),
+                    &mut undotted,
+                    ptr::null_mut(),
+                ));
+                if action == b"error" {
+                    assert!(result.as_ptr().is_null());
+                    assert_ne!(
+                        errors::PyErr_ExceptionMatches((&raw mut PyExc_DeprecationWarning).cast()),
+                        0
+                    );
+                    let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    let text = OwnedPyObject::from_owned(object::PyObject_Str(error.as_ptr()));
+                    assert!(!text.as_ptr().is_null());
+                    assert_eq!(
+                        std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(text.as_ptr()))
+                            .to_bytes(),
+                        b"builtin type NoModule has no __module__ attribute"
+                    );
+                    assert_eq!(
+                        (*provider.as_ptr()).ob_refcnt,
+                        provider_refs,
+                        "failed post-readiness publication releases the defining-module owner"
+                    );
+                } else {
+                    assert!(!result.as_ptr().is_null());
+                    assert!(
+                        mapping::_PyDict_GetItemStringWithError(
+                            (*result.as_ptr().cast::<PyTypeObject>()).tp_dict,
+                            c"__module__".as_ptr(),
+                        )
+                        .is_null()
+                    );
+                    assert!(
+                        object::PyObject_GetAttrString(result.as_ptr(), c"__module__".as_ptr(),)
+                            .is_null()
+                    );
+                    assert_ne!(
+                        errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()),
+                        0
+                    );
+                    errors::PyErr_Clear();
+                    assert_eq!(
+                        typeobj::PyType_GetModule(result.as_ptr().cast()),
+                        provider.as_ptr()
+                    );
+                }
+                assert!(errors::PyErr_Occurred().is_null());
+                assert!(!exception_pending(py));
+            }
+        }
+    });
+}
+
+#[test]
 fn native_type_metadata_and_c_mappingproxy_share_runtime_descriptors() {
     use molt_cpython_abi::abi_types::*;
     use molt_cpython_abi::api::refcount::OwnedPyObject;
