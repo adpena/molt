@@ -388,12 +388,12 @@ def test_abort_termination_stays_typed_per_platform(tmp_path, termination, admit
     [
         ("parent_stdout_bytes", "stdout capture changed"),
         ("parent_stderr_bytes", "stderr capture changed"),
-        ("descendant_bytes", "stream changed"),
+        ("descendant_bytes", "custody file"),
         ("incomplete_success", "complete re-derived"),
         ("foreign_loader_root", "loader's custody root"),
         ("capture_outside_custody", "escaped receipt custody"),
         ("record_on_stdout", "canonical stderr"),
-        ("image_changed", "image changed"),
+        ("image_changed", "custody file"),
         ("baseline_image", "did not run the receipt image"),
     ],
 )
@@ -410,7 +410,7 @@ def test_promotion_reopens_raw_parent_and_descendant_evidence(
         path = Path(execution["stderr_evidence"])
         path.write_bytes(path.read_bytes() + b"mutation\n")
     elif change == "descendant_bytes":
-        Path(records[0]["stderr"]["path"]).write_text("mutation", encoding="utf-8")
+        support.corrupt_retained_file(receipt, Path(records[0]["stderr"]["path"]))
     elif change == "incomplete_success":
         text = stdout.read_text(encoding="utf-8").split("test result:")[0]
         support.republish(receipt, "stdout", text)
@@ -429,7 +429,7 @@ def test_promotion_reopens_raw_parent_and_descendant_evidence(
         )
     elif change == "image_changed":
         image = Path(receipt["executable_resolved"])
-        image.write_bytes(image.read_bytes() + b"rebuilt")
+        support.corrupt_retained_file(receipt, image)
     elif change == "baseline_image":
         execution["argv"][0] = str(tmp_path / "other.exe")
     with pytest.raises(descendants.DescendantEvidenceError, match=message):
@@ -913,3 +913,42 @@ def test_native_thread_descendant_rejects_forwarded_nested_libtest_banner(tmp_pa
         match=r"\(delayed-isolate\): descendant lacks exact one-test completion; .*multiple-run-banners",
     ):
         verify(receipt)
+
+
+def test_historical_receipt_survives_cargo_target_rebuild_and_removal(tmp_path):
+    import shutil
+
+    receipt, _records = lib_receipt(tmp_path)
+    expected = verify(receipt)
+    image = Path(receipt["executable_resolved"])
+    image.write_bytes(b"next Cargo generation")
+    assert verify(receipt) == expected
+    shutil.rmtree(image.parent)
+    assert verify(receipt) == expected
+
+
+@pytest.mark.parametrize("mutation", ["missing", "foreign-root", "wrong-source"])
+def test_retained_image_requires_explicit_run_and_source_binding(tmp_path, mutation):
+    receipt, _records = lib_receipt(tmp_path)
+    if mutation == "missing":
+        del receipt["retained_files"]
+    elif mutation == "foreign-root":
+        receipt["retained_root"] = str(tmp_path / "foreign")
+    else:
+        row = receipt["retained_files"].pop(receipt["executable_resolved"])
+        receipt["retained_files"][str(tmp_path / "foreign-image")] = row
+    with pytest.raises(descendants.DescendantEvidenceError):
+        verify(receipt)
+
+
+@pytest.mark.parametrize("changed", ["image", "stream"])
+def test_retention_refuses_changed_execution_inputs(tmp_path, changed):
+    receipt, records = lib_receipt(tmp_path)
+    path = Path(
+        receipt["executable_resolved"]
+        if changed == "image"
+        else records[0]["stdout"]["path"]
+    )
+    path.write_bytes(b"changed after execution admission")
+    with pytest.raises(descendants.DescendantEvidenceError, match="changed"):
+        descendants.retain_receipt_files(receipt, root=tmp_path / "receipts")

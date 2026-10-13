@@ -156,7 +156,7 @@ def test_aggregate_fails_closed_for_child_evidence_mutations(mutation, tmp_path)
     [
         ("exit_lease_child_missing", "missing mandatory"),
         ("parallel_children_removed", "missing mandatory"),
-        ("descendant_stream_changed", "stream changed"),
+        ("descendant_stream_changed", "custody file"),
         ("saved_rows_hide_owner", "disagree with the saved ledger"),
         ("parent_capture_changed", "capture changed"),
         ("saved_summary_forged", "missing mandatory"),
@@ -177,8 +177,12 @@ def test_aggregate_rederives_descendants_from_raw_child_evidence(
     elif mutation == "parallel_children_removed":
         support.republish(parallel, "stderr", "")
     elif mutation == "descendant_stream_changed":
-        artifacts = binding["binary"].parent / "molt-test-artifacts"
-        next(artifacts.glob("*/stdout.log")).write_text("mutated", encoding="utf-8")
+        source = next(
+            source
+            for source in parallel["retained_files"]
+            if source.endswith("/stdout.log")
+        )
+        support.corrupt_retained_file(parallel, Path(source))
     elif mutation == "saved_rows_hide_owner":
         parallel["test_results"] = [
             row for row in parallel["test_results"] if row["identity"] != support.COLD
@@ -362,11 +366,16 @@ def abi_compiler_fixture(source_root: Path, features: list[str]):
         "profile": {"test": False, "debug_assertions": False, "opt_level": "3"},
         "features": features,
         "filenames": [
-            str(source_root / "target/deps/libmolt_cpython_abi-fixture.rlib")
+            str(source_root / "target/deps/libmolt_cpython_abi-fixture.rlib"),
+            str(source_root / "target/deps/libmolt_cpython_abi-fixture.dylib"),
         ],
         "executable": None,
         "fresh": True,
     }
+    for filename in artifact["filenames"]:
+        path = Path(filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"ABI library fixture")
     return metadata, artifact
 
 
@@ -785,6 +794,7 @@ OBSERVER_WITNESSES = {
         "required_pass",
         "same_process",
         "changed_image",
+        "abi_changed_after",
         "changed_source",
         "first_image_failure",
         "missing_abi",
@@ -904,6 +914,7 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
                     [name],
                     [],
                     args=args,
+                    retained_root=Path(argv[argv.index("--retained-root") + 1]),
                     run_id=argv[argv.index("--run-id") + 1],
                     invocation=(
                         f"child-{len(children) - 1}"
@@ -932,6 +943,8 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
                 children.append((binary, name))
                 if mutation == "changed_image":
                     binary.write_bytes(b"replacement-image")
+                if mutation == "abi_changed_after":
+                    Path(abi_artifact["filenames"][-1]).write_bytes(b"replacement ABI")
             return result
 
     monkeypatch.setattr(gate, "COMMANDS", Commands())
@@ -1066,6 +1079,7 @@ def test_feature_only_performance_probes_are_unrun_without_changing_default_poli
         "host_wrong_kind",
         "host_changed_before",
         "host_changed_after",
+        "abi_changed_after",
         "instrumented_abi",
     ],
 )
@@ -1252,6 +1266,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                     names,
                     [],
                     args=args,
+                    retained_root=Path(argv[argv.index("--retained-root") + 1]),
                     run_id=argv[argv.index("--run-id") + 1],
                     invocation="wasi-consumer",
                     statuses={gate.WASI_CONSUMER: "ignored"}
@@ -1266,6 +1281,8 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                     wasm.write_bytes(b"changed")
                 if mutation == "host_changed_after":
                     production_host.write_bytes(b"changed")
+                if mutation == "abi_changed_after":
+                    Path(abi_artifact["filenames"][-1]).write_bytes(b"replacement ABI")
                 if mutation == "child_failure":
                     result.returncode = 1
             return result

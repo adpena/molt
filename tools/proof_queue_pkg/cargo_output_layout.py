@@ -43,13 +43,24 @@ def recorded_target_layout(record: Mapping[str, object]) -> str:
 def target_layout_fields(record: Mapping[str, object]) -> dict[str, str]:
     version = recorded_target_layout(record)
     # Do not change the shape of a historical immutable lifecycle projection.
-    return {"cargo_target_layout": version} if "cargo_target_layout" in record else {}
+    fields = {"cargo_target_layout": version} if "cargo_target_layout" in record else {}
+    workspace = record.get("workspace_sha256")
+    if workspace is not None:
+        if (
+            not isinstance(workspace, str)
+            or re.fullmatch(r"[0-9a-f]{64}", workspace) is None
+        ):
+            raise ValueError("Cargo workspace identity is malformed")
+        fields["workspace_sha256"] = workspace
+    return fields
 
 
 def require_same_target_layout(
     left: Mapping[str, object], right: Mapping[str, object]
 ) -> None:
-    if recorded_target_layout(left) != recorded_target_layout(right):
+    if recorded_target_layout(left) != recorded_target_layout(right) or left.get(
+        "workspace_sha256"
+    ) != right.get("workspace_sha256"):
         raise ValueError("Cargo target layout binding mismatch")
 
 

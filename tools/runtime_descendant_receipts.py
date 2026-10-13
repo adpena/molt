@@ -28,6 +28,7 @@ from pathlib import Path
 
 from molt.exact_json import loads_exact
 from tools.libtest_results import parse_libtest
+from tools.proof_queue_pkg import custody_cas
 
 RECORD_PREFIX = "MOLT_RUNTIME_DESCENDANT_RECEIPT "
 RECORD_SCHEMA = "molt.runtime-descendant.v1"
@@ -412,6 +413,75 @@ def _file_identity(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def retain_file(source: Path, root: Path) -> dict[str, object]:
+    """Retain observed bytes as evidence, never as an execution-path substitute."""
+    source = source.resolve(strict=True)
+    expected = _file_identity(source)
+    reference = custody_cas.put_file(
+        root / "custody-cas", source, logical_name="evidence"
+    )
+    if (
+        _file_identity(source) != expected
+        or (reference.size_bytes, reference.sha256) != expected
+    ):
+        raise DescendantEvidenceError("file changed during evidence retention")
+    return reference.as_dict()
+
+
+def retained_file(reference: object, *, root: Path) -> Path:
+    if not isinstance(reference, dict) or reference.get("executable") is not False:
+        raise DescendantEvidenceError(
+            "retained bytes are evidence, not executable custody"
+        )
+    custody_cas.verify_file_ref(reference, expected_root=root / "custody-cas")
+    return Path(reference["path"])
+
+
+def receipt_file(receipt: Mapping[str, object], source: Path) -> Path:
+    root = _canonical(receipt.get("retained_root"))
+    custody = _canonical(receipt.get("receipt_custody_root"))
+    if root == Path(root.anchor) or not custody.is_relative_to(root):
+        raise DescendantEvidenceError("retained root escaped run custody")
+    rows = receipt.get("retained_files")
+    if not isinstance(rows, dict) or str(source) not in rows:
+        raise DescendantEvidenceError("binary receipt lacks retained source binding")
+    return retained_file(rows[str(source)], root=root)
+
+
+def retain_receipt_files(receipt: dict, *, root: Path) -> None:
+    """Publish the executed image and exact typed descendant stream evidence."""
+    root = root.resolve()
+    custody = _canonical(receipt["receipt_custody_root"])
+    if root == Path(root.anchor) or not custody.is_relative_to(root):
+        raise DescendantEvidenceError("retained root escaped run custody")
+    image = _canonical(receipt["executable_resolved"])
+    expected = (receipt["executable_size"], receipt["executable_sha256"])
+    if _file_identity(image) != expected:
+        raise DescendantEvidenceError("executed image changed before retention")
+    sources = {image}
+    executions = receipt.get("executions")
+    if executions and _engaged(receipt):
+        baseline = executions[0]
+        stderr = _parent_capture(receipt, baseline, "stderr", custody)
+        for record in _records(stderr):
+            for name in ("stdout", "stderr"):
+                value = record.get(name)
+                # Check original lexical ownership and current bytes before copy;
+                # the receiver repeats those checks against the immutable copy.
+                _descendant_stream(value, image=image, name=name)
+                path = _canonical(value["path"])
+                sources.update((path, path.parent / "artifact-label.txt"))
+    receipt["retained_root"] = str(root)
+    receipt["retained_files"] = {
+        str(path): retain_file(path, root) for path in sorted(sources)
+    }
+    if (
+        _file_identity(image) != expected
+        or _file_identity(receipt_file(receipt, image)) != expected
+    ):
+        raise DescendantEvidenceError("executed image retention differs from admission")
+
+
 def _exact(value: object, expected: object) -> bool:
     """JSON equality that never conflates bool/int or int/float."""
     if type(value) is not type(expected):
@@ -522,7 +592,13 @@ def _parent_capture(
     return path
 
 
-def _descendant_stream(value: object, *, image: Path, name: str) -> tuple[Path, str]:
+def _descendant_stream(
+    value: object,
+    *,
+    image: Path,
+    name: str,
+    receipt: Mapping[str, object] | None = None,
+) -> tuple[Path, str]:
     if not isinstance(value, dict) or set(value) != {"path", "bytes", "sha256"}:
         raise DescendantEvidenceError(f"unbound runtime descendant {name} stream")
     path = _canonical(value["path"])
@@ -532,11 +608,14 @@ def _descendant_stream(value: object, *, image: Path, name: str) -> tuple[Path, 
         raise DescendantEvidenceError(
             f"runtime descendant {name} stream escaped Cargo test-image custody"
         )
-    if (owner / "artifact-label.txt").read_bytes() != STREAM_LABEL:
+    label = owner / "artifact-label.txt"
+    retained = path if receipt is None else receipt_file(receipt, path)
+    label = label if receipt is None else receipt_file(receipt, label)
+    if label.read_bytes() != STREAM_LABEL:
         raise DescendantEvidenceError(
             f"runtime descendant {name} stream owner is not a descendant capture"
         )
-    raw = path.read_bytes()
+    raw = retained.read_bytes()
     if (
         type(value["bytes"]) is not int
         or value["bytes"] != len(raw)
@@ -553,6 +632,7 @@ def _verify_record(
     image: Path,
     image_sha256: object,
     platform: str,
+    receipt: Mapping[str, object],
 ) -> str:
     """Verify one record whose (owner, mode) is admitted; return its stream owner."""
     parent = record["parent_test"]
@@ -594,10 +674,10 @@ def _verify_record(
             f"{record['termination']!r}"
         )
     stdout_owner, stdout = _descendant_stream(
-        record["stdout"], image=image, name="stdout"
+        record["stdout"], image=image, name="stdout", receipt=receipt
     )
     stderr_owner, stderr = _descendant_stream(
-        record["stderr"], image=image, name="stderr"
+        record["stderr"], image=image, name="stderr", receipt=receipt
     )
     if not _same_path(stdout_owner, stderr_owner):
         raise DescendantEvidenceError(f"{parent}: descendant streams have two owners")
@@ -660,7 +740,7 @@ def _verify(
     image = _canonical(receipt.get("executable_resolved"))
     image_sha256 = receipt.get("executable_sha256")
     image_size = receipt.get("executable_size")
-    if type(image_size) is not int or _file_identity(image) != (
+    if type(image_size) is not int or _file_identity(receipt_file(receipt, image)) != (
         image_size,
         image_sha256,
     ):
@@ -740,6 +820,7 @@ def _verify(
             image=image,
             image_sha256=image_sha256,
             platform=platform,
+            receipt=receipt,
         )
         if owner in owners:
             raise DescendantEvidenceError("runtime descendant streams share one owner")

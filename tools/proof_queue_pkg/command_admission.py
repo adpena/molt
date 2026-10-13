@@ -1257,6 +1257,35 @@ def cargo_invocation_for_envelope(
     raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
 
 
+def cargo_cache_domain(envelope: Mapping[str, object]) -> str:
+    """Reuse only a registered command's declared Cargo workspace domain."""
+    delegated = envelope.get("delegated")
+    if isinstance(delegated, Mapping):
+        return cargo_cache_domain(delegated)
+    kind = envelope.get("kind")
+    if kind not in {"proof-plan", "named-lane"}:
+        return "none"
+    ids = envelope.get("proof_plan_command_ids")
+    if not isinstance(ids, list) or not ids:
+        raise ValueError("registered Cargo command lacks command identities")
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    records = (
+        {command.id: command.data for command in plan.commands}
+        if kind == "proof-plan"
+        else {lane.id: lane.data for lane in plan.named_lanes}
+    )
+    if any(
+        not isinstance(identifier, str) or identifier not in records
+        for identifier in ids
+    ):
+        raise ValueError("registered Cargo command identity is unknown")
+    domains = {records[identifier]["cache_domain"] for identifier in ids}
+    if len(domains) != 1:
+        raise ValueError("registered Cargo commands disagree on cache domain")
+    return "cargo-workspace" if domains == {"cargo-workspace"} else "none"
+
+
 def command_proof_kind(envelope: Mapping[str, object]) -> ProofKind:
     """Derive evidence obligations from the admitted execution payload."""
     delegated = envelope.get("delegated")

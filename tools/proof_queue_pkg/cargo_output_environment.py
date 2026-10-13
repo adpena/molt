@@ -7,7 +7,12 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root
+from molt.dx import (
+    PROOF_SCRATCH_ROOT_ENV,
+    SCRATCH_ENV_KEYS,
+    generated_session_id,
+    proof_scratch_root,
+)
 from tools.proof_queue_pkg import command_admission
 
 TEMPORARY_VARIABLE_NAMES = ("TEMP", "TMP", "TMPDIR")
@@ -35,6 +40,7 @@ class CargoOutputEnvironment:
     documentation: bool
     external_placement: bool = False
     python_driver: bool = False
+    cache_domain: str = "none"
 
     @classmethod
     def for_envelope(cls, envelope: Mapping[str, object]) -> CargoOutputEnvironment:
@@ -44,6 +50,7 @@ class CargoOutputEnvironment:
         The delegated envelope retains the original Cargo operation; reparsing
         that transformed transport would invent a second admission boundary.
         """
+        cache_domain = command_admission.cargo_cache_domain(envelope)
         external_placement = envelope.get("cargo_output_root") is not None
         delegated = envelope.get("delegated")
         if delegated is not None:
@@ -59,6 +66,7 @@ class CargoOutputEnvironment:
         if invocation is None:
             return cls(
                 documentation=True,
+                cache_domain=cache_domain,
                 external_placement=external_placement,
                 python_driver="cargo" in envelope.get("toolchains", []),
             )
@@ -67,7 +75,11 @@ class CargoOutputEnvironment:
             name == "--artifact-dir" for name, _value in invocation.option_values
         ):
             raise ValueError("Cargo --artifact-dir bypasses declared output placement")
-        return cls(policy.documentation, external_placement=external_placement)
+        return cls(
+            policy.documentation,
+            external_placement=external_placement,
+            cache_domain=cache_domain,
+        )
 
     @classmethod
     def for_invocation(
@@ -105,7 +117,8 @@ class CargoOutputEnvironment:
 
     def identity(self) -> dict[str, object]:
         return {
-            "schema": "molt.proof-cargo-output-environment.v2",
+            "schema": "molt.proof-cargo-output-environment.v3",
+            "cache_domain": self.cache_domain,
             "bindings": {
                 **{name: {"role": "build-output"} for name in self.build_names},
                 **{name: {"role": "scratch-output"} for name in self.scratch_names},
@@ -137,6 +150,17 @@ class CargoOutputEnvironment:
 
     def owns(self, name: str) -> bool:
         return _name_key(name) in self.names
+
+    def workspace_environment(self, env: Mapping[str, str]) -> dict[str, str]:
+        """Project existing run scratch/session roles out of Cargo workspace storage."""
+        ignored = set(SCRATCH_ENV_KEYS)
+        if generated_session_id(env):
+            ignored.update(("MOLT_SESSION_ID", "MOLT_SESSION_ID_GENERATED"))
+        return {
+            name: value
+            for name, value in self.caller_environment(env).items()
+            if name not in ignored
+        }
 
     def caller_environment(self, env: Mapping[str, str]) -> dict[str, str]:
         return {name: value for name, value in env.items() if not self.owns(name)}

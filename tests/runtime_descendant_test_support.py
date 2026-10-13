@@ -414,8 +414,9 @@ def binary_receipt(
     invocation: str = "invocation",
     stdout_text: str | None = None,
     stderr_text: str | None = None,
+    retained_root: Path | None = None,
 ) -> dict[str, object]:
-    """A runner-shaped v2 receipt whose evidence is real files under ``root``."""
+    """A runner-shaped v3 receipt whose evidence is real files under ``root``."""
     args = ["--test-threads=4", "--nocapture"] if args is None else args
     statuses = statuses or {}
     evidence = root / "evidence" / invocation
@@ -430,8 +431,8 @@ def binary_receipt(
     rows = [{"identity": name, "status": statuses.get(name, "pass")} for name in tests]
     failed = [row["identity"] for row in rows if row["status"] == "fail"]
     image_bytes = image.read_bytes()
-    return {
-        "schema": "molt.cargo-test-binary.v2",
+    receipt = {
+        "schema": "molt.cargo-test-binary.v3",
         "receipt_custody_root": str(root),
         "run_id": run_id,
         "source_identity": source,
@@ -469,6 +470,57 @@ def binary_receipt(
         ],
     }
 
+    # Independent fixture publication, not the production retention helper.
+    sources = {image}
+    for record in records:
+        for name in ("stdout", "stderr"):
+            if isinstance(record.get(name), dict) and "path" in record[name]:
+                path = Path(record[name]["path"])
+                sources.update((path, path.parent / "artifact-label.txt"))
+    receipt["retained_root"] = str((retained_root or root).resolve())
+    receipt["retained_files"] = {}
+    for path in sorted(sources):
+        if path.is_file():
+            retain_fixture_file(receipt, path)
+    return receipt
+
+
+def retain_fixture_file(receipt: dict, source: Path) -> None:
+    """Publish independent file evidence with the documented FileRef layout."""
+    data = source.read_bytes()
+    digest = sha256(data)
+    root = Path(receipt["retained_root"])
+    retained = (
+        root
+        / "custody-cas"
+        / "files"
+        / "sha256"
+        / "data"
+        / digest[:2]
+        / digest[2:]
+        / "evidence"
+    )
+    retained.parent.mkdir(parents=True, exist_ok=True)
+    if not retained.exists():
+        retained.write_bytes(data)
+        retained.chmod(0o444)
+    receipt["retained_files"][str(source.resolve())] = {
+        "schema": "molt.proof-custody-file-ref.v1",
+        "media_type": "application/octet-stream",
+        "path": str(retained.resolve()),
+        "size_bytes": len(data),
+        "sha256": digest,
+        "executable": False,
+    }
+
+
+def corrupt_retained_file(receipt: dict, source: Path) -> None:
+    row = receipt["retained_files"][str(source.resolve())]
+    path = Path(row["path"])
+    path.chmod(0o644)
+    path.write_bytes(path.read_bytes() + b"mutation")
+    path.chmod(0o444)
+
 
 def republish(receipt: dict, stream: str, text: str) -> None:
     """Replace one parent capture and keep the receipt's hashes consistent."""
@@ -478,3 +530,9 @@ def republish(receipt: dict, stream: str, text: str) -> None:
     path.write_bytes(data)
     execution[f"{stream}_bytes"] = len(data)
     execution[f"{stream}_sha256"] = sha256(data)
+    # A changed producer transcript can deliberately carry newly captured
+    # bytes; preserve this independent semantic oracle through the retention boundary.
+    for source_path in list(receipt["retained_files"]):
+        source = Path(source_path)
+        if source.is_file():
+            retain_fixture_file(receipt, source)

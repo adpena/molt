@@ -105,9 +105,9 @@ def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
     return (
         "proof queue refuses cold-prone single-test Cargo proofs "
         f"({filters[0]!r} under --lib). Batch the relevant crate shard in one "
-        "compile, warm the target dir with cargo check before proving, or "
-        "resubmit with --allow-warm-single-test only after verifying the target "
-        "dir is already warm and recording that in --note."
+        "compile or use a registered cargo-workspace command. "
+        "--allow-warm-single-test bypasses this cost-shape check only; it "
+        "does not authorize target reuse for an unregistered command."
     )
 
 

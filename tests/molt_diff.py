@@ -4145,7 +4145,10 @@ def _emit_backend_fail(
     print(f"  CPython stdout: {cp_out!r}")
     print(f"  Molt    stdout: {outcome.stdout!r}")
     print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
-    print(f"  Molt    return: {outcome.returncode} stderr: {outcome.stderr!r}")
+    child_stderr = outcome.child_stderr or ""
+    print(f"  Molt    return: {outcome.returncode} stderr: {child_stderr!r}")
+    if outcome.stderr != child_stderr:
+        print(f"  Molt diagnostics (combined stderr): {outcome.stderr!r}")
 
 
 def _record_backend_result(

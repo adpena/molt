@@ -1009,6 +1009,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-seconds", type=float, required=True)
     parser.add_argument("--receipt-dir", type=Path, required=True)
     parser.add_argument("--run-id")
+    parser.add_argument("--retained-root", type=Path)
     parser.add_argument("--source-identity-json")
     parser.add_argument(
         "--require-passed-test",
@@ -1213,6 +1214,18 @@ def main(argv: list[str] | None = None) -> int:
                 + ", ".join(missing),
                 file=sys.stderr,
             )
+    try:
+        runtime_descendant_receipts.retain_receipt_files(
+            receipt, root=args.retained_root or args.receipt_dir
+        )
+    except (
+        OSError,
+        ValueError,
+        runtime_descendant_receipts.DescendantEvidenceError,
+    ) as exc:
+        receipt["retention_error"] = str(exc)
+        receipt["status"] = "infrastructure_error"
+        receipt["returncode"] = returncode = 2
     descendants = runtime_descendant_receipts.receipt_outcome(
         receipt, receipt_root=args.receipt_dir
     )

@@ -858,6 +858,49 @@ def test_all_backends_agree_with_cpython_passes(
     assert status == "pass"
 
 
+@pytest.mark.parametrize(
+    "guest_bytes", [b"", b"ExperimentalWarning: guest\r\n\x00\xfftail"]
+)
+def test_diff_report_separates_compared_stderr_from_retained_diagnostics(
+    guest_bytes, fake_test_file, install_fake_registry, monkeypatch, capsys
+) -> None:
+    fake_test_file.write_text(
+        "# MOLT_META: stderr=exact\nprint(42)\n", encoding="utf-8"
+    )
+    guest_stderr = guest_bytes.decode("utf-8", errors="surrogateescape")
+    diagnostics = "guard preface\n" + guest_stderr + "\nExperimentalWarning: host\n"
+    targets = ("native", "wasm", "llvm", "luau")
+    result = compat_backends.BackendResult(
+        "WRONG\n", diagnostics, 0, child_stderr=guest_stderr
+    )
+    install_fake_registry(
+        {target: result for target in targets}, cpython=("42\n", guest_stderr, 0)
+    )
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+
+    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "fail"
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines.count(f"  Molt    return: 0 stderr: {guest_stderr!r}") == len(targets)
+    assert lines.count(f"  Molt diagnostics (combined stderr): {diagnostics!r}") == len(
+        targets
+    )
+    assert all(
+        row["stderr_sha256"] == hashlib.sha256(guest_bytes).hexdigest()
+        for row in records[0]["backend_rows"]
+    )
+
+    # Host diagnostics alone must not change the full differential verdict.
+    install_fake_registry(
+        {target: replace(result, stdout="42\n") for target in targets},
+        cpython=("42\n", guest_stderr, 0),
+    )
+    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "pass"
+    assert result.stderr == diagnostics
+    assert result.child_stderr == guest_stderr
+
+
 def test_backend_metadata_filters_each_requested_cell_before_execution(
     fake_test_file: Path, install_fake_registry
 ) -> None:

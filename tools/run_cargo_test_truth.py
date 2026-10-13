@@ -163,6 +163,7 @@ def load_binary_receipts(
     expected_run_id: str | None = None,
     expected_source_identity: dict[str, object] | None = None,
     workspace: str = "",
+    retained_root: Path | None = None,
 ) -> list[dict]:
     receipts = []
     invocation_ids: set[str] = set()
@@ -192,22 +193,36 @@ def load_binary_receipts(
         executable = payload.get("executable_resolved")
         size = payload.get("executable_size")
         digest = payload.get("executable_sha256")
-        if expected_run_id is not None:
-            if (
-                not isinstance(executable, str)
-                or not isinstance(size, int)
-                or size < 0
-                or not isinstance(digest, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        if (
+            not isinstance(executable, str)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise RuntimeError(
+                f"Cargo test binary receipt lacks executable byte identity: {path}"
+            )
+        try:
+            if payload.get("retained_root") != str(
+                (retained_root or receipt_dir).resolve()
             ):
-                raise RuntimeError(
-                    f"Cargo test binary receipt lacks executable byte identity: {path}"
-                )
-            current_size, current_digest = _file_identity(Path(executable))
-            if (current_size, current_digest) != (size, digest):
-                raise RuntimeError(
-                    f"Cargo test binary changed after receipt publication: {executable}"
-                )
+                raise RuntimeError("binary retained root differs from admitted run")
+            current_size, current_digest = _file_identity(
+                runtime_descendant_receipts.receipt_file(payload, Path(executable))
+            )
+        except (
+            OSError,
+            ValueError,
+            runtime_descendant_receipts.DescendantEvidenceError,
+        ) as exc:
+            raise RuntimeError(
+                f"binary retained evidence changed after receipt publication: {exc}"
+            ) from exc
+        if (current_size, current_digest) != (size, digest):
+            raise RuntimeError(
+                f"Cargo test binary changed after receipt publication: {executable}"
+            )
         if workspace:
             payload["workspace"] = workspace
         # Re-derive runtime descendant evidence from raw captures; a saved
@@ -1069,6 +1084,7 @@ def _main() -> int:
         workspace_phase["binary_receipt_count"] = len(binary_receipts)
         workspace_phase["expected_binary_count"] = len(expected_binaries)
     except RuntimeError as exc:
+        coverage_problems.append(f"binary receipt validation failed: {exc}")
         returncode = 2
         failed = True
         output = f"cargo-test-truth-runner: {exc}\n"

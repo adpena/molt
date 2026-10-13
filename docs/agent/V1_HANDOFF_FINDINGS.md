@@ -88,6 +88,15 @@ execution with two divergent workspaces and warm repeats. A managed-worktree
 fixture assumption was corrected. This qualifies developer target selection,
 not cold proof-queue reuse or broader HF-45 performance acceptance.
 
+The queued development successor reuses the existing exclusive Cargo workspace
+and retains consumed test evidence through the existing content-addressed store.
+Cargo owns declared dependency freshness; complete source/toolchain observations
+remain attached to each run. Editable Python sources and generated scratch/session
+names no longer force a new storage address. Tests execute at their original
+Cargo paths. Release producers remain isolated. Independent source review and
+173 composed receiver controls pass with three Windows-only skips; actual Linux
+queue cold/warm execution remains required before landing this successor.
+
 ### Qualified boundaries
 
 | Boundary | Current retained evidence and limits |
@@ -197,11 +206,15 @@ through `object.__setattr__`. Reviewed source `5b2fcb578` preserves canonical
 class namespaces until module and C/TLS callback owners drain, then retires
 heap and static namespaces through the existing loop. It extends the existing
 isolated lifecycle regression. All 1,909 runtime semantic tests pass at that
-source with valid custody; affected native and WASM compiled-program execution
-remain required. This cleanup migration blocks the candidate's landing.
-Finish its actual consumers before widening verification; preserve unrelated
-open release obligations without hiding failures behind expected-failure
-markers, fake implementations or permissive fixtures.
+source with valid custody. The affected native and WASM programs both have
+identical empty CPython/Molt guest stderr and zero exit status, with valid
+source/toolchain custody and complete process closure. Their independent
+statistics-output mismatch remains a failing whole-program comparison. Node
+warnings are retained separately; the differential failure reporter now labels
+the compared guest stream separately from combined diagnostics. These results
+qualify the changed cleanup boundary on both targets. Preserve unrelated open
+release obligations without hiding failures behind expected-failure markers,
+fake implementations or permissive fixtures.
 
 ### Development cost and release discipline
 

@@ -27,6 +27,24 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+@pytest.fixture(autouse=True)
+def materialized_runner_images(request, tmp_path, monkeypatch):
+    if (
+        request.node.name.startswith("test_binary_runner")
+        and "rejects_blank" not in request.node.name
+    ):
+        monkeypatch.chdir(tmp_path)
+        for name in (
+            "molt_runtime-hash",
+            "molt-runtime-test",
+            "fixture",
+            "resource_enforcement-hash",
+        ):
+            (tmp_path / name).write_bytes(
+                b"independent mock execution image: " + name.encode()
+            )
+
+
 def _accounting(count: int, *, complete: bool = True) -> dict:
     return {
         "schema": "molt.libtest-accounting.v1",
@@ -260,7 +278,7 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
         {
             "executable_resolved": executable,
             "status": "failed" if registered else "success",
-            "schema": "molt.cargo-test-binary.v2",
+            "schema": "molt.cargo-test-binary.v3",
             "result_accounting": _accounting(len(raw_registered)),
             "failure_identities": raw_registered,
             "test_results": [
@@ -360,9 +378,9 @@ def test_truth_runner_owns_only_the_root_workspace_and_binary_runner_custody(
     assert "molt.git-source.v1" in config
 
 
-@pytest.mark.parametrize("publish_binary", [False, True])
+@pytest.mark.parametrize("publish_binary", [False, True, "missing-retention"])
 def test_truth_runner_traverses_the_root_workspace_exactly_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_binary: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_binary: bool | str
 ) -> None:
     runner = _load_tool(
         "run_cargo_test_truth_workspace_execution", "run_cargo_test_truth.py"
@@ -413,7 +431,7 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
             (receipt_dir / "one.json").write_text(
                 json.dumps(
                     {
-                        "schema": "molt.cargo-test-binary.v2",
+                        "schema": "molt.cargo-test-binary.v3",
                         "result_accounting": _accounting(1),
                         "invocation_id": "one",
                         "run_id": "root-workspace",
@@ -428,6 +446,16 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
                 ),
                 encoding="utf-8",
             )
+            if publish_binary is True:
+                path = receipt_dir / "one.json"
+                payload = json.loads(path.read_text())
+                payload.update(
+                    receipt_custody_root=str(receipt_dir),
+                    retained_root=str(receipt_dir),
+                    retained_files={},
+                )
+                descendants.retain_fixture_file(payload, executable)
+                path.write_text(json.dumps(payload))
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(output, encoding="utf-8")
         return runner.StreamedCommandResult(
@@ -449,7 +477,7 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
 
     # Missing synthetic artifacts must fail coverage after the same complete
     # root traversal used for a fully attributed binary receipt.
-    assert runner.main([]) == (0 if publish_binary else 1)
+    assert runner.main([]) == (0 if publish_binary is True else 1)
     assert [command[1] for command in commands] == ["fetch", "metadata", "test"]
     for command in commands:
         assert command[command.index("--manifest-path") + 1] == str(ROOT / "Cargo.toml")
@@ -465,7 +493,7 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
     assert runner_argv[receipt_index] == str(run_dir / "binaries" / "root")
     assert [path.name for path in (run_dir / "binaries").iterdir()] == ["root"]
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["status"] == ("success" if publish_binary else "failed")
+    assert manifest["status"] == ("success" if publish_binary is True else "failed")
     assert manifest["source_identity"] == source_identity
     assert [phase["kind"] for phase in manifest["phases"]] == [
         "dependency-prefetch",
@@ -474,7 +502,7 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
     ]
     assert all(phase["workspace"] == "root" for phase in manifest["phases"])
     assert all(phase["manifest"] == "Cargo.toml" for phase in manifest["phases"])
-    if publish_binary:
+    if publish_binary is True:
         assert manifest["problems"] == []
         assert manifest["observed_test_count"] == 1
         [binary] = manifest["test_binaries"]
@@ -483,8 +511,12 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
         assert expected["package"] == "molt-runtime@0.1.0"
         assert manifest["phases"][-1]["binary_receipt_count"] == 1
         assert manifest["phases"][-1]["expected_binary_count"] == 1
-    else:
+    elif publish_binary is False:
         assert "Cargo JSON reported zero expected test binaries" in manifest["problems"]
+    else:
+        assert any(
+            "binary receipt validation failed" in item for item in manifest["problems"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -743,7 +775,7 @@ def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -
             "status": "success",
             "failure_identities": [],
             "test_results": [{"identity": "tests::same", "status": "pass"}],
-            "schema": "molt.cargo-test-binary.v2",
+            "schema": "molt.cargo-test-binary.v3",
             "result_accounting": _accounting(1),
         }
         for executable in (first, second)
@@ -770,7 +802,7 @@ def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -
         {
             "executable_resolved": first,
             "status": "failed",
-            "schema": "molt.cargo-test-binary.v2",
+            "schema": "molt.cargo-test-binary.v3",
             "result_accounting": _accounting(1),
             "failure_identities": ["tests::same"],
             "test_results": [{"identity": "tests::same", "status": "pass"}],
@@ -815,7 +847,7 @@ def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
             "status": "failed",
             "failure_identities": [],
             "test_results": [],
-            "schema": "molt.cargo-test-binary.v2",
+            "schema": "molt.cargo-test-binary.v3",
             "result_accounting": _accounting(0, complete=False),
             "diagnosis": {
                 "kind": kind,
@@ -1025,7 +1057,17 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
 
 @pytest.mark.parametrize(
     "raw_test_output",
-    ["[]", '["unsupported op"]', "null", "42", "true", '"stdout"', "[", '{"fragment":'],
+    [
+        "[]",
+        '["unsupported op"]',
+        "null",
+        "42",
+        "true",
+        '"stdout"',
+        "[",
+        '{"fragment":',
+        '{"reason":"compiler-artifact","profile":{"test":false},"target":{"kind":["cdylib"],"crate_types":["cdylib"]},"filenames":["/not-an-admitted-dependency"]}',
+    ],
 )
 def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_test_output: str
@@ -1062,6 +1104,13 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
         ),
     )
     evidence_path = tmp_path / "phase.log"
+    monkeypatch.setattr(
+        runner.runtime_descendant_receipts,
+        "retain_file",
+        lambda *_args, **_kwargs: pytest.fail(
+            "mixed test stdout cannot authorize file retention"
+        ),
+    )
 
     result = runner.run_streamed(
         ("cargo", "test"),
@@ -2123,24 +2172,17 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
         "run_cargo_test_truth_binary_receipts", "run_cargo_test_truth.py"
     )
     receipt = tmp_path / "one.json"
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema": "molt.cargo-test-binary.v2",
-                "invocation_id": "invocation-one",
-                "executable": "one",
-            }
-        ),
-        encoding="utf-8",
+    payload = descendants.binary_receipt(
+        tmp_path,
+        descendants.make_image(tmp_path),
+        ["ordinary"],
+        [],
+        invocation="invocation-one",
+        run_id=None,
+        source=None,
     )
-
-    assert runner.load_binary_receipts(tmp_path) == [
-        {
-            "schema": "molt.cargo-test-binary.v2",
-            "invocation_id": "invocation-one",
-            "executable": "one",
-        }
-    ]
+    receipt.write_text(json.dumps(payload))
+    assert runner.load_binary_receipts(tmp_path) == [payload]
 
     receipt.write_text(json.dumps({"schema": "wrong"}), encoding="utf-8")
     with pytest.raises(RuntimeError, match="invalid Cargo test binary receipt schema"):
@@ -2152,7 +2194,7 @@ def test_truth_runner_cannot_erase_infrastructure_status_with_duplicate_json_key
 ):
     runner = _load_tool("run_cargo_test_truth_exact_outcome", "run_cargo_test_truth.py")
     (tmp_path / "one.json").write_text(
-        '{"schema":"molt.cargo-test-binary.v2","invocation_id":"one",'
+        '{"schema":"molt.cargo-test-binary.v3","invocation_id":"one",'
         '"status":"infrastructure_error","status":"success"}',
         encoding="utf-8",
     )
@@ -2173,7 +2215,7 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
     receipt.write_text(
         json.dumps(
             {
-                "schema": "molt.cargo-test-binary.v2",
+                "schema": "molt.cargo-test-binary.v3",
                 "invocation_id": "invocation-one",
                 "run_id": "exact-run",
                 "executable_resolved": str(executable),
@@ -2184,9 +2226,19 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
         encoding="utf-8",
     )
 
+    payload = json.loads(receipt.read_text())
+    payload.update(
+        receipt_custody_root=str(tmp_path),
+        retained_root=str(tmp_path),
+        retained_files={},
+    )
+    descendants.retain_fixture_file(payload, executable)
+    receipt.write_text(json.dumps(payload))
     assert len(runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")) == 1
-    executable.write_bytes(b"tampered executable bytes")
-    with pytest.raises(RuntimeError, match="changed after receipt publication"):
+    executable.write_bytes(b"new Cargo build bytes")
+    assert len(runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")) == 1
+    descendants.corrupt_retained_file(payload, executable)
+    with pytest.raises(RuntimeError, match="custody file"):
         runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")
 
 
@@ -2203,7 +2255,7 @@ def test_truth_runner_rejects_binary_receipt_from_different_source_snapshot(
     (tmp_path / "one.json").write_text(
         json.dumps(
             {
-                "schema": "molt.cargo-test-binary.v2",
+                "schema": "molt.cargo-test-binary.v3",
                 "invocation_id": "invocation-one",
                 "run_id": "exact-run",
                 "source_identity": {
@@ -2455,9 +2507,7 @@ def test_truth_loader_rederives_descendants_instead_of_saved_summaries(
     truth = _load_tool("run_cargo_test_truth_rederive", "run_cargo_test_truth.py")
     [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
     assert loaded["runtime_descendants"]["children"] == 2
-    Path(records[0]["stderr"]["path"]).write_text(
-        "changed after publication", encoding="utf-8"
-    )
+    descendants.corrupt_retained_file(receipt, Path(records[0]["stderr"]["path"]))
     with pytest.raises(RuntimeError, match="changed after receipt publication"):
         truth.load_binary_receipts(receipts, expected_run_id="run")
 
@@ -2754,7 +2804,7 @@ def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
     )
     [path] = list(tmp_path.glob("*.json"))
     receipt = json.loads(path.read_text(encoding="utf-8"))
-    assert receipt["schema"] == "molt.cargo-test-binary.v2"
+    assert receipt["schema"] == "molt.cargo-test-binary.v3"
     assert (
         receipt["status"] == "failed" and not receipt["result_accounting"]["complete"]
     )
@@ -2974,7 +3024,7 @@ def test_truth_rejects_success_without_complete_v2_accounting(mutation):
         )
     }
     receipt = dict(
-        schema="molt.cargo-test-binary.v2",
+        schema="molt.cargo-test-binary.v3",
         executable=executable,
         status="success",
         test_results=[dict(identity="one", status="pass")],
@@ -3010,7 +3060,7 @@ def test_truth_keeps_ignored_in_receipt_but_not_execution_reality():
         )
     }
     receipt = dict(
-        schema="molt.cargo-test-binary.v2",
+        schema="molt.cargo-test-binary.v3",
         executable=executable,
         status="success",
         test_results=[dict(identity="skip", status="ignored")],
@@ -3032,7 +3082,7 @@ def test_libtest_duplicate_identity_or_run_is_ambiguous(extra):
 def test_truth_loader_rejects_old_schema_instead_of_upgrading_evidence(tmp_path):
     runner = _load_tool("run_cargo_test_truth_old_schema", "run_cargo_test_truth.py")
     historical = dict(
-        schema="molt.cargo-test-binary.v1", invocation_id="old", status="success"
+        schema="molt.cargo-test-binary.v2", invocation_id="old", status="success"
     )
     path = tmp_path / "old.json"
     path.write_text(json.dumps(historical), encoding="utf-8")
@@ -3071,7 +3121,7 @@ def test_truth_rejects_duplicate_empty_or_malformed_v2_rows(rows):
         )
     }
     receipt = dict(
-        schema="molt.cargo-test-binary.v2",
+        schema="molt.cargo-test-binary.v3",
         executable=executable,
         status="success",
         test_results=rows,
