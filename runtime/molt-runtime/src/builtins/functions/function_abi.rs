@@ -1865,6 +1865,10 @@ mod function_type_execution_kind_tests {
         code_callable_identity, code_publish_lexical_metadata, code_set_signature_bits,
         function_closure_bits, function_code_bits, function_fn_ptr, function_trampoline_ptr,
     };
+    use crate::{
+        HEADER_FLAG_FUNC_REQUIRES_BINDER, dict_set_in_place, function_dict_bits,
+        header_from_obj_ptr, ptr_from_bits,
+    };
 
     extern "C" fn opaque_context_probe(_context: u64, value: u64) -> u64 {
         value
