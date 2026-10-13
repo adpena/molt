@@ -193,6 +193,33 @@ with tempfile.TemporaryDirectory() as directory:
         payload = b"abc" if base is io.BytesIO else "abc"
         stream.write(payload)
         print("memory-subclass-value", stream.getvalue() == payload)
+        class MemorySibling(base):
+            __slots__ = ("slot_token",)
+
+        other_base = io.StringIO if base is io.BytesIO else io.BytesIO
+
+        class OtherMemory(other_base):
+            __slots__ = ("slot_token",)
+
+        stream.__class__ = MemorySibling
+        print(
+            "memory-class-sibling",
+            type(stream) is MemorySibling,
+            stream.slot_token,
+            stream.dictionary_token,
+            stream.getvalue() == payload,
+        )
+        try:
+            stream.__class__ = OtherMemory
+        except TypeError:
+            print(
+                "memory-class-incompatible",
+                type(stream) is MemorySibling,
+                stream.slot_token,
+                stream.dictionary_token,
+                stream.getvalue() == payload,
+            )
+        stream.__class__ = MemoryClose
         if base is io.BytesIO:
             view = stream.getbuffer()
             view[1] = ord("Z")
