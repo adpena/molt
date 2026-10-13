@@ -61,14 +61,15 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-The parent integrator owns one candidate against current main and the preserved
-WIP reconciliation. The current candidate and the public-consumer repairs below
-are **not landed**. Coordination records own active write scopes and private
-receipts; this ledger owns release status. The current inventory has 98 open
+The runtime/ABI, public-consumer and developer-cost integration below is
+qualified through `13590c299` and lands as one main update. The parent integrator
+continues to own preserved WIP reconciliation. Coordination records own active
+write scopes and private receipts; this ledger owns release status. The current
+inventory has 98 open
 finding records and no ledger identity defects. Rows are obligations, not a
 completion percentage. The preserved root checkout also contains separate
 unjoined SSL, source-input/custody, JSON and related work. Qualifying this
-candidate does not mean all preserved WIP has landed; reconcile each family
+integration does not mean all preserved WIP has landed; reconcile each family
 through its existing owner and handoff without replaying stale files over the
 current authority.
 
@@ -100,8 +101,14 @@ guard memory budgets still selected distinct workspaces. The correction replaces
 the broad operational-environment key with the existing compiler-input selector,
 retaining explicitly pinned session isolation and full per-run evidence. Its
 150 focused controls pass; a real Cargo build-script environment change rebuilds
-in the same workspace with the changed output. Actual queue reuse remains required
-before landing this successor.
+in the same workspace with the changed output. The corrected Linux queue pair at
+`13590c299` passes both public comparisons: cold 247.65s, warm 6.56s, approximately
+38 times faster for this case. Both runs retain valid source/toolchain observations
+and complete process closure. The same Cargo target transfers ownership to the
+warm run and remains reusable. Both runs emit the same binary bytes, and historical
+receipts validate after that transfer.
+This qualifies queued development reuse on Linux aarch64; it adds no guest work
+and does not qualify release performance or other host cells.
 
 ### Qualified boundaries
 
