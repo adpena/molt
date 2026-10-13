@@ -84,8 +84,7 @@ pub fn convert_to_ssa_with_name_and_params(
 struct BlockInfo {
     /// Variables that are defined (assigned to) in this CFG block.
     defs: HashSet<String>,
-    /// Variables that are used (read) in this CFG block (retained for future liveness analysis).
-    #[allow(dead_code)]
+    /// Upward-exposed reads consumed by liveness and pruned argument placement.
     uses: HashSet<String>,
     /// Ordered list of ops (index into the original `ops` slice).
     op_indices: Vec<usize>,
@@ -115,7 +114,7 @@ struct SsaContext<'a> {
     /// Function parameter names (treated as implicit entry-block definitions).
     params: Vec<String>,
     /// Construction-only placeholder for known variables without a reaching def.
-    /// Materialized at actual uses after branch repair, never eagerly at entry.
+    /// Materialized only at actual uses, never eagerly at entry.
     undef_value: Option<ValueId>,
     /// Source-site fact active at each SimpleIR op index, derived once from
     /// frontend `line` markers plus per-op source fields.
@@ -279,33 +278,30 @@ impl<'a> SsaContext<'a> {
             });
         }
 
-        // Track how many definitions each block pushed (for stack cleanup).
-        // Map: block_id → vec of (var_name, count_pushed).
-        let mut pushed: Vec<Vec<(String, usize)>> = vec![Vec::new(); n];
-
-        // Per-block exit variable snapshots for second-pass branch arg resolution.
-        let mut block_exit_vars: HashMap<usize, HashMap<String, ValueId>> = HashMap::new();
-
         // Iterative dominator-tree walk (pre-order DFS).
         let mut stack: Vec<(usize, bool)> = vec![(self.cfg.entry, false)];
 
         while let Some((bid, is_exit)) = stack.pop() {
             if is_exit {
-                // Pop definitions pushed by this block.
-                for (var, count) in &pushed[bid] {
+                // Immutable source metadata enumerates exactly the definitions
+                // pushed below, including repeated names and binding aliases.
+                for var in &self.block_arg_vars[bid] {
                     if let Some(s) = var_stacks.get_mut(var) {
-                        for _ in 0..*count {
+                        s.pop();
+                    }
+                }
+                for &op_idx in &self.block_info[bid].op_indices {
+                    visit_simple_ir_ssa_definitions(&self.ops[op_idx], |var, _| {
+                        if let Some(s) = var_stacks.get_mut(var) {
                             s.pop();
                         }
-                    }
+                    });
                 }
                 continue;
             }
 
             // Push exit marker.
             stack.push((bid, true));
-
-            let mut block_pushed: Vec<(String, usize)> = Vec::new();
 
             // 1. Create ValueIds for block arguments.
             let arg_vars = self.block_arg_vars[bid].clone();
@@ -317,13 +313,6 @@ impl<'a> SsaContext<'a> {
                 });
                 // Push onto the variable's definition stack.
                 var_stacks.entry(var.clone()).or_default().push(vid);
-                // Track push.
-                let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
-                if let Some((_, c)) = entry {
-                    *c += 1;
-                } else {
-                    block_pushed.push((var.clone(), 1));
-                }
             }
 
             // 2. Process ops in this block.
@@ -341,12 +330,6 @@ impl<'a> SsaContext<'a> {
                         .copied()
                         .expect("translated SimpleIR definition must have an SSA result");
                     var_stacks.entry(var.to_string()).or_default().push(vid);
-                    let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
-                    if let Some((_, c)) = entry {
-                        *c += 1;
-                    } else {
-                        block_pushed.push((var.to_string(), 1));
-                    }
                 });
 
                 // Push any inline constant ops generated for this op's args
@@ -363,67 +346,14 @@ impl<'a> SsaContext<'a> {
             let terminator = self.build_terminator(bid, &var_stacks, &mut tir_blocks[bid].ops);
             tir_blocks[bid].terminator = terminator;
 
-            // Save the variable stacks snapshot for this block (used in
-            // the second pass to resolve branch args from sibling branches).
-            let mut block_vars: HashMap<String, ValueId> = HashMap::new();
-            for (var, stack) in &var_stacks {
-                if let Some(&top) = stack.last() {
-                    block_vars.insert(var.clone(), top);
-                }
-            }
-
-            // Save pushed counts for cleanup.
-            pushed[bid] = block_pushed;
+            // Branch arguments already use these active stack tops. Ancestor
+            // definitions remain pushed until all dominated children finish;
+            // an absent definition stays a placeholder for local materialization.
 
             // Push dominator-tree children in reverse order for correct DFS.
             for &child in dom_children[bid].iter().rev() {
                 stack.push((child, false));
             }
-
-            // Store the block's exit variable state for second-pass resolution.
-            block_exit_vars.insert(bid, block_vars);
-        }
-
-        // ── Second pass: fix branch args that used undef_value ──
-        // The dom-tree walk may have produced undef_value for branch args
-        // when a sibling predecessor hadn't been visited yet.  Now that all
-        // blocks are processed, resolve them using predecessor exit states.
-        // Second pass: resolve undef branch args by walking the dominator
-        // tree from each block upward.  The block_exit_vars snapshot contains
-        // all variables visible at each block's exit (which dominate the block).
-        for bid in 0..n {
-            let terminator = &mut tir_blocks[bid].terminator;
-            let fix_args = |args: &mut Vec<ValueId>, target_bid: usize| {
-                let target_vars = &self.block_arg_vars[target_bid];
-                for (i, arg) in args.iter_mut().enumerate() {
-                    if *arg == undef_vid
-                        && let Some(var_name) = target_vars.get(i)
-                    {
-                        // Walk dominator chain from bid upward to find
-                        // the nearest dominator that defines this variable.
-                        // Values in block_exit_vars[d] dominate d, and
-                        // since d dominates bid, they also dominate bid.
-                        // Use the augmented dominator tree so handler blocks
-                        // (reached only via exception edges) participate.
-                        let mut d = Some(bid);
-                        while let Some(dom_bid) = d {
-                            if let Some(vars) = block_exit_vars.get(&dom_bid)
-                                && let Some(&val) = vars.get(var_name)
-                                && val != undef_vid
-                            {
-                                *arg = val;
-                                break;
-                            }
-                            let next = self.aug_dominators[dom_bid];
-                            if next == Some(dom_bid) || next == d {
-                                break; // entry block or cycle
-                            }
-                            d = next;
-                        }
-                    }
-                }
-            };
-            terminator.for_each_edge_mut(|target, args| fix_args(args, target.0 as usize));
         }
 
         // Fill unreachable blocks (not visited during dom-tree walk) by

@@ -129,6 +129,15 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   word without an owner and never releases it. Raw machine helpers whose
   operands or results are not Python values never become generic call targets.
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
+  SimpleIR construction uses one definition-stack walk over the augmented
+  dominator tree. Explicit branch and state-resume arguments read those stacks
+  at the terminator; exception arguments read them at the transfer operation.
+  Ancestor definitions remain active through each dominated subtree, and each
+  definition push has one matching cleanup pop, enumerated from the same
+  immutable block arguments and source definitions without a separate log.
+  Missing reaching definitions
+  remain construction placeholders until actual uses materialize them locally;
+  construction does not retain full variable environments at every block exit.
 - **Executable edges**: typed block-argument meets and LIR branch parameters are
   computed only from blocks reachable from the function entry through explicit
   terminators or implicit exception edges. Structural loop metadata blocks that

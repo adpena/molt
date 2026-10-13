@@ -528,3 +528,89 @@ fn undefined_materialization_covers_every_terminator_value_projection() {
     assert!(blocks[5].ops.is_empty());
     assert!(!context.value_types.contains_key(&undef));
 }
+
+#[test]
+fn repeated_definition_and_alias_pushes_restore_the_dominating_value_for_siblings() {
+    for repetitions in [1, 64] {
+        let mut ops = vec![op_val_out("const", 17, "x"), op_args("if", &["condition"])];
+        let mut last_store = 0;
+        for index in 0..repetitions {
+            ops.push(op_val_out("const", 100 + index, "fresh"));
+            last_store = ops.len();
+            ops.push(OpIR {
+                var: Some("x".into()),
+                // Both a duplicate name and a distinct binding snapshot must
+                // pop exactly as often as the shared definition visitor pushes.
+                out: Some(if index % 2 == 0 { "x" } else { "snapshot" }.into()),
+                ..op_args("store_var", &["fresh"])
+            });
+        }
+        let left_definition = ops.len();
+        ops.push(op_val_out("const", 53, "left_only"));
+        ops.push(op("else"));
+        let sibling_read = ops.len();
+        ops.push(op_args_out("identity_alias", &["x"], "observed"));
+        ops.push(op("end_if"));
+        let join_read = ops.len();
+        ops.push(op_args_out("tuple_new", &["x", "left_only"], "pair"));
+        ops.push(op_args("ret", &["pair"]));
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa_with_params(&cfg, &ops, &["condition".into()]);
+        let at = |source| {
+            output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .find(|op| op.source_op_index() == Some(source))
+                .unwrap()
+        };
+        let original = at(0).results[0];
+        let changed = at(last_store).results[0];
+        let left = at(left_definition).results[0];
+        assert_eq!(at(sibling_read).operands, vec![original]);
+        let join = output
+            .blocks
+            .iter()
+            .find(|block| {
+                block
+                    .ops
+                    .iter()
+                    .any(|op| op.source_op_index() == Some(join_read))
+            })
+            .unwrap();
+        let pair = at(join_read);
+        let x_position = join
+            .args
+            .iter()
+            .position(|arg| arg.id == pair.operands[0])
+            .unwrap();
+        let left_position = join
+            .args
+            .iter()
+            .position(|arg| arg.id == pair.operands[1])
+            .unwrap();
+        let mut incoming = Vec::new();
+        for block in &output.blocks {
+            block.terminator.for_each_edge(|target, args| {
+                if target == join.id {
+                    incoming.push((args[x_position], args[left_position]));
+                }
+            });
+        }
+        assert_eq!(incoming.len(), 2);
+        assert!(
+            incoming.contains(&(changed, left)),
+            "the then edge retains its final bindings"
+        );
+        let missing = incoming.iter().find(|(x, _)| *x == original).unwrap().1;
+        assert!(
+            output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(|op| { op.opcode == OpCode::ConstNone && op.results == [missing] }),
+            "the else edge has no reaching definition of left_only"
+        );
+        assert_no_placeholder(&output);
+    }
+}
