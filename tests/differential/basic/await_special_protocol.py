@@ -403,9 +403,40 @@ class CompletionIterator:
 
 print("await-completion-identity", finish(use(Returned(CompletionIterator()))) is completion_value)
 
-delegated = use(Returned(iter((None,))))
-print("await-builtin-send-start", delegated.send(None))
+for iterator in (iter((None,)), iter([None]), iter(range(1))):
+    delegated = use(Returned(iterator))
+    print("await-builtin-send-start", delegated.send(None))
+    try:
+        delegated.send(9)
+    except AttributeError as error:
+        assert error.name == "send"
+        assert error.obj is iterator
+        print("await-builtin-nonempty-send", "rejected")
+    else:
+        raise AssertionError("missing send method was accepted")
+
+
+send_failure = AttributeError("send descriptor failure")
+
+
+class SendDescriptorFailure:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return None
+
+    @property
+    def send(self):
+        raise send_failure
+
+
+delegated = use(Returned(SendDescriptorFailure()))
+assert delegated.send(None) is None
 try:
     delegated.send(9)
-except AttributeError:
-    print("await-builtin-nonempty-send", "rejected")
+except AttributeError as error:
+    assert error is send_failure
+    print("await-send-descriptor-identity", True)
+else:
+    raise AssertionError("send descriptor failure was replaced")
