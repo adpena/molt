@@ -291,6 +291,51 @@ for module_class in (object, type, int, str, list, types.BuiltinFunctionType,
 print("class-module-namespace", "__module__" in object.__dict__,
       "__module__" in int.__dict__, "__module__" in type.__dict__,
       type(types.BuiltinFunctionType.__dict__["__module__"]).__name__)
+# Inspect each currently published callable metadata role, independently of its
+# stored value. CPython's declaration tables distinguish members from getsets.
+for descriptor_owner, descriptor_names in (
+    (types.BuiltinFunctionType,
+     ("__name__", "__qualname__", "__doc__", "__text_signature__", "__module__", "__self__")),
+    (types.MethodDescriptorType,
+     ("__name__", "__qualname__", "__doc__", "__text_signature__", "__objclass__")),
+    (types.WrapperDescriptorType,
+     ("__name__", "__qualname__", "__doc__", "__text_signature__", "__objclass__")),
+    (types.ClassMethodDescriptorType,
+     ("__name__", "__qualname__", "__doc__", "__text_signature__", "__objclass__")),
+    (types.MethodWrapperType,
+     ("__name__", "__qualname__", "__doc__", "__text_signature__", "__objclass__", "__self__")),
+    (types.FunctionType,
+     ("__name__", "__qualname__", "__doc__", "__module__", "__defaults__", "__kwdefaults__")),
+):
+    print("callable-field-kinds", descriptor_owner.__name__, tuple(
+        (name, type(descriptor_owner.__dict__[name]).__name__,
+         repr(descriptor_owner.__dict__[name]),
+         descriptor_owner.__dict__[name].__get__(None, descriptor_owner)
+         is descriptor_owner.__dict__[name])
+        for name in descriptor_names
+    ))
+
+for member_target, member_name in (
+    (len, "__module__"), (outcome, "__module__"), (outcome, "__doc__"),
+):
+    member = type(member_target).__dict__[member_name]
+    saved_value = getattr(member_target, member_name)
+    assigned_value = []
+    try:
+        member.__set__(member_target, assigned_value)
+        print("callable-member-write", type(member_target).__name__, member_name,
+              member.__get__(member_target) is assigned_value,
+              getattr(member_target, member_name) is assigned_value)
+        member.__delete__(member_target)
+        print("callable-member-delete", type(member_target).__name__, member_name,
+              member.__get__(member_target) is None,
+              getattr(member_target, member_name) is None)
+    finally:
+        member.__set__(member_target, saved_value)
+outcome("callable-member-readonly", lambda: types.MethodDescriptorType.__dict__["__name__"]
+        .__set__(list.append, "changed"))
+
+
 outcome("static-module-write", lambda: setattr(int, "__module__", "changed"))
 outcome("static-module-delete", lambda: delattr(int, "__module__"))
 

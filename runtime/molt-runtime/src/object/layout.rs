@@ -2699,8 +2699,9 @@ pub(crate) enum NativeDescriptorFlavor {
     /// Physical declared slot owned by the descriptor's sealed declaring class.
     ManagedSlot = 3,
     InstanceDictionary = 4,
-    CallableMetadata = 5,
+    CallableGetSet = 5,
     RootMetadata = 6,
+    CallableMember = 7,
 }
 
 impl NativeDescriptorFlavor {
@@ -2711,8 +2712,9 @@ impl NativeDescriptorFlavor {
             2 => Some(Self::GetSet),
             3 => Some(Self::ManagedSlot),
             4 => Some(Self::InstanceDictionary),
-            5 => Some(Self::CallableMetadata),
+            5 => Some(Self::CallableGetSet),
             6 => Some(Self::RootMetadata),
+            7 => Some(Self::CallableMember),
             _ => None,
         }
     }

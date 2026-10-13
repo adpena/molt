@@ -1,4 +1,4 @@
-//! Declared callable getsets over existing private function/binding storage.
+//! Declared callable members/getsets over existing private function/binding storage.
 use super::*;
 use crate::builtins::functions::native_callable::CallableMetadata as Field;
 
@@ -156,14 +156,35 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[Field]) -> bool
     unsafe {
         let class = obj_from_bits(owner).as_ptr().unwrap();
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
+        let kind = NativeCallableKind::from_class(py, owner);
         for field in fields {
             let Some(name) = attr_name_bits_from_bytes(py, field.name().as_bytes()) else {
                 return false;
             };
+            // CPython's methodobject/descrobject/funcobject declaration kind
+            // is independent of this runtime's shared typed metadata storage.
+            let member = match kind {
+                Some(
+                    NativeCallableKind::Constructor
+                    | NativeCallableKind::Function
+                    | NativeCallableKind::CMethod,
+                ) => *field == Field::Module,
+                Some(
+                    NativeCallableKind::MethodDescriptor
+                    | NativeCallableKind::WrapperDescriptor
+                    | NativeCallableKind::ClassMethodDescriptor,
+                ) => matches!(field, Field::Name | Field::Owner),
+                Some(NativeCallableKind::MethodWrapper) => *field == Field::SelfValue,
+                None => matches!(field, Field::Doc | Field::Module),
+            };
             let descriptor = crate::builtins::types::alloc_native_descriptor(
                 py,
                 crate::builtins::types::NativeDescriptorSpec {
-                    flavor: crate::object::layout::NativeDescriptorFlavor::CallableMetadata,
+                    flavor: if member {
+                        crate::object::layout::NativeDescriptorFlavor::CallableMember
+                    } else {
+                        crate::object::layout::NativeDescriptorFlavor::CallableGetSet
+                    },
                     operation: *field as u32,
                     owner,
                     name,
