@@ -52,6 +52,8 @@ channel.on('connect', () => {
     event: 'hook-start',
     runtime: 'node',
     pid: workerData.pid,
+    thread_id: workerData.threadId,
+    parent_connection_id: workerData.parentConnectionId,
     token: workerData.token,
     admitted: true,
   }) + '\n');
@@ -127,7 +129,7 @@ parentPort.on('message', (message) => {
     });
     return;
   }
-  if (message.operation === 'violation') {
+  if (message.operation === 'violation' || message.operation === 'worker-lifecycle') {
     if (!ready || closed) {
       signal(
         message.header,
@@ -144,7 +146,7 @@ parentPort.on('message', (message) => {
           message.header,
           message.body,
           1,
-          { event: 'violation-recorded' },
+          { event: 'event-recorded' },
         );
       }
     });
@@ -160,6 +162,8 @@ parentPort.on('message', (message) => {
       event: 'hook-end',
       runtime: 'node',
       pid: workerData.pid,
+      thread_id: workerData.threadId,
+      parent_connection_id: workerData.parentConnectionId,
       admitted: true,
     }) + '\n', () => {
       signal(message.header, message.body, 1, { event: 'hook-closed' });

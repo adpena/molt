@@ -594,6 +594,7 @@ def _write_synthetic_guarded_execution(
                 "derived_roots": supervisor_policy["derived_roots"],
             },
             "receipt": {
+                "schema": execution_custody.CHILD_CUSTODY_RECEIPT_SCHEMA,
                 "broker_complete": True,
                 "events": [],
                 "errors": [],

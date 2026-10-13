@@ -16,10 +16,13 @@ const moduleAuthority = require('module');
 const path = require('path');
 const workerThreads = require('worker_threads');
 const OriginalWorker = workerThreads.Worker;
+const workerThreadId = Object.getOwnPropertyDescriptor(OriginalWorker.prototype, 'threadId').get;
+const terminateWorker = OriginalWorker.prototype.terminate;
 
 const POLICY_ENV = 'MOLT_PROOF_CHILD_CUSTODY_JSON';
 const ENDPOINT_ENV = 'MOLT_PROOF_CHILD_CUSTODY_ENDPOINT';
 const TOKEN_ENV = 'MOLT_PROOF_CHILD_CUSTODY_TOKEN';
+const WORKER_PARENT_ENV = 'MOLT_PROOF_CHILD_CUSTODY_WORKER_PARENT';
 const RESERVED_ENVIRONMENT = Object.freeze([
   POLICY_ENV,
   ENDPOINT_ENV,
@@ -91,6 +94,13 @@ if (rawPolicy) {
       }
     }
 
+    const parentConnectionId = workerThreads.isMainThread
+      ? undefined : Number(process.env[WORKER_PARENT_ENV]);
+    if (!workerThreads.isMainThread
+        && (!Number.isSafeInteger(parentConnectionId) || parentConnectionId < 0)) {
+      throw new Error('proof Worker has no creator custody identity');
+    }
+
     const readyHeader = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
     const readyBody = new SharedArrayBuffer(RESPONSE_BYTES);
     const brokerWorker = new OriginalWorker(
@@ -106,6 +116,8 @@ if (rawPolicy) {
         port,
         token,
         pid: process.pid,
+        threadId: workerThreads.threadId,
+        parentConnectionId,
         readyHeader,
         readyBody,
       },
@@ -128,7 +140,8 @@ if (rawPolicy) {
     } catch (error) {
       throw new Error('proof child custody broker handshake returned invalid JSON');
     }
-    if (readyPayload?.event !== 'hook-ready' || readyPayload.runtime !== 'node') {
+    if (readyPayload?.event !== 'hook-ready' || readyPayload.runtime !== 'node'
+        || !Number.isSafeInteger(readyPayload.connection_id) || readyPayload.connection_id < 0) {
       throw new Error('proof child custody broker handshake mismatch');
     }
 
@@ -163,7 +176,37 @@ if (rawPolicy) {
       const preload = `--require=${__filename}`;
       if (!execArgv.includes(preload)) execArgv.unshift(preload);
       rewritten.execArgv = execArgv;
-      return Reflect.construct(OriginalWorker, [filename, rewritten], OriginalWorker);
+      // Each child binds to this authenticated creator connection, so reused
+      // OS process IDs cannot alias an earlier Worker lifetime.
+      for (const name of Object.keys(rewritten.env)) {
+        if (name.toUpperCase() === WORKER_PARENT_ENV) delete rewritten.env[name];
+      }
+      rewritten.env[WORKER_PARENT_ENV] = String(readyPayload.connection_id);
+      const worker = Reflect.construct(OriginalWorker, [filename, rewritten], OriginalWorker);
+      const childThreadId = workerThreadId.call(worker);
+      let observedExit = false;
+      // Only the creator sees the native Worker exit after terminate() has
+      // stopped the isolate. Its own JS exit hooks need not have run.
+      worker.on('exit', (code) => {
+        if (observedExit || workerThreadId.call(worker) !== -1) {
+          recordViolation('Worker.exit', 'unobserved-or-duplicate-worker-exit');
+          return;
+        }
+        observedExit = true;
+        exchange('worker-lifecycle', { event: {
+          event: 'node-worker-exit', child_thread_id: childThreadId, exit_code: code,
+        } });
+      });
+      try {
+        exchange('worker-lifecycle', { event: {
+          event: 'node-worker-start', child_thread_id: childThreadId,
+        } });
+      } catch (error) {
+        // A failed creation receipt must not leave an unowned live Worker.
+        terminateWorker.call(worker);
+        throw error;
+      }
+      return worker;
     }
     custodyWorker.prototype = OriginalWorker.prototype;
     Object.defineProperty(custodyWorker.prototype, 'constructor', {

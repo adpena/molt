@@ -11,6 +11,7 @@ import pytest
 from tools.proof_queue_pkg import cargo_cache_custody as cache
 from tools.proof_queue_pkg import (
     custody_cas,
+    execution_custody,
     execution_environment,
     command_identity,
     execution_receipt_details,
@@ -448,6 +449,7 @@ def _completed(lease: cache.CargoCacheLease, *, returncode: int = 0) -> dict:
         live_input_custody={"stable": True, "event_count": 0, "error_count": 0},
         child_process_custody={
             "receipt": {
+                "schema": execution_custody.CHILD_CUSTODY_RECEIPT_SCHEMA,
                 "broker_complete": True,
                 "events": [],
                 "errors": [],

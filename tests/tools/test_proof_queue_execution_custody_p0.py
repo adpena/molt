@@ -832,14 +832,18 @@ def test_python_payload_cannot_replace_private_audit_enforcement(
 
 @pytest.mark.parametrize("runtime", ["python", "node"])
 def test_child_admission_distinguishes_handshakes_from_launch_decisions(runtime):
+    identity = {"runtime": runtime, "pid": 123, "connection_id": 0}
+    if runtime == "node":
+        identity["thread_id"] = 0
     receipt = {
+        "schema": execution_custody.CHILD_CUSTODY_RECEIPT_SCHEMA,
         "broker_complete": True,
         "errors": [],
         "violations": [],
         "events": [
-            {"event": "hook-start", "runtime": runtime, "connection_id": 0},
-            {"event": "child-process", "admitted": True},
-            {"event": "hook-end", "runtime": runtime, "connection_id": 0},
+            {"event": "hook-start", **identity},
+            {"event": "child-process", "admitted": True, "connection_id": 0},
+            {"event": "hook-end", **identity},
         ],
     }
     assert execution_custody.child_receipt_is_admitted(receipt)
@@ -855,6 +859,7 @@ def test_child_admission_distinguishes_handshakes_from_launch_decisions(runtime)
             {**receipt, "events": [*receipt["events"], bad_event]}
         )
     for field, value in (
+        ("schema", "molt.proof-child-custody-receipt.v3"),
         ("broker_complete", False),
         ("errors", ["broken transport"]),
         ("violations", [{"event": "child-process", "admitted": False}]),
