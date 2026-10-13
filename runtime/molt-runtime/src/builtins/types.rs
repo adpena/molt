@@ -307,7 +307,6 @@ pub(crate) struct RuntimeMethodSignature<'a> {
 
 pub(crate) const NO_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[];
 pub(crate) const SELF_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[b"self"];
-pub(crate) const SELF_NAME_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[b"self", b"name"];
 
 impl<'a> RuntimeMethodSignature<'a> {
     pub(crate) const fn new(arg_names: &'a [&'a [u8]], has_vararg: bool, has_varkw: bool) -> Self {
