@@ -614,3 +614,88 @@ fn repeated_definition_and_alias_pushes_restore_the_dominating_value_for_sibling
         assert_no_placeholder(&output);
     }
 }
+
+#[test]
+fn disconnected_exception_transfers_use_their_own_cfg_target_environment() {
+    for kind in ["check_exception", "async_work_poll", "try_start"] {
+        let ops = vec![
+            op("ret_void"),
+            op_val_out("const", 13, "x"),
+            op_val(kind, 7),
+            op_val_out("const", 29, "y"),
+            op_val(kind, 8),
+            op("ret_void"),
+            op_val("label", 7),
+            op_args("ret", &["x"]),
+            op_val("state_label", 8),
+            op_args("ret", &["y"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        assert!(matches!(
+            output.blocks[0].terminator,
+            Terminator::Return { .. }
+        ));
+        for (literal, label) in [(13, 7), (29, 8)] {
+            let block = output
+                .blocks
+                .iter()
+                .find(|block| {
+                    block.ops.iter().any(|op| {
+                        op.opcode == OpCode::ConstInt
+                            && op.attrs.get("value") == Some(&AttrValue::Int(literal))
+                    })
+                })
+                .expect("disconnected transfer source");
+            let definition = block
+                .ops
+                .iter()
+                .find(|op| {
+                    op.opcode == OpCode::ConstInt
+                        && op.attrs.get("value") == Some(&AttrValue::Int(literal))
+                })
+                .unwrap();
+            let transfer = block.ops.last().unwrap();
+            assert!(crate::tir::dominators::is_exception_transfer_edge(
+                transfer.opcode
+            ));
+            assert_eq!(transfer.attrs.get("value"), Some(&AttrValue::Int(label)));
+            assert_eq!(
+                transfer.operands, definition.results,
+                "{kind}: label {label}"
+            );
+        }
+        assert_no_placeholder(&output);
+    }
+}
+
+#[test]
+fn low_level_ssa_uses_cfg_duplicate_label_resolution_for_handler_arguments() {
+    let ops = vec![
+        op_val_out("const", 11, "x"),
+        op_val_out("const", 22, "y"),
+        op_val("check_exception", 7),
+        op("ret_void"),
+        op_val("label", 7),
+        op_args("ret", &["x"]),
+        op_val("state_label", 7),
+        op_args("ret", &["y"]),
+    ];
+    // Normal control-flow admission rejects duplicate labels. This direct API
+    // check prevents SSA from disagreeing with the CFG it was explicitly given.
+    let cfg = CFG::build(&ops);
+    let output = convert_to_ssa(&cfg, &ops);
+    let entry = &output.blocks[cfg.entry];
+    let y = entry
+        .ops
+        .iter()
+        .find(|op| {
+            op.opcode == OpCode::ConstInt && op.attrs.get("value") == Some(&AttrValue::Int(22))
+        })
+        .unwrap()
+        .results[0];
+    let transfer = entry.ops.last().unwrap();
+    assert_eq!(transfer.opcode, OpCode::CheckException);
+    assert_eq!(transfer.operands, vec![y]);
+    assert_no_placeholder(&output);
+}

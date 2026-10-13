@@ -71,6 +71,7 @@ impl<'a> SsaContext<'a> {
 
     pub(super) fn translate_op(
         &mut self,
+        bid: usize,
         op_idx: usize,
         op: &OpIR,
         var_stacks: &HashMap<String, Vec<ValueId>>,
@@ -112,14 +113,14 @@ impl<'a> SsaContext<'a> {
             operands.push(vid);
         }
         if dominators::is_exception_transfer_edge(opcode)
-            && let Some(label_id) = op.value
-            && let Some(target_bid) = self.block_for_label(label_id)
+            && let Some(target_bid) = self.cfg.exception_target(bid)
         {
             // Exception-transfer operands are the target block's serialized
             // SSA environment, not ordinary SimpleIR value operands. Frontend
             // transfer ops have no explicit data operands; replacing rather
             // than appending makes this one authority for CheckException,
-            // TryStart, and every generated wire alias.
+            // TryStart, and every generated wire alias. Target resolution reuses
+            // the exact CFG edge that placed the handler's block arguments.
             operands.clear();
             var_operand_index = None;
             operands.extend(self.collect_branch_args(target_bid, var_stacks));

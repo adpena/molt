@@ -54,6 +54,11 @@ pub struct SsaOutput {
 ///
 /// All values are typed as [`TirType::DynBox`] since type refinement is a
 /// later pass.
+///
+/// `cfg` must describe these same operations with the block and edge invariants
+/// established by [`CFG::build`]. In particular, exception edges are sorted by
+/// source block, with at most one authored transfer target per source. The
+/// parameter-aware entry points below use this same contract.
 pub fn convert_to_ssa(cfg: &CFG, ops: &[OpIR]) -> SsaOutput {
     convert_to_ssa_with_name_and_params("<unknown>", cfg, ops, &[])
 }
@@ -321,7 +326,7 @@ impl<'a> SsaContext<'a> {
             for &op_idx in &op_indices {
                 let op = &self.ops[op_idx];
 
-                let tir_op = self.translate_op(op_idx, op, &var_stacks);
+                let tir_op = self.translate_op(bid, op_idx, op, &var_stacks);
 
                 visit_simple_ir_ssa_definitions(op, |var, result_idx| {
                     let vid = tir_op
@@ -397,7 +402,7 @@ impl<'a> SsaContext<'a> {
                 let op_indices = self.block_info[bid].op_indices.clone();
                 for &op_idx in &op_indices {
                     let op = &self.ops[op_idx];
-                    let tir_op = self.translate_op(op_idx, op, &local_stacks);
+                    let tir_op = self.translate_op(bid, op_idx, op, &local_stacks);
 
                     visit_simple_ir_ssa_definitions(op, |var, result_idx| {
                         let vid = tir_op

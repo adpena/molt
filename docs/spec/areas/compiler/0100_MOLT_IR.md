@@ -131,7 +131,9 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
   SimpleIR construction uses one definition-stack walk over the augmented
   dominator tree. Explicit branch and state-resume arguments read those stacks
-  at the terminator; exception arguments read them at the transfer operation.
+  at the terminator; exception arguments read them at the transfer operation,
+  resolving their target through the same CFG exception relation used for
+  argument placement and liveness. Each authored transfer ends its source block.
   Ancestor definitions remain active through each dominated subtree, and each
   definition push has one matching cleanup pop, enumerated from the same
   immutable block arguments and source definitions without a separate log.
