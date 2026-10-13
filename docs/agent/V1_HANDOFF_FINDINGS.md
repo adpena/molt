@@ -175,22 +175,32 @@ build's diagnostics remain retained separately; target public-program checks
 and performance acceptance are not inferred from this runtime result.
 
 The native cohort's passing lifecycle/process programs qualify their exact
-changed cells. The selected 35-case WASM consumer cohort is executing at
-`d9850d279`; its completed cases include callable metadata, argument binding and
-class copy hooks. Terminal target qualification remains pending. The run exposes
-two development-adapter defects: capability profile names reach a runtime that
-requires atomic grants, and Node process warnings contaminate exact guest stderr.
-The existing capability algebra and host-diagnostic channel now own those
-projections at `14b3d3eef`; all 239 focused adapter controls pass, including real
-child environments, Node warnings, nonzero exits and diagnostic-read failure.
-Retained-module replay remains required; generated programs are unchanged by
-this harness repair. Both native and WASM output also expose CSV and graph
-finalizers raising AttributeError while detaching their resource handle through
-`object.__setattr__`. This candidate's cleanup migration must be corrected before
-landing; it is not a target exclusion or an unrelated backlog item. Finish
-these affected migrations and replay their failures before another broad
-runtime/ABI expansion. Do not hide missing behavior behind narrowed admission,
-fake implementations, expected-failure markers or permissive fixtures.
+changed cells. The 35-case WASM cohort at `d9850d279` completed with 22
+passing and 13 failing comparisons. Its source bytes and OS process closure
+were stable, but developer bytecode mutation and two incomplete Node Worker
+terminal handshakes make the producer ineligible for release qualification.
+
+The existing capability algebra and host-diagnostic channel own the corrected
+adapter projections at `14b3d3eef`; 239 focused controls pass. Execution-only
+diagnostic replay of all 35 retained modules at harness `5b2fcb578` gives 27
+matching and eight mismatching comparisons without rebuilding. Atomic grants
+now reach the known missing operator, heapq and email.generator imports; five
+warning-only mismatches disappear. The other failures are three WASI
+temporary-directory panics, binary large-int pickle, and dictionary callback
+statistics/finalization. This replay retains the failed producer custody and
+does not qualify compilation or release. Temporary-directory selection and
+Node Worker termination require their existing owning families to be repaired;
+neither justifies a target exclusion or a new execution framework.
+
+Both native and WASM expose CSV and graph finalizers raising AttributeError
+through `object.__setattr__`. Reviewed source `5b2fcb578` preserves canonical
+class namespaces until module and C/TLS callback owners drain, then retires
+heap and static namespaces through the existing loop. It extends the existing
+isolated lifecycle regression; runtime and affected compiled-program execution
+remain required. This cleanup migration blocks the candidate's landing.
+Finish its actual consumers before widening verification; preserve unrelated
+open release obligations without hiding failures behind expected-failure
+markers, fake implementations or permissive fixtures.
 
 ### Development cost and release discipline
 
