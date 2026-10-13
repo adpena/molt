@@ -135,10 +135,6 @@ pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::p
     path_from_bits_with_flavor(_py, file_bits).map(|(path, _flavor)| path)
 }
 
-pub(crate) fn filesystem_encoding() -> &'static str {
-    "utf-8"
-}
-
 pub(crate) fn filesystem_encode_errors() -> &'static str {
     #[cfg(windows)]
     {

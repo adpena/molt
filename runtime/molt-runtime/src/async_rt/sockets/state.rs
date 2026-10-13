@@ -756,7 +756,7 @@ mod socket_runtime_state_tests {
     #[test]
     #[ignore = "mutates the process-global runtime lifecycle; run with serialized lifecycle shard"]
     fn cold_socket_and_websocket_retirement_never_starts_services() {
-        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("net", |py| {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("net.poll", |py| {
             let state = crate::runtime_state(py);
             assert!(state.io_poller.get().is_none());
             assert!(state.scheduler.get().is_none());
