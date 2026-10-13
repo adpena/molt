@@ -56,6 +56,7 @@ enum IoOperation {
     WriteThrough,
     Buffer,
     Closefd,
+    Raw,
 }
 
 impl IoOperation {
@@ -72,6 +73,7 @@ impl IoOperation {
             9 => Self::WriteThrough,
             10 => Self::Buffer,
             11 => Self::Closefd,
+            12 => Self::Raw,
             _ => return None,
         })
     }
@@ -199,6 +201,16 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
+        name: "raw",
+        owners: &[
+            IoClass::BufferedReader,
+            IoClass::BufferedWriter,
+            IoClass::BufferedRandom,
+        ],
+        operation: IoOperation::Raw,
+        dictionary: false,
+    },
+    IoMember {
         name: "closefd",
         owners: &[IoClass::FileIO],
         operation: IoOperation::Closefd,
@@ -314,9 +326,51 @@ unsafe fn io_member_value(
         if handle_ptr.is_null() {
             return None;
         }
+        if operation == IoOperation::Raw {
+            return file_handle_raw_bits(py, object);
+        }
+        if matches!(operation, IoOperation::Name | IoOperation::Mode) {
+            let underlying = {
+                let handle = &*handle_ptr;
+                if handle.detached {
+                    return raise_exception::<_>(
+                        py,
+                        "ValueError",
+                        file_handle_detached_message(handle),
+                    );
+                }
+                let value = handle.buffer_bits;
+                if !(operation == IoOperation::Mode && handle.text)
+                    && value != 0
+                    && !obj_from_bits(value).is_none()
+                {
+                    Some(value)
+                } else {
+                    None
+                }
+            };
+            if let Some(underlying) = underlying {
+                inc_ref_bits(py, underlying);
+                let _owner = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    underlying,
+                );
+                let name = if operation == IoOperation::Name {
+                    b"name".as_slice()
+                } else {
+                    b"mode".as_slice()
+                };
+                let name = attr_name_bits_from_bytes(py, name)?;
+                let _name =
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), name);
+                // No native handle reference/lock spans user attribute lookup.
+                let value = molt_getattr_builtin(underlying, name, missing_bits(py));
+                return (!exception_pending(py)).then_some(value);
+            }
+        }
         let handle = &*handle_ptr;
         match operation {
-            IoOperation::Dictionary => unreachable!(),
+            IoOperation::Dictionary | IoOperation::Raw => unreachable!(),
             IoOperation::Closed => {
                 if handle.detached {
                     return raise_exception::<_>(
@@ -349,7 +403,7 @@ unsafe fn io_member_value(
                         file_handle_detached_message(handle),
                     );
                 }
-                let value = alloc_string(py, handle.mode.as_bytes());
+                let value = alloc_string(py, file_handle_mode(handle).as_bytes());
                 (!value.is_null()).then(|| MoltObject::from_ptr(value).bits())
             }
             IoOperation::Encoding | IoOperation::Errors => {

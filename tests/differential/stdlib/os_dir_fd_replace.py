@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Purpose: differential coverage for os.replace(src_dir_fd=..., dst_dir_fd=...)."""
 
 from __future__ import annotations

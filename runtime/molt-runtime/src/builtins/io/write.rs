@@ -263,8 +263,8 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
         // parent would silently drop the child's buffered bytes (e.g. a
         // sub-blocksize binary write that never fills a block, then process
         // exit), so we must cascade the flush into the `buffer_bits` child after
-        // releasing the shared backend lock. The child has `buffer_bits == 0`,
-        // so the cascade terminates after one hop.
+        // releasing the shared backend lock. A buffered child may retain its
+        // raw FileIO owner in the same field; that raw owner ends the cascade.
         let buffer_bits = unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
                 return raise_exception::<_>(_py, "TypeError", "expected file handle");

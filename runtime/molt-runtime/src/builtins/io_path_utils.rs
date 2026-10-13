@@ -9,8 +9,9 @@ pub(crate) use molt_runtime_platform::path_text::{
     glob_split_path_text, glob_translate_text, path_as_uri_text, path_basename_text,
     path_compare_text, path_dirname_text, path_expandvars_with_lookup, path_glob_matches,
     path_isabs_text, path_join_many_text, path_join_raw, path_join_text, path_match_simple_pattern,
-    path_match_text, path_name_text, path_normpath_text, path_parents_text, path_relative_to_text,
-    path_splitext_text, path_stem_text, path_suffix_text, path_suffixes_text,
+    path_match_text, path_name_text, path_normpath_raw, path_normpath_text, path_parents_text,
+    path_relative_to_text, path_splitext_text, path_stem_text, path_suffix_text,
+    path_suffixes_text,
 };
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
@@ -39,12 +40,15 @@ pub(crate) fn path_and_name_from_bits(
         std::path::PathBuf::from(text)
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "wasi"))]
         {
+            #[cfg(unix)]
             use std::os::unix::ffi::OsStringExt;
+            #[cfg(target_os = "wasi")]
+            use std::os::wasi::ffi::OsStringExt;
             std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, target_os = "wasi")))]
         {
             let text = std::str::from_utf8(bytes).map_err(|_| {
                 raise_exception::<u64>(py, "TypeError", "open path bytes must be utf-8")
@@ -339,36 +343,47 @@ pub(crate) fn alloc_path_list_bits(_py: &PyToken<'_>, values: &[String], bytes_o
     }
 }
 
-pub(crate) fn path_abspath_text(_py: &PyToken<'_>, path: &str, sep: char) -> Result<String, u64> {
-    let mut current = path.to_string();
-    if !path_isabs_text(&current, sep) {
-        if !has_capability(_py, "fs.read") {
+/// Native path projection of the shared lexical normalizer. ASCII component
+/// boundaries preserve the platform OsStr encoding, including opaque POSIX bytes.
+pub(crate) fn path_abspath_path(
+    py: &PyToken<'_>,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, u64> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        if !has_capability(py, "fs.read") {
             return Err(raise_exception::<_>(
-                _py,
+                py,
                 "PermissionError",
                 "missing fs.read capability",
             ));
         }
-        let cwd = match std::env::current_dir() {
-            Ok(path) => path.to_string_lossy().into_owned(),
-            Err(err) => {
-                let msg = err.to_string();
-                let bits = match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                };
-                return Err(bits);
-            }
+        let path = if path.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            path
         };
-        current = path_join_text(cwd, &current, sep);
-    }
-    Ok(path_normpath_text(&current, sep))
+        std::path::absolute(path).map_err(|error| raise_os_error::<u64>(py, error, "abspath"))?
+    };
+    let normalized = path_normpath_raw(
+        absolute.as_os_str().as_encoded_bytes(),
+        path_sep_char() as u8,
+    );
+    // SAFETY: normalization only splits at ASCII separators, removes whole
+    // components, and rejoins unchanged encoded components with ASCII. Every
+    // slice originates from this platform's OsStr encoding in the same process.
+    Ok(std::path::PathBuf::from(unsafe {
+        std::ffi::OsString::from_encoded_bytes_unchecked(normalized)
+    }))
+}
+
+pub(crate) fn path_abspath_text(py: &PyToken<'_>, path: &str, sep: char) -> Result<String, u64> {
+    debug_assert_eq!(sep, path_sep_char());
+    let absolute = path_abspath_path(py, std::path::Path::new(path))?;
+    absolute.into_os_string().into_string().map_err(|_| {
+        raise_exception::<u64>(py, "UnicodeError", "absolute path is not valid Unicode")
+    })
 }
 
 #[derive(Clone, Debug)]

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,os.getpid
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,os.getpid,env.read
 """Purpose: differential coverage for file text encoding newline."""
 
 import os

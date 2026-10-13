@@ -37,8 +37,8 @@ use buffer::{
 #[path = "io/handle.rs"]
 mod handle;
 use handle::{
-    VfsWritebackEntry, alloc_file_handle_with_state, resolve_file_handle_ptr,
-    vfs_writeback_register, vfs_writeback_take,
+    VfsWritebackEntry, alloc_file_handle_with_state, file_handle_mode, file_handle_raw_bits,
+    resolve_file_handle_ptr, vfs_writeback_register, vfs_writeback_take,
 };
 pub(crate) use handle::{
     file_handle_close_detached, file_handle_close_ptr, file_handle_detached_message,
@@ -52,13 +52,13 @@ mod open;
 pub(crate) use open::dup_fd;
 #[cfg(windows)]
 use open::windows_handle_isatty;
-#[cfg(windows)]
-pub(crate) use open::windows_path_from_handle;
 pub use open::{
     molt_file_io_init, molt_file_io_new, molt_file_open, molt_file_open_ex, molt_open_builtin,
     molt_sys_stderr, molt_sys_stdin, molt_sys_stdout,
 };
 use open::{open_arg_newline, reconfigure_arg_newline, reconfigure_arg_type};
+#[cfg(windows)]
+pub(crate) use open::{windows_crt_fd_from_handle, windows_path_from_handle};
 #[path = "io/construct.rs"]
 mod construct;
 pub use construct::{
@@ -474,6 +474,195 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
+    static CODEC_OPENER_FD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+    #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
+    extern "C" fn codec_opener(_path: u64, _flags: u64) -> u64 {
+        crate::MoltObject::from_int(CODEC_OPENER_FD.load(Ordering::Relaxed)).bits()
+    }
+
+    #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
+    #[test]
+    fn codec_failure_preserves_open_order_and_retires_selected_descriptor_owner() {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            "fs.read,fs.write",
+            |py| {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("selected");
+                let none = crate::MoltObject::none().bits();
+                let yes = crate::MoltObject::from_bool(true).bits();
+                let buffering = crate::MoltObject::from_int(-1).bits();
+                let path_bits = io_string(py, path.to_str().unwrap());
+                let encoding = io_string(py, "molt-invalid-codec");
+                let read = io_string(py, "r");
+                let write = io_string(py, "w");
+                super::molt_file_open_ex(
+                    path_bits, read, buffering, encoding, none, none, yes, none,
+                );
+                assert_eq!(io_error(py).0, "FileNotFoundError");
+                std::fs::write(&path, b"sentinel").unwrap();
+                super::molt_file_open_ex(
+                    path_bits, write, buffering, encoding, none, none, yes, none,
+                );
+                assert_eq!(io_error(py).0, "LookupError");
+                assert_eq!(std::fs::read(&path).unwrap(), b"");
+
+                for (closefd, custom_opener) in [(true, false), (false, false), (true, true)] {
+                    let dir = io_string(py, root.path().to_str().unwrap());
+                    let empty = io_string(py, "");
+                    let created = crate::molt_tempfile_mkstemp(
+                        empty,
+                        empty,
+                        dir,
+                        crate::MoltObject::from_bool(false).bits(),
+                    );
+                    assert!(!crate::exception_pending(py));
+                    let rows = unsafe {
+                        crate::object::seq_access::snapshot(
+                            py,
+                            obj_from_bits(created).as_ptr().unwrap(),
+                            "test tuple",
+                        )
+                    }
+                    .unwrap();
+                    let fd = crate::to_i64(obj_from_bits(rows[0])).unwrap();
+                    CODEC_OPENER_FD.store(fd, Ordering::Relaxed);
+                    let opener = if custom_opener {
+                        test_callable(py, codec_opener as *const (), 2)
+                    } else {
+                        none
+                    };
+                    let input = if custom_opener { path_bits } else { rows[0] };
+                    super::molt_file_open_ex(
+                        input,
+                        read,
+                        buffering,
+                        encoding,
+                        none,
+                        none,
+                        crate::MoltObject::from_bool(closefd).bits(),
+                        opener,
+                    );
+                    assert_eq!(io_error(py).0, "LookupError");
+                    let duplicate = unsafe { libc::dup(fd as libc::c_int) };
+                    assert_eq!(duplicate >= 0, !closefd);
+                    if duplicate >= 0 {
+                        unsafe {
+                            libc::close(duplicate);
+                            libc::close(fd as libc::c_int);
+                        }
+                    }
+                    let selected_path = crate::string_obj_to_owned(obj_from_bits(rows[1])).unwrap();
+                    std::fs::remove_file(selected_path).unwrap();
+                    for bits in [opener, created, dir, empty] {
+                        dec_ref_bits(py, bits);
+                    }
+                }
+                for bits in [path_bits, encoding, read, write] {
+                    dec_ref_bits(py, bits);
+                }
+            },
+        );
+    }
+
+    #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
+    #[test]
+    fn lazy_raw_publication_failure_preserves_live_stream_and_detach_identity() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            "fs.read,fs.write",
+            |py| {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("raw-owner");
+                std::fs::write(&path, b"abcdef").unwrap();
+                let path = io_string(py, path.to_str().unwrap());
+                let mode = io_string(py, "rb");
+                let none = crate::MoltObject::none().bits();
+                let yes = crate::MoltObject::from_bool(true).bits();
+                let mut refused = false;
+                let mut completed = false;
+                for limit in 0..16 {
+                    let stream = super::molt_file_open_ex(
+                        path,
+                        mode,
+                        crate::MoltObject::from_int(4).bits(),
+                        none,
+                        none,
+                        none,
+                        yes,
+                        none,
+                    );
+                    assert!(!crate::exception_pending(py));
+                    let pointer = obj_from_bits(stream).as_ptr().unwrap();
+                    set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                        max_allocations: Some(limit),
+                        ..Default::default()
+                    })));
+                    let restore = RestoreTracker;
+                    let raw = unsafe { super::file_handle_raw_bits(py, pointer) };
+                    drop(restore);
+                    let raw = if let Some(raw) = raw {
+                        completed = true;
+                        raw
+                    } else {
+                        refused = true;
+                        assert!(crate::exception_pending(py));
+                        crate::molt_exception_clear();
+                        // A refusal during raw/dictionary construction must not
+                        // close the live parent's shared descriptor.
+                        assert!(!unsafe {
+                            super::file_handle_is_closed(&*crate::file_handle_ptr(pointer))
+                        });
+                        unsafe { super::file_handle_raw_bits(py, pointer) }.unwrap()
+                    };
+                    assert!(!crate::exception_pending(py));
+                    let repeated = unsafe { super::file_handle_raw_bits(py, pointer) }.unwrap();
+                    assert_eq!(raw, repeated);
+                    dec_ref_bits(py, repeated);
+                    let first =
+                        super::molt_file_read(stream, crate::MoltObject::from_int(1).bits());
+                    assert_eq!(
+                        unsafe { super::collect_bytes_like(py, first) }.unwrap(),
+                        b"a"
+                    );
+                    dec_ref_bits(py, first);
+                    assert_eq!(
+                        crate::to_i64(obj_from_bits(super::molt_file_tell(raw))),
+                        Some(4)
+                    );
+                    let detached = super::molt_file_detach(stream);
+                    assert_eq!(detached, raw);
+                    let remaining =
+                        super::molt_file_read(raw, crate::MoltObject::from_int(-1).bits());
+                    assert_eq!(
+                        unsafe { super::collect_bytes_like(py, remaining) }.unwrap(),
+                        b"ef"
+                    );
+                    dec_ref_bits(py, remaining);
+                    super::molt_file_close(raw);
+                    for value in [raw, detached, stream] {
+                        dec_ref_bits(py, value);
+                    }
+                    assert!(!crate::exception_pending(py));
+                    if completed {
+                        break;
+                    }
+                }
+                assert!(refused && completed);
+                for value in [path, mode] {
+                    dec_ref_bits(py, value);
+                }
+            },
+        );
     }
 
     #[test]

@@ -13512,12 +13512,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileGettempdir,
         name: "tempfile_gettempdir",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TempfileGettempdirb,
-        name: "tempfile_gettempdirb",
-        type_idx: 0,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileMkdtemp,
@@ -13527,17 +13522,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileMkstemp,
         name: "tempfile_mkstemp",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TempfileNamed,
-        name: "tempfile_named",
         type_idx: 7,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TempfileTempdir,
-        name: "tempfile_tempdir",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileCleanup,
@@ -20119,16 +20104,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_pathlib_samefile" => Some(WasmRuntimeImport::PathlibSamefile),
         "tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
         "molt_tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
-        "tempfile_gettempdirb" => Some(WasmRuntimeImport::TempfileGettempdirb),
-        "molt_tempfile_gettempdirb" => Some(WasmRuntimeImport::TempfileGettempdirb),
         "tempfile_mkdtemp" => Some(WasmRuntimeImport::TempfileMkdtemp),
         "molt_tempfile_mkdtemp" => Some(WasmRuntimeImport::TempfileMkdtemp),
         "tempfile_mkstemp" => Some(WasmRuntimeImport::TempfileMkstemp),
         "molt_tempfile_mkstemp" => Some(WasmRuntimeImport::TempfileMkstemp),
-        "tempfile_named" => Some(WasmRuntimeImport::TempfileNamed),
-        "molt_tempfile_named" => Some(WasmRuntimeImport::TempfileNamed),
-        "tempfile_tempdir" => Some(WasmRuntimeImport::TempfileTempdir),
-        "molt_tempfile_tempdir" => Some(WasmRuntimeImport::TempfileTempdir),
         "tempfile_cleanup" => Some(WasmRuntimeImport::TempfileCleanup),
         "molt_tempfile_cleanup" => Some(WasmRuntimeImport::TempfileCleanup),
         "sys_getdefaultencoding" => Some(WasmRuntimeImport::SysGetdefaultencoding),

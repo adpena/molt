@@ -987,6 +987,20 @@ pub(crate) struct MoltFileState {
 impl Drop for MoltFileState {
     fn drop(&mut self) {
         if !self.host_descriptor {
+            // Explicit close consumes this same owner. Failed construction may
+            // retire the state before a Python handle can perform that close.
+            #[cfg(windows)]
+            {
+                let fd = match self.crt_fd.get_mut() {
+                    Ok(fd) => fd.take(),
+                    Err(poisoned) => poisoned.into_inner().take(),
+                };
+                if let Some(fd) = fd {
+                    unsafe {
+                        libc::close(fd as libc::c_int);
+                    }
+                }
+            }
             return;
         }
         let backend = match self.backend.get_mut() {

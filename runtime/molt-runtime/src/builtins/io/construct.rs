@@ -82,6 +82,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
             if want_write && !raw_handle.writable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
             }
+            let owns_fd = raw_handle.owns_fd;
             let ptr = alloc_file_handle_with_state(
                 _py,
                 Arc::clone(&raw_handle.state),
@@ -89,7 +90,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 want_write,
                 false,
                 raw_handle.closefd,
-                raw_handle.owns_fd,
+                false,
                 false,
                 false,
                 buffer_size,
@@ -100,12 +101,13 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 None,
                 None,
                 None,
-                0,
+                raw_bits,
                 raw_handle.mem_bits,
             );
             if ptr.is_null() {
                 MoltObject::none().bits()
             } else {
+                (*file_handle_ptr(ptr)).owns_fd = owns_fd;
                 MoltObject::from_ptr(ptr).bits()
             }
         }
@@ -192,6 +194,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
             } else {
                 is_truthy(_py, obj_from_bits(write_through_bits))
             };
+            let owns_fd = buffer_handle.owns_fd;
             let ptr = alloc_file_handle_with_state(
                 _py,
                 Arc::clone(&buffer_handle.state),
@@ -199,7 +202,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
                 buffer_handle.writable,
                 true,
                 buffer_handle.closefd,
-                buffer_handle.owns_fd,
+                false,
                 line_buffering,
                 write_through,
                 buffer_handle.buffer_size,
@@ -216,6 +219,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
             if ptr.is_null() {
                 MoltObject::none().bits()
             } else {
+                (*file_handle_ptr(ptr)).owns_fd = owns_fd;
                 MoltObject::from_ptr(ptr).bits()
             }
         }
