@@ -1153,14 +1153,24 @@ mod tests {
                 string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) })),
                 Some("UnraisableHookArgs".to_string())
             );
+            let module_name = crate::attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+            let module = molt_get_attr_name(class_bits, module_name);
+            assert!(!exception_pending(_py));
             assert_eq!(
-                string_obj_to_owned(obj_from_bits(class_dict_value(
-                    _py,
-                    class_bits,
-                    "__module__"
-                ))),
+                string_obj_to_owned(obj_from_bits(module)),
                 Some("builtins".to_string())
             );
+            let dictionary = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
+                .as_ptr()
+                .unwrap();
+            assert!(
+                unsafe { dict_get_in_place(_py, dictionary, module_name) }
+                    .unwrap()
+                    .is_none(),
+                "static module identity is not an instance namespace declaration"
+            );
+            dec_ref_bits(_py, module);
+            dec_ref_bits(_py, module_name);
             assert_eq!(
                 obj_from_bits(class_dict_value(_py, class_bits, "n_fields")).as_int(),
                 Some(5)

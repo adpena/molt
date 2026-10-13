@@ -2674,6 +2674,57 @@ unsafe fn type_from_spec_impl(
                 return ptr::null_mut();
             }
         }
+        // CPython's spec constructor publishes an own module declaration only
+        // after readiness and temporary layout-member retirement. A descriptor
+        // already supplied under this key is an ordinary namespace owner and
+        // must not be overwritten or invoked. ht_module is separate C state.
+        let module_key = crate::api::refcount::OwnedPyObject::from_owned(
+            crate::api::strings::PyUnicode_FromString(c"__module__".as_ptr()),
+        );
+        if module_key.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        let contains = crate::api::mapping::PyDict_Contains((*tp).tp_dict, module_key.as_ptr());
+        if contains < 0 {
+            return ptr::null_mut();
+        }
+        if contains == 0 {
+            let name = std::ffi::CStr::from_ptr((*spec).name).to_bytes();
+            if let Some(dot) = name.iter().rposition(|byte| *byte == b'.') {
+                let module_name = crate::api::refcount::OwnedPyObject::from_owned(
+                    crate::api::strings::PyUnicode_FromStringAndSize((*spec).name, dot as isize),
+                );
+                if module_name.as_ptr().is_null()
+                    || crate::api::mapping::PyDict_SetItem(
+                        (*tp).tp_dict,
+                        module_key.as_ptr(),
+                        module_name.as_ptr(),
+                    ) < 0
+                {
+                    return ptr::null_mut();
+                }
+            } else {
+                let message = crate::api::refcount::OwnedPyObject::from_owned(
+                    crate::api::errors::PyUnicode_FromFormat(
+                        c"builtin type %.200s has no __module__ attribute".as_ptr(),
+                        (*spec).name,
+                    ),
+                );
+                if message.as_ptr().is_null() {
+                    return ptr::null_mut();
+                }
+                let text = crate::api::strings::PyUnicode_AsUTF8(message.as_ptr());
+                if text.is_null()
+                    || crate::api::errors::PyErr_WarnEx(
+                        (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
+                        text,
+                        1,
+                    ) < 0
+                {
+                    return ptr::null_mut();
+                }
+            }
+        }
         if crate::api::memory::PyObject_GC_IsTracked(object) == 0 {
             crate::api::memory::PyObject_GC_Track(object.cast());
         }
