@@ -808,7 +808,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         assert "importlib.machinery" not in analysis.module_order
 
 
-@pytest.mark.parametrize("mode", ["module_init", "module_init_static_helpers"])
+@pytest.mark.parametrize("mode", ["module_init"])
 @pytest.mark.parametrize("consumer", ["imports", "stars", "cache", "loader"])
 def test_every_owner_scan_entry_rejects_incomplete_depth(
     tmp_path: Path,

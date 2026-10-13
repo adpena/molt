@@ -1505,7 +1505,7 @@ def _finalize_runtime_import_closure(
                         filename=str(path),
                         retain=False,
                         target_python=target_python,
-                    )
+                    ).tree
                 ),
             )
             for name, path in owner_sources

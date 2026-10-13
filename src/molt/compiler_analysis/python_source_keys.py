@@ -9,6 +9,8 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TypeAlias, cast
+from types import MappingProxyType
+from collections.abc import Mapping
 
 
 PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
@@ -221,9 +223,61 @@ class _PythonAstDigestAdmission:
 
     tree: ast.AST = field(repr=False, compare=False)
     digest: str = field(init=False)
+    deferred_nodes: Mapping[PythonSourceKey, ast.AST] = field(
+        init=False, repr=False, compare=False
+    )
+
+    module_setup_nodes: tuple[ast.stmt, ...] = field(
+        init=False, repr=False, compare=False
+    )
+
+    _private_names_resolved: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
+
+    def resolved_private_tree(self, tree: ast.AST) -> ast.AST:
+        if self.tree is not tree:
+            raise ValueError("AST digest admission belongs to a different tree")
+        if not self._private_names_resolved:
+            from molt.python_private_names import resolve_python_private_names
+
+            resolve_python_private_names(tree)
+            object.__setattr__(self, "_private_names_resolved", True)
+        return tree
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "digest", python_ast_digest(self.tree))
+        object.__setattr__(
+            self,
+            "module_setup_nodes",
+            tuple(
+                node
+                for node in getattr(self.tree, "body", ())
+                if isinstance(
+                    node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "deferred_nodes",
+            MappingProxyType(
+                {
+                    python_node_source_key(node): node
+                    for node in ast.walk(self.tree)
+                    if isinstance(
+                        node,
+                        (
+                            ast.FunctionDef,
+                            ast.AsyncFunctionDef,
+                            ast.ClassDef,
+                            ast.Lambda,
+                            *([ast.TypeAlias] if hasattr(ast, "TypeAlias") else []),
+                        ),
+                    )
+                }
+            ),
+        )
 
     @classmethod
     def for_tree(

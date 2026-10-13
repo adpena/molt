@@ -310,8 +310,8 @@ def test_static_loader_requests_preserve_target_and_conservative_branches(
 def test_resolver_ast_memo_distinguishes_source_generations(tmp_path):
     path = tmp_path / "entry.py"
     cache = _ModuleResolutionCache()
-    first = cache.parse_module_ast(path, "a = 1", filename=str(path))
-    second = cache.parse_module_ast(path, "a = 2", filename=str(path))
+    first = cache.parse_module_ast(path, "a = 1", filename=str(path)).tree
+    second = cache.parse_module_ast(path, "a = 2", filename=str(path)).tree
     assert ast.dump(first) != ast.dump(second)
 
 

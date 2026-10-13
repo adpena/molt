@@ -435,7 +435,7 @@ def _resolve_tree_for_serial_frontend_module(
             filename=logical_source_path,
             retain=False,
             target_python=lowering_context.target_python,
-        )
+        ).tree
     except SyntaxError as exc:
         raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 

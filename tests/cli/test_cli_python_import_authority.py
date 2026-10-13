@@ -1646,9 +1646,9 @@ def test_runtime_protocol_scanner_uses_completion_reachability(
     ) is (not dead)
 
 
-@pytest.mark.parametrize("mode", ["full", "module_init_static_helpers"])
-def test_selected_stdlib_helper_scan_does_not_revive_dead_body_imports(
-    mode: module_import_scanner.ImportScanMode,
+@pytest.mark.parametrize("full", [False, True])
+def test_selected_source_body_scan_does_not_revive_dead_body_imports(
+    full: bool,
 ) -> None:
     source = (
         "class UserDict:\n"
@@ -1656,10 +1656,14 @@ def test_selected_stdlib_helper_scan_does_not_revive_dead_body_imports(
         "        return self\n"
         "        import sealed.dead_static_helper\n"
     )
+    tree = ast.parse(source)
+    owner = tree.body[0].body[0]
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
     imports = module_import_scanner._collect_imports(
-        ast.parse(source),
+        tree,
         module_name="collections",
-        import_scan_mode=mode,
+        import_scan_mode="full" if full else "module_init",
+        source_owner=None if full else python_node_source_key(owner),
     )
     assert "sealed.dead_static_helper" not in imports
 

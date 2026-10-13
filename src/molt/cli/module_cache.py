@@ -1263,7 +1263,7 @@ def _load_module_analysis(
             filename=logical_source_path,
             retain=retain_tree,
             target_python=target_python,
-        )
+        ).tree
     func_defaults = persisted_defaults
     if func_defaults is None:
         func_defaults = _collect_func_defaults(tree)

@@ -18,6 +18,9 @@ from molt.cli.models import (
     ImportScanMode,
     _ImportDiscoveryProjection,
     _ImportScanRequests,
+    _SourceValueDemand,
+    _SourceImportBinding,
+    _SourceValueSummary,
     _CompleteImportScan,
     _StaticSourceExecutionRequest,
     _StaticSourcePath,
@@ -60,51 +63,20 @@ from molt.compiler_analysis.python_imports import (
     static_import_fromlist_is_empty,
     UnresolvedStaticImportError,
 )
-from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+    python_pattern_capture_names,
+    _PythonAstDigestAdmission,
+)
 
 
-# Runtime helper bodies whose imports are required static graph edges. This is
-# intentionally qualname-based: stdlib modules stay module-init scanned unless a
-# specific helper body is part of Molt's compiled runtime contract.
-STDLIB_STATIC_IMPORT_HELPER_QUALNAMES: Mapping[str, frozenset[str]] = {
-    # HelpFormatter imports shutil and textwrap to format usage and help, which
-    # every parse error prints; _copy_items imports copy for `append` defaults.
-    "argparse": frozenset(
-        {
-            "_copy_items",
-            "HelpFormatter.__init__",
-            "HelpFormatter._fill_text",
-            "HelpFormatter._split_lines",
-        }
-    ),
-    "collections": frozenset({"UserDict.copy"}),
-    # EmailMessage inherits MIMEPart.__init__, which supplies email.policy.default.
-    "email.message": frozenset({"MIMEPart.__init__"}),
-    # assertLogs and assertNoLogs import unittest._log, which imports logging.
-    "unittest.case": frozenset({"TestCase.assertLogs", "TestCase.assertNoLogs"}),
-}
-STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(STDLIB_STATIC_IMPORT_HELPER_QUALNAMES)
-
-_IMPORT_SCAN_MODES = frozenset({"full", "module_init", "module_init_static_helpers"})
+_IMPORT_SCAN_MODES = frozenset({"full", "module_init"})
 
 
-def _module_import_scan_mode(
-    module_name: str,
-    *,
-    full_scan: bool,
-    static_import_helper_modules: Collection[str] | None = None,
-) -> ImportScanMode:
-    """Project scan authority, independent of graph seeding or import admission."""
-    if full_scan:
-        return "full"
-    helpers = (
-        STDLIB_STATIC_IMPORT_HELPER_MODULES
-        if static_import_helper_modules is None
-        else static_import_helper_modules
-    )
-    if module_name in helpers:
-        return "module_init_static_helpers"
-    return "module_init"
+def _module_import_scan_mode(module_name: str, *, full_scan: bool) -> ImportScanMode:
+    """Explicit roots own full scans; imported sources start at initialization."""
+    return "full" if full_scan else "module_init"
 
 
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -310,6 +282,8 @@ def _collect_static_source_execution_requests(
     tree: ast.AST,
     *,
     source_path: Path,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     module_name: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -343,7 +317,7 @@ def _collect_static_source_execution_requests(
     constants: dict[str, str | _StaticSourcePath] = {}
 
     if isinstance(tree, ast.Module):
-        for stmt in tree.body:
+        for stmt in ast_digest_admission.module_setup_nodes:
             if not import_flow.states_for(stmt):
                 continue
             if isinstance(stmt, ast.Import):
@@ -420,7 +394,7 @@ def _collect_static_source_execution_requests(
     # Module constants are the common authority for loader paths and remain
     # visible to calls nested in entry-module functions.
     if isinstance(tree, ast.Module):
-        for stmt in tree.body:
+        for stmt in ast_digest_admission.module_setup_nodes:
             if not import_flow.states_for(stmt):
                 continue
             assignment: tuple[ast.expr, ast.expr] | None = None
@@ -444,6 +418,8 @@ def _collect_static_source_execution_requests(
     for node in _scan_nodes_for_import_mode(
         tree,
         import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         module_name=module_name,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
@@ -484,42 +460,69 @@ def _validate_import_scan_mode(import_scan_mode: ImportScanMode) -> None:
         raise ValueError(f"unknown import scan mode: {import_scan_mode}")
 
 
-def _static_import_helper_qualnames(
-    module_name: str | None, import_scan_mode: ImportScanMode
-) -> frozenset[str]:
-    _validate_import_scan_mode(import_scan_mode)
-    if import_scan_mode != "module_init_static_helpers":
-        return frozenset()
-    if module_name is None:
-        raise ValueError("module_init_static_helpers requires module_name")
-    helper_qualnames = STDLIB_STATIC_IMPORT_HELPER_QUALNAMES.get(module_name)
-    if helper_qualnames is None:
-        raise ValueError(
-            f"module_init_static_helpers has no helper policy for {module_name}"
+def _source_body(
+    tree: ast.AST, owner: PythonSourceKey | None, admission: _PythonAstDigestAdmission
+) -> tuple[ast.AST, ...]:
+    if owner is None:
+        return tuple(getattr(tree, "body", ()))
+    node = admission.deferred_nodes.get(owner)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return tuple(node.body)
+    if isinstance(node, ast.Lambda):
+        return (node.body,)
+    if isinstance(node, getattr(ast, "TypeAlias", ())):
+        return tuple(
+            value
+            for parameter in node.type_params
+            for field in ("bound", "default_value")
+            if isinstance(value := getattr(parameter, field, None), ast.expr)
+        ) + (node.value,)
+    raise ValueError(f"deferred demand lost source owner: {owner!r}")
+
+
+def _source_parameter_bindings(admission, source_owner, source_arguments):
+    if not source_arguments:
+        return {}
+    node = admission.deferred_nodes.get(source_owner)
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        raise ValueError("argument facts require a function source owner")
+    # Bind proven positional member-selection arguments. Expired or rebound
+    # parameter facts remain unknown in _source_expression_result.
+    parameters = (*node.args.posonlyargs, *node.args.args)
+    if len(source_arguments) > len(parameters):
+        return {}
+    return dict(zip((parameter.arg for parameter in parameters), source_arguments))
+
+
+def _source_expression_result(binding_index, node, bindings):
+    value = binding_index.static_value(node)
+    if isinstance(value, PythonParameterRef) and value.name in bindings:
+        return StaticExpressionResult.scalar(
+            bindings[value.name], evaluation_required=True
         )
-    return helper_qualnames
-
-
-def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
-    return (*prefix, name)
-
-
-def _function_parameter_names_from_args(args: ast.arguments) -> list[str]:
-    names = [arg.arg for arg in args.posonlyargs]
-    names.extend(arg.arg for arg in args.args)
-    names.extend(arg.arg for arg in args.kwonlyargs)
-    if args.vararg is not None:
-        names.append(args.vararg.arg)
-    if args.kwarg is not None:
-        names.append(args.kwarg.arg)
-    return names
+    result = binding_index.expression_result(node)
+    if (
+        bindings
+        and isinstance(
+            node, (ast.UnaryOp, ast.BinOp, ast.BoolOp, ast.Compare, ast.IfExp)
+        )
+        and not result.value_known
+    ):
+        return static_expression_result(
+            node,
+            fact_result=lambda child: _source_expression_result(
+                binding_index, child, bindings
+            ),
+        )
+    return result
 
 
 def _static_scan_nodes(
     tree: ast.AST,
     *,
     include_function_bodies: bool,
-    included_function_qualnames: Collection[str] = frozenset(),
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
@@ -531,117 +534,120 @@ def _static_scan_nodes(
     binding_index = analyze_python_binding_facts(
         tree,
         source_digest=ast_digest_admission.digest,
+        ast_digest_admission=ast_digest_admission,
         policy=PythonBindingFlowPolicy(target_python=target_python.feature_version),
     )
+    source_bindings = _source_parameter_bindings(
+        ast_digest_admission, source_owner, source_arguments
+    )
     nodes: list[ast.AST] = []
-    included_qualnames = frozenset(included_function_qualnames)
 
     def visit(
         node: ast.AST,
-        qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         nodes.append(node)
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             return
         if isinstance(node, ast.Assign):
-            visit(node.value, qualname_prefix)
+            visit(node.value)
             for target in node.targets:
-                visit(target, qualname_prefix)
+                visit(target)
             return
         if isinstance(node, ast.AnnAssign):
-            visit(node.annotation, qualname_prefix)
+            visit(node.annotation)
             if node.value is not None:
-                visit(node.value, qualname_prefix)
-            visit(node.target, qualname_prefix)
+                visit(node.value)
+            visit(node.target)
             return
         if isinstance(node, ast.AugAssign):
-            visit(node.target, qualname_prefix)
-            visit(node.value, qualname_prefix)
+            visit(node.target)
+            visit(node.value)
             return
         if isinstance(node, ast.Delete):
             for target in node.targets:
-                visit(target, qualname_prefix)
+                visit(target)
             return
         if isinstance(node, ast.NamedExpr):
-            visit(node.value, qualname_prefix)
-            visit(node.target, qualname_prefix)
+            visit(node.value)
+            visit(node.target)
             return
         if isinstance(node, ast.BoolOp):
             for value in statically_executed_boolop_values(
                 node,
-                fact_result=binding_index.expression_result,
+                fact_result=lambda expression: _source_expression_result(
+                    binding_index, expression, source_bindings
+                ),
             ):
-                visit(value, qualname_prefix)
+                visit(value)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix)
+                visit(decorator)
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix)
+                visit(default)
             for arg in (
                 list(node.args.posonlyargs)
                 + list(node.args.args)
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    visit(arg.annotation, qualname_prefix)
+                    visit(arg.annotation)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                visit(node.args.vararg.annotation, qualname_prefix)
+                visit(node.args.vararg.annotation)
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                visit(node.args.kwarg.annotation, qualname_prefix)
+                visit(node.args.kwarg.annotation)
             if node.returns is not None:
-                visit(node.returns, qualname_prefix)
+                visit(node.returns)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix)
-            if include_function_bodies or function_qualname in included_qualnames:
-                function_prefix = _qualified_child(qualname_prefix, node.name)
+                visit(type_param)
+            if include_function_bodies:
                 for stmt in node.body:
-                    visit(stmt, function_prefix)
+                    visit(stmt)
             return
         if isinstance(node, ast.Lambda):
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix)
+                visit(default)
             if include_function_bodies:
-                visit(node.body, qualname_prefix)
+                visit(node.body)
             return
         if isinstance(node, ast.ClassDef):
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix)
+                visit(decorator)
             for base in node.bases:
-                visit(base, qualname_prefix)
+                visit(base)
             for keyword in node.keywords:
                 if keyword.value is not None:
-                    visit(keyword.value, qualname_prefix)
+                    visit(keyword.value)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix)
-            class_prefix = _qualified_child(qualname_prefix, node.name)
+                visit(type_param)
             for stmt in node.body:
-                visit(stmt, class_prefix)
+                visit(stmt)
             return
         if isinstance(node, ast.If):
-            visit(node.test, qualname_prefix)
+            visit(node.test)
             static_branch = static_if_live_branch(
                 node,
-                fact_result=binding_index.expression_result,
+                fact_result=lambda expression: _source_expression_result(
+                    binding_index, expression, source_bindings
+                ),
             )
             if static_branch is not None:
                 for stmt in static_branch:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt)
             else:
                 for stmt in node.body:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt)
                 for stmt in node.orelse:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt)
             return
         for child in ast.iter_child_nodes(node):
-            visit(child, qualname_prefix)
+            visit(child)
 
-    for stmt in tree.body:
+    for stmt in _source_body(tree, source_owner, ast_digest_admission):
         visit(stmt)
     return tuple(nodes)
 
@@ -655,24 +661,6 @@ def _module_init_scan_nodes(
     return _static_scan_nodes(
         tree,
         include_function_bodies=False,
-        target_python=target_python,
-        ast_digest_admission=ast_digest_admission,
-    )
-
-
-def _module_init_static_helper_scan_nodes(
-    tree: ast.AST,
-    module_name: str | None,
-    *,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    ast_digest_admission: _PythonAstDigestAdmission | None = None,
-) -> tuple[ast.AST, ...]:
-    return _static_scan_nodes(
-        tree,
-        include_function_bodies=False,
-        included_function_qualnames=_static_import_helper_qualnames(
-            module_name, "module_init_static_helpers"
-        ),
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
     )
@@ -697,25 +685,17 @@ def _scan_nodes_for_import_mode(
     import_scan_mode: ImportScanMode,
     *,
     module_name: str | None = None,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
     _validate_import_scan_mode(import_scan_mode)
-    if import_scan_mode == "full":
-        return _full_static_scan_nodes(
-            tree,
-            target_python=target_python,
-            ast_digest_admission=ast_digest_admission,
-        )
-    if import_scan_mode == "module_init_static_helpers":
-        return _module_init_static_helper_scan_nodes(
-            tree,
-            module_name,
-            target_python=target_python,
-            ast_digest_admission=ast_digest_admission,
-        )
-    return _module_init_scan_nodes(
+    return _static_scan_nodes(
         tree,
+        include_function_bodies=import_scan_mode == "full" and source_owner is None,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
     )
@@ -726,16 +706,23 @@ def _collect_imports(
     module_name: str | None = None,
     is_package: bool = False,
     *,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     source_path: Path | None = None,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    _source_demands: list[_SourceValueDemand] | None = None,
+    _source_bindings: list[_SourceImportBinding] | None = None,
+    _source_values: list[_SourceValueSummary] | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
 ) -> list[str]:
     if runtime_import_custody is not None:
+        if source_owner is not None:
+            raise ValueError("runtime import custody requires full-depth owner scans")
         runtime_import_custody.validate_scan_mode(
             module_name, source_path, import_scan_mode
         )
@@ -743,17 +730,13 @@ def _collect_imports(
         tree, ast_digest_admission
     )
     _validate_import_scan_mode(import_scan_mode)
-    selected_static_helper_qualnames = _static_import_helper_qualnames(
-        module_name, import_scan_mode
-    )
     imports: list[str] = []
     needs_typing = False
     needs_string_templatelib = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
     template_str_cls = getattr(ast, "TemplateStr", None)
-    helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_import_calls: dict[
-        str,
+        PythonSourceKey,
         tuple[list[str], set[str], list[_StaticImportCallPayload]],
     ] = {}
     base_import_context = ModuleImportContext(
@@ -766,6 +749,7 @@ def _collect_imports(
     binding_index = analyze_python_bindings(
         cast(ast.Module, tree),
         source_digest=ast_digest_admission.digest,
+        ast_digest_admission=ast_digest_admission,
         policy=PythonBindingPolicy(
             target_python=target_python.feature_version,
             module_name=module_name,
@@ -776,6 +760,27 @@ def _collect_imports(
         ),
     )
     import_flow = binding_index.module_import_flow
+    if _source_values is not None and source_owner is None:
+        _source_values.append(
+            _SourceValueSummary(
+                binding_index.source_namespaces, binding_index.source_attributes
+            )
+        )
+
+    def demand(
+        result: StaticExpressionResult, phase: str, *, contents: bool = False
+    ) -> None:
+        if _source_demands is not None:
+            origins = (
+                result.exposed_source_origins if contents else result.source_origins
+            )
+            _source_demands.extend(
+                _SourceValueDemand(origin, phase) for origin in sorted(origins)
+            )
+            if result.exposes_module_globals:
+                _source_demands.append(
+                    _SourceValueDemand(python_node_source_key(tree), "escape")
+                )
 
     def _import_contexts(
         node: ast.AST, *, source_discovery: bool = False
@@ -789,10 +794,9 @@ def _collect_imports(
             )
         )
 
-    module_body = list(getattr(tree, "body", []))
-    function_walks: list[
-        tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
-    ] = []
+    source_bindings = _source_parameter_bindings(
+        ast_digest_admission, source_owner, source_arguments
+    )
 
     def _static_call_target(
         call: ast.Call, *, allow_possible: bool = False
@@ -835,20 +839,7 @@ def _collect_imports(
     def _bound_expression_result(
         node: ast.expr, bindings: Mapping[str, object]
     ) -> StaticExpressionResult:
-        value = binding_index.static_value(node)
-        if isinstance(value, PythonParameterRef) and value.name in bindings:
-            return StaticExpressionResult.scalar(
-                bindings[value.name], evaluation_required=True
-            )
-        result = binding_index.expression_result(node)
-        if bindings and isinstance(node, ast.UnaryOp) and not result.value_known:
-            # Instantiate retained parameter facts through the shared operator
-            # authority; an expired/unknown name has no parameter fact to bind.
-            return static_expression_result(
-                node,
-                fact_result=lambda child: _bound_expression_result(child, bindings),
-            )
-        return result
+        return _source_expression_result(binding_index, node, bindings)
 
     def _resolve_string_sequence(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
@@ -867,7 +858,10 @@ def _collect_imports(
     ) -> str | None:
         bindings = bindings or {}
         seen = seen or set()
-        value = _bound_static_value(node, bindings)
+        result = _source_expression_result(binding_index, node, bindings)
+        value = (
+            result.value if result.value_known else _bound_static_value(node, bindings)
+        )
         if isinstance(value, str):
             return value
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
@@ -893,10 +887,28 @@ def _collect_imports(
                 func_name = node.func.id
                 if func_name in seen:
                     return None
-                helper = helper_string_functions.get(func_name)
-                if helper is None:
+                origins = binding_index.expression_result(node.func).source_origins
+                if len(origins) != 1:
                     return None
-                params, expr = helper
+                helper = ast_digest_admission.deferred_nodes.get(next(iter(origins)))
+                if (
+                    not isinstance(helper, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    or len(helper.body) != 1
+                    or not isinstance(helper.body[0], ast.Return)
+                    or helper.body[0].value is None
+                    or helper.args.vararg is not None
+                    or helper.args.kwarg is not None
+                ):
+                    return None
+                params = [
+                    arg.arg
+                    for arg in (
+                        *helper.args.posonlyargs,
+                        *helper.args.args,
+                        *helper.args.kwonlyargs,
+                    )
+                ]
+                expr = helper.body[0].value
                 if len(node.args) != len(params) or node.keywords:
                     return None
                 child_bindings: dict[str, object] = dict(bindings)
@@ -1315,80 +1327,62 @@ def _collect_imports(
             return None
         return bindings
 
-    module_import_helper_scan = isinstance(tree, ast.Module)
-
-    if module_import_helper_scan:
-        for stmt in module_body:
-            if not import_flow.states_for(stmt):
+    def _source_helper_imports(stmt):
+        params = [
+            arg.arg
+            for arg in (
+                list(stmt.args.posonlyargs)
+                + list(stmt.args.args)
+                + list(stmt.args.kwonlyargs)
+            )
+        ]
+        if stmt.args.vararg is not None:
+            params.append(stmt.args.vararg.arg)
+        if stmt.args.kwarg is not None:
+            params.append(stmt.args.kwarg.arg)
+        if not params:
+            return None
+        required_params = _function_required_param_names(stmt, params)
+        local_expr_bindings = _simple_function_local_expr_bindings(stmt)
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
                 continue
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                stmt_nodes = tuple(ast.walk(stmt))
-                function_walks.append((stmt, stmt_nodes))
-                if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
-                    continue
-                ret_expr = stmt.body[0].value
-                if ret_expr is None:
-                    continue
-                params = [
-                    arg.arg
-                    for arg in (
-                        list(stmt.args.posonlyargs)
-                        + list(stmt.args.args)
-                        + list(stmt.args.kwonlyargs)
-                    )
-                ]
-                if stmt.args.vararg is not None or stmt.args.kwarg is not None:
-                    continue
-                helper_string_functions[stmt.name] = (params, ret_expr)
-
-        for stmt, stmt_nodes in function_walks:
-            params = [
-                arg.arg
-                for arg in (
-                    list(stmt.args.posonlyargs)
-                    + list(stmt.args.args)
-                    + list(stmt.args.kwonlyargs)
-                )
-            ]
-            if stmt.args.vararg is not None:
-                params.append(stmt.args.vararg.arg)
-            if stmt.args.kwarg is not None:
-                params.append(stmt.args.kwarg.arg)
-            if not params:
+            if not import_flow.states_for(node):
                 continue
-            required_params = _function_required_param_names(stmt, params)
-            local_expr_bindings = _simple_function_local_expr_bindings(stmt)
-            for node in stmt_nodes:
-                if not isinstance(node, ast.Call):
-                    continue
-                if not import_flow.states_for(node):
-                    continue
-                target = _static_call_target(node, allow_possible=True)
-                if not _is_static_import_target(target):
-                    continue
-                assert target is not None
-                payload = _static_import_call_payload(
-                    node,
-                    target,
-                    local_expr_bindings=local_expr_bindings,
+            target = _static_call_target(node, allow_possible=True)
+            if not _is_static_import_target(target):
+                continue
+            assert target is not None
+            payload = _static_import_call_payload(
+                node,
+                target,
+                local_expr_bindings=local_expr_bindings,
+            )
+            if payload is None:
+                continue
+            helper_entry = helper_import_calls.get(python_node_source_key(stmt))
+            if helper_entry is None:
+                helper_import_calls[python_node_source_key(stmt)] = (
+                    params,
+                    required_params,
+                    [payload],
                 )
-                if payload is None:
-                    continue
-                helper_entry = helper_import_calls.get(stmt.name)
-                if helper_entry is None:
-                    helper_import_calls[stmt.name] = (
-                        params,
-                        required_params,
-                        [payload],
-                    )
-                else:
-                    helper_entry[2].append(payload)
+            else:
+                helper_entry[2].append(payload)
+
+        return helper_import_calls.get(python_node_source_key(stmt))
+
+    scanned_helpers: set[PythonSourceKey] = set()
 
     def _record_helper_call_imports(node: ast.Call) -> None:
-        if module_import_helper_scan:
-            if not isinstance(node.func, ast.Name):
-                return
-            helper_call_entry = helper_import_calls.get(node.func.id)
+        for origin in binding_index.expression_result(node.func).source_origins:
+            stmt = ast_digest_admission.deferred_nodes.get(origin)
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if origin not in scanned_helpers:
+                scanned_helpers.add(origin)
+                _source_helper_imports(stmt)
+            helper_call_entry = helper_import_calls.get(origin)
             if helper_call_entry is not None:
                 params, required_params, payloads = helper_call_entry
                 call_bindings = _bind_helper_call_arguments(
@@ -1406,10 +1400,31 @@ def _collect_imports(
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
+                if _source_bindings is not None:
+                    _source_bindings.append(
+                        _SourceImportBinding(
+                            python_node_source_key(alias),
+                            (
+                                alias.name
+                                if alias.asname
+                                else alias.name.split(".", 1)[0],
+                            ),
+                            None,
+                        )
+                    )
             return
         names = tuple(python_source_field(alias, "name") for alias in node.names)
         if node.level == 0:
             imports.extend(static_import_candidates(node.module or "", names))
+            if _source_bindings is not None:
+                _source_bindings.extend(
+                    _SourceImportBinding(
+                        python_node_source_key(alias),
+                        (node.module or "",),
+                        python_source_field(alias, "name"),
+                    )
+                    for alias in node.names
+                )
             if _star_modules is not None and "*" in names and node.module:
                 _star_modules.append(node.module)
             return
@@ -1441,6 +1456,40 @@ def _collect_imports(
             dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
         )
         imports.extend(resolved)
+        if _source_bindings is not None:
+            # Resolve the base with the identical source-ordered context, rather
+            # than stripping a member suffix from an ambiguous candidate list.
+            base_request = StaticImportRequest.statement(
+                node.module or "", level=node.level, fromlist=()
+            )
+            bases = _sealed_import_modules(
+                base_request,
+                contexts,
+                lexical_discovery_contexts=lexical_contexts,
+                runtime_import_custody=runtime_import_custody,
+                source_path=source_path,
+                source_ast_digest=ast_digest_admission.digest,
+                dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
+            )
+            if _dynamic_relative_import_discovery is not None:
+                bases = tuple(
+                    dict.fromkeys(
+                        (
+                            *bases,
+                            *static_import_discovery(
+                                base_request, lexical_contexts
+                            ).modules,
+                        )
+                    )
+                )
+            _source_bindings.extend(
+                _SourceImportBinding(
+                    python_node_source_key(alias),
+                    bases,
+                    python_source_field(alias, "name"),
+                )
+                for alias in node.names
+            )
         if _star_modules is not None and "*" in names:
             _star_modules.extend(resolved)
 
@@ -1456,95 +1505,188 @@ def _collect_imports(
         assert target is not None
         payload = _static_import_call_payload(node, target)
         if payload is not None:
-            imports.extend(_resolve_static_import_call(payload))
+            imports.extend(_resolve_static_import_call(payload, source_bindings))
 
-    def _function_parameter_names(
-        node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> list[str]:
-        return _function_parameter_names_from_args(node.args)
+    def publishes_binding(node: ast.AST, name: str) -> bool:
+        fact = (
+            binding_index.statement_fact(node)
+            if isinstance(node, ast.stmt)
+            else binding_index.expression_fact(node)
+            if isinstance(node, ast.expr)
+            else None
+        )
+        if fact is None:
+            return False
+        scope = binding_index.scopes[fact.scope_id]
+        return name in scope.global_names or name in scope.nonlocal_names
+
+    def publishes_target(node: ast.stmt, target: ast.AST) -> bool:
+        if isinstance(target, ast.Name):
+            return publishes_binding(node, target.id)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(publishes_target(node, child) for child in target.elts)
+        if isinstance(target, ast.Starred):
+            return publishes_target(node, target.value)
+        return isinstance(target, (ast.Attribute, ast.Subscript))
 
     def _visit_many(
         nodes: Iterable[ast.AST],
-        qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         for child in nodes:
-            _visit(child, qualname_prefix)
+            _visit(child)
 
     def _visit(
         node: ast.AST,
-        qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         nonlocal needs_string_templatelib, needs_typing
         if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
             return
+        if isinstance(node, ast.Call):
+            demand(binding_index.expression_result(node.func), "call")
+            for value in (*node.args, *(keyword.value for keyword in node.keywords)):
+                demand(binding_index.expression_result(value), "escape", contents=True)
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            demand(binding_index.expression_result(node), "read")
+        elif (
+            isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom))
+            and node.value is not None
+        ):
+            demand(binding_index.expression_result(node.value), "escape", contents=True)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if isinstance(node, ast.ClassDef):
+                for base in node.bases:
+                    demand(binding_index.expression_result(base), "call")
+                for keyword in node.keywords:
+                    demand(
+                        binding_index.expression_result(keyword.value),
+                        "escape",
+                        contents=True,
+                    )
+            for decorator in node.decorator_list:
+                demand(binding_index.expression_result(decorator), "call")
+            if (
+                node.decorator_list or publishes_binding(node, node.name)
+            ) and _source_demands is not None:
+                _source_demands.append(
+                    _SourceValueDemand(python_node_source_key(node), "escape")
+                )
+        elif isinstance(node, ast.Assign) and any(
+            publishes_target(node, target) for target in node.targets
+        ):
+            demand(binding_index.expression_result(node.value), "escape", contents=True)
+        elif isinstance(node, (ast.For, ast.AsyncFor)) and publishes_target(
+            node, node.target
+        ):
+            demand(binding_index.expression_result(node.iter), "escape", contents=True)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None and publishes_target(
+                    node, item.optional_vars
+                ):
+                    demand(
+                        binding_index.expression_result(item.context_expr),
+                        "escape",
+                        contents=True,
+                    )
+        elif isinstance(node, ast.Match) and any(
+            publishes_binding(node, name)
+            for case in node.cases
+            for name in python_pattern_capture_names(case.pattern)
+        ):
+            demand(
+                binding_index.expression_result(node.subject), "escape", contents=True
+            )
         if isinstance(node, ast.Module):
             _visit_many(node.body)
             return
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             _record_import_statement(node)
+            if isinstance(node, ast.ImportFrom) and _source_demands is not None:
+                _source_demands.extend(
+                    _SourceValueDemand(
+                        python_node_source_key(alias),
+                        "escape"
+                        if alias.name == "*"
+                        or publishes_binding(node, alias.asname or alias.name)
+                        else "read",
+                    )
+                    for alias in node.names
+                )
             return
         if isinstance(node, ast.Assign):
-            _visit(node.value, qualname_prefix)
-            _visit_many(node.targets, qualname_prefix)
+            _visit(node.value)
+            _visit_many(node.targets)
             return
         if isinstance(node, ast.AnnAssign):
-            _visit(node.annotation, qualname_prefix)
+            if node.value is not None and publishes_target(node, node.target):
+                demand(
+                    binding_index.expression_result(node.value), "escape", contents=True
+                )
+            _visit(node.annotation)
             if node.value is not None:
-                _visit(node.value, qualname_prefix)
-            _visit(node.target, qualname_prefix)
+                _visit(node.value)
+            _visit(node.target)
             return
         if isinstance(node, ast.AugAssign):
-            _visit(node.target, qualname_prefix)
-            _visit(node.value, qualname_prefix)
+            if publishes_target(node, node.target):
+                demand(
+                    binding_index.expression_result(node.value), "escape", contents=True
+                )
+            _visit(node.target)
+            _visit(node.value)
             return
         if isinstance(node, ast.Delete):
-            _visit_many(node.targets, qualname_prefix)
+            _visit_many(node.targets)
             return
         if isinstance(node, ast.If):
-            _visit(node.test, qualname_prefix)
+            _visit(node.test)
             static_branch = static_if_live_branch(
                 node,
-                fact_result=binding_index.expression_result,
+                fact_result=lambda expression: _source_expression_result(
+                    binding_index, expression, source_bindings
+                ),
             )
             if static_branch is not None:
-                _visit_many(static_branch, qualname_prefix)
+                _visit_many(static_branch)
             else:
-                _visit_many(node.body, qualname_prefix)
-                _visit_many(node.orelse, qualname_prefix)
+                _visit_many(node.body)
+                _visit_many(node.orelse)
             return
         if isinstance(node, ast.NamedExpr):
-            _visit(node.value, qualname_prefix)
-            _visit(node.target, qualname_prefix)
+            if publishes_binding(node, node.target.id):
+                demand(
+                    binding_index.expression_result(node.value), "escape", contents=True
+                )
+            _visit(node.value)
+            _visit(node.target)
             return
         if isinstance(node, ast.BoolOp):
             for value in statically_executed_boolop_values(
                 node,
-                fact_result=binding_index.expression_result,
+                fact_result=lambda expression: _source_expression_result(
+                    binding_index, expression, source_bindings
+                ),
             ):
-                _visit(value, qualname_prefix)
+                _visit(value)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
-                _visit_many(node.decorator_list, qualname_prefix)
-                _visit_many(node.bases, qualname_prefix)
+                _visit_many(node.decorator_list)
+                _visit_many(node.bases)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
-                    qualname_prefix,
                 )
                 _visit_many(
                     getattr(node, "type_params", ()),
-                    qualname_prefix,
                 )
-                class_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(node.body, class_prefix)
+                _visit_many(node.body)
                 return
-            _visit_many(node.decorator_list, qualname_prefix)
-            _visit_many(list(node.args.defaults), qualname_prefix)
+            _visit_many(node.decorator_list)
+            _visit_many(list(node.args.defaults))
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
-                qualname_prefix,
             )
             for arg in (
                 list(node.args.posonlyargs)
@@ -1552,44 +1694,39 @@ def _collect_imports(
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    _visit(arg.annotation, qualname_prefix)
+                    _visit(arg.annotation)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
                 _visit(
                     node.args.vararg.annotation,
-                    qualname_prefix,
                 )
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
                 _visit(
                     node.args.kwarg.annotation,
-                    qualname_prefix,
                 )
             if node.returns is not None:
-                _visit(node.returns, qualname_prefix)
+                _visit(node.returns)
             _visit_many(
                 getattr(node, "type_params", ()),
-                qualname_prefix,
             )
-            function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
-            if (
-                import_scan_mode == "full"
-                or function_qualname in selected_static_helper_qualnames
-            ):
-                function_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(node.body, function_prefix)
+            if import_scan_mode == "full" and source_owner is None:
+                _visit_many(node.body)
             return
         if isinstance(node, ast.Lambda):
-            _visit_many(list(node.args.defaults), qualname_prefix)
+            _visit_many(list(node.args.defaults))
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
-                qualname_prefix,
             )
-            if import_scan_mode == "full":
+            if import_scan_mode == "full" and source_owner is None:
                 _visit(node.body)
             return
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             type_alias = cast(ast.TypeAlias, node)
             needs_typing = True
-            if import_scan_mode == "full":
+            if publishes_target(node, type_alias.name) and _source_demands is not None:
+                _source_demands.append(
+                    _SourceValueDemand(python_node_source_key(node), "escape")
+                )
+            if import_scan_mode == "full" and source_owner is None:
                 deferred_expressions: list[ast.expr] = []
                 for type_param in type_alias.type_params:
                     for attribute in ("bound", "default_value"):
@@ -1598,7 +1735,7 @@ def _collect_imports(
                             deferred_expressions.append(value)
                 deferred_expressions.append(type_alias.value)
                 for expression in deferred_expressions:
-                    _visit(expression, qualname_prefix)
+                    _visit(expression)
                     for child in ast.walk(expression):
                         if not isinstance(child, ast.Call):
                             continue
@@ -1615,9 +1752,12 @@ def _collect_imports(
         if isinstance(node, ast.Call):
             _collect_import_call(node)
         for child in ast.iter_child_nodes(node):
-            _visit(child, qualname_prefix)
+            _visit(child)
 
-    _visit(tree)
+    if source_owner is None:
+        _visit(tree)
+    else:
+        _visit_many(_source_body(tree, source_owner, ast_digest_admission))
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:
@@ -1630,6 +1770,8 @@ def _collect_imports_for_graph(
     module_name: str | None = None,
     is_package: bool = False,
     *,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
@@ -1639,6 +1781,9 @@ def _collect_imports_for_graph(
     discovery = _DynamicRelativeImportDiscovery()
     star_modules: list[str] = []
     dynamic_star_modules: list[str] = []
+    source_demands: list[_SourceValueDemand] = []
+    source_bindings: list[_SourceImportBinding] = []
+    source_values: list[_SourceValueSummary] = []
     imports = _collect_imports(
         tree,
         module_name,
@@ -1648,11 +1793,20 @@ def _collect_imports_for_graph(
         runtime_import_custody=runtime_import_custody,
         source_path=source_path,
         ast_digest_admission=ast_digest_admission,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
+        _source_demands=source_demands,
+        _source_bindings=source_bindings,
+        _source_values=source_values,
         _dynamic_relative_import_discovery=discovery,
         _star_modules=star_modules,
         _dynamic_star_modules=dynamic_star_modules,
     )
-    return discovery.projection(imports, star_modules, dynamic_star_modules)
+    return discovery.projection(imports, star_modules, dynamic_star_modules)._replace(
+        source_demands=tuple(dict.fromkeys(source_demands)),
+        source_bindings=tuple(dict.fromkeys(source_bindings)),
+        source_values=source_values[0] if source_values else _SourceValueSummary(),
+    )
 
 
 def _source_may_use_runtime_import_protocol(source: str) -> bool:
@@ -1664,6 +1818,8 @@ def _tree_uses_runtime_import_protocol(
     *,
     module_name: str | None,
     is_package: bool,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
@@ -1675,6 +1831,7 @@ def _tree_uses_runtime_import_protocol(
     binding_index = analyze_python_bindings(
         cast(ast.Module, tree),
         source_digest=ast_digest_admission.digest,
+        ast_digest_admission=ast_digest_admission,
         policy=PythonBindingPolicy(
             target_python=target_python.feature_version,
             module_name=module_name,
@@ -1686,6 +1843,8 @@ def _tree_uses_runtime_import_protocol(
     for node in _scan_nodes_for_import_mode(
         tree,
         import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         module_name=module_name,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
@@ -1843,7 +2002,7 @@ def _expand_static_package_all_star_children(
                 filename=str(package_path),
                 retain=False,
                 target_python=target_python,
-            )
+            ).tree
         except (OSError, SyntaxError, UnicodeDecodeError):
             continue
         exports = _static_module_all_exports(package_tree)
@@ -1870,6 +2029,8 @@ def _collect_import_scan_requests(
     *,
     source_path: Path,
     module_name: str,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
@@ -1882,6 +2043,8 @@ def _collect_import_scan_requests(
             tree,
             source_path=source_path,
             import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
             module_name=module_name,
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
@@ -1894,6 +2057,9 @@ def _collect_import_scan_requests(
         projection.dynamic_relative_import_candidates,
         projection.requires_runtime_package_anchor,
         projection.dynamic_star_modules,
+        projection.source_demands,
+        projection.source_bindings,
+        projection.source_values,
     )
 
 
@@ -1982,6 +2148,9 @@ def _complete_import_scan(
         tuple(executions),
         candidates,
         requests.requires_runtime_package_anchor,
+        requests.source_demands,
+        requests.source_bindings,
+        requests.source_values,
     )
 
 
@@ -2001,6 +2170,8 @@ def _module_uses_runtime_import_protocol(
     module_resolution_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
     import_scan_mode: ImportScanMode = "full",
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     tree: ast.AST | None = None,
     is_package: bool | None = None,
 ) -> bool:
@@ -2023,21 +2194,26 @@ def _module_uses_runtime_import_protocol(
             if not _source_may_use_runtime_import_protocol(source):
                 return False
             try:
-                scan_tree = module_resolution_cache.parse_module_ast(
+                parsed = module_resolution_cache.parse_module_ast(
                     module_path,
                     source,
                     filename=str(module_path),
-                    retain=False,
+                    retain=True,
                     target_python=target_python,
                 )
+                scan_tree = parsed.tree
+                ast_digest_admission = parsed.admission
             except SyntaxError:
                 return True
-        ast_digest_admission = _PythonAstDigestAdmission(scan_tree)
+        else:
+            ast_digest_admission = _PythonAstDigestAdmission(scan_tree)
         return _tree_uses_runtime_import_protocol(
             scan_tree,
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
             include_statements=True,
@@ -2049,6 +2225,8 @@ def _module_uses_runtime_import_protocol(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         target_python_tag=target_python.tag,
     )
 
@@ -2079,19 +2257,27 @@ def _module_graph_needs_runtime_import_support(
             else None
         )
         import_scan_mode = scan_authority.mode_for(module_name, module_path)
-        if _module_uses_runtime_import_protocol(
-            module_name=module_name,
-            module_path=module_path,
-            module_resolution_cache=module_resolution_cache,
-            target_python=target_python,
-            import_scan_mode=import_scan_mode,
-            tree=tree,
-            is_package=scan_authority.by_module[module_name].is_package,
-        ):
-            return _RuntimeImportSupportPolicy(
-                needs_generated_importer=False,
-                needs_runtime_import_support=True,
-            )
+        owners = (
+            ()
+            if import_scan_mode == "full"
+            else sorted(scan_authority.by_module[module_name].deferred_owners)
+        )
+        for source_owner, source_arguments in ((None, ()), *owners):
+            if _module_uses_runtime_import_protocol(
+                module_name=module_name,
+                module_path=module_path,
+                module_resolution_cache=module_resolution_cache,
+                target_python=target_python,
+                import_scan_mode=import_scan_mode,
+                source_owner=source_owner,
+                source_arguments=source_arguments,
+                tree=tree,
+                is_package=scan_authority.by_module[module_name].is_package,
+            ):
+                return _RuntimeImportSupportPolicy(
+                    needs_generated_importer=False,
+                    needs_runtime_import_support=True,
+                )
     return _RuntimeImportSupportPolicy(
         needs_generated_importer=False,
         needs_runtime_import_support=False,

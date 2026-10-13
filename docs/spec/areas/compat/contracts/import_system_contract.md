@@ -214,6 +214,33 @@ result and effects. Aliases can preserve that proof; a familiar spelling,
 class-local import or rebound constructor cannot create it. The syntax-only
 effect projection does not carry a separate registry of pure callable names.
 
+### Source demand and packaged availability
+
+Imported sources begin with module initialization. Binding facts retain the
+source owners of values through aliases, containers, rebinding and publication;
+one discovery worklist admits the deferred bodies those values can invoke or
+expose. Function calls, returned or escaped callables, class construction and
+unknown instance use retain the relevant callable families, including base and
+metaclass hooks. Type-alias values remain deferred until demanded. Explicit
+execution roots retain their conservative full-depth scan contract.
+
+Module namespace summaries are may-provenance across initialization, not an
+initialization-order proof. Cyclic importers can observe earlier publications or
+invoke a hook before a later export exists. A proven static member selection
+binds its argument to the existing parameter facts and branch-liveness evaluator;
+unknown or escaped hook use widens. No standard-library helper-name list governs
+availability. Class-family and reflection escape remain conservative, so this
+contract does not promise a minimal module set.
+
+Selected owner and argument facts travel together through scan authority,
+source-request caches, runtime-support detection and binary-image diagnostics.
+Read-only discovery reuses one parsed source admission and owner index, and
+revalidates its captured source bytes at the fixpoint. Filesystem-dependent
+resolution still runs through the existing live resolver. Graph admission
+packages a dependency; the original import operation continues to determine
+when its initializer executes. Native and WASM execution qualification is
+separate from host graph and binding-fact validation.
+
 ### 3.3 Dynamic Imports
 - Import-call dependency binding distinguishes a proven invalid call from an
   unresolved expansion. Missing, excess, duplicate, and unexpected arguments
