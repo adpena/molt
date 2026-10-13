@@ -548,9 +548,8 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
             );
         }
         record_exception(_py, exc_ptr);
-        if exception_handler_active() {
-            exception_context_set(_py, MoltObject::from_ptr(exc_ptr).bits());
-        }
+        // Raising publishes only the pending owner. Handler entry explicitly
+        // changes handled state; a consuming builtin must preserve its caller.
         if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
             context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
         }

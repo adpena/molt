@@ -1367,7 +1367,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
         with self._suppress_check_exception():
             exc_val = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
             is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -1392,7 +1392,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         awaited_val = self._emit_await_value(awaitable, raise_pending=False)
         with self._suppress_check_exception():
             exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
+            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
