@@ -366,3 +366,46 @@ except LookupError as error:
     print("manual-error-identity", True)
 else:
     raise AssertionError("manual resume lost the original exception")
+
+
+# Builtin iterator slots and Python __next__ descriptors share await delegation.
+for iterator in (
+    iter(()), iter([]), iter(range(0)), iter({}), iter({}.values()),
+    iter({}.items()), iter(set()), enumerate(()), map(str, ()),
+    filter(None, ()), zip(()), reversed(()),
+):
+    print("await-empty-iterator", finish(use(Returned(iterator))) is None)
+
+for iterator in (iter((None, 17)), iter([None, 17])):
+    delegated = use(Returned(iterator))
+    print("await-native-items", delegated.send(None), delegated.send(None))
+    try:
+        delegated.send(None)
+    except StopIteration as completed:
+        print("await-native-completed", completed.value is None)
+
+
+class CompletionValue:
+    def __str__(self):
+        raise AssertionError("completion value must not be stringified")
+
+
+completion_value = CompletionValue()
+
+
+class CompletionIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise StopIteration(completion_value)
+
+
+print("await-completion-identity", finish(use(Returned(CompletionIterator()))) is completion_value)
+
+delegated = use(Returned(iter((None,))))
+print("await-builtin-send-start", delegated.send(None))
+try:
+    delegated.send(9)
+except AttributeError:
+    print("await-builtin-nonempty-send", "rejected")
