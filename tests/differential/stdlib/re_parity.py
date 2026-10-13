@@ -314,11 +314,14 @@ print("PASS: DOTALL flag")
 # 13. Flags — VERBOSE
 # ---------------------------------------------------------------------------
 
-pattern = re.compile(r"""
+pattern = re.compile(
+    r"""
     (\d+)       # integer part
     \.          # decimal point
     (\d+)       # fractional part
-""", re.VERBOSE)
+""",
+    re.VERBOSE,
+)
 m = pattern.match("3.14")
 assert m is not None
 assert m.group(1) == "3"
@@ -535,6 +538,44 @@ m = re.match(r"\s", " ")
 assert m is not None
 m = re.match(r"\S", "a")
 assert m is not None
+
+# Escaped and literal endpoints share one range grammar. Include leading
+# ']'/'-', trailing '-', and chained ranges to detect recursive endpoint scans.
+for pattern in (
+    r"[\101-\132]",
+    r"[\101-Z]",
+    r"[A-\132]",
+    r"[\t-\r]",
+    r"[\--/]",
+    r"[\(-\)]",
+    r"[]-a]",
+    r"[--0]",
+    r"[a-b-c]",
+    r"[\141-\142-\143]",
+    r"[a-b-c-e]",
+    r"[a-]",
+    r"[\d-]",
+    r"[^\101-\132]",
+):
+    print(
+        "class-range",
+        pattern,
+        repr("".join(re.findall(pattern, "".join(chr(i) for i in range(128))))),
+    )
+
+header_pattern = re.compile(r"^(From |[\041-\071\073-\176]*:|[\t ])")
+for line in (
+    "Subject: Hello\n",
+    "Content-Type: text/plain\n",
+    "From sender\n",
+    "\tcontinued\n",
+    " continued\n",
+    "\n",
+    "Body\n",
+    "Bad Name: value\n",
+):
+    match = header_pattern.match(line)
+    print("header-range", repr(line), None if match is None else match.span())
 
 print("PASS: character classes")
 

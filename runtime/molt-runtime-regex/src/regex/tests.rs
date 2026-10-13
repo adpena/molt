@@ -572,6 +572,80 @@ fn test_match_charclass_range() {
 }
 
 #[test]
+fn test_match_charclass_literal_and_escaped_range_endpoints() {
+    // CPython's class grammar decodes one atom on each side of '-'. These
+    // literal expected sets distinguish ranges from endpoints and literal '-'.
+    for (pattern, expected) in [
+        (r"[\101-\132]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        (r"[\101-Z]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        (r"[A-\132]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        (r"[\t-\r]", "\t\n\x0b\x0c\r"),
+        (r"[\--/]", "-./"),
+        (r"[\(-\)]", "()"),
+        (r"[]-a]", "]^_`a"),
+        (r"[--0]", "-./0"),
+        (r"[a-b-c]", "-abc"),
+        (r"[\141-\142-\143]", "-abc"),
+        (r"[a-b-c-e]", "-abcde"),
+        (r"[a-]", "-a"),
+        (r"[\d-]", "-0123456789"),
+    ] {
+        let compiled = parse_pattern(pattern, 0).unwrap();
+        for code in 0u8..=127 {
+            let ch = char::from(code);
+            let text = ch.to_string();
+            assert_eq!(
+                execute_match(&compiled, &text, 0, 1, "fullmatch").is_some(),
+                expected.contains(ch),
+                "pattern {pattern:?}, input {ch:?}"
+            );
+        }
+    }
+    assert!(do_fullmatch(r"[^\101-\132]", "M").is_none());
+    assert!(do_fullmatch(r"[^\101-\132]", "m").is_some());
+}
+
+#[test]
+fn test_parse_charclass_refuses_nonliteral_or_reversed_ranges() {
+    for pattern in [
+        r"[z-a]",
+        r"[\141-\140]",
+        r"[a-\-]",
+        r"[\d-a]",
+        r"[a-\w]",
+        r"[\D-a]",
+        r"[a-\S]",
+        "[a-",
+        "[]",
+    ] {
+        assert!(parse_pattern(pattern, 0).is_err(), "{pattern:?}");
+    }
+}
+
+#[test]
+fn test_match_email_header_ranges() {
+    // The unmodified CPython FeedParser pattern: letters must occur in the
+    // interior of the escaped ranges, not merely at their endpoints.
+    let pattern = r"^(From |[\041-\071\073-\176]*:|[\t ])";
+    for (line, end) in [
+        ("Subject: Hello\n", Some(8)),
+        ("Content-Type: text/plain\n", Some(13)),
+        ("From sender\n", Some(5)),
+        ("\tcontinued\n", Some(1)),
+        (" continued\n", Some(1)),
+        ("\n", None),
+        ("Body\n", None),
+        ("Bad Name: value\n", None),
+    ] {
+        assert_eq!(
+            do_match(pattern, line).map(|result| result.end),
+            end,
+            "{line:?}"
+        );
+    }
+}
+
+#[test]
 fn test_match_charclass_range_no_match() {
     assert!(do_match("[a-z]", "5").is_none());
 }
