@@ -31,6 +31,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     ScratchCell,
+    TryScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -1344,14 +1345,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         default_val: MoltValue | None,
         has_default: bool,
     ) -> MoltValue:
-        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        awaitable = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
-        if has_default:
-            if default_val is None:
-                default_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-        else:
+        if default_val is None or not has_default:
             default_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
         res_cell = self._emit_cell_new(default_val)
@@ -1365,75 +1359,55 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
-        with self._suppress_check_exception():
-            exc_val = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            is_none = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-            pending = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-            self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-            is_stop = self._emit_builtin_exception_match(exc_val, "StopAsyncIteration")
-            self.emit(MoltOp(kind="IF", args=[is_stop], result=MoltValue("none")))
-            if not has_default:
+
+        # Async iteration catches termination from both __anext__ acquisition
+        # and await completion. One labeled scope owns the runtime frame and
+        # every call/poll exceptional edge, including suspension and resumption.
+        failed = self.next_label()
+        done = self.next_label()
+        scope = TryScope(finalbody=None, handler_label=failed)
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = None
+        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+        self.try_scopes.append(scope)
+        self.try_end_labels.append(failed)
+        self.emit(MoltOp(kind="TRY_START", args=[failed], result=MoltValue("none")))
+        try:
+            awaitable = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
+            awaited_val = self._emit_await_value(awaitable)
+            if cell_slot is not None:
+                res_cell_after = MoltValue(self.next_var(), type_hint="cell")
                 self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", cell_slot],
+                        result=res_cell_after,
+                    )
                 )
+                self._emit_cell_set(res_cell_after, awaited_val)
             else:
+                self._emit_cell_set(res_cell, awaited_val)
+        finally:
+            self.try_end_labels.pop()
+            self.try_scopes.pop()
+        self.emit(MoltOp(kind="TRY_END", args=[failed], result=MoltValue("none")))
+        self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[failed], result=MoltValue("none")))
+        self.emit(MoltOp(kind="TRY_END", args=[failed], result=MoltValue("none")))
+        with self._suppress_check_exception(emit_on_exit=False):
+            if has_default:
+                exc = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc))
+                is_stop = self._emit_builtin_exception_match(exc, "StopAsyncIteration")
+                self.emit(MoltOp(kind="IF", args=[is_stop], result=MoltValue("none")))
                 self.emit(
                     MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
                 )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        awaited_val = self._emit_await_value(awaitable, raise_pending=False)
-        with self._suppress_check_exception():
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
-            none_after = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
-            is_none_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
-            )
-            pending_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
-            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
-            is_stop_after = self._emit_builtin_exception_match(
-                exc_after, "StopAsyncIteration"
-            )
-            self.emit(MoltOp(kind="IF", args=[is_stop_after], result=MoltValue("none")))
-            if not has_default:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none"))
-                )
-            else:
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
-        if cell_slot is not None:
-            res_cell_after = MoltValue(self.next_var(), type_hint="cell")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", cell_slot],
-                    result=res_cell_after,
-                )
-            )
-            self._emit_cell_set(res_cell_after, awaited_val)
-        else:
-            self._emit_cell_set(res_cell, awaited_val)
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        self.try_suppress_depth = prior_suppress
         self._emit_raise_if_pending()
         if cell_slot is not None:
             res_cell_final = MoltValue(self.next_var(), type_hint="cell")
@@ -1459,9 +1433,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         )
         return result
 
-    def _emit_await_value(
-        self, awaitable: MoltValue, *, raise_pending: bool = True
-    ) -> MoltValue:
+    def _emit_await_value(self, awaitable: MoltValue) -> MoltValue:
         if not self._in_coroutine_body():
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW, "await outside async function"
@@ -1543,7 +1515,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.state_count += 1
         next_state_id = self.state_count
         res_placeholder = MoltValue(self.next_var(), type_hint="Any")
-        with self._suppress_check_exception(emit_on_exit=raise_pending):
+        with self._suppress_check_exception():
             self.emit(
                 MoltOp(
                     kind="STATE_TRANSITION",
@@ -1563,8 +1535,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             # The transition owns this carrier only until resumption. Loading
             # retains the result before clearing its hidden frame reference.
             res = self._consume_scratch_cell(result_storage)
-            if raise_pending:
-                self._emit_raise_if_pending()
+            self._emit_raise_if_pending()
         return res
 
     def _emit_state_yield_resume_try_starts(self) -> None:

@@ -5237,8 +5237,28 @@ def test_async_for_termination_matches_canonical_exception_class() -> None:
         fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe_poll"
     )
     matches = [op for op in ops if op["kind"] == "exception_match_builtin"]
-    assert len(matches) == 2
+    # Acquisition and resumed completion enter the same lexical handler.
+    assert len(matches) == 1
     assert {op["s_value"] for op in matches} == {"StopAsyncIteration"}
+    anext_index = next(i for i, op in enumerate(ops) if op["kind"] == "anext")
+    transfer = ops[anext_index + 1]
+    assert transfer["kind"] == "check_exception"
+    handler = transfer["value"]
+    assert any(
+        op["kind"] == "try_start" and op["value"] == handler for op in ops[:anext_index]
+    )
+    landing = next(
+        i
+        for i, op in enumerate(ops)
+        if op["kind"] == "label" and op["value"] == handler
+    )
+    assert ops[landing + 1]["kind"] == "try_end"
+    assert ops[landing + 2]["kind"] == "exception_last_pending"
+    transition = next(i for i, op in enumerate(ops) if op["kind"] == "state_transition")
+    resumed_check = next(
+        op for op in ops[transition + 1 :] if op["kind"] == "check_exception"
+    )
+    assert resumed_check["value"] == handler
     assert not any(op["kind"] == "exception_kind" for op in ops)
 
 
@@ -5478,3 +5498,68 @@ def test_public_builtin_role_calls_use_live_binder(
     source: str, runtime_name: str
 ) -> None:
     assert _first_builtin_call_kind(source, runtime_name) == "call_bind"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "async for value in values: pass",
+        "result = [value async for value in values]",
+        "result = {value async for value in values}",
+        "result = {value: value async for value in values}",
+        "result = (value async for value in values)",
+    ],
+)
+def test_async_iteration_inside_handler_keeps_only_lexical_stack_owners(
+    body: str,
+) -> None:
+    source = (
+        "async def probe(values):\n"
+        "    try:\n        raise RuntimeError('outer')\n"
+        "    except RuntimeError:\n"
+        "        try:\n" + indent(body, "            ") + "\n"
+        "        finally:\n            await cleanup()\n"
+    )
+    # CPython admits the source and its existing differential companion proves
+    # handled identity across immediate/awaited termination and failure.
+    compile(source, "<iteration-custody>", "exec")
+    ir = compile_to_tir(source)
+    pushes = 0
+    for function in ir["functions"]:
+        ops = function["ops"]
+        for index, op in enumerate(ops):
+            if op["kind"] == "exception_push":
+                pushes += 1
+                assert ops[index + 1]["kind"] == "try_start", function["name"]
+    assert pushes > 0
+
+
+@pytest.mark.parametrize("prefix", ["def", "async def"])
+def test_except_star_captures_and_clears_replacement_before_cleanup(
+    prefix: str,
+) -> None:
+    source = (
+        f"{prefix} probe():\n"
+        "    try:\n        raise ExceptionGroup('group', [ValueError(), TypeError()])\n"
+        "    except* ValueError as caught:\n        raise RuntimeError('replacement')\n"
+        "    except* TypeError as caught:\n        consume(caught)\n"
+    )
+    compile(source, "<except-star-custody>", "exec")
+    ir = compile_to_tir(source)
+    captured = 0
+    for function in ir["functions"]:
+        ops = function["ops"]
+        positions = {
+            op.get("out"): index for index, op in enumerate(ops) if op.get("out")
+        }
+        for op in ops:
+            if op["kind"] != "list_append":
+                continue
+            position = positions.get(op["args"][1])
+            if position is None or ops[position]["kind"] != "exception_last_pending":
+                continue
+            # The observation owns its result before clear; no potentially
+            # raising cleanup/append may see the old pending replacement.
+            assert ops[position + 1]["kind"] == "exception_clear"
+            captured += 1
+    assert captured == 2

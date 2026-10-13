@@ -1018,14 +1018,20 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     )
                 )
                 self._emit_guarded_body(handler.body)
-                handler_terminated = self.block_terminated
-                if not handler_terminated:
-                    self._emit_exception_handler_exit_cleanup(exc_entry)
-                self.active_exceptions.pop()
+                # Retain this clause's replacement before clearing pending.
+                # Cleanup and list insertion may observe exceptions; they must
+                # not redispatch a replacement reserved for the final merge.
                 raised_exc = MoltValue(self.next_var(), type_hint="exception")
                 self.emit(
                     MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=raised_exc)
                 )
+                self.emit(
+                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
+                )
+                handler_terminated = self.block_terminated
+                if not handler_terminated:
+                    self._emit_exception_handler_exit_cleanup(exc_entry)
+                self.active_exceptions.pop()
                 raised_is_none = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
@@ -1046,9 +1052,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                         args=[raised_target, raised_exc],
                         result=MoltValue("none"),
                     )
-                )
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
