@@ -214,7 +214,9 @@ def _logging_module(monkeypatch):
         "molt_logging_logger_set_level": lambda *args: None,
         "molt_logging_level_to_int": lambda value: value,
         "molt_rlock_new": threading.RLock,
-        "molt_rlock_acquire": lambda lock, blocking, timeout: lock.acquire(blocking, timeout),
+        "molt_rlock_acquire": lambda lock, blocking, timeout: lock.acquire(
+            blocking, timeout
+        ),
         "molt_rlock_release": lambda lock: lock.release(),
         "molt_logging_handler_close": lambda *args: None,
         "molt_logging_handler_new": lambda *args: 3,
@@ -280,7 +282,9 @@ def test_filehandler_readonly_emission_cannot_mutate(monkeypatch, tmp_path, dela
 
 
 @pytest.mark.parametrize("delay", [False, True])
-def test_filehandler_persistent_stream_and_closed_write_mode(monkeypatch, tmp_path, delay):
+def test_filehandler_persistent_stream_and_closed_write_mode(
+    monkeypatch, tmp_path, delay
+):
     module = _logging_module(monkeypatch)
     path = tmp_path / "output.log"
     handler = module.FileHandler(path, mode="w", delay=delay)
@@ -305,7 +309,9 @@ def test_filehandler_persistent_stream_and_closed_write_mode(monkeypatch, tmp_pa
     assert path.read_bytes() == b"custom:one|custom:two|"
 
 
-def test_delayed_filehandler_emit_preserves_open_denial_without_mutation(monkeypatch, tmp_path):
+def test_delayed_filehandler_emit_preserves_open_denial_without_mutation(
+    monkeypatch, tmp_path
+):
     module = _logging_module(monkeypatch)
     path = tmp_path / "denied.log"
     path.write_bytes(b"keep")
@@ -329,7 +335,9 @@ def test_delayed_filehandler_emit_preserves_open_denial_without_mutation(monkeyp
     handler.close()
 
 
-def test_streamhandler_uses_selected_stream_formatter_terminator_and_filter(monkeypatch):
+def test_streamhandler_uses_selected_stream_formatter_terminator_and_filter(
+    monkeypatch,
+):
     module = _logging_module(monkeypatch)
     stream = io.StringIO()
     handler = module.StreamHandler(stream)

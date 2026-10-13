@@ -1659,6 +1659,7 @@ def test_selected_source_body_scan_does_not_revive_dead_body_imports(
     tree = ast.parse(source)
     owner = tree.body[0].body[0]
     from molt.compiler_analysis.python_source_keys import python_node_source_key
+
     imports = module_import_scanner._collect_imports(
         tree,
         module_name="collections",
