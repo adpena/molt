@@ -183,7 +183,7 @@ fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> 
             // This constructor owns the unpublished identity, including any
             // namespace callables and MRO edges installed before the failure.
             unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, class) };
-            class_break_cycles(_py, class_bits);
+            crate::class_break_cycles(_py, class_bits);
             dec_ref_bits(_py, class_bits);
         }
     });
