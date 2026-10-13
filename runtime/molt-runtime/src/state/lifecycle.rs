@@ -32,7 +32,7 @@ use crate::c_api::c_api_module_clear_state;
 use crate::call::bind::{clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache};
 use crate::const_data_cache::clear_const_data_literal_caches;
 use crate::object::builders::clear_builder_singletons;
-use crate::object::class_storage::RuntimeClassRetirement;
+use crate::object::class_storage::{ClassOrigin, RuntimeClassRetirement};
 use crate::object::dec_ref_ptr;
 use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
@@ -330,6 +330,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     let mut modules = ModuleRetirement::new(_py);
     clear_runtime_callback_roots(_py, state, &mut modules);
     let mut retirement = RuntimeClassRetirement::new();
+    let mut class_origin = None;
     trace_shutdown("drain_shutdown_owner_thread_state");
     molt_cpython_abi::api::object::detach_runtime_execution_thread();
     loop {
@@ -340,7 +341,9 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
             let mut changed = collect_cycles_for_teardown(_py, &mut cycle_collection_available);
             changed |= retirement.include(_py, runtime_class_roots(_py, state));
             changed |= clear_runtime_callback_roots(_py, state, &mut modules);
-            changed |= retirement.clear_contents(_py);
+            if let Some(origin) = class_origin {
+                changed |= retirement.clear_contents(_py, origin);
+            }
             changed |= clear_thread_local_state(_py);
             changed |= clear_interned_names(_py, state);
             changed |= clear_runtime_static_names(_py, state);
@@ -358,8 +361,24 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         if retirement.retire_projections(_py, &drained) {
             continue;
         }
-        if !modules.advance() {
-            break;
+        if modules.advance() {
+            continue;
+        }
+        // Module and C/Molt TLS owners can release finalizers which still
+        // resolve builtin methods. Keep their actual namespaces intact until
+        // those owners have drained, then retire heap classes before static
+        // types, as CPython's finalize_interp_clear/finalize_interp_types do.
+        // Each class phase gets the same callback/GC/TLS fixed point: a value
+        // held by a heap namespace may release or republish another owner.
+        class_origin = match class_origin {
+            None => Some(ClassOrigin::Heap),
+            Some(ClassOrigin::Heap) => Some(ClassOrigin::Static),
+            Some(ClassOrigin::Static) => break,
+        };
+        if class_origin == Some(ClassOrigin::Heap) {
+            trace_shutdown("drain_heap_class_namespaces");
+        } else {
+            trace_shutdown("drain_static_class_namespaces");
         }
     }
     shutdown_thread_state.finish();

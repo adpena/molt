@@ -196,6 +196,12 @@ The lifecycle publishes a single ready-state pointer for the fast path:
   Each drain collects cycles released by the preceding owner/TLS pass, then
   drains roots again to catch collector callbacks that resurrect into them.
   Collection ends before callback-free class identity retirement.
+  Canonical class namespaces remain intact through these module and thread-state
+  drains. Heap class namespaces retire next, with another shared callback drain
+  while static builtin methods remain available. Static class namespaces retire
+  last, descendants before bases according to their sealed MRO. Namespace
+  retirement clears actual storage; it does not recreate deleted native methods
+  or substitute copied builtin bindings.
   Registered module owners retire with their cache cohort; retired rows cannot
   return a cleared namespace or restart its initializer during shutdown. No
   copied builtin namespace or lookup fallback substitutes for captured identity.
