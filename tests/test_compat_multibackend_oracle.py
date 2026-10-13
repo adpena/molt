@@ -96,6 +96,155 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
     assert actual.stderr == stderr
 
 
+@pytest.mark.parametrize(
+    "declared, expected",
+    [
+        (
+            "fs,env,time,random,fs.read",
+            "fs.read,fs.write,env.read,env.write,time.wall,random",
+        ),
+        ("fs.read", "fs.read"),
+        ("", ""),
+    ],
+)
+@pytest.mark.parametrize(
+    "adapter, artifact",
+    [
+        (compat_backends.WasmAdapter, "output_linked.wasm"),
+        (compat_backends.LlvmAdapter, "case_molt"),
+        (compat_backends.LuauAdapter, "case.luau"),
+    ],
+)
+def test_adapter_child_receives_atomic_selected_capabilities(
+    declared, expected, adapter, artifact, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    environment = dict(os.environ)
+    environment.update(
+        MOLT_CAPABILITY_TIER="none", MOLT_CAPABILITIES="poison.inherited"
+    )
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities=declared,
+        environment=environment,
+    )
+    real_guarded_run = compat_backends._guarded_run
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"].endswith("BUILD"):
+            if declared:
+                assert command[command.index("--capabilities") + 1] == declared
+            (tmp_path / artifact).touch()
+            if artifact.endswith(".wasm"):
+                (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+            return compat_backends.BackendResult("", "", 0)
+        # No compiler or target execution is claimed: the real guarded child
+        # observes the exact environment each adapter would give its artifact.
+        return real_guarded_run(
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['MOLT_CAPABILITIES']); "
+                "print(os.environ['MOLT_CAPABILITY_TIER'])",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = adapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    assert result.returncode == 0
+    assert result.infrastructure_failure is None
+    assert result.stdout == expected + "\nnone\n"
+    assert context.capabilities == declared
+    assert context.environment["MOLT_CAPABILITIES"] == "poison.inherited"
+    assert environment["MOLT_CAPABILITIES"] == "poison.inherited"
+
+
+@pytest.mark.parametrize("exit_code", (0, 7))
+def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
+    exit_code, tmp_path, monkeypatch
+):
+    from molt.node_runtime import resolve_node_runtime
+
+    node = str(
+        resolve_node_runtime(source_root=_REPO_ROOT, guard_prefix="MOLT_WASM_TEST").path
+    )
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    environment = dict(os.environ)
+    for name in ("NODE_NO_WARNINGS", "NODE_OPTIONS", "NODE_REDIRECT_WARNINGS"):
+        environment.pop(name, None)
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment=environment,
+    )
+    guest_stderr = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
+    real_guarded_run = compat_backends._guarded_run
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"].endswith("BUILD"):
+            (tmp_path / "output_linked.wasm").touch()
+            (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+            return compat_backends.BackendResult("", "", 0)
+        assert command[1].startswith("--redirect-warnings=")
+        # Exercise the actual Node warning producer and destination flag, with
+        # no WASM/compiler claim; guest-looking bytes must remain untouched.
+        probe = (
+            "const {WASI} = require('node:wasi'); new WASI({version:'preview1'});"
+            "process.emitWarning('other host warning', {code:'MOLT_PROBE'});"
+            f"process.stderr.write(Buffer.from({list(guest_stderr)}));"
+            f"process.exitCode = {exit_code};"
+        )
+        return real_guarded_run([node, command[1], "-e", probe], **kwargs)
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = compat_backends.WasmAdapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    assert result.returncode == exit_code
+    assert result.infrastructure_failure is None
+    assert result.child_stderr.encode("utf-8", errors="surrogateescape") == guest_stderr
+    warnings = (tmp_path / "node-warnings.log").read_text(encoding="utf-8")
+    assert "WASI is an experimental feature" in warnings
+    assert "[MOLT_PROBE] Warning: other host warning" in warnings
+    assert result.stderr == result.child_stderr + warnings
+
+
+def test_wasm_host_warning_read_failure_cannot_pass(tmp_path, monkeypatch):
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"].endswith("BUILD"):
+            (tmp_path / "output_linked.wasm").touch()
+            (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+        else:
+            warning_path = Path(command[1].split("=", 1)[1])
+            warning_path.unlink()
+            warning_path.mkdir()
+        return compat_backends.BackendResult("output", "guest error", 0)
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = compat_backends.WasmAdapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    assert result.infrastructure_failure is not None
+    assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+    assert "cannot read Node host warnings" in result.detail
+    assert result.stdout == "output"
+    assert result.child_stderr == "guest error"
+
+
 def test_cross_backend_comparison_uses_child_stream_not_guard_diagnostics():
     reference = compat_backends.BackendResult(
         "output", "first guard diagnostic", 0, child_stderr="guest\r\n"

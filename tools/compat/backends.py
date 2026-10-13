@@ -19,7 +19,7 @@ Adapters:
     in as a callable to avoid an import cycle); this is the ONLY backend that
     keeps the daemon/dyld/RSS pipeline, because that pipeline is native-shaped.
   * wasm   — `molt build --target wasm` (linked) + the canonical node host shim
-    `wasm/run_wasm.js` (lifted from wasm_diff.py, including node-noise stripping).
+    `wasm/run_wasm.js`, with Node diagnostics separate from guest stderr.
   * llvm   — `molt build --target llvm` (emits a native binary) + run the binary
     under the shared memory guard. Available-gated on the LLVM toolchain.
   * luau   — `molt build --target luau` + `lune run <out>.luau`. Available-gated
@@ -58,6 +58,7 @@ from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     verify_available_llvm_toolchain,
 )
+from molt.capability_policy import expand_capabilities, split_capability_tokens
 from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
@@ -499,8 +500,12 @@ def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
         for name in ("TMPDIR", "TEMP", "TMP"):
             env[name] = str(selected / "guest-tmp")
     env["PYTHONHASHSEED"] = "0"
-    if context.capabilities:
-        env["MOLT_CAPABILITIES"] = context.capabilities
+    # CLI profiles are development input; runtimes consume only atomic grants.
+    # An explicit empty selection must also replace inherited permissions.
+    grants, _profiles = expand_capabilities(
+        split_capability_tokens(context.capabilities)
+    )
+    env["MOLT_CAPABILITIES"] = ",".join(grants)
     return env
 
 
@@ -702,13 +707,48 @@ class WasmAdapter:
             )
         run_env = dict(env)
         manifest = wasm_runtime_manifest_path(linked)
-        return _guarded_run(
-            [shutil.which("node") or "node", str(_RUN_WASM_JS), str(manifest)],
+        warnings_path = out_dir / "node-warnings.log"
+        warnings_path.touch(exist_ok=False)
+        result = _guarded_run(
+            [
+                shutil.which("node") or "node",
+                f"--redirect-warnings={warnings_path}",
+                str(_RUN_WASM_JS),
+                str(manifest),
+            ],
             prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
             timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
+        try:
+            host_warnings = warnings_path.read_bytes().decode(
+                "utf-8", errors="surrogateescape"
+            )
+        except OSError as error:
+            from tools.memory_guard_core.process_custody import (
+                GuardInfrastructureFailure,
+            )
+
+            diagnostic = f"cannot read Node host warnings {warnings_path}: {error}"
+            existing = result.infrastructure_failure
+            return replace(
+                result,
+                infrastructure_failure=GuardInfrastructureFailure(
+                    phase=existing.phase
+                    if existing is not None
+                    else "temporary_artifact_custody",
+                    details=(*existing.details, diagnostic)
+                    if existing is not None
+                    else (diagnostic,),
+                ),
+                detail="\n".join(part for part in (result.detail, diagnostic) if part),
+            )
+        # Preserve every guest byte and Node failure; process warnings remain
+        # inspectable diagnostics without becoming the program's stderr oracle.
+        if host_warnings:
+            return replace(result, stderr=result.stderr + host_warnings)
+        return result
 
 
 # ---------------------------------------------------------------------------
