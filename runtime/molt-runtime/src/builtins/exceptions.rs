@@ -3277,9 +3277,16 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
     let class_ptr = obj_from_bits(class_bits)
         .as_ptr()
         .expect("new exception class");
+    let discard = || {
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, class_ptr) };
+            class_break_cycles(_py, class_bits);
+            dec_ref_bits(_py, class_bits);
+        });
+        0
+    };
     if exception_pending(_py) {
-        dec_ref_bits(_py, class_bits);
-        return 0;
+        return discard();
     }
     if let Some(spec) = builtin_exception_spec(name) {
         let ptr = obj_from_bits(class_bits)
@@ -3291,15 +3298,9 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
         );
         use crate::object::class_storage::{ClassDeclaration, ClassSemanticPolicy, class_declare};
         let policy = ClassSemanticPolicy::for_builtin_exception(spec);
-        if !unsafe { policy.apply(_py, ptr) } {
-            dec_ref_bits(_py, class_bits);
-            return 0;
-        }
-        unsafe { class_declare(ptr, ClassDeclaration::BuiltinException) };
         let module = alloc_string(_py, spec.module().as_bytes());
         if module.is_null() {
-            dec_ref_bits(_py, class_bits);
-            return 0;
+            return discard();
         }
         let module_bits = MoltObject::from_ptr(module).bits();
         let module_name = attr_name_bits_from_bytes(_py, b"__module__");
@@ -3312,21 +3313,16 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
             dec_ref_bits(_py, module_name);
         }
         dec_ref_bits(_py, module_bits);
-        if !stored {
-            dec_ref_bits(_py, class_bits);
-            return 0;
+        if !stored || !unsafe { policy.apply(_py, ptr) } {
+            return discard();
         }
+        unsafe { class_declare(ptr, ClassDeclaration::BuiltinException) };
     }
     // Descriptor publication below resolves canonical owners through this
     // cache. Seal the complete layout and creation metadata before making the
     // identity visible to that reentry, as every other native factory does.
     if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err() {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, class_ptr) };
-            class_break_cycles(_py, class_bits);
-            dec_ref_bits(_py, class_bits);
-        });
-        return 0;
+        return discard();
     }
     // Transfer the constructor's owned reference into the cache. The returned
     // reference is borrowed on both a miss and a hit; no creator hold leaks.

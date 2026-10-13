@@ -22,6 +22,7 @@ pub enum TypeAttributeField {
     Doc = 9,
     TextSignature = 10,
     AbstractMethods = 11,
+    Module = 12,
 }
 impl TypeAttributeField {
     pub fn from_operation(operation: u32) -> Option<Self> {
@@ -38,6 +39,7 @@ impl TypeAttributeField {
             9 => Self::Doc,
             10 => Self::TextSignature,
             11 => Self::AbstractMethods,
+            12 => Self::Module,
             _ => return None,
         })
     }
@@ -55,6 +57,7 @@ impl TypeAttributeField {
             Self::Doc => "__doc__",
             Self::TextSignature => "__text_signature__",
             Self::AbstractMethods => "__abstractmethods__",
+            Self::Module => "__module__",
         }
     }
 }
@@ -103,6 +106,20 @@ pub(super) unsafe fn add_type_documentation(tp: *mut PyTypeObject) -> c_int {
 /// Heap docs bind an own descriptor; abstract methods never bind or inherit.
 unsafe fn native_namespace_metadata(tp: *mut PyTypeObject, field: Field) -> *mut PyObject {
     unsafe {
+        if field == Field::Module && (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0 {
+            let name = std::ffi::CStr::from_ptr((*tp).tp_name).to_bytes();
+            return match name.iter().rposition(|byte| *byte == b'.') {
+                Some(end) => {
+                    let mut module =
+                        strings::PyUnicode_FromStringAndSize((*tp).tp_name, end as isize);
+                    if !module.is_null() {
+                        strings::PyUnicode_InternInPlace(&raw mut module);
+                    }
+                    module
+                }
+                None => strings::PyUnicode_InternFromString(c"builtins".as_ptr()),
+            };
+        }
         if field == Field::TextSignature
             || (field == Field::Doc
                 && (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0
@@ -127,10 +144,10 @@ unsafe fn native_namespace_metadata(tp: *mut PyTypeObject, field: Field) -> *mut
                 if dictionary.is_null() {
                     return ptr::null_mut();
                 }
-                let key = if field == Field::Doc {
-                    c"__doc__"
-                } else {
-                    c"__abstractmethods__"
+                let key = match field {
+                    Field::Doc => c"__doc__",
+                    Field::Module => c"__module__",
+                    _ => c"__abstractmethods__",
                 };
                 mapping::_PyDict_GetItemStringWithError(dictionary, key.as_ptr())
             };
@@ -143,7 +160,11 @@ unsafe fn native_namespace_metadata(tp: *mut PyTypeObject, field: Field) -> *mut
             }
             errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
-                c"__abstractmethods__".as_ptr(),
+                if field == Field::Module {
+                    c"__module__".as_ptr()
+                } else {
+                    c"__abstractmethods__".as_ptr()
+                },
             );
             return ptr::null_mut();
         }
@@ -163,10 +184,15 @@ unsafe fn set_native_namespace_metadata(
     value: *mut PyObject,
 ) -> c_int {
     unsafe {
-        if field == Field::Doc && value.is_null() {
+        if matches!(field, Field::Doc | Field::Module) && value.is_null() {
             errors::PyErr_Format(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                c"cannot delete '__doc__' attribute of immutable type '%s'".as_ptr(),
+                c"cannot delete '%s' attribute of immutable type '%s'".as_ptr(),
+                if field == Field::Module {
+                    c"__module__".as_ptr()
+                } else {
+                    c"__doc__".as_ptr()
+                },
                 (*tp).tp_name,
             );
             return -1;
@@ -186,14 +212,29 @@ unsafe fn set_native_namespace_metadata(
             return -1;
         }
         let key = crate::api::refcount::ProtectedPyObject::from_owned(
-            strings::PyUnicode_FromString(if field == Field::Doc {
-                c"__doc__".as_ptr()
-            } else {
-                c"__abstractmethods__".as_ptr()
+            strings::PyUnicode_FromString(match field {
+                Field::Doc => c"__doc__".as_ptr(),
+                Field::Module => c"__module__".as_ptr(),
+                _ => c"__abstractmethods__".as_ptr(),
             }),
         );
         if key.as_ptr().is_null() {
             return -1;
+        }
+        if field == Field::Module {
+            PyType_Modified(tp);
+            if (crate::hooks::hooks_or_stubs().target_python_minor)() >= 13 {
+                let firstline = OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+                    c"__firstlineno__".as_ptr(),
+                ));
+                if firstline.as_ptr().is_null()
+                    || mapping::PyDict_Pop(dictionary.as_ptr(), firstline.as_ptr(), ptr::null_mut())
+                        < 0
+                {
+                    return -1;
+                }
+            }
+            return mapping::PyDict_SetItem(dictionary.as_ptr(), key.as_ptr(), incoming.as_ptr());
         }
         struct Publication {
             tp: *mut PyTypeObject,
@@ -294,7 +335,7 @@ pub unsafe fn native_type_attribute_get(
             Field::Annotations | Field::Annotate => {
                 native_annotation(tp, field, ptr::null_mut(), false, false, deferred)
             }
-            Field::Doc | Field::TextSignature | Field::AbstractMethods => {
+            Field::Doc | Field::TextSignature | Field::AbstractMethods | Field::Module => {
                 native_namespace_metadata(tp, field)
             }
             Field::Class => unreachable!(),
@@ -331,7 +372,9 @@ pub unsafe fn native_type_attribute_set(
         match field {
             Field::Name | Field::QualName => set_native_name(tp, field, value),
             Field::Bases => hierarchy::set_bases(tp, value),
-            Field::Doc | Field::AbstractMethods => set_native_namespace_metadata(tp, field, value),
+            Field::Doc | Field::AbstractMethods | Field::Module => {
+                set_native_namespace_metadata(tp, field, value)
+            }
             Field::Annotations | Field::Annotate => {
                 let result = native_annotation(tp, field, value, true, value.is_null(), deferred);
                 if result.is_null() {

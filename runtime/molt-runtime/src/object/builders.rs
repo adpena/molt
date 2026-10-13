@@ -1816,7 +1816,8 @@ pub(crate) fn alloc_class_obj_with_namespace(
                 ClassReferenceSlot::SlotDeclaration
                 | ClassReferenceSlot::FieldLayout
                 | ClassReferenceSlot::InstanceDictionary
-                | ClassReferenceSlot::CreationDoc => 0,
+                | ClassReferenceSlot::CreationDoc
+                | ClassReferenceSlot::StaticModule => 0,
             };
             slot.initialize_owned(ptr, bits);
         }

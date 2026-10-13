@@ -494,11 +494,6 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
             class_ptr,
             crate::object::class_storage::ClassSlotPolicy::default(),
         );
-        if !crate::object::class_storage::ClassSemanticPolicy::static_type(false)
-            .apply(_py, class_ptr)
-        {
-            return discard_unraisable_args_class(_py, class_bits);
-        }
     }
     let builtins = builtin_classes(_py);
     if !init_class_edge(_py, class_ptr, builtins.type_obj) {
@@ -517,6 +512,10 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
     let module_set = set_class_attr(_py, class_ptr, "__module__", module_bits);
     dec_ref_bits(_py, module_bits);
     if !module_set
+        || !unsafe {
+            crate::object::class_storage::ClassSemanticPolicy::static_type(false)
+                .apply(_py, class_ptr)
+        }
         || !set_class_attr(
             _py,
             class_ptr,

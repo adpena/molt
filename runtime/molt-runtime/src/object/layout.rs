@@ -2255,7 +2255,7 @@ pub(crate) enum ClassSlotDeclaration {
 // hold slot declarations and physical rows; policy8 and cached size9 stay fixed.
 pub(crate) const CLASS_DECLARATIONS_WORD: usize = 10;
 // Static generic attributes own a separate reference after semantic facts.
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = ClassReferenceSlot::CreationDoc as usize + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize = ClassReferenceSlot::StaticModule as usize + 1;
 
 pub(crate) unsafe fn class_slot_declaration_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::SlotDeclaration.load(ptr) }

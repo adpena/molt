@@ -590,6 +590,82 @@ fn native_type_metadata_and_c_mappingproxy_share_runtime_descriptors() {
             let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));
             assert!(!class.as_ptr().is_null());
             let class_ptr = class.as_ptr().cast::<PyTypeObject>();
+            // Heap C types use their own raw namespace module, not tp_name or
+            // descriptor binding; arbitrary assigned objects remain identical.
+            let module = OwnedPyObject::from_owned(typeobj::native_type_attribute_get(
+                class.as_ptr(),
+                typeobj::TypeAttributeField::Module,
+                false,
+            ));
+            assert!(!module.as_ptr().is_null());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(module.as_ptr())).to_bytes(),
+                b"namespace"
+            );
+            let raw_module = OwnedPyObject::from_owned(mapping::PyDict_New());
+            let firstline =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyLong_FromLong(77));
+            assert_eq!(
+                mapping::PyDict_SetItemString(
+                    (*class_ptr).tp_dict,
+                    c"__firstlineno__".as_ptr(),
+                    firstline.as_ptr()
+                ),
+                0
+            );
+            assert_eq!(
+                typeobj::native_type_attribute_set(
+                    class.as_ptr(),
+                    typeobj::TypeAttributeField::Module,
+                    raw_module.as_ptr(),
+                    false
+                ),
+                0
+            );
+            let observed = OwnedPyObject::from_owned(typeobj::native_type_attribute_get(
+                class.as_ptr(),
+                typeobj::TypeAttributeField::Module,
+                false,
+            ));
+            assert_eq!(observed.as_ptr(), raw_module.as_ptr());
+            assert_eq!(
+                mapping::_PyDict_GetItemStringWithError(
+                    (*class_ptr).tp_dict,
+                    c"__firstlineno__".as_ptr()
+                )
+                .is_null(),
+                crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
+            );
+            assert_eq!(
+                typeobj::native_type_attribute_set(
+                    class.as_ptr(),
+                    typeobj::TypeAttributeField::Module,
+                    ptr::null_mut(),
+                    false
+                ),
+                -1
+            );
+            assert_ne!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                0
+            );
+            errors::PyErr_Clear();
+            assert_eq!(
+                mapping::_PyDict_GetItemStringWithError(
+                    (*class_ptr).tp_dict,
+                    c"__module__".as_ptr()
+                ),
+                raw_module.as_ptr()
+            );
+            assert_eq!(
+                typeobj::native_type_attribute_set(
+                    class.as_ptr(),
+                    typeobj::TypeAttributeField::Module,
+                    module.as_ptr(),
+                    false
+                ),
+                0
+            );
             let namespace = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
                 class.as_ptr(),
                 c"__dict__".as_ptr(),
@@ -1245,6 +1321,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
             for direct in [false, true] {
                 for (field, value) in [
                     (typeobj::TypeAttributeField::Doc, name),
+                    (typeobj::TypeAttributeField::Module, dictionary),
                     (typeobj::TypeAttributeField::Name, name),
                     (typeobj::TypeAttributeField::QualName, name),
                     (typeobj::TypeAttributeField::Annotations, dictionary),
@@ -1447,6 +1524,158 @@ fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
                     dec_ref_bits(py, bits);
                 }
             }
+        }
+    });
+}
+
+#[test]
+fn type_module_reads_own_heap_storage_and_static_native_name() {
+    use molt_cpython_abi::abi_types::{PyType_Type, PyTypeObject};
+    use molt_cpython_abi::api::{mapping, refcount::OwnedPyObject, strings, typeobj};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use typeobj::TypeAttributeField as Field;
+    static FAIL_EQUALITY: AtomicBool = AtomicBool::new(false);
+    extern "C" fn module_key_hash(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let hash = crate::molt_hash_builtin(key);
+            dec_ref_bits(py, key);
+            hash
+        })
+    }
+    extern "C" fn module_key_equal(_self: u64, _other: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            if FAIL_EQUALITY.load(Ordering::Relaxed) {
+                return raise_exception::<u64>(py, "RuntimeError", "module key equality failure");
+            }
+            MoltObject::from_bool(true).bits()
+        })
+    }
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let parent_name = attr_name_bits_from_bytes(py, b"ModuleParent").unwrap();
+            let child_name = attr_name_bits_from_bytes(py, b"ModuleChild").unwrap();
+            let parent = molt_class_new(parent_name);
+            molt_class_set_base(parent, builtin_classes(py).object);
+            let child = molt_class_new(child_name);
+            molt_class_set_base(child, parent);
+            let raw = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            type_metadata::write(py, parent, Field::Module, Some(raw)).unwrap();
+            let parent_ptr = obj_from_bits(parent).as_ptr().unwrap();
+            let child_ptr = obj_from_bits(child).as_ptr().unwrap();
+            let child_dict = obj_from_bits(class_dict_bits(child_ptr)).as_ptr().unwrap();
+            drop(crate::object::ops::dict_del_deferred(py, child_dict, key).unwrap());
+            assert_eq!(type_metadata::read(py, child, Field::Module), Err(()));
+            assert_attribute_error(py);
+            let observed = type_metadata::read(py, parent, Field::Module).unwrap();
+            assert_eq!(observed, raw);
+            dec_ref_bits(py, observed);
+            // Native namespace dictionaries admit ordinary hashable keys.
+            // A same-hash key equal to __module__ must not be skipped by a
+            // physical string-byte probe, and its equality errors must escape.
+            FAIL_EQUALITY.store(false, Ordering::Relaxed);
+            let key_name = attr_name_bits_from_bytes(py, b"ModuleNamespaceKey").unwrap();
+            let key_class = molt_class_new(key_name);
+            molt_class_set_base(key_class, builtin_classes(py).object);
+            let key_class_ptr = obj_from_bits(key_class).as_ptr().unwrap();
+            let key_dictionary = obj_from_bits(class_dict_bits(key_class_ptr))
+                .as_ptr()
+                .unwrap();
+            for (name, address, arity) in [
+                (b"__hash__".as_slice(), fn_addr!(module_key_hash), 1),
+                (b"__eq__".as_slice(), fn_addr!(module_key_equal), 2),
+            ] {
+                let name = attr_name_bits_from_bytes(py, name).unwrap();
+                let function = MoltObject::from_ptr(alloc_function_obj(py, address, arity)).bits();
+                assert!(dict_set_in_place(py, key_dictionary, name, function));
+                dec_ref_bits(py, function);
+                dec_ref_bits(py, name);
+            }
+            class_bump_layout_version(key_class_ptr);
+            let collision = alloc_instance_for_class(py, key_class_ptr);
+            assert!(obj_from_bits(collision).as_ptr().is_some());
+            assert!(dict_set_in_place(py, child_dict, collision, raw));
+            let observed = type_metadata::read(py, child, Field::Module).unwrap();
+            assert_eq!(observed, raw);
+            dec_ref_bits(py, observed);
+            FAIL_EQUALITY.store(true, Ordering::Relaxed);
+            assert_eq!(type_metadata::read(py, child, Field::Module), Err(()));
+            let exception = crate::builtins::exceptions::molt_exception_last_pending();
+            let kind = crate::builtins::exceptions::molt_exception_kind(exception);
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(kind)).as_deref(),
+                Some("RuntimeError")
+            );
+            crate::molt_exception_clear();
+            dec_ref_bits(py, kind);
+            dec_ref_bits(py, exception);
+            FAIL_EQUALITY.store(false, Ordering::Relaxed);
+            for (bits, ptr) in [(child, child_ptr), (parent, parent_ptr)] {
+                crate::object::class_storage::clear_class_runtime_contents(py, ptr);
+                class_break_cycles(py, bits);
+                dec_ref_bits(py, bits);
+            }
+            dec_ref_bits(py, collision);
+            crate::object::class_storage::clear_class_runtime_contents(py, key_class_ptr);
+            class_break_cycles(py, key_class);
+            for bits in [key_class, key_name, raw, child_name, parent_name, key] {
+                dec_ref_bits(py, bits);
+            }
+
+            // A physical static type's own dictionary is not the module owner.
+            // CPython uses the last prefix of immutable tp_name even when an
+            // instance metadata descriptor occupies the same namespace key.
+            let dictionary = OwnedPyObject::from_owned(mapping::PyDict_New());
+            assert!(!dictionary.as_ptr().is_null());
+            let module_key =
+                OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"__module__".as_ptr()));
+            let roots = builtin_classes(py);
+            let root_dict = obj_from_bits(class_dict_bits(
+                obj_from_bits(roots.type_obj).as_ptr().unwrap(),
+            ))
+            .as_ptr()
+            .unwrap();
+            let descriptor =
+                crate::object::ops::dict_get_str_bytes_borrowed(py, root_dict, b"__module__")
+                    .unwrap();
+            let descriptor = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(descriptor),
+            );
+            assert_eq!(
+                mapping::PyDict_SetItem(
+                    dictionary.as_ptr(),
+                    module_key.as_ptr(),
+                    descriptor.as_ptr()
+                ),
+                0
+            );
+            let mut native: PyTypeObject = std::mem::zeroed();
+            native.ob_base.ob_base.ob_refcnt = 1;
+            native.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            native.tp_dict = dictionary.as_ptr();
+            for (name, expected) in [
+                (c"vendor.codec.Native", b"vendor.codec".as_slice()),
+                (c"Native", b"builtins".as_slice()),
+            ] {
+                native.tp_name = name.as_ptr();
+                let module = OwnedPyObject::from_owned(typeobj::native_type_attribute_get(
+                    (&raw mut native).cast(),
+                    Field::Module,
+                    false,
+                ));
+                assert!(!module.as_ptr().is_null());
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(module.as_ptr())).to_bytes(),
+                    expected
+                );
+                assert_eq!(
+                    mapping::PyDict_GetItem(dictionary.as_ptr(), module_key.as_ptr()),
+                    descriptor.as_ptr()
+                );
+            }
+            assert!(!exception_pending(py));
         }
     });
 }

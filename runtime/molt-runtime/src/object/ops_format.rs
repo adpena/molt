@@ -418,12 +418,10 @@ fn format_qualified_type_name_in_context(
             string_obj_bytes(obj_from_bits(class_qualname_bits(type_ptr))).unwrap_or(name);
         let mut module_name: Option<Vec<u8>> = None;
         if !exception_pending(_py) {
-            let dict_bits = class_dict_bits(type_ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-                && let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__").ok()?
+            if let Some(value) =
+                crate::object::class_storage::class_module_bits(_py, type_ptr).ok()?
             {
-                module_name = Some(val);
+                module_name = string_obj_bytes(obj_from_bits(value));
             }
         }
         if let Some(module) = module_name

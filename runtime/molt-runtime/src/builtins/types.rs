@@ -178,9 +178,15 @@ fn alloc_bootstrap_runtime_function(
 }
 
 fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> u64 {
-    if class_bits != 0 {
-        dec_ref_bits(_py, class_bits);
-    }
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        if let Some(class) = obj_from_bits(class_bits).as_ptr() {
+            // This constructor owns the unpublished identity, including any
+            // namespace callables and MRO edges installed before the failure.
+            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, class) };
+            class_break_cycles(_py, class_bits);
+            dec_ref_bits(_py, class_bits);
+        }
+    });
     if !exception_pending(_py) {
         let _ = raise_exception::<u64>(
             _py,
