@@ -94,8 +94,14 @@ Cargo owns declared dependency freshness; complete source/toolchain observations
 remain attached to each run. Editable Python sources and generated scratch/session
 names no longer force a new storage address. Tests execute at their original
 Cargo paths. Release producers remain isolated. Independent source review and
-173 composed receiver controls pass with three Windows-only skips; actual Linux
-queue cold/warm execution remains required before landing this successor.
+173 composed receiver controls pass with three Windows-only skips. The first
+actual Linux pair passed both programs but took 251.42s and 249.71s: changing
+guard memory budgets still selected distinct workspaces. The correction replaces
+the broad operational-environment key with the existing compiler-input selector,
+retaining explicitly pinned session isolation and full per-run evidence. Its
+150 focused controls pass; a real Cargo build-script environment change rebuilds
+in the same workspace with the changed output. Actual queue reuse remains required
+before landing this successor.
 
 ### Qualified boundaries
 
@@ -197,9 +203,15 @@ now reach the known missing operator, heapq and email.generator imports; five
 warning-only mismatches disappear. The other failures are three WASI
 temporary-directory panics, binary large-int pickle, and dictionary callback
 statistics/finalization. This replay retains the failed producer custody and
-does not qualify compilation or release. Temporary-directory selection and
-Node Worker termination require their existing owning families to be repaired;
-neither justifies a target exclusion or a new execution framework.
+does not qualify compilation or release. Temporary-directory selection remains
+open under its existing owner. The Node termination repair uses the existing
+broker and each Worker's creator-observed native exit, including termination
+before the child hook starts. It removes the incomplete hook-only closure rule
+without a new process, registry or timer. At `d525a9488`, 28 focused Linux
+controls pass using the pinned Node 26.11.1; three Windows-only controls are
+skipped. The host successor previously passed 50 controls with the same three
+platform exclusions. These checks qualify the observed Worker lifetime boundary,
+not the failed historical WASM producer or an unexecuted Windows cell.
 
 Both native and WASM expose CSV and graph finalizers raising AttributeError
 through `object.__setattr__`. Reviewed source `5b2fcb578` preserves canonical
