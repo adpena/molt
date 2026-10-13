@@ -978,6 +978,14 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         (classmethod, TYPE_ID_CLASSMETHOD),
         (staticmethod, TYPE_ID_STATICMETHOD),
         (property, TYPE_ID_PROPERTY),
+        (file, TYPE_ID_FILE_HANDLE),
+        (file_io, TYPE_ID_FILE_HANDLE),
+        (buffered_reader, TYPE_ID_FILE_HANDLE),
+        (buffered_writer, TYPE_ID_FILE_HANDLE),
+        (buffered_random, TYPE_ID_FILE_HANDLE),
+        (text_io_wrapper, TYPE_ID_FILE_HANDLE),
+        (bytes_io, TYPE_ID_FILE_HANDLE),
+        (string_io, TYPE_ID_FILE_HANDLE),
     ] {
         let class_ptr = obj_from_bits(class_bits)
             .as_ptr()

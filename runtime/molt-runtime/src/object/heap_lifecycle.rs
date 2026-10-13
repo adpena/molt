@@ -775,7 +775,9 @@ pub(crate) unsafe fn visit_payload_owned_values(
             HeapLifecycleHandler::FileHandle => {
                 let handle = super::file_handle_ptr(ptr);
                 if !handle.is_null() {
-                    if (*handle).dict_bits != 0 {
+                    // Extended instances already project this same external
+                    // dictionary through the shared native-field authority.
+                    if !super::native_instance::has_fields(ptr) && (*handle).dict_bits != 0 {
                         visit_bits((*handle).dict_bits, visit);
                     }
                     visit_bits((*handle).name_bits, visit);
@@ -1439,6 +1441,8 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             HeapLifecycleHandler::FileHandle => {
                 let handle = super::file_handle_ptr(ptr);
                 if !handle.is_null() {
+                    // Native subtype fields clear the external dictionary
+                    // first. Exact roots retire it here; no tail dictionary is owned.
                     let detached = [
                         std::mem::replace(&mut (*handle).dict_bits, 0),
                         std::mem::replace(&mut (*handle).name_bits, MoltObject::none().bits()),

@@ -57,14 +57,20 @@ with tempfile.TemporaryDirectory() as directory:
     failure = LookupError("close flush")
 
     class FailingRaw(io.FileIO):
+        __slots__ = ("slot_token",)
+
         def flush(self):
             raise failure
 
     class FailingBuffered(io.BufferedReader):
+        __slots__ = ("slot_token",)
+
         def flush(self):
             raise failure
 
     class FailingText(io.TextIOWrapper):
+        __slots__ = ("slot_token",)
+
         def flush(self):
             raise failure
 
@@ -74,6 +80,14 @@ with tempfile.TemporaryDirectory() as directory:
         (FailingText, FailingText(io.FileIO(path, "r"))),
     ):
         print("concrete-class", expected_class.__name__, type(stream) is expected_class)
+        stream.slot_token = failure
+        stream.dictionary_token = "separate"
+        print(
+            "concrete-slots",
+            stream.slot_token is failure,
+            stream.__dict__["dictionary_token"],
+            "slot_token" in stream.__dict__,
+        )
         descriptor = stream.fileno()
         try:
             stream.close()
@@ -163,10 +177,19 @@ with tempfile.TemporaryDirectory() as directory:
     for base in (io.BytesIO, io.StringIO):
 
         class MemoryClose(base):
+            __slots__ = ("slot_token",)
+
             def flush(self):
                 raise AssertionError("memory close must not call flush")
 
         stream = MemoryClose()
+        stream.slot_token = "slot"
+        stream.dictionary_token = "dictionary"
+        print(
+            "memory-subclass-slots",
+            stream.slot_token,
+            stream.__dict__["dictionary_token"],
+        )
         payload = b"abc" if base is io.BytesIO else "abc"
         stream.write(payload)
         print("memory-subclass-value", stream.getvalue() == payload)

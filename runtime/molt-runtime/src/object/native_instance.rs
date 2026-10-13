@@ -1,5 +1,6 @@
 //! One native-subtype representation: the physical payload followed by aligned
-//! declared slots and the ordinary dictionary tail. The sealed class owns the
+//! declared slots and the ordinary layout tail. FileHandle keeps its dictionary
+//! in native backing; its reserved tail word remains empty. The sealed class owns the
 //! physical kind and extent; immutable payload length derives the field base.
 //! No per-object offset or tuple-only dictionary representation is retained.
 
@@ -21,12 +22,18 @@ pub(crate) enum NativePayload {
     Set,
     Frozenset,
     Complex,
+    FileHandle,
 }
 
 impl NativePayload {
-    pub(crate) fn owner(self, py: &PyToken<'_>) -> u64 {
+    pub(crate) fn owner(self, py: &PyToken<'_>) -> Option<u64> {
+        // FileHandle has several concrete native roots. Their sealed physical
+        // kind and non-inherited NativeSlotLayout declaration own admission.
+        if self == Self::FileHandle {
+            return None;
+        }
         let classes = builtin_classes(py);
-        match self {
+        Some(match self {
             Self::Tuple => classes.tuple,
             Self::String => classes.str,
             Self::Bytes => classes.bytes,
@@ -34,7 +41,8 @@ impl NativePayload {
             Self::Set => classes.set,
             Self::Frozenset => classes.frozenset,
             Self::Complex => classes.complex,
-        }
+            Self::FileHandle => unreachable!(),
+        })
     }
 
     pub(crate) fn type_id(self) -> u32 {
@@ -46,6 +54,7 @@ impl NativePayload {
             Self::Set => TYPE_ID_SET,
             Self::Frozenset => TYPE_ID_FROZENSET,
             Self::Complex => TYPE_ID_COMPLEX,
+            Self::FileHandle => TYPE_ID_FILE_HANDLE,
         }
     }
 
@@ -58,6 +67,7 @@ impl NativePayload {
             TYPE_ID_SET => Self::Set,
             TYPE_ID_FROZENSET => Self::Frozenset,
             TYPE_ID_COMPLEX => Self::Complex,
+            TYPE_ID_FILE_HANDLE => Self::FileHandle,
             _ => return None,
         })
     }
@@ -72,6 +82,7 @@ impl NativePayload {
             Self::Bytearray => Some(size_of::<*mut Vec<u8>>() + size_of::<u64>()),
             Self::Set | Self::Frozenset => Some(size_of::<HashStorage<SetEntry>>()),
             Self::Complex => Some(size_of::<crate::builtins::numbers::ComplexParts>()),
+            Self::FileHandle => Some(size_of::<*mut MoltFileHandle>()),
         }
     }
 
@@ -95,11 +106,12 @@ impl NativePayload {
     pub(crate) unsafe fn admit(self, py: &PyToken<'_>, class: u64) -> Option<*mut u8> {
         unsafe {
             let owner = self.owner(py);
+            let label = owner.map(class_name_for_error);
             let (_, class_ptr) = crate::builtins::type_ops::native_constructor_receiver(
                 py,
-                owner,
+                owner.unwrap_or(class),
                 Some(class),
-                &class_name_for_error(owner),
+                label.as_deref().unwrap_or("IO"),
             )?;
             super::class_finish_definition(py, class_ptr).ok()?;
             if super::class_instance_type_id(class_ptr) != self.type_id()
@@ -195,7 +207,10 @@ pub(crate) unsafe fn alloc_unpublished(
         let Some(class_ptr) = kind.admit(py, class) else {
             return std::ptr::null_mut();
         };
-        let subtype = class != kind.owner(py);
+        let subtype = !super::class_storage::class_declares(
+            class_ptr,
+            super::class_storage::ClassDeclaration::NativeSlotLayout,
+        );
         let native = kind.native_bytes(length);
         let payload = if subtype {
             native.and_then(align).and_then(|offset| {
@@ -209,7 +224,10 @@ pub(crate) unsafe fn alloc_unpublished(
             return std::ptr::null_mut();
         };
         let aux = if !subtype {
-            if kind == NativePayload::Frozenset {
+            if kind == NativePayload::FileHandle {
+                // Every concrete IO root retains its actual class identity.
+                super::ObjectAuxPreselection::ClassInline
+            } else if kind == NativePayload::Frozenset {
                 super::ObjectAuxPreselection::StateInline
             } else {
                 super::ObjectAuxPreselection::Default
@@ -226,42 +244,66 @@ pub(crate) unsafe fn alloc_unpublished(
     }
 }
 
-/// Consume the unpublished allocation on both success and failure. Native Vecs,
-/// tuple items and inline bytes are complete before any owned class edge exists.
-pub(crate) unsafe fn publish(py: &PyToken<'_>, object: *mut u8, class: u64) -> *mut u8 {
+/// Prepare fields and class ownership without publishing the allocation. The
+/// caller has already installed every native owner, so failure can retire the
+/// complete payload through the ordinary lifecycle authority. FileHandle uses
+/// this phase before initializing its public dictionary members.
+/// Consumes the unpublished allocation on failure; success remains unpublished.
+pub(crate) unsafe fn prepare_publication(py: &PyToken<'_>, object: *mut u8, class: u64) -> *mut u8 {
     unsafe {
         if object.is_null() {
             return object;
         }
         let kind = NativePayload::from_type_id(object_type_id(object)).expect("native allocation");
-        if class != kind.owner(py) {
-            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        let subtype = !super::class_storage::class_declares(
+            class_ptr,
+            super::class_storage::ClassDeclaration::NativeSlotLayout,
+        );
+        if subtype {
             let size = super::layout::class_cached_layout_size(class_ptr).unwrap();
             if super::field_storage::initialize_fields(py, object, class_ptr, size).is_err() {
                 dec_ref_bits(py, MoltObject::from_ptr(object).bits());
                 return std::ptr::null_mut();
             }
-            if !super::object_init_class_edge_unpublished(
+        }
+        if (subtype || kind == NativePayload::FileHandle)
+            && !super::object_init_class_edge_unpublished(
                 py,
                 object,
                 class,
                 super::ClassEdgeOwnership::Owned,
-            ) {
-                dec_ref_bits(py, MoltObject::from_ptr(object).bits());
-                raise_exception::<()>(
-                    py,
-                    "SystemError",
-                    "native subtype class edge initialization failed",
-                );
-                return std::ptr::null_mut();
-            }
+            )
+        {
+            dec_ref_bits(py, MoltObject::from_ptr(object).bits());
+            raise_exception::<()>(py, "SystemError", "native class edge initialization failed");
+            return std::ptr::null_mut();
+        }
+        if subtype {
             // Native classes never own inferred inline rows. The sticky guard
             // also forces any compiled immediate store through field projection.
             (*header_from_obj_ptr(object))
                 .fetch_or_flags(super::HEADER_FLAG_HAS_PTRS | super::HEADER_FLAG_CONTAINS_REFS);
-            super::gc::gc_track_if_cyclic(py, object, kind.type_id());
+            // Always-tracked kinds (including FileHandle) were admitted by the
+            // allocator. Only a class-dependent projection needs promotion.
+            if super::heap_track_projection(kind.type_id())
+                == Some(super::HeapTrackProjection::NativeSubtype)
+            {
+                super::gc::gc_track_if_cyclic(py, object, kind.type_id());
+            }
         }
-        super::gc::gc_publish_initialized(py, object);
+        object
+    }
+}
+
+/// Consume the unpublished allocation on both success and failure. Native Vecs,
+/// tuple items and inline bytes are complete before any owned class edge exists.
+pub(crate) unsafe fn publish(py: &PyToken<'_>, object: *mut u8, class: u64) -> *mut u8 {
+    unsafe {
+        let object = prepare_publication(py, object, class);
+        if !object.is_null() {
+            super::gc::gc_publish_initialized(py, object);
+        }
         object
     }
 }
