@@ -744,7 +744,7 @@ fn native_spec_module_preserves_descriptors_and_retires_warning_failures() {
                         0
                     );
                     let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
-                    let text = OwnedPyObject::from_owned(object::PyObject_Str(error.as_ptr()));
+                    let text = OwnedPyObject::from_owned(typeobj::PyObject_Str(error.as_ptr()));
                     assert!(!text.as_ptr().is_null());
                     assert_eq!(
                         std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(text.as_ptr()))
