@@ -229,7 +229,7 @@ fn pending_exception_matches_any(_py: &PyToken<'_>, kinds: &[&str]) -> bool {
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last();
+    let exc_bits = molt_exception_last_pending();
     let matches = kinds.iter().any(|kind| {
         crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, kind)
     });

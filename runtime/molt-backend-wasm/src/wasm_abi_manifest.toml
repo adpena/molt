@@ -2056,11 +2056,6 @@ return_contract = "owned_object"
 type = 25
 
 [[import]]
-name = "get_attr_ptr"
-return_contract = "owned_object"
-type = 23
-
-[[import]]
 name = "get_attr_special"
 return_contract = "owned_object"
 type = 18
@@ -5854,10 +5849,6 @@ boxed_operand_count = 2
 [[lir_runtime_call]]
 variant = "GetAttrObjectIc"
 import_name = "get_attr_object_ic"
-
-[[lir_runtime_call]]
-variant = "GetAttrPtr"
-import_name = "get_attr_ptr"
 
 [[lir_runtime_call]]
 variant = "GetAttrSpecial"

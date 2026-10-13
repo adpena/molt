@@ -27,10 +27,10 @@ use crate::{
     exception_stack_set_depth, exception_type_bits_from_name, generator_context_stack_store,
     generator_context_stack_take, generator_exception_stack_store, generator_exception_stack_take,
     generator_raise_active, header_from_obj_ptr, inc_ref_bits, is_truthy, maybe_ptr_from_bits,
-    molt_exception_clear, molt_exception_last, molt_exception_set_last, molt_raise, obj_from_bits,
-    object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits, raise_exception,
-    register_task_execution, resolve_task_ptr, runtime_state, set_generator_raise, to_i64,
-    token_id_from_bits, type_name,
+    molt_exception_clear, molt_exception_last_pending, molt_exception_set_last, molt_raise,
+    obj_from_bits, object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits,
+    raise_exception, register_task_execution, resolve_task_ptr, runtime_state, set_generator_raise,
+    to_i64, token_id_from_bits, type_name,
 };
 
 pub(crate) fn promise_trace_enabled() -> bool {
@@ -501,7 +501,7 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             }
             let pending = exception_pending(_py);
             let exc_bits = if pending {
-                let bits = molt_exception_last();
+                let bits = molt_exception_last_pending();
                 clear_exception(_py);
                 bits
             } else {
@@ -639,7 +639,7 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             set_generator_raise(prev_raise);
             let pending = exception_pending(_py);
             let exc_bits = if pending {
-                let bits = molt_exception_last();
+                let bits = molt_exception_last_pending();
                 clear_exception(_py);
                 bits
             } else {
@@ -724,7 +724,7 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
         set_generator_raise(prev_raise);
         let exc_pending = exception_pending(_py);
         let exc_bits = if exc_pending {
-            let bits = molt_exception_last();
+            let bits = molt_exception_last_pending();
             clear_exception(_py);
             bits
         } else {
@@ -798,7 +798,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             dec_ref_bits(py, exit);
             if exception_pending(py) {
                 dec_ref_bits(py, result);
-                let exception = molt_exception_last();
+                let exception = molt_exception_last_pending();
                 let is_exit = crate::builtins::exceptions::exception_matches_builtin_name(
                     py,
                     exception,
@@ -1056,7 +1056,7 @@ unsafe fn asyncgen_call_firstiter_if_needed(
             dec_ref_bits(_py, res_bits);
         }
         if exception_pending(_py) {
-            let exc_bits = molt_exception_last();
+            let exc_bits = molt_exception_last_pending();
             clear_exception(_py);
             let raised = molt_raise(exc_bits);
             dec_ref_bits(_py, exc_bits);
@@ -1474,7 +1474,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             impl<'a> PendingExceptionGuard<'a> {
                 fn new(py: &'a PyToken<'a>) -> Self {
                     let prior_bits = if exception_pending(py) {
-                        let bits = molt_exception_last();
+                        let bits = molt_exception_last_pending();
                         exception_clear_reason_set("asyncgen_poll_guard_prior");
                         molt_exception_clear();
                         Some(bits)
@@ -1489,10 +1489,8 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                         return;
                     };
                     if exception_pending(self.py) {
-                        let cur_bits = molt_exception_last();
                         exception_clear_reason_set("asyncgen_poll_guard_restore");
                         molt_exception_clear();
-                        dec_ref_bits(self.py, cur_bits);
                     }
                     let _ = molt_exception_set_last(prior_bits);
                     dec_ref_bits(self.py, prior_bits);
@@ -1656,7 +1654,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     asyncgen_clear_running_bits(_py, asyncgen_ptr);
                 }
                 crate::object::object_set_state(obj_ptr, 0);
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 if op == ASYNCGEN_OP_ACLOSE {
                     let terminal = obj_from_bits(exc_bits).as_ptr().is_some_and(|exc_ptr| {
                         crate::builtins::exceptions::exception_matches_builtin_name(

@@ -21,8 +21,6 @@ pub(crate) unsafe fn asyncio_clear_pending_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    let exc_bits = molt_exception_last();
-    dec_ref_bits(_py, exc_bits);
     molt_exception_clear();
 }
 
@@ -180,7 +178,7 @@ pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
 }
 
 pub(crate) unsafe fn asyncio_take_pending_exception_bits(_py: &PyToken<'_>) -> u64 {
-    let exc_bits = molt_exception_last();
+    let exc_bits = molt_exception_last_pending();
     molt_exception_clear();
     exc_bits
 }

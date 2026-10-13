@@ -1161,12 +1161,12 @@ fn alloc_stdio_handle(
             dec_ref_bits(_py, name_bits);
             return MoltObject::none().bits();
         }
-        if trace_stdio && exception_pending(_py) {
-            let exc_bits = molt_exception_last();
-            let kind_bits = molt_exception_kind(exc_bits);
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<exc>".to_string());
-            eprintln!("stdio build pending after buffer alloc fd={fd}: {kind}");
+        if trace_stdio {
+            if let Some((kind, _message)) =
+                crate::builtins::exceptions::pending_exception_diagnostic(_py)
+            {
+                eprintln!("stdio build pending after buffer alloc fd={fd}: {kind}");
+            }
         }
         MoltObject::from_ptr(buffer_ptr).bits()
     } else {
@@ -1196,12 +1196,12 @@ fn alloc_stdio_handle(
     if buffer_bits != 0 {
         dec_ref_bits(_py, buffer_bits);
     }
-    if trace_stdio && exception_pending(_py) {
-        let exc_bits = molt_exception_last();
-        let kind_bits = molt_exception_kind(exc_bits);
-        let kind =
-            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
-        eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
+    if trace_stdio {
+        if let Some((kind, _message)) =
+            crate::builtins::exceptions::pending_exception_diagnostic(_py)
+        {
+            eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
+        }
     }
     dec_ref_bits(_py, name_bits);
     if ptr.is_null() {
@@ -1227,12 +1227,12 @@ fn cached_stdio_handle(
     if obj_from_bits(handle_bits).is_none() {
         return handle_bits;
     }
-    if trace_stdio && exception_pending(_py) {
-        let exc_bits = molt_exception_last();
-        let kind_bits = molt_exception_kind(exc_bits);
-        let kind =
-            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
-        eprintln!("stdio build pending after make_handle: {kind}");
+    if trace_stdio {
+        if let Some((kind, _message)) =
+            crate::builtins::exceptions::pending_exception_diagnostic(_py)
+        {
+            eprintln!("stdio build pending after make_handle: {kind}");
+        }
     }
 
     // Keep one pinned reference so repeated sys stdio lookups share the same

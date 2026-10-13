@@ -20,16 +20,7 @@ pub(super) fn emit_generic_attribute_op(
     op_idx: usize,
 ) -> bool {
     match op.kind.as_str() {
-        "get_attr_generic_ptr" => emit_get_attr_generic_ptr(
-            backend,
-            func,
-            op,
-            import_ids,
-            locals,
-            func_index,
-            reloc_enabled,
-        ),
-        "get_attr_generic_obj" => emit_get_attr_generic_obj(
+        "get_attr_generic_ptr" | "get_attr_generic_obj" => emit_get_attr_generic_object(
             backend,
             func,
             op,
@@ -73,41 +64,7 @@ pub(super) fn emit_generic_attribute_op(
     true
 }
 
-fn emit_get_attr_generic_ptr(
-    backend: &mut WasmBackend,
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    func_index: u32,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let obj = locals[&args[0]];
-    let attr = staged_attr_name(backend, op, reloc_enabled);
-    func.instruction(&Instruction::LocalGet(obj));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[WasmRuntimeImport::HandleResolve],
-    );
-    emit_staged_attr_name(backend, func, func_index, reloc_enabled, attr);
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[WasmRuntimeImport::GetAttrPtr],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        WasmRuntimeImport::GetAttrPtr,
-    );
-}
-
-fn emit_get_attr_generic_obj(
+fn emit_get_attr_generic_object(
     backend: &mut WasmBackend,
     func: &mut Function,
     op: &OpIR,
@@ -121,11 +78,11 @@ fn emit_get_attr_generic_obj(
     let args = op.args.as_ref().unwrap();
     let obj = locals[&args[0]];
     let attr = staged_attr_name(backend, op, reloc_enabled);
-    let source_op_idx = op.required_source_op_index(op_idx, "get_attr_generic_obj");
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
     let site_bits = box_int(stable_ic_site_id(
         func_ir.name.as_str(),
         source_op_idx,
-        "get_attr_generic_obj",
+        op.kind.as_str(),
     ));
     func.instruction(&Instruction::LocalGet(obj));
     emit_staged_attr_name(backend, func, func_index, reloc_enabled, attr);

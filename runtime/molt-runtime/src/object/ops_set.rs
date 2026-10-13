@@ -74,7 +74,7 @@ pub(crate) fn set_contains(
     if policy == SetContainsPolicy::ExactKey || mutable.is_none() {
         return Err(());
     }
-    let error = ExceptionValue::adopt(py, molt_exception_last());
+    let error = ExceptionValue::adopt(py, molt_exception_last_pending());
     if !crate::builtins::exceptions::exception_matches_builtin_name(py, error.bits(), "TypeError") {
         return Err(());
     }

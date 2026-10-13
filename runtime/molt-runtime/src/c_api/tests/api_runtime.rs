@@ -1180,24 +1180,49 @@ fn err_pending_peek_restore_roundtrip() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         let runtime_error = runtime_error_type_bits(_py);
-        let msg = b"boom";
-        let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
-        assert_eq!(rc, 0);
-        assert_eq!(molt_err_pending(), 1);
-        let peek_bits = molt_err_peek();
-        assert!(!obj_from_bits(peek_bits).is_none());
-        assert_eq!(molt_err_pending(), 1);
-        let fetched_bits = molt_err_fetch();
-        assert!(!obj_from_bits(fetched_bits).is_none());
-        assert_eq!(molt_err_pending(), 0);
-        assert_eq!(molt_err_restore(fetched_bits), 0);
-        assert_eq!(molt_err_pending(), 1);
-        let restored_bits = molt_err_fetch();
-        assert!(!obj_from_bits(restored_bits).is_none());
-        assert_eq!(molt_err_pending(), 0);
-        dec_ref_bits(_py, peek_bits);
-        dec_ref_bits(_py, fetched_bits);
-        dec_ref_bits(_py, restored_bits);
+        let task = Box::into_raw(Box::new(0_u8));
+        assert!(crate::builtins::exceptions::task_raised_slot_admit(
+            _py, task
+        ));
+        for current in [std::ptr::null_mut(), task] {
+            let previous = crate::replace_current_task(_py, current);
+            let outer = crate::alloc_exception(_py, "ValueError", "handled owner");
+            let outer_bits = MoltObject::from_ptr(outer).bits();
+            crate::exception_stack_push();
+            crate::exception_context_set(_py, outer_bits);
+            let msg = b"boom";
+            let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
+            assert_eq!(rc, 0);
+            assert_eq!(molt_err_pending(), 1);
+            let peek_bits = molt_err_peek();
+            assert!(!obj_from_bits(peek_bits).is_none());
+            assert_ne!(peek_bits, outer_bits);
+            assert_eq!(molt_err_pending(), 1);
+            let fetched_bits = molt_err_fetch();
+            assert_eq!(fetched_bits, peek_bits);
+            assert_eq!(molt_err_pending(), 0);
+            assert!(obj_from_bits(molt_err_peek()).is_none());
+            assert_eq!(molt_err_restore(fetched_bits), 0);
+            assert_eq!(molt_err_pending(), 1);
+            let restored_bits = molt_err_fetch();
+            assert_eq!(restored_bits, peek_bits);
+            assert_eq!(molt_err_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::exception_context_active_bits(),
+                Some(outer_bits)
+            );
+            dec_ref_bits(_py, peek_bits);
+            dec_ref_bits(_py, fetched_bits);
+            dec_ref_bits(_py, restored_bits);
+            crate::exception_context_set(_py, MoltObject::none().bits());
+            crate::exception_stack_pop(_py);
+            dec_ref_bits(_py, outer_bits);
+            crate::replace_current_task(_py, previous);
+        }
+        crate::builtins::exceptions::task_raised_slot_forget(_py, task);
+        unsafe {
+            drop(Box::from_raw(task));
+        }
     });
 }
 

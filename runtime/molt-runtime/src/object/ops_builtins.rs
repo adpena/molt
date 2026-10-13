@@ -2881,7 +2881,9 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
         let obj = obj_from_bits(obj_bits);
         let start_obj = obj_from_bits(start_bits);
         let end_obj = obj_from_bits(end_bits);
-        if let Some(ptr) = obj.as_ptr() {
+        if let Some(ptr) = obj.as_ptr()
+            && unsafe { crate::object::iterable::builtin_receiver(_py, ptr) }
+        {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_STRING {
@@ -2979,7 +2981,7 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         MoltObject::none().bits(),
                     );
                 }
-                if type_id == TYPE_ID_LIST && crate::object::iterable::builtin_receiver(_py, ptr) {
+                if type_id == TYPE_ID_LIST {
                     let len = list_len(ptr) as isize;
                     let start = match decode_slice_bound(_py, start_obj, len, 0) {
                         Ok(v) => v,

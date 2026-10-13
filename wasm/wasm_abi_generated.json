@@ -3521,7 +3521,6 @@
     "get_attr_name_default": "molt_get_attr_name_default",
     "get_attr_object": "molt_get_attr_object",
     "get_attr_object_ic": "molt_get_attr_object_ic",
-    "get_attr_ptr": "molt_get_attr_ptr",
     "get_attr_special": "molt_get_attr_special",
     "get_awaitable": "molt_get_awaitable",
     "getargv": "molt_getargv",

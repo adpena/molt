@@ -307,7 +307,7 @@ pub extern "C" fn molt_exception_clear() -> u64 {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();
         let cleared_bits = if debug_clear && exception_pending(_py) {
-            molt_exception_last()
+            exception_last_pending_bits(_py)
         } else {
             MoltObject::none().bits()
         };

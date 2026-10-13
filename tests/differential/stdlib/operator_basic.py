@@ -53,3 +53,44 @@ try:
     operator.itemgetter(5)([1, 2])
 except Exception as exc:
     print(type(exc).__name__)
+
+# Both public construction entries initialize; object.__init__ must not replay
+# the former constructor arguments or replace the retained getter payload.
+for kind, argument, target in (
+    (operator.itemgetter, 1, [10, 20, 30]),
+    (operator.attrgetter, "value", obj),
+    (operator.methodcaller, "add", obj),
+):
+    if kind is operator.methodcaller:
+        explicit = kind.__new__(kind, argument, 5, y=2)
+    else:
+        explicit = kind.__new__(kind, argument)
+    print("explicit-new", kind.__name__, explicit(target))
+    print("inherited-init", kind.__init__ is object.__init__)
+    explicit.__init__("ignored")
+    print("init-preserved", explicit(target))
+    for receiver in (list, 7):
+        try:
+            kind.__new__(receiver, argument)
+        except TypeError:
+            print("new-receiver-refused", kind.__name__)
+    try:
+        object.__new__(kind)
+    except TypeError:
+        print("object-new-refused", kind.__name__)
+
+class KeywordTarget:
+    def result(self, *, name, self_value):
+        return name, self_value
+
+
+print("forward-named-keywords", operator.methodcaller("result", name=4, self_value=9)(KeywordTarget()))
+for kind in (operator.itemgetter, operator.attrgetter):
+    try:
+        kind.__new__(kind, "value", self="forbidden")
+    except TypeError:
+        print("new-keyword-refused", kind.__name__)
+try:
+    operator.methodcaller(name="result")
+except TypeError:
+    print("method-name-positional-only")

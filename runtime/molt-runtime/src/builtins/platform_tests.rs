@@ -4,6 +4,48 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 #[test]
+fn pending_error_filters_preserve_independent_handled_error() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let outer = alloc_exception(py, "RuntimeError", "handled owner");
+        let outer_bits = MoltObject::from_ptr(outer).bits();
+        exception_stack_push();
+        exception_context_set(py, outer_bits);
+        for kind in ["AttributeError", "TypeError", "ImportError", "OSError"] {
+            let inner = alloc_exception(py, kind, "raised owner");
+            let inner_bits = MoltObject::from_ptr(inner).bits();
+            record_exception(py, inner);
+            // Matching the handled error must neither match nor consume raised state.
+            assert!(!clear_pending_if_kind(py, &["RuntimeError"]));
+            assert!(exception_pending(py));
+            let observed = molt_exception_last_pending();
+            assert_eq!(observed, inner_bits);
+            dec_ref_bits(py, observed);
+            assert!(clear_pending_if_kind(py, &[kind]));
+            assert!(!exception_pending(py));
+            assert_eq!(
+                crate::builtins::exceptions::exception_context_active_bits(),
+                Some(outer_bits)
+            );
+            dec_ref_bits(py, inner_bits);
+        }
+        let instance = molt_object_new_bound(builtin_classes(py).object);
+        let missing_name = alloc_test_string_bits(py, "unpublished_optional_attribute");
+        assert_eq!(getattr_optional_bits(py, instance, missing_name), Ok(None));
+        assert!(!exception_pending(py));
+        assert_eq!(
+            crate::builtins::exceptions::exception_context_active_bits(),
+            Some(outer_bits)
+        );
+        dec_ref_bits(py, missing_name);
+        dec_ref_bits(py, instance);
+        exception_context_set(py, MoltObject::none().bits());
+        exception_stack_pop(py);
+        dec_ref_bits(py, outer_bits);
+    });
+}
+
+#[test]
 fn dynamic_extension_admission_reports_complete_static_grants_before_path_access() {
     for (grants, missing) in [
         ("", "fs.read, module.extension.exec"),

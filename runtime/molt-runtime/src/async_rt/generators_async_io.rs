@@ -114,9 +114,7 @@ unsafe fn asyncio_close_connection_best_effort(_py: &PyToken<'_>, conn_bits: u64
     unsafe {
         let close_bits = asyncio_call_method0(_py, conn_bits, b"close");
         if exception_pending(_py) {
-            let exc_bits = molt_exception_last();
             molt_exception_clear();
-            dec_ref_bits(_py, exc_bits);
         }
         if !obj_from_bits(close_bits).is_none() {
             dec_ref_bits(_py, close_bits);

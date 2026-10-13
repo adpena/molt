@@ -129,7 +129,7 @@ in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat
 | email | Stdlib | Partial | P3 | SL3 | stdlib/runtime | `email.quoprimime` implemented; broader package parsing/generator stack still pending. |
 | email.policy | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; policy objects pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.policy pending parity) |
 | email.message | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; message objects pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.message pending parity) |
-| email.parser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; parser helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.parser pending parity) |
+| email.parser | Stdlib | Partial | P3 | SL3 | stdlib | Pinned CPython incremental `FeedParser` returns Message trees with factory and policy semantics; versioned defect handling shares one parser. Native/WASM acceptance remains pending. |
 | email.utils | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; formatting helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.utils pending parity) |
 | email.header | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; header encoding pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): email.header pending parity) |
 | gzip/bz2/lzma | Stdlib | Planned | P3 | SL3 | stdlib | Compression modules. |

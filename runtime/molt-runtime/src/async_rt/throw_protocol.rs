@@ -140,7 +140,7 @@ fn take_throw_normalization_failure(
     if !exception_pending(py) {
         return None;
     }
-    let exception = ExceptionValue::adopt(py, molt_exception_last());
+    let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
     clear_exception(py);
     if let Some(traceback) = fallback_traceback {
         let current = exception_field(py, exception.bits(), ExceptionFieldSlot::Traceback)?;

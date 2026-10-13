@@ -330,7 +330,6 @@ pub(crate) enum WasmRuntimeImport {
     GetAttrNameDefault,
     GetAttrObject,
     GetAttrObjectIc,
-    GetAttrPtr,
     GetAttrSpecial,
     GetattrBuiltin,
     HasAttrName,

@@ -1640,11 +1640,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 25,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::GetAttrPtr,
-        name: "get_attr_ptr",
-        type_idx: 23,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::GetAttrSpecial,
         name: "get_attr_special",
         type_idx: 18,
@@ -14664,8 +14659,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_get_attr_object" => Some(WasmRuntimeImport::GetAttrObject),
         "get_attr_object_ic" => Some(WasmRuntimeImport::GetAttrObjectIc),
         "molt_get_attr_object_ic" => Some(WasmRuntimeImport::GetAttrObjectIc),
-        "get_attr_ptr" => Some(WasmRuntimeImport::GetAttrPtr),
-        "molt_get_attr_ptr" => Some(WasmRuntimeImport::GetAttrPtr),
         "get_attr_special" => Some(WasmRuntimeImport::GetAttrSpecial),
         "molt_get_attr_special" => Some(WasmRuntimeImport::GetAttrSpecial),
         "getattr_builtin" => Some(WasmRuntimeImport::GetattrBuiltin),

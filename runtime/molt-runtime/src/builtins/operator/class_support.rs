@@ -1,8 +1,8 @@
 use crate::PyToken;
 use crate::builtins::functions::native_callable::NativeCallableKind;
 use crate::builtins::types::{
-    ClassSemanticPolicy, RuntimeClassMethodSpec, RuntimeMethodSignature,
-    SELF_NAME_RUNTIME_ARGUMENT_NAMES, SELF_RUNTIME_ARGUMENT_NAMES, init_cached_runtime_class,
+    ClassSemanticPolicy, NO_RUNTIME_ARGUMENT_NAMES, RuntimeClassMethodSpec, RuntimeMethodSignature,
+    init_cached_runtime_class,
 };
 
 pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
@@ -15,12 +15,13 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__init__",
-            NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_itemgetter_init as *const () as usize as u64,
+            "__new__",
+            NativeCallableKind::Constructor,
+            crate::molt_operator_itemgetter_new as *const () as usize as u64,
             2,
-            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, false),
-        ),
+            RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
+        )
+        .with_owner_context(),
     ];
     init_cached_runtime_class(
         _py,
@@ -46,12 +47,13 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__init__",
-            NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_attrgetter_init as *const () as usize as u64,
+            "__new__",
+            NativeCallableKind::Constructor,
+            crate::molt_operator_attrgetter_new as *const () as usize as u64,
             2,
-            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, false),
-        ),
+            RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
+        )
+        .with_owner_context(),
     ];
     init_cached_runtime_class(
         _py,
@@ -77,12 +79,13 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__init__",
-            NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_methodcaller_init as *const () as usize as u64,
-            4,
-            RuntimeMethodSignature::new(SELF_NAME_RUNTIME_ARGUMENT_NAMES, true, true),
-        ),
+            "__new__",
+            NativeCallableKind::Constructor,
+            crate::molt_operator_methodcaller_new as *const () as usize as u64,
+            2,
+            RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
+        )
+        .with_owner_context(),
     ];
     init_cached_runtime_class(
         _py,

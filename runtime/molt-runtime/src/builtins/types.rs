@@ -325,6 +325,7 @@ pub(crate) struct RuntimeClassMethodSpec<'a> {
     fn_ptr: u64,
     arity: u64,
     signature: Option<RuntimeMethodSignature<'a>>,
+    owner_context: bool,
 }
 
 impl<'a> RuntimeClassMethodSpec<'a> {
@@ -340,6 +341,7 @@ impl<'a> RuntimeClassMethodSpec<'a> {
             fn_ptr,
             arity,
             signature: None,
+            owner_context: false,
         }
     }
 
@@ -356,7 +358,14 @@ impl<'a> RuntimeClassMethodSpec<'a> {
             fn_ptr,
             arity,
             signature: Some(signature),
+            owner_context: false,
         }
+    }
+    /// Retain the declaring class as the native entry's hidden first argument.
+    /// Public receivers still pass through ordinary constructor admission.
+    pub(crate) const fn with_owner_context(mut self) -> Self {
+        self.owner_context = true;
+        self
     }
 }
 
@@ -397,6 +406,19 @@ pub(crate) fn configure_runtime_class_methods(
         } else {
             crate::builtins::methods::builtin_func_bits(_py, spec, method.fn_ptr, method.arity)
         };
+        if method.owner_context {
+            let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                return false;
+            };
+            unsafe {
+                crate::object::layout::function_set_closure_bits(
+                    _py,
+                    ptr,
+                    class_bits,
+                    crate::FunctionCallAbi::OpaqueContextFirst,
+                );
+            }
+        }
         if !set_class_method(_py, dict_ptr, method.name, bits) {
             return false;
         }

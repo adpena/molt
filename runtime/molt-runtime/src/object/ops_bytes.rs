@@ -1579,7 +1579,7 @@ fn bytes_constructor_iter<'a, 'py>(
 ) -> Option<crate::object::iterable::OwnedIterator<'a, 'py>> {
     let iter = crate::object::iterable::OwnedIterator::new(py, source);
     if iter.is_none() && exception_pending(py) {
-        let error = molt_exception_last();
+        let error = molt_exception_last_pending();
         let replace =
             crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
         if replace {
@@ -1640,7 +1640,7 @@ fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
         "object cannot be interpreted as an integer",
     );
     let Some(value) = value else {
-        let error = molt_exception_last();
+        let error = molt_exception_last_pending();
         let fallback =
             crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
         if fallback {

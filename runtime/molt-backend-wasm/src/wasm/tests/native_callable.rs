@@ -192,47 +192,78 @@ fn lir_fast_literal_const_materialization_emits_valid_wasm() {
 }
 
 #[test]
-fn generic_attr_ic_uses_transported_source_op_idx() {
-    let source_op_idx = 17;
-    let mut load_attr = wasm_test_op("get_attr_generic_obj", Some("value"), vec!["obj"]);
-    load_attr.s_value = Some("field".to_string());
-    load_attr.source_op_idx = Some(source_op_idx);
-    let mut ret = wasm_test_op("ret", None, vec!["value"]);
-    ret.args = Some(vec!["value".to_string()]);
-    let func = wasm_test_function("generic_attr_ic", vec!["obj"], None, vec![load_attr, ret]);
-    let ir = SimpleIR {
-        functions: vec![func],
-        profile: None,
-    };
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        native_eh_enabled: false,
-        reloc_enabled: false,
-        ..WasmCompileOptions::default()
-    })
-    .compile(ir);
+fn generic_attr_ic_preserves_boxed_receivers_and_transported_source_op_idx() {
+    for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
+        for integer_receiver in [false, true] {
+            let source_op_idx = 17;
+            let mut load_attr = wasm_test_op(kind, Some("value"), vec!["obj"]);
+            load_attr.s_value = Some("to_bytes".to_string());
+            load_attr.source_op_idx = Some(source_op_idx);
+            let mut ops = Vec::new();
+            if integer_receiver {
+                let mut integer = wasm_test_op("const", Some("obj"), vec![]);
+                integer.value = Some(20);
+                ops.push(integer);
+            }
+            ops.extend([load_attr, wasm_test_op("ret", None, vec!["value"])]);
+            let func = wasm_test_function(
+                "generic_attr_ic",
+                if integer_receiver {
+                    vec![]
+                } else {
+                    vec!["obj"]
+                },
+                None,
+                ops,
+            );
+            let ir = SimpleIR {
+                functions: vec![func],
+                profile: None,
+            };
+            let wasm = WasmBackend::with_options(WasmCompileOptions {
+                native_eh_enabled: false,
+                reloc_enabled: false,
+                ..WasmCompileOptions::default()
+            })
+            .compile(ir);
 
-    wasmparser::Validator::new()
-        .validate_all(&wasm)
-        .expect("generic attr IC lowering must emit valid WASM");
+            wasmparser::Validator::new()
+                .validate_all(&wasm)
+                .expect("generic attr IC lowering must emit valid WASM");
 
-    let expected_site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
-        "generic_attr_ic",
-        source_op_idx as usize,
-        "get_attr_generic_obj",
-    ));
-    assert!(
-        wasm_i64_consts(&wasm).contains(&expected_site_bits),
-        "generic WASM attr IC must use transported source_op_idx for site id"
-    );
+            let expected_site_bits =
+                molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
+                    "generic_attr_ic",
+                    source_op_idx as usize,
+                    kind,
+                ));
+            let constants = wasm_i64_consts(&wasm);
+            assert!(constants.contains(&expected_site_bits));
+            if integer_receiver {
+                assert!(constants.contains(&molt_codegen_abi::box_int_bits(20)));
+            }
 
-    let imports = wasm_function_import_indices(&wasm);
-    let get_attr_object_ic = *imports
-        .get("get_attr_object_ic")
-        .unwrap_or_else(|| panic!("get_attr_object_ic import missing; imports={imports:?}"));
-    assert!(
-        wasm_direct_call_indices(&wasm).contains(&get_attr_object_ic),
-        "generic WASM attr IC must call get_attr_object_ic"
-    );
+            let imports = wasm_function_import_indices(&wasm);
+            let calls = wasm_direct_call_indices_for_export(&wasm, "generic_attr_ic");
+            let get_attr_object_ic = imports["get_attr_object_ic"];
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|&&call| call == get_attr_object_ic)
+                    .count(),
+                1,
+                "{kind} must perform one boxed lookup"
+            );
+            for pointer_only in ["handle_resolve", "get_attr_ptr"] {
+                assert!(
+                    imports
+                        .get(pointer_only)
+                        .is_none_or(|index| !calls.contains(index)),
+                    "{kind} must preserve a tagged integer instead of resolving it to null"
+                );
+            }
+        }
+    }
 }
 
 #[test]
