@@ -408,7 +408,7 @@ fn native_text_result(py: &PyToken<'_>, class: u64, kind: NativePayload, result:
         dec_ref_bits(py, result);
         return MoltObject::none().bits();
     }
-    if class == kind.owner(py) {
+    if Some(class) == kind.owner(py) {
         return result;
     }
     let Some(source) = obj_from_bits(result).as_ptr() else {
