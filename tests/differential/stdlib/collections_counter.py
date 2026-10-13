@@ -11,6 +11,10 @@ c = collections.Counter("abbbb")
 show("keys", list(c.keys()))
 show("values", list(c.values()))
 show("items", list(c.items()))
+try:
+    show("most-all", c.most_common())
+except TypeError as error:
+    show("most-all-error", str(error))
 show("repr", repr(c))
 show("total", c.total())
 show("most1", c.most_common(1))

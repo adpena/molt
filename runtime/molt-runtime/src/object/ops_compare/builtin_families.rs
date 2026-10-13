@@ -84,7 +84,10 @@ impl BuiltinComparison {
             Self::Int => integer_payload(value).is_some(),
             Self::Float => float_value(value).is_some(),
             Self::Complex => complex_ptr_from_bits(value.bits()).is_some(),
-            Self::Dict => physical_type(value) == Some(TYPE_ID_DICT),
+            Self::Dict => value.as_ptr().is_some_and(|ptr| unsafe {
+                object_type_id(ptr) == TYPE_ID_DICT
+                    || crate::object::layout::dict_subclass_storage_slot(ptr).is_some()
+            }),
             Self::Set => physical_type(value) == Some(TYPE_ID_SET),
             Self::Frozenset => physical_type(value) == Some(TYPE_ID_FROZENSET),
             Self::Range => physical_type(value) == Some(TYPE_ID_RANGE),
@@ -190,6 +193,7 @@ pub(crate) fn family_for_value(_py: &PyToken<'_>, value: MoltObject) -> Option<B
     match physical_type(value)? {
         TYPE_ID_COMPLEX => Some(Complex),
         TYPE_ID_DICT => Some(Dict),
+        TYPE_ID_OBJECT if Dict.accepts(value) => Some(Dict),
         TYPE_ID_SET => Some(Set),
         TYPE_ID_FROZENSET => Some(Frozenset),
         TYPE_ID_RANGE => Some(Range),
