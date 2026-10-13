@@ -346,13 +346,6 @@ pub(super) unsafe fn call_type_with_arguments(
             }
 
             if class_bits == builtins.enumerate {
-                if pos_args.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "enumerate() missing required argument 'iterable' (pos 1)",
-                    );
-                }
                 if pos_args.len() > 2 {
                     let msg = format!(
                         "enumerate expected at most 2 arguments, got {}",
@@ -360,29 +353,33 @@ pub(super) unsafe fn call_type_with_arguments(
                     );
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
-                let iterable_bits = pos_args[0];
-                let mut start_opt = if pos_args.len() == 2 {
-                    Some(pos_args[1])
-                } else {
-                    None
-                };
+                let mut iterable_opt = pos_args.first().copied();
+                let mut start_opt = pos_args.get(1).copied();
                 for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
                     let name = string_obj_to_owned(obj_from_bits(name_bits))
                         .unwrap_or_else(|| "<name>".to_string());
-                    if name != "start" {
-                        let msg =
-                            format!("enumerate() got an unexpected keyword argument '{name}'");
+                    let target = match name.as_str() {
+                        "iterable" => &mut iterable_opt,
+                        "start" => &mut start_opt,
+                        _ => {
+                            let msg =
+                                format!("enumerate() got an unexpected keyword argument '{name}'");
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                    };
+                    if target.is_some() {
+                        let msg = format!("enumerate() got multiple values for argument '{name}'");
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
-                    if start_opt.is_some() {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "enumerate() got multiple values for argument 'start'",
-                        );
-                    }
-                    start_opt = Some(val_bits);
+                    *target = Some(val_bits);
                 }
+                let Some(iterable_bits) = iterable_opt else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "enumerate() missing required argument 'iterable' (pos 1)",
+                    );
+                };
                 return crate::object::ops::enumerate_new_impl(_py, iterable_bits, start_opt);
             }
 

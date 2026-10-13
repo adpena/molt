@@ -25,3 +25,34 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+import builtins
+
+print(
+    "compile-named",
+    compile(
+        source="1 + 2",
+        filename="named",
+        mode="eval",
+        flags=0,
+        dont_inherit=False,
+        optimize=0,
+    ).co_name,
+)
+selected = builtins.compile
+print(
+    "compile-indirect",
+    selected(**{"source": "3", "filename": "indirect", "mode": "eval"}).co_name,
+)
+print("compile-positional", selected("4", "positional", "eval", 0, False, 0).co_name)
+for args, kwargs in [
+    (("1", "x", "eval"), {"source": "2"}),
+    (("1", "x", "eval"), {"bad": 1}),
+]:
+    try:
+        selected(*args, **kwargs)
+    except TypeError:
+        print("compile-refusal", True)
+    else:
+        print("compile-refusal", False)

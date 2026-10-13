@@ -24,46 +24,6 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
     def _try_emit_named_builtin_iter_call(
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any:
-        if func_id == "enumerate":
-            if len(node.args) > 2:
-                return CALL_NOT_HANDLED
-            if node.keywords:
-                for keyword in node.keywords:
-                    if keyword.arg != "start":
-                        return CALL_NOT_HANDLED
-            iterable = self.visit(node.args[0]) if node.args else None
-            if iterable is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported enumerate iterable"
-                )
-            start_val = None
-            has_start = False
-            if len(node.args) == 2:
-                start_val = self.visit(node.args[1])
-                has_start = True
-            for keyword in node.keywords:
-                if keyword.arg == "start":
-                    if has_start:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "enumerate got multiple values for start",
-                        )
-                    start_val = self.visit(keyword.value)
-                    has_start = True
-            if start_val is None:
-                start_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
-            has_start_val = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[has_start], result=has_start_val))
-            res = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="ENUMERATE",
-                    args=[iterable, start_val, has_start_val],
-                    result=res,
-                )
-            )
-            return res
         if func_id == "slice":
             if len(node.args) not in (1, 2, 3):
                 return CALL_NOT_HANDLED
@@ -195,68 +155,6 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                     runtime_name,
                     [args_tuple, key_val, default_val],
                 )
-            return res
-        if func_id == "sorted":
-            if not node.args:
-                return self._emit_type_error_value("sorted expected 1 argument, got 0")
-            if len(node.args) > 1:
-                return self._emit_type_error_value(
-                    f"sorted expected 1 argument, got {len(node.args)}"
-                )
-            key_expr = None
-            reverse_expr = None
-            for keyword in node.keywords:
-                if keyword.arg not in {"key", "reverse"}:
-                    msg = f"sorted() got an unexpected keyword argument '{keyword.arg}'"
-                    return self._emit_type_error_value(msg)
-                if keyword.arg == "key":
-                    if key_expr is not None:
-                        return self._emit_type_error_value(
-                            "sorted() got multiple values for argument 'key'"
-                        )
-                    key_expr = keyword.value
-                else:
-                    if reverse_expr is not None:
-                        return self._emit_type_error_value(
-                            "sorted() got multiple values for argument 'reverse'"
-                        )
-                    reverse_expr = keyword.value
-            callee = self._emit_builtin_function(func_id)
-            res = MoltValue(self.next_var(), type_hint="Any")
-            iterable = self.visit(node.args[0])
-            if iterable is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported sorted iterable"
-                )
-            # Emit key argument (default: None)
-            if key_expr is not None:
-                key_val = self.visit(key_expr)
-                if key_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "Unsupported sorted key expression",
-                    )
-            else:
-                key_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
-            # Emit reverse argument (default: False)
-            if reverse_expr is not None:
-                reverse_val = self.visit(reverse_expr)
-                if reverse_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE,
-                        "Unsupported sorted reverse expression",
-                    )
-            else:
-                reverse_val = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=reverse_val))
-            self.emit(
-                MoltOp(
-                    kind="CALL_FUNC",
-                    args=[callee, iterable, key_val, reverse_val],
-                    result=res,
-                )
-            )
             return res
         if func_id == "iter":
             if node.keywords:

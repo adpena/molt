@@ -52,3 +52,27 @@ try:
     hex(BadIndex())
 except TypeError as exc:
     print(f"hex-badindex:{exc}")
+
+
+import builtins
+
+print("format-positional", format(15, "x"))
+selected = builtins.format
+print("format-indirect", selected(15, "x"), selected(15))
+for args, kwargs in [
+    ((15,), {"format_spec": "x"}),
+    ((), {"value": 15}),
+    ((15, "x", "extra"), {}),
+]:
+    try:
+        selected(*args, **kwargs)
+    except TypeError:
+        print("format-refusal", True)
+    else:
+        print("format-refusal", False)
+try:
+    format(15, format_spec="x")
+except TypeError:
+    print("format-direct-refusal", True)
+else:
+    print("format-direct-refusal", False)
