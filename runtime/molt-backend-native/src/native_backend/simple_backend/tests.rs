@@ -457,7 +457,7 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
     let cache_dir = test_tir_pipeline_cache_dir();
     let target_info = crate::tir::target_info::TargetInfo::native_release_fast();
     let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-        &mut functions,
+        crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut functions),
         crate::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: target_info.clone(),
             cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,

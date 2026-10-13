@@ -20,11 +20,13 @@ retire each consumed TIR body, and retain byte-identical SimpleIR for unchanged
 functions. Return ABI and index-map checks run before replacement. Externs keep
 their authored signatures and do not enter body passes.
 
-LLVM consumes owned post-module TIR directly and rebuilds value representation
-facts from those exact bodies. Its per-function cache runner still produces a
-SimpleIR projection; this is separate from the module phase. The LLVM path does
-not run the Cranelift module phase as well. Luau uses the shared SimpleIR wrapper
-with its own target information and receives the changed-function count.
+LLVM and FactGraph request TIR-only preparation from the shared cache runner;
+no SimpleIR projection is built on cache hits or misses. FactGraph borrows its
+input without cloning the full FunctionIR vector. LLVM captures source ABI
+metadata before moving source bodies into module assembly, then consumes each
+post-module TIR body after LLVM lowering. The LLVM path does not also run the
+Cranelift module phase. Native, WASM and Luau request SimpleIR projections within
+the existing bounded optimization waves; Luau receives the changed-function count.
 
 ## Native leaf and linkage metadata
 

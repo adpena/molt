@@ -5,6 +5,12 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 ## Module transformations and demanded analyses
 
 The shared cached TIR runner optimizes functions before the module phase.
+Native, WASM and Luau request SimpleIR projections within bounded optimization
+waves. LLVM and FactGraph borrow preparation input and retain only optimized TIR;
+neither cache hits nor misses build an unused SimpleIR projection. Owned module
+assembly accepts moved LLVM source bodies or borrowed diagnostic inputs, retaining
+source order and canonical extern declarations. LLVM freezes source ABI metadata
+before retiring those bodies and consumes each TIR function after LLVM lowering.
 `molt-passes::tir::module_phase::run_module_pipeline` builds the initial call
 graph and summaries consumed by inlining and generator fusion, then performs
 slot promotion, changed-body optimization, and terminal ownership finalization.
