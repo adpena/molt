@@ -92,7 +92,7 @@ not cold proof-queue reuse or broader HF-45 performance acceptance.
 
 | Boundary | Current retained evidence and limits |
 | --- | --- |
-| Optimized native runtime | All 1,909 semantic cases pass at `d9850d279`, including shared class constructors and module ownership, callable declaration kinds, aggregate HTTP capability denial, redirect scheme selection, LRU ownership, decoder provenance and cold resource cleanup. Eight performance probes are intentionally excluded. Earlier `19b4a05e9` producer/namespace failures and `631493bfb` HTTP test-inspection failures remain retained with their actual images; both repair families are covered by the current pass. This proves the optimized Linux aarch64 runtime coordinate; public compiled programs and other matrix cells remain separate obligations. |
+| Optimized native runtime | All 1,909 semantic cases pass at `5b2fcb578`, including shared class constructors and module ownership, callable declaration kinds, aggregate HTTP capability denial, redirect scheme selection, LRU ownership, decoder provenance, cold resource cleanup and class namespace retirement after module/C/TLS finalizers. Source and toolchain custody are valid. Eight performance probes are intentionally excluded. Earlier `19b4a05e9` producer/namespace failures and `631493bfb` HTTP test-inspection failures remain retained with their actual images; both repair families are covered by the current pass. This proves the optimized Linux aarch64 runtime coordinate; public compiled programs and other matrix cells remain separate obligations. |
 | Reduced runtime, IR/passes and WASM host authorities | 2,360 cases pass with two intentional ignores at `d72ee398c`. These are native host tests, not WASM target execution. |
 | Native/compiler consumers | 1,417 cases pass at `65ffcb283`, including seven actual native-artifact parser integration checks. |
 | LLVM consumers | 170 cases pass at `d72ee398c`; the LLVM-specific Clippy command also passes. |
@@ -196,7 +196,8 @@ Both native and WASM expose CSV and graph finalizers raising AttributeError
 through `object.__setattr__`. Reviewed source `5b2fcb578` preserves canonical
 class namespaces until module and C/TLS callback owners drain, then retires
 heap and static namespaces through the existing loop. It extends the existing
-isolated lifecycle regression; runtime and affected compiled-program execution
+isolated lifecycle regression. All 1,909 runtime semantic tests pass at that
+source with valid custody; affected native and WASM compiled-program execution
 remain required. This cleanup migration blocks the candidate's landing.
 Finish its actual consumers before widening verification; preserve unrelated
 open release obligations without hiding failures behind expected-failure
