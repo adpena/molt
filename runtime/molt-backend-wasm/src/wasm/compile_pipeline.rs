@@ -211,12 +211,13 @@ impl WasmBackend {
         );
         audit("after-lir-planning", &ir.functions);
         audit("before-module-emission", &ir.functions);
+        let stage_shape = stage_audit.capture_simple_ir_shape(&ir.functions);
         let output =
-            self.emit_wasm_module(&ir, lir_lowering_plans, trampoline_analysis, stage_audit);
+            self.emit_wasm_module(ir, lir_lowering_plans, trampoline_analysis, stage_audit);
         emit_wasm_stage_audit(
             stage_audit,
             "after-module-emission",
-            || simple_ir_stage_shape(&ir.functions),
+            || stage_shape.as_ref().expect("enabled audit shape").clone(),
             Some(output.wasm.len()),
             None,
             None,

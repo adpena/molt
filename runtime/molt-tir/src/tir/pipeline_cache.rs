@@ -702,7 +702,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
     }
     backconvert_changed_tir_module_to_simple_ir(
         functions,
-        &module,
+        module,
         &idx_map,
         &module_analysis.changed_functions,
         options.backconvert_context,
@@ -833,28 +833,38 @@ fn take_ordered_tir_functions_from_cached_tir(
 
 fn backconvert_changed_tir_module_to_simple_ir(
     functions: &mut [FunctionIR],
-    module: &TirModule,
+    module: TirModule,
     idx_map: &[usize],
     changed_functions: &[String],
     backconvert_context: &str,
 ) {
+    assert_eq!(
+        module.functions.len(),
+        idx_map.len(),
+        "module optimization must preserve the local function index mapping"
+    );
     let changed: HashSet<&str> = changed_functions.iter().map(String::as_str).collect();
-    for (pos, &orig_idx) in idx_map.iter().enumerate() {
-        let tir_func = &module.functions[pos];
+    // This is the terminal consumer of the module's TIR bodies. Retire each
+    // body as its SimpleIR replacement is installed, including unchanged TIR.
+    for (tir_func, &orig_idx) in module.functions.into_iter().zip(idx_map) {
         if !changed.contains(tir_func.name.as_str()) {
             continue;
         }
-        let ops = super::lower_to_simple::lower_to_simple_ir(tir_func);
+        let function = &mut functions[orig_idx];
+        assert_eq!(
+            function.return_abi, tir_func.return_abi,
+            "module optimization must preserve the authored function return ABI"
+        );
+        // The optimized TIR owns the replacement; lowering cannot read the old
+        // SimpleIR body. Release it before allocating the replacement body.
+        drop(std::mem::take(&mut function.ops));
+        let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
         debug_assert!(
             super::lower_to_simple::validate_labels(&ops),
             "{backconvert_context} back-conversion emitted invalid labels for '{}'",
             tir_func.name
         );
-        assert_eq!(
-            functions[orig_idx].return_abi, tir_func.return_abi,
-            "module optimization must preserve the authored function return ABI"
-        );
-        functions[orig_idx].ops = ops;
+        function.ops = ops;
     }
 }
 
@@ -967,6 +977,150 @@ fn trace_tir_blocks(name: &str, stage: &str, tir_func: &TirFunction) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_backconversion_preserves_selective_bodies_metadata_and_extern_indices() {
+        let constant_function = |name: &str, value| FunctionIR {
+            name: name.into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            source_file: Some("module_lifetime.py".into()),
+            execution_context: crate::ExecutionContextPolicy::Inherited,
+            ops: vec![
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(value),
+                    out: Some("result".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["result".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        let external = |name: &str| FunctionIR {
+            name: name.into(),
+            is_extern: true,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ..FunctionIR::default()
+        };
+        let mut functions = vec![
+            external("external_before"),
+            constant_function("changed_left", 11),
+            constant_function("unchanged", 22),
+            external("external_between"),
+            constant_function("changed_right", 33),
+        ];
+        let before = serde_json::to_value(&functions).unwrap();
+        let module = TirModule {
+            name: "selective_module".into(),
+            functions: vec![
+                super::super::lower_from_simple::lower_to_tir(&constant_function(
+                    "changed_left",
+                    101,
+                )),
+                super::super::lower_from_simple::lower_to_tir(&functions[2]),
+                super::super::lower_from_simple::lower_to_tir(&constant_function(
+                    "changed_right",
+                    303,
+                )),
+            ],
+        };
+        backconvert_changed_tir_module_to_simple_ir(
+            &mut functions,
+            module,
+            &[1, 2, 4],
+            &["changed_left".into(), "changed_right".into()],
+            "selective module test",
+        );
+        let after = serde_json::to_value(&functions).unwrap();
+        for index in [0, 2, 3] {
+            assert_eq!(after[index], before[index], "unchanged or extern body");
+        }
+        for (index, value) in [(1, 101), (4, 303)] {
+            let constants: Vec<_> = functions[index]
+                .ops
+                .iter()
+                .filter(|op| op.kind == "const")
+                .map(|op| op.value)
+                .collect();
+            assert_eq!(constants, vec![Some(value)]);
+            assert!(functions[index].ops.iter().any(|op| op.kind == "ret"));
+            let mut old_metadata = before[index].clone();
+            let mut new_metadata = after[index].clone();
+            old_metadata.as_object_mut().unwrap().remove("ops");
+            new_metadata.as_object_mut().unwrap().remove("ops");
+            assert_eq!(new_metadata, old_metadata, "authored function metadata");
+        }
+    }
+
+    #[test]
+    fn module_backconversion_refuses_abi_change_before_retiring_simple_ir() {
+        let mut functions = vec![FunctionIR {
+            name: "authored_void".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            ops: vec![OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        }];
+        let before = serde_json::to_value(&functions).unwrap();
+        let mut tir = super::super::lower_from_simple::lower_to_tir(&functions[0]);
+        tir.return_abi = molt_ir::FunctionReturnAbi::Value;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            backconvert_changed_tir_module_to_simple_ir(
+                &mut functions,
+                TirModule {
+                    name: "invalid_abi".into(),
+                    functions: vec![tir],
+                },
+                &[0],
+                &["authored_void".into()],
+                "ABI refusal test",
+            );
+        }));
+        assert!(
+            failure.is_err(),
+            "a module pass cannot change the return ABI"
+        );
+        assert_eq!(serde_json::to_value(&functions).unwrap(), before);
+    }
+
+    #[test]
+    fn module_backconversion_refuses_incomplete_local_index_mapping() {
+        for local_count in [0, 2] {
+            let mut functions = vec![FunctionIR {
+                name: "mapped".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            }];
+            let before = serde_json::to_value(&functions).unwrap();
+            let module = TirModule {
+                name: "invalid_mapping".into(),
+                functions: (0..local_count)
+                    .map(|_| super::super::lower_from_simple::lower_to_tir(&functions[0]))
+                    .collect(),
+            };
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                backconvert_changed_tir_module_to_simple_ir(
+                    &mut functions,
+                    module,
+                    &[0],
+                    &[],
+                    "index mapping refusal test",
+                );
+            }));
+            assert!(failure.is_err(), "local mapping cannot silently truncate");
+            assert_eq!(serde_json::to_value(&functions).unwrap(), before);
+        }
+    }
 
     #[test]
     fn cached_partition_preserves_unmodified_tir_and_plans_every_new_transport() {

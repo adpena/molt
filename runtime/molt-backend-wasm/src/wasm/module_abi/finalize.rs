@@ -4,18 +4,17 @@ use std::borrow::Cow;
 use wasm_encoder::{CustomSection, RawSection, TagKind, TagSection, TagType};
 
 use super::callable_table::WasmCallableTableElements;
-use crate::FunctionIR;
 use crate::wasm::{WasmBackend, WasmCompileOutput};
 use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
 use crate::wasm_binary::{add_reloc_sections, strip_unused_imports, validate_wasm_sections};
 use crate::wasm_options::WasmProfile;
 use crate::wasm_plan::{
-    WasmStageAudit, emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
+    WasmStageAudit, WasmStageAuditShape, emit_wasm_numeric_lane_audit, emit_wasm_stage_audit,
 };
 
 pub(super) struct WasmModuleFinalizationInput<'a> {
     pub(super) stage_audit: WasmStageAudit,
-    pub(super) functions: &'a [FunctionIR],
+    pub(super) stage_shape: Option<&'a WasmStageAuditShape>,
     pub(super) callable_table_elements: WasmCallableTableElements,
     pub(super) reloc_enabled: bool,
 }
@@ -27,7 +26,7 @@ impl WasmBackend {
     ) -> WasmCompileOutput {
         let WasmModuleFinalizationInput {
             stage_audit,
-            functions,
+            stage_shape,
             callable_table_elements,
             reloc_enabled,
         } = input;
@@ -48,7 +47,7 @@ impl WasmBackend {
         emit_wasm_stage_audit(
             stage_audit,
             "after-module-finish",
-            || simple_ir_stage_shape(functions),
+            || stage_shape.expect("enabled audit shape").clone(),
             Some(bytes.len()),
             None,
             None,
@@ -56,7 +55,7 @@ impl WasmBackend {
         );
 
         bytes =
-            Self::strip_unused_imports_if_enabled(bytes, functions, unused_imports, stage_audit);
+            Self::strip_unused_imports_if_enabled(bytes, stage_shape, unused_imports, stage_audit);
         if reloc_enabled {
             bytes = add_reloc_sections(
                 bytes,
@@ -213,7 +212,7 @@ impl WasmBackend {
 
     fn strip_unused_imports_if_enabled(
         mut bytes: Vec<u8>,
-        functions: &[FunctionIR],
+        stage_shape: Option<&WasmStageAuditShape>,
         unused: BTreeSet<String>,
         stage_audit: WasmStageAudit,
     ) -> Vec<u8> {
@@ -225,7 +224,7 @@ impl WasmBackend {
         emit_wasm_stage_audit(
             stage_audit,
             "before-strip-unused-imports",
-            || simple_ir_stage_shape(functions),
+            || stage_shape.expect("enabled audit shape").clone(),
             Some(before_len),
             Some(unused.len()),
             None,
@@ -236,7 +235,7 @@ impl WasmBackend {
         emit_wasm_stage_audit(
             stage_audit,
             "after-strip-unused-imports",
-            || simple_ir_stage_shape(functions),
+            || stage_shape.expect("enabled audit shape").clone(),
             Some(stripped.len()),
             Some(unused.len()),
             None,

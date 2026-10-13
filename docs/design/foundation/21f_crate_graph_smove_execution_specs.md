@@ -104,6 +104,14 @@ change the mechanics. Absorb all eight.
    outputs and fact-graph diagnostics are derived from final shared-custody TIR/SimpleIR state, not
    from a pre-final cached side channel.
 
+   Terminal SimpleIR back-conversion consumes the local TIR module in its original
+   index mapping. It keeps unchanged SimpleIR bodies intact, checks the authored return ABI
+   before retiring each changed body, and releases each consumed TIR function as it proceeds.
+   WASM emission likewise consumes its SimpleIR functions after projecting the owned callable,
+   import, type, and trampoline metadata. Finalization retains only an audit-enabled module
+   shape snapshot, never the emitted bodies; disabled audits do not project that shape. These
+   are compiler allocation lifetimes and do not change emitted-program ownership or ABI.
+
 10. **Backend-neutral SimpleIR rewrite policy is upstream of backend extraction.** `runtime/molt-tir/src/ir_rewrites.rs`
     owns phi-store lowering, try/except elision, copy-alias rewriting, and annotation-stub
     rewriting. `molt-backend` imports these passes from `molt-tir`; it must not grow a replacement
