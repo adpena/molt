@@ -158,20 +158,6 @@ _INTRINSIC_OWNER = (
 )
 
 
-def test_public_wrapper_uses_exact_top_level_native_provider(tmp_path: Path) -> None:
-    classification = _classify_sources(
-        tmp_path,
-        {
-            "stream": "import _stream\nclass Stream(_stream.Value): pass\n",
-            "_stream": _INTRINSIC_OWNER,
-        },
-    )
-
-    assert classification.statuses["stream"] == STATUS_INTRINSIC
-    assert classification.import_evidence["stream"].proven_modules == {"_stream"}
-    assert classification.import_evidence["stream"].facade is None
-
-
 @pytest.mark.parametrize(
     "provider_source",
     [
@@ -184,7 +170,7 @@ def test_public_wrapper_uses_exact_top_level_native_provider(tmp_path: Path) -> 
     ],
     ids=["missing", "python", "policy", "unread", "cycle"],
 )
-def test_public_wrapper_requires_independently_backed_native_provider(
+def test_python_implementation_does_not_inherit_provider_status(
     tmp_path: Path, provider_source: str | None
 ) -> None:
     sources = {"stream": "import _stream\nclass Stream(_stream.Value): pass\n"}
@@ -198,6 +184,9 @@ def test_public_wrapper_requires_independently_backed_native_provider(
 @pytest.mark.parametrize(
     "wrapper,provider",
     [
+        ("stream", "_stream"),
+        ("pkg.stream", "pkg.owner"),
+        ("pkg.stream", "pkg.child.owner"),
         ("stream", "_stream_extra"),
         ("stream", "__stream"),
         ("stream", "_stream.child"),
@@ -207,7 +196,7 @@ def test_public_wrapper_requires_independently_backed_native_provider(
         ("pkg.stream", "_pkg"),
     ],
 )
-def test_private_provider_relationship_is_exact_and_directed(
+def test_imports_do_not_change_python_implementation_ownership(
     tmp_path: Path, wrapper: str, provider: str
 ) -> None:
     classification = _classify_sources(
@@ -257,14 +246,14 @@ def test_private_provider_cannot_bypass_pure_facade_all_owner_proof(
     }
 
 
-def test_real_io_abc_wrapper_inherits_native_provider_backing() -> None:
+def test_real_io_abc_wrapper_keeps_python_implementation_ownership() -> None:
     stdlib = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib"
     classification = classify_stdlib_module_statuses(
         {name: stdlib / f"{name}.py" for name in ("io", "_io", "abc")},
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
 
-    assert classification.statuses["io"] == STATUS_INTRINSIC
+    assert classification.statuses["io"] == STATUS_PYTHON_COMPILED
     assert classification.statuses["_io"] == STATUS_INTRINSIC
     assert "_io" in classification.import_evidence["io"].proven_modules
 

@@ -24,19 +24,18 @@ unconditional `ImportError`.
 
 `src/molt/stdlib_intrinsic_policy.py` owns source relationship classification
 for the audit and the core-lane gate. Builds do not classify: a compiled program
-may import any implemented stdlib module. A wrapper can inherit intrinsic backing through
-a proved import of an already backed module in the same package, or through
-its exact top-level private provider (`io` importing `_io`). Private names,
-prefix matches, provider children, missing providers, unresolved imports and
-unanchored cycles do not establish that public/private relationship. Pure
-reexports keep the stricter `intrinsic-support` rule: every resolved owner must
-already have backing. These relationships classify source support; they do not
-attest API parity or target execution.
+may import any implemented stdlib module. An import of a backed module does not
+make the importing module's Python implementation intrinsic-backed, including
+same-package imports and public/private pairs such as `io` and `_io`. Pure
+reexports use `intrinsic-support` only when every resolved owner already has
+backing. Private fragments imported by a backed owner in the same family can
+also be classified as support. These relationships classify source ownership;
+they do not attest API parity or target execution.
 
 Runtime publication and Python protocol adapters are distinct authorities.
 For example, runtime initialization publishes native `sys` streams, but event
 loop exception reporting must use the current replaceable Python streams and
-their `write`/`flush` methods. That adapter lives with its sole intrinsic-backed
+their `write`/`flush` methods. That adapter lives with its sole compiled Python
 owner, `asyncio.events`; the retired private `asyncio._debug` module has no
 independent provider or compatibility stub. A module import, builtin spelling,
 runtime catalog entry or method protocol alone does not grant intrinsic backing.
