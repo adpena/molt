@@ -37,6 +37,13 @@ impl WasmStageAudit {
     pub(crate) fn start(self) -> Option<std::time::Instant> {
         self.enabled.then(std::time::Instant::now)
     }
+
+    pub(crate) fn capture_simple_ir_shape(
+        self,
+        functions: &[FunctionIR],
+    ) -> Option<WasmStageAuditShape> {
+        self.enabled.then(|| simple_ir_stage_shape(functions))
+    }
 }
 
 pub(crate) fn simple_ir_stage_shape(functions: &[FunctionIR]) -> WasmStageAuditShape {
@@ -154,6 +161,42 @@ pub(crate) fn emit_wasm_numeric_lane_audit(audit: WasmStageAudit, stats: WasmNum
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_shape_preserves_full_module_counts_after_bodies_are_consumed() {
+        let functions = vec![
+            FunctionIR {
+                name: "external".into(),
+                is_extern: true,
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "small".into(),
+                ops: vec![crate::OpIR::default()],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "largest".into(),
+                ops: vec![crate::OpIR::default(); 3],
+                ..FunctionIR::default()
+            },
+        ];
+        assert!(
+            WasmStageAudit::for_test(false)
+                .capture_simple_ir_shape(&functions)
+                .is_none()
+        );
+        let shape = WasmStageAudit::for_test(true)
+            .capture_simple_ir_shape(&functions)
+            .unwrap();
+        drop(functions);
+        assert_eq!(shape.functions, 3, "externs remain in the module count");
+        assert_eq!(shape.simple_ops, 4);
+        assert_eq!(shape.tir_blocks, 0);
+        assert_eq!(shape.tir_ops, 0);
+        assert_eq!(shape.largest_function, "largest");
+        assert_eq!(shape.largest_ops, 3);
+    }
 
     #[test]
     fn disabled_request_never_evaluates_observation_inputs() {

@@ -720,7 +720,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         .unwrap(),
     )
     .emit_wasm_module(
-        &unwind_ir,
+        unwind_ir,
         BTreeMap::new(),
         trampolines,
         crate::wasm_plan::WasmStageAudit::from_environment(),

@@ -83,7 +83,7 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
     })
     .with_code_slots(code_slots)
     .emit_wasm_module(
-        &ir,
+        ir,
         BTreeMap::new(),
         trampoline_analysis,
         crate::wasm_plan::WasmStageAudit::from_environment(),
