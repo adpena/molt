@@ -823,9 +823,12 @@ fn count_elements_dict_storage(
     if same(&mapping_get, &dict_get)
         && same(&mapping_setitem, &dict_setitem)
         && let Some(ptr) = obj_from_bits(mapping).as_ptr()
-        && unsafe { object_type_id(ptr) == TYPE_ID_DICT }
     {
-        return Ok(Some(ptr));
+        // The pinned receiver owns its stable backing edge across callbacks.
+        // Descriptor identity above, rather than physical layout, decides whether
+        // get/set overrides require the generic mapping protocol.
+        return unsafe { dict_like_bits_from_ptr(py, ptr) }
+            .map(|bits| bits.and_then(|bits| obj_from_bits(bits).as_ptr()));
     }
     Ok(None)
 }
