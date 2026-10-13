@@ -13,7 +13,7 @@ from tools.exception_diagnostics import (
 )
 
 from dataclasses import dataclass
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -26,12 +26,17 @@ import secrets
 import sys
 import tarfile
 import time
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 from molt import file_publication
 from molt import disk_capacity
 from molt.file_deletion import delete_path
-from molt.file_locks import _acquire_file_lock, _release_file_lock, _FileLockHandle
+from molt.file_locks import (
+    _acquire_file_lock,
+    _release_file_lock,
+    _try_acquire_file_lock,
+    _FileLockHandle,
+)
 from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.toolchain_identity import (
     StableRegularFileHandle,
@@ -766,6 +771,112 @@ def validate_terminal_receipt(
     if dict(projection) != expected:
         raise ValueError("Cargo cache lifecycle projection differs from its receipt")
     return dict(receipt)
+
+
+@contextmanager
+def superseded_workspace_evidence(
+    *,
+    result_root: Path,
+    provenance: Mapping[str, object],
+    projection: Mapping[str, object],
+    run_id: str,
+    execution_nonce_sha256: str,
+    status: str,
+    returncode: int,
+) -> Iterator[bool]:
+    """Yield permission to retire old evidence while pinning the later owner.
+
+    This grants no target mutation and does not retire immutable custody CAS.
+    Missing, busy or ambiguous authority defers retention rather than waiting.
+    """
+    workspace = provenance.get("workspace_sha256")
+    if not isinstance(workspace, str) or _HEX_64.fullmatch(workspace) is None:
+        raise ValueError("Cargo evidence is not a declared development workspace")
+    identity_root, _generation, target, owner_path = _generation_paths(
+        result_root, provenance
+    )
+    lock_path = file_publication.resolve_owned_path(identity_root / "target.lock")
+    lock = _try_acquire_file_lock(lock_path, create=False)
+    if lock is None:
+        yield False
+        return
+    try:
+        old = validate_terminal_receipt(
+            result_root=result_root,
+            projection=projection,
+            provenance=provenance,
+            run_id=run_id,
+            execution_nonce_sha256=execution_nonce_sha256,
+        )
+        reusable = {"state": "unsealed", "reason": "cargo-workspace", "reusable": True}
+        if (
+            old.get("process_cleanup_safe") is not True
+            or old.get("cargo_cache_publication") != reusable
+            or old["queue_terminal"]["status"] != status
+            or old["queue_terminal"]["returncode"] != returncode
+        ):
+            raise ValueError("Historical workspace run lacks matching closed custody")
+        owner = _read_owner(owner_path)
+        if (
+            owner.get("run_id") == run_id
+            and owner.get("execution_nonce_sha256") == execution_nonce_sha256
+        ):
+            yield False  # Current owner remains protected, not unverified.
+            return
+        if (
+            owner.get("workspace_sha256") != workspace
+            or owner.get("generation_id") != provenance.get("generation_id")
+            or owner.get("run_id") == run_id
+            or owner.get("execution_nonce_sha256") == execution_nonce_sha256
+            or not isinstance(owner.get("run_id"), str)
+            or not owner["run_id"]
+            or owner.get("lifecycle") != "terminal-unsealed-reclaimable"
+        ):
+            raise ValueError("Cargo workspace has no distinct closed successor owner")
+        current = {
+            **owner,
+            "schema": SCHEMA,
+            "run_owned": True,
+            "path": str(target),
+            "generation_owner": str(owner_path),
+            "generation_run_id": owner["run_id"],
+        }
+        if _generation_paths(result_root, current) != (
+            identity_root,
+            _generation,
+            target,
+            owner_path,
+        ):
+            raise ValueError("Cargo workspace successor changed generation paths")
+        pointer = _read_current_pointer(
+            identity_root / "state.json",
+            target=target,
+            owner_path=owner_path,
+            provenance=current,
+        )
+        if (
+            pointer is None
+            or pointer.get("state") != owner["lifecycle"]
+            or pointer.get("terminal_receipt") != owner.get("terminal_receipt")
+        ):
+            raise ValueError("Cargo workspace successor pointer is not terminal")
+        current_projection = _lifecycle_projection(
+            state=owner["lifecycle"],
+            provenance=current,
+            terminal_receipt=owner.get("terminal_receipt"),
+        )
+        _, receipt, publication = _validate_terminal_generation_authority(
+            result_root=result_root,
+            provenance=current,
+            projection=current_projection,
+            target=target,
+            owner_path=owner_path,
+        )
+        if receipt.get("process_cleanup_safe") is not True or publication != reusable:
+            raise ValueError("Cargo workspace successor lacks safe reusable custody")
+        yield True
+    finally:
+        _release_file_lock(lock)
 
 
 def record_terminal_receipt(

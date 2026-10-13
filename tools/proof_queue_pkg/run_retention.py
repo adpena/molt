@@ -13,14 +13,14 @@ before it is deleted.
 
 These runs keep all their files: unresolved rows, failed rows, runs pinned by a
 ``retain`` note, parents of unresolved rows, runs whose Cargo generation target
-is still live, and rows whose evidence custody cannot be proved. Of the other
+is still live without a verified closed successor workspace owner, and rows whose evidence custody cannot be proved. Of the other
 terminal runs, the newest runs that fit the count and byte bound stay. The
 newest such run always stays, so the run that just finished is inspectable.
 """
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -85,7 +85,7 @@ def _sql_list(values: Sequence[str]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
 
-# Receipt contexts can be large. Retention reads only the two facts it needs.
+# Receipt contexts can be large. Read only the custody projections needed here.
 _CONTEXT_FACT = (
     "CASE WHEN json_valid(receipt_context_json) "
     "THEN json_extract(receipt_context_json, '{path}') END"
@@ -231,12 +231,14 @@ def _rows(
     )
     prelaunch = _CONTEXT_FACT.format(path="$.derived_root_custody.prelaunch")
     nonce = _CONTEXT_FACT.format(path="$.execution_nonce_sha256")
+    lifecycle = _CONTEXT_FACT.format(path="$.cargo_generation_lifecycle")
     where = "" if run_id is None else "WHERE run_id = ?"
     yield from conn.execute(
         f"""
-        SELECT rowid AS retention_rowid, run_id, status, finished_at, log_path,
+        SELECT rowid AS retention_rowid, run_id, status, returncode, finished_at, log_path,
                summary_json, command_envelope_json, {retention},
-               {prelaunch} AS prelaunch_json, {nonce} AS nonce_sha256
+               {prelaunch} AS prelaunch_json, {nonce} AS nonce_sha256,
+               {lifecycle} AS cargo_lifecycle_json
         FROM proof_runs {where} ORDER BY rowid
         """,
         () if run_id is None else (run_id,),
@@ -256,15 +258,45 @@ def _prelaunch(row: sqlite3.Row) -> list[Mapping[str, object]]:
     return [entry for entry in entries if isinstance(entry, Mapping)]
 
 
-def _cargo_target_live(row: sqlite3.Row) -> bool:
-    """A Cargo generation target that still exists belongs to its owner first."""
-    for entry in _prelaunch(row):
-        if entry.get("schema") != cargo_cache_custody.SCHEMA:
-            continue
-        target = entry.get("path")
-        if isinstance(target, str) and os.path.lexists(target):
-            return True
-    return False
+@contextmanager
+def _cargo_evidence_protected(row: sqlite3.Row, *, result_root: Path) -> Iterator[bool]:
+    """Keep live targets unless their old workspace evidence can retire safely."""
+    entries = [
+        entry
+        for entry in _prelaunch(row)
+        if entry.get("schema") == cargo_cache_custody.SCHEMA
+    ]
+    if len(entries) > 1:
+        raise CustodyUnverified("multiple Cargo generations in one run")
+    if not entries:
+        yield False
+        return
+    entry = entries[0]
+    target = entry.get("path")
+    if not isinstance(target, str):
+        raise CustodyUnverified("Cargo generation has no target path")
+    if not os.path.lexists(target):
+        yield False
+        return
+    if entry.get("workspace_sha256") is None or row["status"] not in {
+        "passed",
+        "non-evidence",
+    }:
+        yield True
+        return
+    projection = loads_exact(str(row["cargo_lifecycle_json"]))
+    if not isinstance(projection, Mapping):
+        raise CustodyUnverified("workspace run lacks terminal projection")
+    with cargo_cache_custody.superseded_workspace_evidence(
+        result_root=result_root,
+        provenance=entry,
+        projection=projection,
+        run_id=str(row["run_id"]),
+        execution_nonce_sha256=row["nonce_sha256"],
+        status=str(row["status"]),
+        returncode=row["returncode"],
+    ) as superseded:
+        yield not superseded
 
 
 def _layout(
@@ -463,11 +495,16 @@ def plan(
             classified.append(replace(base, disposition=disposition))
             continue
         try:
-            if not disposition and (
-                run_id in disposition_open or _cargo_target_live(row)
-            ):
-                disposition = KEEP_CARGO
-                if not measure_all:
+            if not disposition:
+                if run_id in disposition_open:
+                    disposition = KEEP_CARGO
+                else:
+                    with _cargo_evidence_protected(
+                        row, result_root=result_root
+                    ) as protected:
+                        if protected:
+                            disposition = KEEP_CARGO
+                if disposition and not measure_all:
                     classified.append(replace(base, disposition=disposition))
                     continue
             files, scratch = _evidence_paths(
@@ -655,31 +692,44 @@ def _claim_and_reclaim(
     if not rows:
         return "skipped", 0, []
     row = rows[0]
-    size = run.bytes if run.bytes is not None else _paths_bytes(run.paths)
-    record = {
-        "schema": state.EVIDENCE_RETENTION_SCHEMA,
-        "state": RECLAIMING,
-        "reason": "outside-retention-window",
-        "policy": {"runs": policy.count, "bytes": policy.bytes},
-        "paths": [str(path) for path in run.paths],
-        "bytes": size,
-        # Saved before the guard summary goes, so the receipt stays identical.
-        "peak_rss_bytes": evidence._queue_peak_rss_bytes(row["summary_json"]),
-        "requested_at": state._utc_now(),
-        "reclaimed_at": None,
-        "error": None,
-    }
-    # One statement rechecks eligibility: a pin, a new unresolved child or
-    # another pass that got here first leaves the row untouched.
-    cursor = conn.execute(
-        _CLAIM_SQL,
-        (json.dumps(record, sort_keys=True), run.run_id, state.RETAIN_NOTE_KIND),
-    )
-    state._commit_with_locked_retry(conn)
-    if cursor.rowcount != 1:
-        return "skipped", 0, []
-    errors = _finish(conn, row, record, result_root=result_root)
-    return ("reclaiming" if errors else "reclaimed"), size, errors
+    with ExitStack() as lease:
+        try:
+            protected = lease.enter_context(
+                _cargo_evidence_protected(row, result_root=result_root)
+            )
+        except (CustodyUnverified, OSError, ValueError):
+            return "skipped", 0, []
+        if protected:
+            return "skipped", 0, []
+        size = run.bytes if run.bytes is not None else _paths_bytes(run.paths)
+        record = {
+            "schema": state.EVIDENCE_RETENTION_SCHEMA,
+            "state": RECLAIMING,
+            "reason": "outside-retention-window",
+            "policy": {"runs": policy.count, "bytes": policy.bytes},
+            "paths": [str(path) for path in run.paths],
+            "bytes": size,
+            # Saved before the guard summary goes, so the receipt stays identical.
+            "peak_rss_bytes": evidence._queue_peak_rss_bytes(row["summary_json"]),
+            "requested_at": state._utc_now(),
+            "reclaimed_at": None,
+            "error": None,
+        }
+        # One statement rechecks eligibility: a pin, a new unresolved child or
+        # another pass that got here first leaves the row untouched.
+        cursor = conn.execute(
+            _CLAIM_SQL,
+            (
+                json.dumps(record, sort_keys=True),
+                run.run_id,
+                state.RETAIN_NOTE_KIND,
+            ),
+        )
+        state._commit_with_locked_retry(conn)
+        if cursor.rowcount != 1:
+            return "skipped", 0, []
+        errors = _finish(conn, row, record, result_root=result_root)
+        return ("reclaiming" if errors else "reclaimed"), size, errors
 
 
 def run_pass(

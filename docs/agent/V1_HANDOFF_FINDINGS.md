@@ -356,6 +356,15 @@ it before runtime qualification. This repair
 adds no work to emitted programs; broader build-footprint obligations remain
 with V1-07/HF-10.
 
+Superseded closed development runs now enter the existing run-retention window
+instead of remaining pinned merely because their shared Cargo target exists.
+The existing target lease and immutable terminal receipts establish a distinct
+closed successor; current, busy, failed, pinned and ambiguous runs stay
+protected. Retention removes only the old run's logs and scratch, preserving
+Cargo outputs and custody CAS. All 32 focused ownership, race and recovery
+controls pass; the unchanged-source control reproduces the old exemption.
+The configured byte bound still covers eligible runs, not total disk usage.
+
 Successful compiler-cache reuse now refreshes the existing eviction owner at
 most once per five-minute maintenance interval. Shared archives, constituent
 objects, frontend JSON, optional native sidecars and WASM bundles use their
