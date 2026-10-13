@@ -80,7 +80,7 @@ target execution.
 
 | Boundary | Current retained evidence and limits |
 | --- | --- |
-| Optimized native runtime | 1,886 semantic cases pass at `5931446fa`; seven performance probes remain unrun. |
+| Optimized native runtime | 1,893 semantic cases pass at `c00cd4080`, including joined callable, serial ownership and decoder repairs; seven performance probes remain unrun. Executable and ABI dependency bytes are retained. |
 | Reduced runtime, IR/passes and WASM host authorities | 2,360 cases pass with two intentional ignores at `d72ee398c`. These are native host tests, not WASM target execution. |
 | Native/compiler consumers | 1,417 cases pass at `65ffcb283`, including seven actual native-artifact parser integration checks. |
 | LLVM consumers | 170 cases pass at `d72ee398c`; the LLVM-specific Clippy command also passes. |
@@ -112,7 +112,7 @@ pass.
 | JSON and text codecs | Shared byte decoding and UTF-16/32 handler progress are repaired and independently source-reviewed. Execute the affected codec/JSON consumers (V1-18). |
 | Owned serial returns and error provenance | CSV row and ConfigParser fallback ownership are repaired and source-reviewed. CSV domain errors must preserve the original public class without translating callback exceptions; statistics exception provenance remains open (V1-05/V1-18). |
 | Python callable and copy protocols | Class-level shallow-copy dispatch and frame-binding diagnostics are repaired and source-reviewed. Public intrinsic names and distinct alias identities are migrating through one declaration authority. Broader copy/reduction obligations remain open (V1-05). |
-| Cache result representation | Replace the incomplete custom CacheInfo object with the existing named-tuple protocol; retire the duplicate native decorator factory and metadata-default builders. Qualify tuple behavior, constructor custody and unchanged callback failures (V1-05). |
+| Cache result representation and storage | The custom CacheInfo object, duplicate native decorator factory and metadata-default builders are replaced by the existing named-tuple and public decorator protocols. Compiled qualification remains pending. Independent review also exposes unbounded hit-history storage, callback-spanning mutable borrows, noncanonical key ownership after recursive insertion, and clear discarding reentrant publication. Repair bounded recency within the existing cache/dictionary owners; unlimited caches require no recency state (V1-05/V1-07). |
 | Filesystem and capability consumers | The filesystem codec pair now shares CPython's captured encoding policy; the duplicate native fsencode lane is removed. Source-level filesystem comparison and capability-context transport pass. Retired network grants are migrated through test metadata; actual affected programs, including three formerly misclassified expected failures, remain required (V1-11/V1-12). |
 | Deferred imports | Counter.most_common requires heapq absent from the current graph. Finish demand propagation through the existing binding/import owners and retire the manual helper allowlist; do not replace it with eager whole-library expansion (HF-126). |
 | Pretty-print recursion | Native pformat must inspect a container before enrolling it in the recursion set; PrettyPrinter.format must use its existing context-aware owner without catching and retrying user errors. Review also requires inherited builtin repr semantics (V1-05/V1-18). |
@@ -128,6 +128,12 @@ newly reached existing gap as a new migration regression without source evidence
 The focused declaration/frontend/heap and facade checks pass 678 cases after
 repairing one stale structural allocation assertion; generator freshness and
 the generator-authority audit pass. These are development-side results.
+The joined runtime build at `fa0380704` stopped before executing tests because
+the serial bridge referenced an absent crate-root constructor export. The direct
+reference to its existing implementation is corrected at `c00cd4080`, whose
+registered optimized runtime gate passes all 1,893 semantic tests. The failed
+build's diagnostics remain retained separately; target public-program checks
+and performance acceptance are not inferred from this runtime result.
 
 The native cohort's passing lifecycle/process programs qualify their exact
 changed cells. The selected WASM consumer cohort remains unexecuted. Finish
