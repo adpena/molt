@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from molt.cli import module_cache, module_graph_cache
+from molt.cli import (
+    module_cache,
+    module_graph_cache,
+    module_graph_discovery,
+    module_resolution,
+)
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.target_python import TargetPythonVersion
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +44,142 @@ def _analyze(path: Path, **overrides: Any) -> tuple[Any, ...]:
     }
     options.update(overrides)
     return module_cache._load_module_analysis(path, **options)
+
+
+def test_discovery_tree_is_reused_readonly_by_unretained_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "app.py"
+    helper = tmp_path / "helper.py"
+    leaf = tmp_path / "leaf.py"
+    entry.write_text("from helper import f\n", encoding="utf-8")
+    helper.write_text(
+        "def f(value=1):\n    import leaf\n    return value\n"
+        "class Private:\n    __value = 2\n",
+        encoding="utf-8",
+    )
+    leaf.write_text("VALUE = 1\n", encoding="utf-8")
+    cache = _ModuleResolutionCache()
+    parsed: list[str] = []
+    parse = module_resolution._parse_source_for_target
+
+    def record(source: str, **kwargs: Any) -> ast.Module:
+        parsed.append(kwargs["filename"])
+        return parse(source, **kwargs)
+
+    monkeypatch.setattr(module_resolution, "_parse_source_for_target", record)
+    discovered = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+        resolver_cache=cache,
+    )
+    assert discovered.graph == {"app": entry, "helper": helper}
+    assert sorted(parsed) == sorted((str(entry), str(helper)))
+    retained = {
+        key: (record, ast.dump(record.tree, include_attributes=True))
+        for key, record in cache.ast_cache.items()
+    }
+    result = _analyze(
+        helper,
+        module_name="helper",
+        project_root=None,
+        resolution_cache=cache,
+        retain_source=False,
+        retain_tree=False,
+    )
+    assert sorted(parsed) == sorted((str(entry), str(helper)))
+    # Full analysis still admits deferred imports and function facts. Reuse
+    # cannot substitute discovery's module-init-only projection for this scan.
+    assert result[0] is None and result[4] is None
+    assert result[1] == ("leaf",)
+    assert result[2]["f"]["params"] == 1
+    assert result[3] == {"f": "sync"}
+    assert cache.ast_cache.keys() == retained.keys()
+    for key, (record, before) in retained.items():
+        assert cache.ast_cache[key] is record
+        assert ast.dump(record.tree, include_attributes=True) == before
+
+
+@pytest.mark.parametrize("changed", ["source", "filename", "target", "path"])
+def test_unretained_parse_reuses_only_identical_source_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    path = tmp_path / "app.py"
+    source = "VALUE = 1\n"
+    filename = str(path)
+    target = TargetPythonVersion(3, 12, 0)
+    cache = _ModuleResolutionCache()
+    calls: list[tuple[Path, str, str]] = []
+    parse = module_resolution._parse_source_for_target
+
+    def record(text: str, **kwargs: Any) -> ast.Module:
+        calls.append((Path(kwargs["filename"]), text, kwargs["target_python"].tag))
+        return parse(text, **kwargs)
+
+    monkeypatch.setattr(module_resolution, "_parse_source_for_target", record)
+    first = cache.parse_module_ast(
+        path, source, filename=filename, target_python=target
+    )
+    assert (
+        cache.parse_module_ast(
+            path, source, filename=filename, target_python=target, retain=False
+        )
+        is first
+    )
+    assert len(calls) == 1
+    if changed == "source":
+        source = "VALUE = 2\n"
+    elif changed == "filename":
+        filename = "display/app.py"
+    elif changed == "target":
+        target = TargetPythonVersion(3, 13, 0)
+    else:
+        path = tmp_path / "other.py"
+    if target.feature_version > sys.version_info[:2]:
+        for _ in range(2):
+            with pytest.raises(SyntaxError, match="requires a Python 3.13"):
+                cache.parse_module_ast(
+                    path, source, filename=filename, target_python=target, retain=False
+                )
+        assert len(calls) == 3
+        assert len(cache.ast_cache) == 1
+        assert cache.ast_error_cache == {}
+        return
+    second = cache.parse_module_ast(
+        path, source, filename=filename, target_python=target, retain=False
+    )
+    third = cache.parse_module_ast(
+        path, source, filename=filename, target_python=target, retain=False
+    )
+    assert second is not first and third is not second
+    assert len(calls) == 3
+    assert len(cache.ast_cache) == 1
+    assert calls[-1] == (Path(filename), source, target.tag)
+    assert ast.dump(second.tree) == ast.dump(ast.parse(source))
+
+
+def test_unretained_cold_parse_and_error_do_not_populate_caches(tmp_path: Path) -> None:
+    path = tmp_path / "app.py"
+    cache = _ModuleResolutionCache()
+    first = cache.parse_module_ast(
+        path, "VALUE = 1\n", filename=str(path), retain=False
+    )
+    second = cache.parse_module_ast(
+        path, "VALUE = 1\n", filename=str(path), retain=False
+    )
+    assert first is not second
+    for filename in ("first.py", "second.py"):
+        with pytest.raises(SyntaxError) as caught:
+            cache.parse_module_ast(
+                path, "def invalid(\n", filename=filename, retain=False
+            )
+        assert caught.value.filename == filename
+    assert cache.ast_cache == {} and cache.ast_error_cache == {}
 
 
 def test_warm_function_facts_still_admit_live_scan_without_parsing(

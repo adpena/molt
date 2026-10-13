@@ -244,8 +244,15 @@ sequential, parallel, warmup and retry admission. Already-admitted parallel
 cases drain through their existing owners. Real subprocess closure and
 scheduler controls pass; unchanged-source controls expose the original
 continued-admission defect. This development-only repair adds no binary work.
-The remaining allocation diagnostic is one case with existing stage/limit
-evidence after safe disk recovery. The
+The one-case diagnostic at `456236c60` has complete process custody and
+localizes the allocation failure to WASM emission of an asyncio module chunk.
+The installed data-allocation limit is 4,364,671,393 bytes; sampled data size
+reaches 4,364,668,928 bytes before a 270,344-byte allocation fails. Source IR
+grows from 622,341 to 2,274,441 operations through the function/module pipeline;
+final function reachability removes no bodies in this case. These measurements
+identify a compiler resource failure, not a passing target comparison. The
+exact input, backend image, stage log and live limits are retained. Compiler
+representation lifetime and expansion remain V1-07 work. The
 corrected native consumers below pass at their recorded source coordinates;
 these bounded Linux aarch64 results do not qualify the full release matrix.
 Earlier failed programs and their source/toolchain/process evidence are retained.
@@ -307,6 +314,22 @@ Focused controls distinguish hot-entry preservation from the old policy;
 source review retains approximate recency and explicit protected-file boundaries.
 Actual queued reuse, Rust/platform controls and end-to-end build savings remain
 unqualified. This is compiler/development work with no emitted-program cost.
+
+Discovery and full frontend analysis now share the existing readonly AST
+record when source, path, diagnostic filename and target match. Mutating
+serial lowering parses its own tree, matching parallel lowering. Seventy
+focused controls pass; unchanged-source and incomplete-migration controls
+detect the redundant parse and shared-tree mutation. Five-sample host analysis
+medians fall from 47.1 to 14.8 ms for asyncio and from 42.0 to 15.4 ms for
+asyncio.tasks, with identical analysis facts. These are isolated analysis
+measurements; whole-compile latency and target execution remain unmeasured.
+
+Archived failed Cargo generations can now be reclaimed through the existing
+queue lifecycle after authenticated physical closure and full archive
+verification. Three actual Linux reclamations recover 3,434,692,608 bytes in
+13.96 seconds; their original failed proof status is preserved. Unclosed or
+leased generations remain protected. This development-only path adds no
+emitted-program work; other filesystem/platform cells remain unqualified.
 
 Matched optimized LRU images at `04d4c4d1b` and the preserved old algorithm
 at `2128fd3fa` differ only in the cache implementation. Seven alternating pairs
