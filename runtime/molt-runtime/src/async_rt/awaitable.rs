@@ -10,7 +10,7 @@ use super::throw_protocol::{
 use crate::async_rt::generators::{
     is_iterable_coroutine_bits, is_native_coroutine_bits, is_native_poll_future_bits,
 };
-use crate::object::iterable::{SpecialIterationKind, SpecialIterationStep, special_iteration_step};
+use crate::object::iterable::SpecialIterationStep;
 use crate::*;
 use std::cell::RefCell;
 
@@ -708,7 +708,7 @@ fn iterator_resume(
     if let ResumeRequest::Send(value) = request
         && obj_from_bits(value).is_none()
     {
-        return special_iteration_step(py, iterator, SpecialIterationKind::Next);
+        return crate::object::ops_iter::iteration_step(py, iterator);
     }
     let closing = match &request {
         ResumeRequest::Throw(arguments) => {
@@ -1130,6 +1130,70 @@ mod tests {
 
     fn refcount(bits: u64) -> u64 {
         unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() as u64 }
+    }
+
+    #[test]
+    fn await_resume_uses_builtin_iteration_and_retains_owned_values() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let value = MoltObject::from_ptr(crate::alloc_string(py, b"owned await item")).bits();
+            let tuple = MoltObject::from_ptr(crate::alloc_tuple(py, &[none, value])).bits();
+            let iterator = crate::molt_iter(tuple);
+            assert!(!exception_pending(py));
+            for expected in [none, value] {
+                match iterator_resume(py, iterator, ResumeRequest::Send(none)) {
+                    Ok(SpecialIterationStep::Item(item)) => {
+                        assert_eq!(item, expected);
+                        dec_ref_bits(py, item);
+                    }
+                    _ => panic!("canonical iterator item was not forwarded"),
+                }
+            }
+            match iterator_resume(py, iterator, ResumeRequest::Send(none)) {
+                Ok(SpecialIterationStep::Exhausted(completion)) => {
+                    assert_eq!(completion, none);
+                    dec_ref_bits(py, completion);
+                }
+                _ => panic!("canonical iterator completion was not forwarded"),
+            }
+            dec_ref_bits(py, iterator);
+            dec_ref_bits(py, tuple);
+            assert_eq!(refcount(value), 1);
+            dec_ref_bits(py, value);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn await_resume_preserves_admitted_native_iterator_failure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let one = MoltObject::from_int(1).bits();
+            let two = MoltObject::from_int(2).bits();
+            let dictionary = crate::alloc_dict_with_pairs(py, &[one, one]);
+            assert!(!dictionary.is_null());
+            let dictionary_bits = MoltObject::from_ptr(dictionary).bits();
+            let iterator = crate::molt_iter(dictionary_bits);
+            assert!(!exception_pending(py));
+            assert!(unsafe { crate::dict_set_in_place(py, dictionary, two, two) });
+            assert!(!exception_pending(py));
+            assert!(
+                iterator_resume(py, iterator, ResumeRequest::Send(MoltObject::none().bits()),)
+                    .is_err()
+            );
+            let exception = crate::molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "RuntimeError",
+            ));
+            crate::molt_exception_clear();
+            for value in [exception, iterator, dictionary_bits] {
+                dec_ref_bits(py, value);
+            }
+            assert!(!exception_pending(py));
+        });
     }
 
     #[test]
