@@ -243,19 +243,7 @@ pub(crate) extern "C" fn dict_get_method(self_bits: u64, key_bits: u64, default_
 }
 
 pub(crate) extern "C" fn dict_clear_method(self_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(self_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "dict.clear expects dict");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "dict.clear expects dict");
-            }
-            dict_clear_in_place(_py, ptr);
-        }
-        MoltObject::none().bits() as i64
-    })
+    crate::object::ops_dict::molt_dict_clear(self_bits) as i64
 }
 
 pub(crate) extern "C" fn dict_copy_method(self_bits: u64) -> i64 {

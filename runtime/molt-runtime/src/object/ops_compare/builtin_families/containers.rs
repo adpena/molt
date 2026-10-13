@@ -7,17 +7,28 @@ pub(super) fn dict(
     right: MoltObject,
     op: RichCompareOp,
 ) -> CompareValueOutcome {
-    if !op.is_equality() || physical_type(right) != Some(TYPE_ID_DICT) {
+    if !op.is_equality() || !BuiltinComparison::Dict.accepts(right) {
         return CompareValueOutcome::NotComparable;
     }
+    // compare() pins both receivers. Their sealed backing edges cannot be
+    // replaced while alive, so borrowing also covers callbacks without extra
+    // retains on every exact-dict comparison. Declaring slots bypass overrides.
+    let left = match crate::object::ops::dict_backing_bits(py, left.bits()) {
+        Ok(Some(bits)) => obj_from_bits(bits).as_ptr().unwrap(),
+        Ok(None) => return CompareValueOutcome::NotComparable,
+        Err(()) => return CompareValueOutcome::Error,
+    };
+    let right = match crate::object::ops::dict_backing_bits(py, right.bits()) {
+        Ok(Some(bits)) => obj_from_bits(bits).as_ptr().unwrap(),
+        Ok(None) => return CompareValueOutcome::NotComparable,
+        Err(()) => return CompareValueOutcome::Error,
+    };
     let Some(_guard) = crate::state::recursion::RecursionGuard::enter_with_message(
         py,
         "maximum recursion depth exceeded in comparison",
     ) else {
         return CompareValueOutcome::Error;
     };
-    let left = left.as_ptr().unwrap();
-    let right = right.as_ptr().unwrap();
     let compare = || -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         unsafe {
             if dict_len(left) != dict_len(right) {
