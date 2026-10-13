@@ -78,14 +78,12 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             ClassEdgeOwnership::Owned,
         )
     } {
-        dec_ref_bits(py, class);
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     }
     let base_result = molt_class_set_base(class, builtins.object);
     dec_ref_bits(py, base_result);
     if exception_pending(py) {
-        dec_ref_bits(py, class);
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     }
 
     let new = crate::builtins::methods::builtin_variadic_func_bits(
@@ -124,18 +122,15 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
         .into_iter()
         .any(|bits| bits == 0 || exception_pending(py))
     {
-        dec_ref_bits(py, class);
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     }
     let dict_bits = unsafe { class_dict_bits(class_ptr) };
     let Some(dict) = obj_from_bits(dict_bits).as_ptr() else {
-        dec_ref_bits(py, class);
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     };
     let module_ptr = alloc_string(py, b"builtins");
     if module_ptr.is_null() {
-        dec_ref_bits(py, class);
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     }
     let module = MoltObject::from_ptr(module_ptr).bits();
     let complete = insert_class_attr(py, dict, b"__module__", module)
@@ -153,15 +148,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
                 .apply(py, class_ptr)
         }
     {
-        dec_ref_bits(py, class);
-        if !exception_pending(py) {
-            let _ = raise_exception::<u64>(
-                py,
-                "SystemError",
-                &format!("{} class publication failed", flavor.type_name()),
-            );
-        }
-        return 0;
+        return runtime_class_init_failed(py, class, flavor.type_name());
     }
     class
 }

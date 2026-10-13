@@ -52,6 +52,13 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> Resu
                     name
                 }
             }
+            Field::Module => match crate::object::class_storage::class_module_bits(py, class)? {
+                Some(value) => value,
+                None => {
+                    raise_exception::<()>(py, "AttributeError", field.name());
+                    return Err(());
+                }
+            },
             Field::Base => match crate::object::class_layout::class_best_base(py, class)? {
                 Some(base) => base.direct,
                 None => MoltObject::none().bits(),
@@ -154,6 +161,7 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
                 &[
                     Field::Name,
                     Field::QualName,
+                    Field::Module,
                     Field::Base,
                     Field::Bases,
                     Field::Mro,
@@ -269,12 +277,13 @@ unsafe fn write_namespace_metadata(
     value: Option<u64>,
 ) -> Result<(), ()> {
     unsafe {
-        if field == Field::Doc && value.is_none() {
+        if matches!(field, Field::Doc | Field::Module) && value.is_none() {
             raise_exception::<()>(
                 py,
                 "TypeError",
                 &format!(
-                    "cannot delete '__doc__' attribute of immutable type '{}'",
+                    "cannot delete '{}' attribute of immutable type '{}'",
+                    field.name(),
                     class_name_for_error(MoltObject::from_ptr(class).bits())
                 ),
             );
@@ -292,10 +301,20 @@ unsafe fn write_namespace_metadata(
         let _name =
             crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
         let mut publication = super::TypeMutation::prepare(py, class, name).ok_or(())?;
-        if field == Field::Doc && !publication.invalidate_native() {
+        if matches!(field, Field::Doc | Field::Module) && !publication.invalidate_native() {
             return Err(());
         }
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
+        if field == Field::Module && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+            let firstline = attr_name_bits_from_bytes(py, b"__firstlineno__").ok_or(())?;
+            let _firstline =
+                crate::PtrDropGuard::preserving(obj_from_bits(firstline).as_ptr().unwrap());
+            let retired = crate::object::ops::dict_del_deferred(py, dictionary, firstline)?;
+            if retired.is_some() {
+                class_bump_layout_version(class);
+            }
+            drop(retired);
+        }
         let retired = match value {
             Some(value) => Some(crate::object::ops::dict_set_deferred(
                 py, dictionary, name, value,
@@ -547,6 +566,7 @@ pub(crate) unsafe fn write_type_metadata(
                 | Field::Annotations
                 | Field::Annotate
                 | Field::Doc
+                | Field::Module
                 | Field::AbstractMethods
         ) {
             raise_exception::<()>(py, "AttributeError", "type metadata is read-only");
@@ -569,7 +589,7 @@ pub(crate) unsafe fn write_type_metadata(
         if matches!(field, Field::Annotations | Field::Annotate) {
             return write_type_annotations(py, class, field, value);
         }
-        if matches!(field, Field::Doc | Field::AbstractMethods) {
+        if matches!(field, Field::Doc | Field::Module | Field::AbstractMethods) {
             return write_namespace_metadata(py, class, field, value);
         }
         let Some(value) = value else {

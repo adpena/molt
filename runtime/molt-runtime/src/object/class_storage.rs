@@ -99,7 +99,7 @@ impl ClassSemanticPolicy {
     }
 
     /// Apply only to the unpublished constructor's class, never a subclass or
-    /// a type selected from mutable metadata. No additional storage is needed.
+    /// a type selected from mutable metadata. Static module storage is sealed here.
     pub(crate) unsafe fn apply(self, py: &PyToken<'_>, class: *mut u8) -> bool {
         unsafe {
             if class.is_null() || crate::object_type_id(class) != crate::TYPE_ID_TYPE {
@@ -125,12 +125,25 @@ impl ClassSemanticPolicy {
                         );
                     }
                 }
+            }
+            let retired_module = if self.origin == ClassOrigin::Static {
+                match class_capture_static_module(py, class) {
+                    Ok(retired) => retired,
+                    Err(()) => return false,
+                }
+            } else {
+                None
+            };
+            // Every remaining publication is callback-free and infallible for
+            // this admitted type. Retired namespace owners see the sealed class.
+            if self.origin == ClassOrigin::Static {
                 class_declare(class, ClassDeclaration::StaticType);
             }
             if (!self.immutable || super::class_set_immutable(py, class))
                 && (self.basetype || super::class_set_not_base(py, class))
             {
                 class_declare(class, ClassDeclaration::SemanticPolicySealed);
+                drop(retired_module);
                 true
             } else {
                 false
@@ -421,6 +434,102 @@ pub(crate) enum ClassReferenceSlot {
     InstanceDictionary = 11,
     /// Exact immutable creation-time documentation, independent of __doc__.
     CreationDoc = 12,
+    /// Immutable native declaration, independent of instance descriptors.
+    StaticModule = 13,
+}
+
+/// Seal the constructor's static module declaration before instance descriptors
+/// can occupy the same namespace key. A static type's display module is identity,
+/// while an actual descriptor remains ordinary instance namespace content.
+unsafe fn class_capture_static_module<'a, 'py>(
+    py: &'a PyToken<'py>,
+    class: *mut u8,
+) -> Result<Option<crate::object::ops::DetachedDictReferences<'a, 'py>>, ()> {
+    unsafe {
+        use crate::object::ops;
+        let dictionary_bits = crate::class_dict_bits(class);
+        let dictionary = crate::obj_from_bits(dictionary_bits).as_ptr().unwrap();
+        inc_ref_bits(py, dictionary_bits);
+        let _dictionary = crate::PtrDropGuard::preserving(dictionary);
+        let name = crate::attr_name_bits_from_bytes(py, b"__module__").ok_or(())?;
+        let _name = crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
+        let hash = ops::dict_key_hash(py, name).ok_or(())?;
+        let entry = ops::dict_find_entry_kv_with_hash(py, dictionary, name, hash)?;
+        // Native factories supply an unpublished namespace. A callback during
+        // lookup cannot substitute its owner or seal it behind this constructor.
+        if crate::class_dict_bits(class) != dictionary_bits
+            || class_declares(class, ClassDeclaration::SemanticPolicySealed)
+        {
+            crate::raise_exception::<()>(
+                py,
+                "SystemError",
+                "native class changed during module capture",
+            );
+            return Err(());
+        }
+        let text = entry
+            .and_then(|(_, value)| crate::obj_from_bits(value).as_ptr())
+            .filter(|ptr| crate::object_type_id(*ptr) == crate::TYPE_ID_STRING);
+        if text.is_some() && !ops::dict_require_writable(py, dictionary) {
+            return Err(());
+        }
+        let captured = if let Some(text) = text
+            && (crate::object_class_bits(text) == 0
+                || crate::object_class_bits(text) == crate::builtin_classes(py).str)
+        {
+            let bits = MoltObject::from_ptr(text).bits();
+            inc_ref_bits(py, bits);
+            bits
+        } else {
+            let bytes = if let Some(text) = text {
+                std::slice::from_raw_parts(crate::string_bytes(text), crate::string_len(text))
+            } else {
+                let name = crate::obj_from_bits(crate::class_name_bits(class))
+                    .as_ptr()
+                    .unwrap();
+                let name =
+                    std::slice::from_raw_parts(crate::string_bytes(name), crate::string_len(name));
+                match name.iter().rposition(|byte| *byte == b'.') {
+                    Some(end) => &name[..end],
+                    None => b"builtins",
+                }
+            };
+            let captured = crate::alloc_string(py, bytes);
+            if captured.is_null() {
+                return Err(());
+            }
+            MoltObject::from_ptr(captured).bits()
+        };
+        // No fallible work or callbacks after this point. Only a declaration
+        // string is retired; actual instance descriptors keep their namespace edge.
+        let retired = text.map(|_| {
+            ops::dict_remove_identity_with_hash_deferred(py, dictionary, entry.unwrap().0, hash)
+                .expect("prepared live module declaration")
+        });
+        ClassReferenceSlot::StaticModule.initialize_owned(class, captured);
+        Ok(retired)
+    }
+}
+
+/// Borrow the exact class's module: immutable static declaration or own heap
+/// namespace. Module values never inherit or invoke their descriptor protocol.
+pub(crate) unsafe fn class_module_bits(
+    py: &PyToken<'_>,
+    class: *mut u8,
+) -> Result<Option<u64>, ()> {
+    unsafe {
+        if !class_is_heap_type(class) {
+            let module = ClassReferenceSlot::StaticModule.load(class);
+            assert_ne!(module, 0, "static class module declaration is not sealed");
+            return Ok(Some(module));
+        }
+        let dictionary = crate::obj_from_bits(crate::class_dict_bits(class))
+            .as_ptr()
+            .unwrap();
+        let key = crate::attr_name_bits_from_bytes(py, b"__module__").ok_or(())?;
+        let _key = crate::PtrDropGuard::preserving(crate::obj_from_bits(key).as_ptr().unwrap());
+        crate::dict_get_in_place(py, dictionary, key)
+    }
 }
 
 /// Capture the internal doc once at class birth. Store an exact string, not
@@ -473,7 +582,7 @@ pub(crate) enum ClassReferenceRelease {
 }
 
 impl ClassReferenceSlot {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Name,
         Self::Bases,
         Self::Mro,
@@ -483,6 +592,7 @@ impl ClassReferenceSlot {
         Self::FieldLayout,
         Self::InstanceDictionary,
         Self::CreationDoc,
+        Self::StaticModule,
     ];
 
     const DICTIONARIES: [Self; 2] = [Self::Dictionary, Self::InstanceDictionary];
@@ -499,7 +609,8 @@ impl ClassReferenceSlot {
             | Self::Bases
             | Self::SlotDeclaration
             | Self::FieldLayout
-            | Self::CreationDoc => {
+            | Self::CreationDoc
+            | Self::StaticModule => {
                 matches!(phase, ClassReferenceRelease::Terminal)
             }
         }
@@ -797,7 +908,8 @@ impl RuntimeClassRetirement {
                     match slot {
                         ClassReferenceSlot::Name
                         | ClassReferenceSlot::Qualname
-                        | ClassReferenceSlot::CreationDoc => {
+                        | ClassReferenceSlot::CreationDoc
+                        | ClassReferenceSlot::StaticModule => {
                             self.assert_exact_metadata(py, bits, crate::TYPE_ID_STRING);
                         }
                         ClassReferenceSlot::Dictionary | ClassReferenceSlot::InstanceDictionary => {
@@ -1205,6 +1317,126 @@ mod tests {
                     dec_ref_bits(py, dictionary);
                 }
                 dec_ref_bits(py, key);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn static_module_capture_is_owned_traced_and_failure_atomic() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let key = crate::attr_name_bits_from_bytes(py, b"__module__").unwrap();
+                let declaration =
+                    MoltObject::from_ptr(crate::alloc_string(py, b"declared.owner")).bits();
+                let owner = user_class(py, b"UnqualifiedStatic");
+                let class = crate::obj_from_bits(owner).as_ptr().unwrap();
+                let dictionary = crate::obj_from_bits(crate::class_dict_bits(class))
+                    .as_ptr()
+                    .unwrap();
+                assert!(crate::dict_set_in_place(py, dictionary, key, declaration));
+                // Static bootstrap can run with an unrelated exception already
+                // selected. Successful Result-based capture must preserve it.
+                crate::raise_exception::<()>(py, "ValueError", "pending before static capture");
+                let pending = crate::exception_last_bits_noinc(py).unwrap();
+                assert!(ClassSemanticPolicy::static_type(true).apply(py, class));
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(pending));
+                crate::molt_exception_clear();
+                assert_eq!(class_module_bits(py, class), Ok(Some(declaration)));
+                assert_eq!(crate::dict_get_in_place(py, dictionary, key), Ok(None));
+                // The original namespace owner moved into the typed identity
+                // slot. Traversal sees it, and dropping the class releases it.
+                let mut edges = Vec::new();
+                crate::object::heap_lifecycle::visit_owned_values(py, class, &mut |value| {
+                    edges.push(value)
+                });
+                assert_eq!(
+                    edges.iter().filter(|&&value| value == declaration).count(),
+                    1
+                );
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(
+                        crate::obj_from_bits(declaration).as_ptr().unwrap()
+                    ))
+                    .ref_count_snapshot(),
+                    2
+                );
+                // Later instance descriptor publication must not replace the
+                // captured class module; neither does repeated descriptor read.
+                let roots = crate::builtin_classes(py);
+                let root_dict = crate::obj_from_bits(crate::class_dict_bits(
+                    crate::obj_from_bits(roots.type_obj).as_ptr().unwrap(),
+                ))
+                .as_ptr()
+                .unwrap();
+                let descriptor = crate::dict_get_in_place(py, root_dict, key)
+                    .unwrap()
+                    .unwrap();
+                assert!(crate::dict_set_in_place(py, dictionary, key, descriptor));
+                assert_eq!(class_module_bits(py, class), Ok(Some(declaration)));
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, key),
+                    Ok(Some(descriptor))
+                );
+                clear_class_runtime_contents(py, class);
+                crate::class_break_cycles(py, owner);
+                dec_ref_bits(py, owner);
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(
+                        crate::obj_from_bits(declaration).as_ptr().unwrap()
+                    ))
+                    .ref_count_snapshot(),
+                    1
+                );
+
+                let owner = user_class(py, b"native.pkg.FailedCapture");
+                let class = crate::obj_from_bits(owner).as_ptr().unwrap();
+                let dictionary = crate::obj_from_bits(crate::class_dict_bits(class))
+                    .as_ptr()
+                    .unwrap();
+                assert!(crate::dict_set_in_place(py, dictionary, key, descriptor));
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    ..Default::default()
+                })));
+                let reset = RestoreTracker;
+                assert!(!ClassSemanticPolicy::static_type(true).apply(py, class));
+                drop(reset);
+                assert!(crate::exception_pending(py));
+                crate::molt_exception_clear();
+                assert!(class_is_heap_type(class));
+                assert!(!class_declares(
+                    class,
+                    ClassDeclaration::SemanticPolicySealed
+                ));
+                assert_eq!(ClassReferenceSlot::StaticModule.load(class), 0);
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, key),
+                    Ok(Some(descriptor))
+                );
+                assert!(ClassSemanticPolicy::static_type(true).apply(py, class));
+                let module = class_module_bits(py, class).unwrap().unwrap();
+                assert_eq!(
+                    crate::string_obj_to_owned(crate::obj_from_bits(module)).as_deref(),
+                    Some("native.pkg")
+                );
+                assert_eq!(
+                    crate::dict_get_in_place(py, dictionary, key),
+                    Ok(Some(descriptor))
+                );
+                clear_class_runtime_contents(py, class);
+                crate::class_break_cycles(py, owner);
+                for bits in [owner, declaration, key] {
+                    dec_ref_bits(py, bits);
+                }
                 assert!(!crate::exception_pending(py));
             }
         });

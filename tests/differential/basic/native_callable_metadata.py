@@ -279,3 +279,59 @@ for value in (list, [], ChildList, ChildList()):
     names = dir(value)
     print("enumeration", all(name in names for name in ("append", "extend", "__len__")),
           len(names) == len(set(names)))
+
+# Class module lookup belongs to type's data descriptor. A native callable's
+# instance descriptor at the same spelling must remain in its class namespace.
+module_descriptor = type.__dict__["__module__"]
+for module_class in (object, type, int, str, list, types.BuiltinFunctionType,
+                     types.MethodDescriptorType, types.WrapperDescriptorType,
+                     types.MethodWrapperType, _io.BytesIO):
+    print("class-module-owner", module_class.__name__, module_class.__module__,
+          module_descriptor.__get__(module_class, type))
+print("class-module-namespace", "__module__" in object.__dict__,
+      "__module__" in int.__dict__, "__module__" in type.__dict__,
+      type(types.BuiltinFunctionType.__dict__["__module__"]).__name__)
+outcome("static-module-write", lambda: setattr(int, "__module__", "changed"))
+outcome("static-module-delete", lambda: delattr(int, "__module__"))
+
+module_gets = []
+
+
+class ModuleValue:
+    def __get__(self, instance, owner):
+        module_gets.append("bound")
+        raise AssertionError("a heap class module must remain a raw namespace value")
+
+
+module_value = ModuleValue()
+
+
+class ModuleHeap:
+    __module__ = module_value
+
+
+print("heap-module-raw", ModuleHeap.__module__ is module_value,
+      module_descriptor.__get__(ModuleHeap, type) is module_value, module_gets)
+for module_value in (None, 41, [], "replacement"):
+    ModuleHeap.__module__ = module_value
+    print("heap-module-assignment", ModuleHeap.__module__ is module_value,
+          ModuleHeap.__dict__["__module__"] is module_value)
+outcome("heap-module-delete", lambda: delattr(ModuleHeap, "__module__"))
+print("heap-module-delete-preserved", ModuleHeap.__module__)
+ModuleHeap.__firstlineno__ = 77
+ModuleHeap.__module__ = "versioned"
+print("heap-module-firstline", "__firstlineno__" in ModuleHeap.__dict__)
+
+
+class ModuleMeta(type):
+    @property
+    def __module__(cls):
+        return "metaclass-property"
+
+
+class ModuleOverride(metaclass=ModuleMeta):
+    __module__ = "own-namespace"
+
+
+print("module-metaclass-precedence", ModuleOverride.__module__,
+      module_descriptor.__get__(ModuleOverride, type))
