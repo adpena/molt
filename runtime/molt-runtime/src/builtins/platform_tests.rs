@@ -10,7 +10,7 @@ fn pending_error_filters_preserve_independent_handled_error() {
         let outer = alloc_exception(py, "RuntimeError", "handled owner");
         let outer_bits = MoltObject::from_ptr(outer).bits();
         exception_stack_push();
-        exception_context_set(py, outer_bits);
+        crate::builtins::exceptions::exception_context_set(py, outer_bits);
         for kind in ["AttributeError", "TypeError", "ImportError", "OSError"] {
             let inner = alloc_exception(py, kind, "raised owner");
             let inner_bits = MoltObject::from_ptr(inner).bits();
@@ -39,7 +39,7 @@ fn pending_error_filters_preserve_independent_handled_error() {
         );
         dec_ref_bits(py, missing_name);
         dec_ref_bits(py, instance);
-        exception_context_set(py, MoltObject::none().bits());
+        crate::builtins::exceptions::exception_context_set(py, MoltObject::none().bits());
         exception_stack_pop(py);
         dec_ref_bits(py, outer_bits);
     });

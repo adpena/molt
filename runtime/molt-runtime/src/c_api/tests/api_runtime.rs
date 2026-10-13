@@ -1189,7 +1189,7 @@ fn err_pending_peek_restore_roundtrip() {
             let outer = crate::alloc_exception(_py, "ValueError", "handled owner");
             let outer_bits = MoltObject::from_ptr(outer).bits();
             crate::exception_stack_push();
-            crate::exception_context_set(_py, outer_bits);
+            crate::builtins::exceptions::exception_context_set(_py, outer_bits);
             let msg = b"boom";
             let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
             assert_eq!(rc, 0);
@@ -1214,7 +1214,7 @@ fn err_pending_peek_restore_roundtrip() {
             dec_ref_bits(_py, peek_bits);
             dec_ref_bits(_py, fetched_bits);
             dec_ref_bits(_py, restored_bits);
-            crate::exception_context_set(_py, MoltObject::none().bits());
+            crate::builtins::exceptions::exception_context_set(_py, MoltObject::none().bits());
             crate::exception_stack_pop(_py);
             dec_ref_bits(_py, outer_bits);
             crate::replace_current_task(_py, previous);
