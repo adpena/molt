@@ -1,7 +1,7 @@
 //! Abstract protocol regressions use canonical semantic hooks and shared fixture ownership.
 #![allow(non_snake_case)]
 mod support;
-use molt_cpython_abi::abi_types::{Py_None, PyExc_TypeError};
+use molt_cpython_abi::abi_types::{Py_None, PyExc_TypeError, PyObject};
 use molt_cpython_abi::api::refcount::OwnedPyObject;
 use molt_cpython_abi::api::{
     abstract_mapping, abstract_sequence, errors, mapping, object, sequences, strings, typeobj,
@@ -40,7 +40,7 @@ fn file_descriptor_integer_admission_rejects_negative_and_narrowing_aliases() {
     use molt_cpython_abi::api::numbers;
     let _transaction = install();
     for (value, expected, error) in [
-        (0, 0, std::ptr::null_mut()),
+        (0, 0, std::ptr::null_mut::<PyObject>()),
         (2, 2, std::ptr::null_mut()),
         (i32::MAX as i64, i32::MAX, std::ptr::null_mut()),
         (-1, -1, (&raw mut PyExc_ValueError).cast()),
@@ -157,7 +157,7 @@ fn file_descriptor_fileno_preserves_type_width_errors_and_return_ownership() {
         ml_doc: std::ptr::null(),
     };
     for (value, expected, error) in [
-        (Some(1000), 1000, std::ptr::null_mut()),
+        (Some(1000), 1000, std::ptr::null_mut::<PyObject>()),
         (Some(-2), -1, (&raw mut PyExc_ValueError).cast()),
         (
             Some((1_i64 << 32) + 2),
