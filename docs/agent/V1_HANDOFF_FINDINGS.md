@@ -62,7 +62,7 @@ retain the historical repair evidence without treating it as release acceptance.
 ## Active integration
 
 Main contains the runtime/ABI, public-consumer and developer-cost integration
-through `6cbbfeff8`, with the exact qualification boundaries below. The parent
+through `0b2f013f4`, with the exact qualification boundaries below. The parent
 integrator continues to own preserved WIP reconciliation. Coordination records own active
 write scopes and private receipts; this ledger owns release status. The current
 inventory has 98 open
@@ -297,6 +297,28 @@ WASI `mkstemp` ENOSYS boundary (V1-13). The byte-glob program exposes raw
 byte-path creation/enumeration and `glob.escape` round-trip defects; the
 preserved filesystem-codec migration remains unjoined. These failures remain
 release obligations and are not passing whole-cohort evidence.
+
+At `0b2f013f4`, ordinary module transformation returns only the changed-name
+set. The unused final call graph, summaries, all-function call-fact tables and
+result wrappers are deleted; diagnostics request precise facts only for their
+selected function. The same ordered set replaces three quadratic merge scans
+and the duplicate backconversion membership projection. Native final leaf
+metadata retains its later lifetime/splitting boundary. All actual native,
+WASM, LLVM and Luau drivers compile on Linux aarch64; 51 focused pass, conversion,
+exporter and reader controls pass. Twelve paired complete outputs agree across
+the retained asyncio function, 44-function enum module and recursive/extern
+fixture, including the unchanged terminal path and precise diagnostic facts.
+A local-floor mutation fails the graph oracle despite retaining the precise
+producer label. In the measured module wrapper, enum native/WASM requested
+allocation falls by about 9.5 MB with roughly 82,000 fewer allocation calls;
+asyncio native/WASM falls by about 10.4 MB and 93,000 calls. Preparation and
+serialization are excluded; these are not whole-compiler memory or latency
+claims. The additional full-program diagnostic hits its unchanged 4 GiB RSS
+guard on both sources, with closed descendants and no complete output. It does
+not reproduce production WASM preparation or serialization, so the failure
+cannot localize a production regression. Broader compiler footprint remains a
+V1-07 obligation.
+
 The corrected native consumers below pass at their recorded source coordinates;
 these bounded Linux aarch64 results do not qualify the full release matrix.
 Earlier failed programs and their source/toolchain/process evidence are retained.
