@@ -313,7 +313,7 @@ def _resolve_module_path_parts(
 
 @dataclass(frozen=True)
 class _ParsedModuleAst:
-    """One parsed source generation; discovery keeps it read-only."""
+    """One parsed source generation; discovery and analysis keep it read-only."""
 
     tree: ast.Module
 
@@ -574,6 +574,12 @@ class _ModuleResolutionCache:
         retain: bool = True,
     ) -> _ParsedModuleAst:
         cache_key = (self.resolved_path(path), filename, target_python.tag, source)
+        tree = self.ast_cache.get(cache_key)
+        if tree is not None:
+            return tree
+        # Analysis may borrow discovery's read-only tree without retaining a
+        # newly parsed miss. Content, diagnostic filename and target still bind
+        # every reuse; mutating lowering owns its separate parsed tree.
         if not retain:
             return _ParsedModuleAst(
                 _parse_source_for_target(
@@ -582,9 +588,6 @@ class _ModuleResolutionCache:
                     target_python=target_python,
                 )
             )
-        tree = self.ast_cache.get(cache_key)
-        if tree is not None:
-            return tree
         cached_error = self.ast_error_cache.get(cache_key)
         if cached_error is not None:
             raise cached_error

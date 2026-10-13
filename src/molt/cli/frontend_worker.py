@@ -429,13 +429,13 @@ def _resolve_tree_for_serial_frontend_module(
         module_name, str(module_path)
     )
     try:
-        return lowering_context.module_resolution_cache.parse_module_ast(
-            module_path,
+        # Lowering rewrites AST nodes; discovery/analysis cache entries are
+        # read-only. Match the parallel worker's independently owned parse.
+        return _parse_source_for_target(
             source,
             filename=logical_source_path,
-            retain=False,
             target_python=lowering_context.target_python,
-        ).tree
+        )
     except SyntaxError as exc:
         raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 
