@@ -1397,10 +1397,19 @@ unsafe fn native_callable_attr(
     _py: &PyToken<'_>,
     public_ptr: *mut u8,
     _obj_ptr: *mut u8,
-    _kind: NativeCallableKind,
+    kind: NativeCallableKind,
     attr_bits: u64,
 ) -> Result<Option<u64>, ()> {
     unsafe {
+        let name = obj_from_bits(attr_bits).as_ptr().unwrap();
+        let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
+        if let Some(field) =
+            crate::object::function_metadata::FunctionMetadataField::from_name(name)
+            && !kind.metadata_fields().contains(&field)
+        {
+            // The class's own metadata must not widen this callable role.
+            return Ok(None);
+        }
         let class = type_of_bits(_py, MoltObject::from_ptr(public_ptr).bits());
         let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
             return Ok(None);

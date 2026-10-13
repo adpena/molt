@@ -407,7 +407,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors
                 let msg = format!("unknown error handler name '{name}'");
                 return raise_exception::<_>(_py, "LookupError", &msg);
             }
-            Err(OpsDecodeTextError::Failure(_, _, _)) => {}
+            Err(OpsDecodeTextError::Failure(..)) => {}
         }
 
         let id = next_inc_dec_handle();
@@ -504,7 +504,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err(OpsDecodeTextError::Failure(OpsDecodeFailure::Byte { pos, .. }, _, _))
+            Err(OpsDecodeTextError::Failure(OpsDecodeFailure::Byte { pos, .. }, _, _, _))
                 if !is_final =>
             {
                 // Buffer bytes from pos onward; return decoded prefix.
@@ -900,6 +900,7 @@ fn charmap_decode_undefined(
     errors: &str,
     byte: u8,
     pos: usize,
+    initial_error: &mut Option<crate::object::ops_encoding::DecodeErrorSpan>,
 ) -> Result<(), u64> {
     match errors {
         "ignore" => Ok(()),
@@ -911,7 +912,12 @@ fn charmap_decode_undefined(
             push_backslash_bytes_vec(out, &[byte]);
             Ok(())
         }
-        "surrogateescape" => {
+        "surrogateescape" if byte >= 0x80 => {
+            initial_error.get_or_insert(crate::object::ops_encoding::DecodeErrorSpan {
+                start: pos,
+                end: pos + 1,
+                reason: "character maps to <undefined>",
+            });
             push_wtf8_codepoint(out, 0xDC00 + byte as u32);
             Ok(())
         }
@@ -920,7 +926,7 @@ fn charmap_decode_undefined(
             "TypeError",
             "don't know how to handle UnicodeDecodeError in error callback",
         )),
-        "strict" | "surrogatepass" => Err(OpsDecodeTextError::Failure(
+        "strict" | "surrogatepass" | "surrogateescape" => Err(OpsDecodeTextError::Failure(
             OpsDecodeFailure::Byte {
                 pos,
                 byte,
@@ -928,6 +934,7 @@ fn charmap_decode_undefined(
             },
             "charmap".to_owned(),
             0,
+            *initial_error,
         )
         .raise(_py, input)),
         other => {
@@ -955,6 +962,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
         let mapping_obj = obj_from_bits(mapping_bits);
+        let mut initial_error = None;
 
         if mapping_obj.is_none() {
             let mut decoded = Vec::with_capacity(input_vec.len());
@@ -970,9 +978,15 @@ pub extern "C" fn molt_codecs_charmap_decode(
             for (pos, &byte) in input_vec.iter().enumerate() {
                 match table_chars.get(byte as usize).copied() {
                     Some('\u{FFFE}') | None => {
-                        if let Err(bits) =
-                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, byte, pos)
-                        {
+                        if let Err(bits) = charmap_decode_undefined(
+                            _py,
+                            &input_vec,
+                            &mut out,
+                            &errors,
+                            byte,
+                            pos,
+                            &mut initial_error,
+                        ) {
                             return bits;
                         }
                     }
@@ -1000,9 +1014,15 @@ pub extern "C" fn molt_codecs_charmap_decode(
                 match mapping_vec.get(byte as usize).copied() {
                     Some(mapped) => push_wtf8_codepoint(&mut out, mapped as u32),
                     None => {
-                        if let Err(bits) =
-                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, byte, pos)
-                        {
+                        if let Err(bits) = charmap_decode_undefined(
+                            _py,
+                            &input_vec,
+                            &mut out,
+                            &errors,
+                            byte,
+                            pos,
+                            &mut initial_error,
+                        ) {
                             return bits;
                         }
                     }
@@ -1030,9 +1050,15 @@ pub extern "C" fn molt_codecs_charmap_decode(
                 Some(val) => {
                     let val_obj = obj_from_bits(val);
                     if val_obj.is_none() {
-                        if let Err(bits) =
-                            charmap_decode_undefined(_py, &input_vec, &mut out, &errors, b, pos)
-                        {
+                        if let Err(bits) = charmap_decode_undefined(
+                            _py,
+                            &input_vec,
+                            &mut out,
+                            &errors,
+                            b,
+                            pos,
+                            &mut initial_error,
+                        ) {
                             return bits;
                         }
                     } else if let Some(ptr) = val_obj.as_ptr() {
@@ -1075,9 +1101,15 @@ pub extern "C" fn molt_codecs_charmap_decode(
                     }
                 }
                 None => {
-                    if let Err(bits) =
-                        charmap_decode_undefined(_py, &input_vec, &mut out, &errors, b, pos)
-                    {
+                    if let Err(bits) = charmap_decode_undefined(
+                        _py,
+                        &input_vec,
+                        &mut out,
+                        &errors,
+                        b,
+                        pos,
+                        &mut initial_error,
+                    ) {
                         return bits;
                     }
                 }

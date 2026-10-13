@@ -128,6 +128,33 @@ impl<Storage: DetachedDictEdges> DetachedDictReferences<'_, '_, Storage> {
     }
 }
 
+impl<'a, 'py>
+    DetachedDictReferences<'a, 'py, crate::object::backing::TrackedVecContents<DictEntry>>
+{
+    /// Compact and permute already detached rows without allocating or dropping
+    /// managed edges. Each swap fixes a destination, so at most N swaps occur.
+    /// `rank` must assign each live key a distinct index in the compacted rows.
+    pub(crate) fn into_ordered(mut self, mut rank: impl FnMut(u64) -> usize) -> Self {
+        self.bits.retain(|row| row.hash.is_some());
+        for index in 0..self.bits.len() {
+            loop {
+                let destination = rank(self.bits[index].key);
+                if destination == index {
+                    break;
+                }
+                assert!(destination < self.bits.len(), "retirement rank in bounds");
+                assert_ne!(
+                    rank(self.bits[destination].key),
+                    destination,
+                    "unique retirement rank"
+                );
+                self.bits.swap(index, destination);
+            }
+        }
+        self
+    }
+}
+
 /// Retain, publish and promote tracking; transfer the displaced reference to the
 /// caller so destructor re-entry cannot observe a partially committed owner.
 #[inline]
@@ -379,8 +406,8 @@ unsafe fn dict_layout_frozen(dict: *mut u8) -> bool {
     unsafe { (*header_from_obj_ptr(dict)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) }
 }
 
-/// Admission for every increment projection, including callback-free writes.
-unsafe fn dict_increment_writable(py: &PyToken<'_>, dict: *mut u8) -> bool {
+/// Shared write admission, including callback-free dictionary publications.
+pub(crate) unsafe fn dict_require_writable(py: &PyToken<'_>, dict: *mut u8) -> bool {
     unsafe {
         if dict_layout_frozen(dict) {
             raise_exception::<()>(py, "TypeError", "class layout metadata is immutable");
@@ -409,7 +436,7 @@ pub(crate) unsafe fn dict_inc_in_place(
     delta: u64,
 ) -> bool {
     unsafe {
-        if !dict_increment_writable(py, dict) {
+        if !dict_require_writable(py, dict) {
             return false;
         }
         let dictionary = MoltObject::from_ptr(dict).bits();
@@ -984,7 +1011,7 @@ fn hash_slot_for_row(table: &[usize], row: usize, hash: StoredHash) -> Option<us
 /// The dictionary key's hashability/hash protocol, shared by ordinary reads,
 /// writes and setdefault. A successful result hashes a user key exactly once.
 #[inline]
-unsafe fn dict_key_hash(py: &PyToken<'_>, key_bits: u64) -> Option<u64> {
+pub(crate) unsafe fn dict_key_hash(py: &PyToken<'_>, key_bits: u64) -> Option<u64> {
     unsafe {
         if exact_string_bytes(py, key_bits).is_some() {
             return Some(crate::object::ops_hash::hash_string(
@@ -1597,8 +1624,7 @@ pub(crate) unsafe fn dict_set_deferred<'a, 'py>(
 ) -> Result<DetachedDictReferences<'a, 'py>, ()> {
     unsafe {
         crate::gil_assert();
-        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
-            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+        if !dict_require_writable(_py, ptr) {
             return Err(());
         }
         // Fast path: inline NaN-boxed ints bypass all exception checks,
@@ -1639,8 +1665,7 @@ unsafe fn dict_set_with_hash_deferred<'a, 'py>(
 ) -> Result<DetachedDictReferences<'a, 'py>, ()> {
     let hash = admit_stored_hash(_py, hash).ok_or(())?;
     unsafe {
-        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
-            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+        if !dict_require_writable(_py, ptr) {
             return Err(());
         }
         let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get())?;
@@ -1680,42 +1705,59 @@ pub(crate) unsafe fn dict_setdefault_in_place(
             inc_ref_bits(py, bits);
         }
         let result = (|| {
-            let hash = admit_stored_hash(py, dict_key_hash(py, key)?)?;
-            let found = dict_find_entry_with_hash(py, dict, key, hash.get()).ok()?;
-            if let Some(index) = found {
-                let value = dict_entries(dict)[index].value;
-                inc_ref_bits(py, value);
-                return Some(value);
-            }
-            if dict_layout_frozen(dict) {
-                return raise_exception(py, "TypeError", "class layout metadata is immutable");
-            }
-            if !dict_reserve_entries(py, dict, 1) {
-                return None;
-            }
-            let value = match default {
-                Some(value) => {
-                    inc_ref_bits(py, value);
-                    value
-                }
-                None => {
-                    // alloc_list records GC work for a later safepoint; it does
-                    // not run Python here. The fresh list's initial owner is
-                    // transferred to the result, not retained an extra time.
-                    let list = alloc_list(py, &[]);
-                    if list.is_null() {
-                        return None;
-                    }
-                    MoltObject::from_ptr(list).bits()
-                }
-            };
-            dict_append_reserved_entry(py, dict, key, value, hash);
-            Some(value)
+            let hash = dict_key_hash(py, key)?;
+            dict_setdefault_with_hash_in_place(py, dict, key, default, hash)
+                .map(|(value, _inserted)| value)
         })();
         for bits in inputs.into_iter().rev() {
             dec_ref_bits(py, bits);
         }
         result
+    }
+}
+
+/// Return one owned value and whether this call inserted it. The caller keeps
+/// dict, key and default alive across equality callbacks. After the final live
+/// probe, publication cannot call Python; derived metadata may commit before
+/// releasing any of the caller's owners. Existing entries are never replaced.
+pub(crate) unsafe fn dict_setdefault_with_hash_in_place(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+    default: Option<u64>,
+    hash: u64,
+) -> Option<(u64, bool)> {
+    unsafe {
+        let hash = admit_stored_hash(py, hash)?;
+        let found = dict_find_entry_with_hash(py, dict, key, hash.get()).ok()?;
+        if let Some(index) = found {
+            let value = dict_entries(dict)[index].value;
+            inc_ref_bits(py, value);
+            return Some((value, false));
+        }
+        if !dict_require_writable(py, dict) {
+            return None;
+        }
+        if !dict_reserve_entries(py, dict, 1) {
+            return None;
+        }
+        let value = match default {
+            Some(value) => {
+                inc_ref_bits(py, value);
+                value
+            }
+            None => {
+                // Allocation records GC work for a later safepoint; it does
+                // not execute Python between the absent probe and publication.
+                let list = alloc_list(py, &[]);
+                if list.is_null() {
+                    return None;
+                }
+                MoltObject::from_ptr(list).bits()
+            }
+        };
+        dict_append_reserved_entry(py, dict, key, value, hash);
+        Some((value, true))
     }
 }
 
@@ -1786,8 +1828,7 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
 ) -> Result<DetachedDictReferences<'a, 'py, [u64; DICT_STRING_BINDING_LIMIT]>, ()> {
     unsafe {
         crate::gil_assert();
-        if (*header_from_obj_ptr(dict)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
-            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+        if !dict_require_writable(_py, dict) {
             return Err(());
         }
         if entries.len() > DICT_STRING_BINDING_LIMIT {
@@ -2049,13 +2090,16 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
     }
 }
 
-pub(crate) unsafe fn dict_find_entry_kv_in_place(
+/// Borrow the actual entry key and value after the canonical callback-safe
+/// probe. No backing view is returned; callers retain values before callbacks.
+pub(crate) unsafe fn dict_find_entry_kv_with_hash(
     py: &PyToken<'_>,
     dict: *mut u8,
     key_bits: u64,
+    hash: u64,
 ) -> Result<Option<(u64, u64)>, ()> {
     unsafe {
-        let index = dict_find_entry(py, dict, key_bits)?;
+        let index = dict_find_entry_with_hash(py, dict, key_bits, hash)?;
         Ok(index.map(|index| {
             let row = dict_entries(dict)[index];
             (row.key, row.value)
@@ -2211,6 +2255,46 @@ pub(crate) unsafe fn dict_del_with_hash_deferred<'a, 'py>(
     unsafe { dict_delete_deferred(py, ptr, key_bits, Some(hash.get())) }
 }
 
+/// Remove an exact retained entry without hashing, equality or decref. This
+/// is identity retirement, not Python key lookup. The supplied hash is the
+/// entry's admitted stored hash; callers commit derived metadata before drop.
+pub(crate) unsafe fn dict_remove_identity_with_hash_deferred<'a, 'py>(
+    py: &'a PyToken<'py>,
+    dict: *mut u8,
+    key: u64,
+    hash: u64,
+) -> Option<DetachedDictReferences<'a, 'py>> {
+    unsafe {
+        assert!(!dict_layout_frozen(dict));
+        let len = dict_table(dict).len();
+        if len == 0 {
+            return None;
+        }
+        let mut slot = hash as usize & (len - 1);
+        for _ in 0..len {
+            let entry = dict_table(dict)[slot];
+            if entry == 0 {
+                return None;
+            }
+            if entry != TABLE_TOMBSTONE {
+                let row = dict_entries(dict)[entry - 1];
+                if row.key == key && row.hash.map(StoredHash::get) == Some(hash) {
+                    return Some(dict_remove_row(
+                        py,
+                        dict,
+                        HashProbe {
+                            row: entry - 1,
+                            slot,
+                        },
+                    ));
+                }
+            }
+            slot = (slot + 1) & (len - 1);
+        }
+        None
+    }
+}
+
 unsafe fn dict_delete_deferred<'a, 'py>(
     py: &'a PyToken<'py>,
     ptr: *mut u8,
@@ -2218,8 +2302,7 @@ unsafe fn dict_delete_deferred<'a, 'py>(
     hash: Option<u64>,
 ) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
-        if dict_layout_frozen(ptr) {
-            raise_exception::<()>(py, "TypeError", "class layout metadata is immutable");
+        if !dict_require_writable(py, ptr) {
             return Err(());
         }
         let hash = match hash {
@@ -2280,8 +2363,7 @@ pub(crate) unsafe fn dict_clear_deferred<'a, 'py>(
 ) -> Option<DetachedDictReferences<'a, 'py, crate::object::backing::TrackedVecContents<DictEntry>>>
 {
     unsafe {
-        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
-            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+        if !dict_require_writable(_py, ptr) {
             return None;
         }
         Some(DetachedDictReferences {

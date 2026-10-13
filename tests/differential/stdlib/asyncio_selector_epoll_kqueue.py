@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,net,select.poll
 """Purpose: differential coverage for asyncio epoll/kqueue selectors."""
 
 import asyncio

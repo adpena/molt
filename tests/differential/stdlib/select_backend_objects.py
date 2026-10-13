@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net
+# MOLT_ENV: MOLT_CAPABILITIES=net,select.poll,select.epoll,select.devpoll
 """Purpose: differential coverage for select poll/epoll/kqueue/devpoll objects."""
 
 import select

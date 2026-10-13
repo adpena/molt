@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,select.poll
 """Purpose: differential coverage for selectors fileobj fileno errors."""
 
 import selectors

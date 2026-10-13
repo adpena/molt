@@ -86,6 +86,14 @@ attributes = (
 for label, value, expected_type in roles:
     print("role", label, type(value) is expected_type, type(value).__name__)
     print("metadata", label, tuple(hasattr(value, name) for name in attributes))
+    absent = object()
+    directory = dir(value)
+    print("metadata-observers", label, tuple(
+        (getattr(value, name, absent) is not absent, name in directory)
+        for name in attributes
+    ))
+    print("metadata-class-module", label, type(value).__module__)
+    outcome(label + "-direct-module", lambda: object.__getattribute__(value, "__module__"))
     print("name", label, value.__name__, value.__qualname__)
     outcome(label + "-defaults-write", lambda: setattr(value, "__defaults__", (9,)))
     outcome(label + "-annotations-write", lambda: setattr(value, "__annotations__", {}))
@@ -177,8 +185,12 @@ managed_signature = inspect.signature(managed_receiver.method)
 print("managed-signature", tuple(managed_signature.parameters),
       managed_signature.parameters["value"].default)
 managed.__text_signature__ = "(self, visible=5, /)"
+print("managed-text-dictionary", managed.__dict__["__text_signature__"])
 print("managed-text-signature", str(inspect.signature(managed_receiver.method)))
+managed.__dict__["__text_signature__"] = "(self, replacement=7, /)"
+print("managed-text-dictionary-write", str(inspect.signature(managed_receiver.method)))
 del managed.__text_signature__
+print("managed-text-dictionary-delete", "__text_signature__" in managed.__dict__)
 for parameters in (
     [],
     [inspect.Parameter("only", inspect.Parameter.KEYWORD_ONLY)],

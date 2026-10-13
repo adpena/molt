@@ -298,7 +298,9 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
                 let poll_fn = crate::object::object_poll_fn(sleep_target);
                 if poll_fn == io_wait_poll_fn_addr() {
                     #[cfg(not(target_arch = "wasm32"))]
-                    runtime_state(_py).io_poller().cancel_waiter(sleep_target);
+                    if let Some(poller) = runtime_state(_py).io_poller.get() {
+                        poller.cancel_waiter(sleep_target);
+                    }
                 }
             }
         }
@@ -321,7 +323,9 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
         }
         if poll_fn == io_wait_poll_fn_addr() {
             #[cfg(not(target_arch = "wasm32"))]
-            runtime_state(_py).io_poller().cancel_waiter(task_ptr);
+            if let Some(poller) = runtime_state(_py).io_poller.get() {
+                poller.cancel_waiter(task_ptr);
+            }
         }
     }
     let waiter_count = wake_await_waiters(_py, task_ptr);

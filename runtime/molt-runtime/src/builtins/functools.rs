@@ -1,6 +1,6 @@
 use crate::builtins::functions::native_callable::NativeCallableKind;
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
@@ -14,11 +14,11 @@ use crate::builtins::types::{
 };
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_find_entry_kv_in_place,
-    dict_get_in_place, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
-    exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy,
-    issubclass_runtime, molt_is_callable, molt_repr_from_obj, molt_set_attr_name, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
+    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place,
+    dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
+    inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, issubclass_runtime,
+    molt_is_callable, molt_repr_from_obj, molt_set_attr_name, obj_from_bits, object_class_bits,
+    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 /// The runtime-owned functools objects: the keyword marker and the three
@@ -96,58 +96,113 @@ pub(crate) fn functools_clear_runtime_callbacks(
     changed | slots_changed
 }
 
+#[derive(Clone, Copy)]
+struct LruLink {
+    previous: Option<NonZeroU64>,
+    next: Option<NonZeroU64>,
+    hash: u64,
+}
+
+/// One borrowed identity per actual dictionary entry. Dictionary ownership
+/// outlives every link; no Python callback runs while these links are mutated.
 #[derive(Default)]
 struct LruOrderState {
-    tick: u64,
-    latest: HashMap<u64, u64>,
-    heap: BinaryHeap<Reverse<(u64, u64)>>,
+    entries: HashMap<u64, LruLink>,
+    first: Option<NonZeroU64>,
+    last: Option<NonZeroU64>,
 }
 
 impl LruOrderState {
-    fn touch(&mut self, key_bits: u64) {
-        self.tick = self.tick.wrapping_add(1);
-        let stamp = self.tick;
-        self.latest.insert(key_bits, stamp);
-        self.heap.push(Reverse((stamp, key_bits)));
+    fn touch(&mut self, key: u64) {
+        let identity = NonZeroU64::new(key)
+            .expect("LRU keys are tagged int or non-null string/tuple identities");
+        if self.last == Some(identity) {
+            return;
+        }
+        let link = self.entries[&key];
+        if let Some(previous) = link.previous {
+            self.entries.get_mut(&previous.get()).unwrap().next = link.next;
+        } else {
+            self.first = link.next;
+        }
+        if let Some(next) = link.next {
+            self.entries.get_mut(&next.get()).unwrap().previous = link.previous;
+        }
+        let last = self.last.expect("a cached key has a recency link");
+        self.entries.get_mut(&last.get()).unwrap().next = Some(identity);
+        let link = self.entries.get_mut(&key).unwrap();
+        link.previous = Some(last);
+        link.next = None;
+        self.last = Some(identity);
+    }
+
+    /// The caller reserves one entry after the final callback-capable probe.
+    fn insert(&mut self, key: u64, hash: u64) {
+        let identity = NonZeroU64::new(key)
+            .expect("LRU keys are tagged int or non-null string/tuple identities");
+        assert!(
+            self.entries
+                .insert(
+                    key,
+                    LruLink {
+                        previous: self.last,
+                        next: None,
+                        hash
+                    }
+                )
+                .is_none(),
+            "one recency link per canonical dictionary key"
+        );
+        if let Some(last) = self.last {
+            self.entries.get_mut(&last.get()).unwrap().next = Some(identity);
+        } else {
+            self.first = Some(identity);
+        }
+        self.last = Some(identity);
+    }
+
+    fn pop_first(&mut self) -> Option<(u64, u64)> {
+        let key = self.first?.get();
+        let link = self.entries.remove(&key).unwrap();
+        self.first = link.next;
+        if let Some(next) = link.next {
+            self.entries.get_mut(&next.get()).unwrap().previous = None;
+        } else {
+            self.last = None;
+        }
+        Some((key, link.hash))
+    }
+
+    /// Consume retired metadata: only in this phase does `hash` store a rank.
+    /// No live touch/eviction can observe it, and Python hashes are never probed.
+    fn retire_contents(
+        mut self,
+        retired: crate::object::ops::DetachedDictReferences<
+            '_,
+            '_,
+            crate::object::backing::TrackedVecContents<crate::DictEntry>,
+        >,
+    ) {
+        let mut next = self.first;
+        let mut rank = 0_u64;
+        while let Some(key) = next {
+            let link = self.entries.get_mut(&key.get()).unwrap();
+            next = link.next;
+            link.hash = rank;
+            rank += 1;
+        }
+        assert_eq!(rank as usize, self.entries.len());
+        let retired = retired.into_ordered(|key| {
+            usize::try_from(self.entries[&key].hash).expect("rank is within the retired vector")
+        });
+        drop(self);
+        drop(retired);
     }
 
     fn clear(&mut self) {
-        self.tick = 0;
-        self.latest.clear();
-        self.heap.clear();
-    }
-
-    fn evict_over_limit(
-        &mut self,
-        _py: &PyToken<'_>,
-        cache_ptr: *mut u8,
-        maxsize: usize,
-    ) -> Result<(), ()> {
-        while self.latest.len() > maxsize {
-            let Some(Reverse((stamp, key_bits))) = self.heap.pop() else {
-                break;
-            };
-            if self.latest.get(&key_bits).copied() != Some(stamp) {
-                continue;
-            }
-            self.latest.remove(&key_bits);
-            unsafe {
-                let _ = crate::dict_del_in_place(_py, cache_ptr, key_bits)?;
-            }
-        }
-        // Compact stale heap entries after sufficient churn.
-        if self.heap.len() > self.latest.len().saturating_mul(8).saturating_add(32) {
-            self.compact_heap();
-        }
-        Ok(())
-    }
-
-    fn compact_heap(&mut self) {
-        let mut compacted = BinaryHeap::with_capacity(self.latest.len());
-        for (&key_bits, &stamp) in &self.latest {
-            compacted.push(Reverse((stamp, key_bits)));
-        }
-        self.heap = compacted;
+        self.entries.clear();
+        self.first = None;
+        self.last = None;
     }
 }
 
@@ -292,7 +347,9 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         "_lru_cache_wrapper",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
-            layout_size: 64,
+            // Eight native words, followed by the canonical instance-dict tail.
+            // CacheInfo's owned constructor occupies native word seven.
+            layout_size: 9 * std::mem::size_of::<u64>() as i64,
             instance_shape: Some(crate::object::ObjectShapeId::FunctoolsLruWrapper),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
                 allows_dict: true,
@@ -1258,8 +1315,11 @@ fn build_lru_wrapper(
         return MoltObject::none().bits();
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let order = Box::new(LruOrderState::default());
-    let order_ptr = Box::into_raw(order);
+    let order_ptr = if to_i64(obj_from_bits(maxsize_bits)).is_some_and(|size| size > 0) {
+        Box::into_raw(Box::new(LruOrderState::default()))
+    } else {
+        std::ptr::null_mut()
+    };
     unsafe {
         lru_set_func_bits(inst_ptr, func_bits);
         lru_set_maxsize_bits(inst_ptr, maxsize_bits);
@@ -1281,9 +1341,36 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
+    let has_kwargs = obj_from_bits(kwargs_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_DICT && crate::dict_len(ptr) != 0
+        });
+    if !typed
+        && !has_kwargs
+        && let Some(args_ptr) = obj_from_bits(args_bits).as_ptr()
+        && unsafe { object_type_id(args_ptr) == TYPE_ID_TUPLE }
+    {
+        // Exact int/str single arguments use their own key identity. Bool,
+        // float and subclasses retain tuple keys, as does every other arity.
+        let mut key = args_bits;
+        unsafe {
+            let _ = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                if let [single] = args {
+                    let builtins = builtin_classes(_py);
+                    let class = type_of_bits(_py, *single);
+                    if class == builtins.int || class == builtins.str {
+                        key = *single;
+                    }
+                }
+            });
+        }
+        inc_ref_bits(_py, key);
+        return key;
+    }
     let mut parts: Vec<u64> = Vec::new();
     extend_owned_lru_key_parts_from_call_arg(_py, args_bits, &mut parts);
-    if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
+    if has_kwargs {
         let missing = kwd_mark_bits(_py);
         if missing == 0 || exception_pending(_py) {
             release_owned_lru_key_parts(_py, &parts);
@@ -1303,12 +1390,8 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
                     };
                     let mut idx = 0;
                     while idx + 1 < order.len() {
-                        let pair_ptr = alloc_tuple(_py, &[order[idx], order[idx + 1]]);
-                        if pair_ptr.is_null() {
-                            release_owned_lru_key_parts(_py, &parts);
-                            return MoltObject::none().bits();
-                        }
-                        parts.push(MoltObject::from_ptr(pair_ptr).bits());
+                        push_owned_lru_key_part(_py, &mut parts, order[idx]);
+                        push_owned_lru_key_part(_py, &mut parts, order[idx + 1]);
                         idx += 2;
                     }
                 }
@@ -1322,10 +1405,7 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
             let type_bits = crate::type_of_bits(_py, val_bits);
             push_owned_lru_key_part(_py, &mut parts, type_bits);
         }
-        if kwargs_bits != 0
-            && !obj_from_bits(kwargs_bits).is_none()
-            && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
-        {
+        if has_kwargs && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
                     let Some(order) = crate::object::ops_dict::dict_snapshot(
@@ -1404,12 +1484,18 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             dec_ref_bits(_py, key_bits);
             return MoltObject::none().bits();
         };
+        let Some(hash) = (unsafe { crate::object::ops::dict_key_hash(_py, key_bits) }) else {
+            dec_ref_bits(_py, key_bits);
+            return MoltObject::none().bits();
+        };
         unsafe {
             if object_type_id(cache_ptr) != TYPE_ID_DICT {
                 dec_ref_bits(_py, key_bits);
                 return MoltObject::none().bits();
             }
-            let cached = match dict_find_entry_kv_in_place(_py, cache_ptr, key_bits) {
+            let cached = match crate::object::ops::dict_find_entry_kv_with_hash(
+                _py, cache_ptr, key_bits, hash,
+            ) {
                 Ok(cached) => cached,
                 Err(()) => {
                     dec_ref_bits(_py, key_bits);
@@ -1445,24 +1531,99 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             dec_ref_bits(_py, key_bits);
             return MoltObject::none().bits();
         }
-        if !unsafe { dict_set_in_place(_py, cache_ptr, key_bits, result_bits) } {
-            dec_ref_bits(_py, key_bits);
-            dec_ref_bits(_py, result_bits);
-            return MoltObject::none().bits();
-        }
-        let order_ptr = unsafe { lru_order_ptr(self_ptr) };
-        if !order_ptr.is_null() {
-            let order = unsafe { &mut *order_ptr };
-            order.touch(key_bits);
-            if let Some(maxsize) = maxsize
-                && order
-                    .evict_over_limit(_py, cache_ptr, maxsize.max(0) as usize)
-                    .is_err()
-            {
+        if let Some(maxsize) = maxsize {
+            // CPython performs a distinct post-call lookup before publication.
+            // Equality callbacks and their failures are observable at both probes.
+            match unsafe {
+                crate::object::ops::dict_find_entry_kv_with_hash(_py, cache_ptr, key_bits, hash)
+            } {
+                Ok(Some(_)) => {
+                    dec_ref_bits(_py, key_bits);
+                    return result_bits;
+                }
+                Err(()) => {
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(_py, key_bits);
+                        dec_ref_bits(_py, result_bits);
+                    });
+                    return MoltObject::none().bits();
+                }
+                Ok(None) => {}
+            }
+            // The final no-clobber transaction also handles an insertion made
+            // by its own equality callback without duplicating managed owners.
+            let Some((cached_result, inserted)) = (unsafe {
+                crate::object::ops::dict_setdefault_with_hash_in_place(
+                    _py,
+                    cache_ptr,
+                    key_bits,
+                    Some(result_bits),
+                    hash,
+                )
+            }) else {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    dec_ref_bits(_py, key_bits);
+                    dec_ref_bits(_py, result_bits);
+                });
+                return MoltObject::none().bits();
+            };
+            let retired = if inserted {
+                // No Python callback from publication through link commit and
+                // exact-identity eviction. Displaced owners release afterward.
+                let order = unsafe { &mut *lru_order_ptr(self_ptr) };
+                if order.entries.try_reserve(1).is_err() {
+                    // Undo the just-published row before error construction or
+                    // releasing any owner can reenter the cache.
+                    let rollback = unsafe {
+                        crate::object::ops::dict_remove_identity_with_hash_deferred(
+                            _py, cache_ptr, key_bits, hash,
+                        )
+                        .expect("new cache row has not crossed a callback")
+                    };
+                    crate::record_memory_error_without_allocation(_py);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        drop(rollback);
+                        dec_ref_bits(_py, cached_result);
+                        dec_ref_bits(_py, key_bits);
+                        dec_ref_bits(_py, result_bits);
+                    });
+                    return MoltObject::none().bits();
+                }
+                order.insert(key_bits, hash);
+                let limit = usize::try_from(maxsize).unwrap_or(usize::MAX);
+                if order.entries.len() > limit {
+                    let (old_key, old_hash) = order.pop_first().unwrap();
+                    Some(unsafe {
+                        crate::object::ops::dict_remove_identity_with_hash_deferred(
+                            _py, cache_ptr, old_key, old_hash,
+                        )
+                        .expect("recency entry belongs to the live cache")
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // All mutable order access ended before any finalizer can reenter.
+            drop(retired);
+            dec_ref_bits(_py, cached_result);
+        } else if !unsafe {
+            crate::object::ops::dict_set_with_hash_in_place(
+                _py,
+                cache_ptr,
+                key_bits,
+                result_bits,
+                hash,
+            )
+        } {
+            // Unlimited caches intentionally overwrite a reentrant insertion;
+            // they have no order state or eviction work.
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
                 dec_ref_bits(_py, key_bits);
                 dec_ref_bits(_py, result_bits);
-                return MoltObject::none().bits();
-            }
+            });
+            return MoltObject::none().bits();
         }
         dec_ref_bits(_py, key_bits);
         result_bits
@@ -1527,23 +1688,33 @@ pub extern "C" fn molt_functools_lru_cache_clear(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let cache_bits = unsafe { lru_cache_bits(self_ptr) };
-        if let Some(cache_ptr) = obj_from_bits(cache_bits).as_ptr() {
+        let order_ptr = unsafe { lru_order_ptr(self_ptr) };
+        let retired = if let Some(cache_ptr) = obj_from_bits(cache_bits).as_ptr() {
             unsafe {
                 if object_type_id(cache_ptr) == TYPE_ID_DICT {
-                    crate::dict_clear_in_place(_py, cache_ptr);
+                    crate::object::ops::dict_clear_deferred(_py, cache_ptr)
+                } else {
+                    None
                 }
             }
-        }
-        let order_ptr = unsafe { lru_order_ptr(self_ptr) };
-        if !order_ptr.is_null() {
-            unsafe {
-                let order = &mut *order_ptr;
-                order.clear();
-            }
-        }
+        } else {
+            None
+        };
+        let order = if order_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::mem::take(&mut *order_ptr) })
+        };
         unsafe {
             lru_set_hits(self_ptr, 0);
             lru_set_misses(self_ptr, 0);
+        }
+        // Empty dictionary, order and counters are visible before any decref.
+        // Bounded clear follows recency in one physical row scan; unbounded
+        // clear retains dictionary retirement order and allocates no order.
+        match (order, retired) {
+            (Some(order), Some(retired)) => order.retire_contents(retired),
+            (_, retired) => drop(retired),
         }
         MoltObject::none().bits()
     })
@@ -1933,6 +2104,238 @@ mod tests {
     use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
     use std::sync::atomic::Ordering;
 
+    extern "C" fn lru_test_identity(value: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            inc_ref_bits(py, value);
+            value
+        })
+    }
+
+    #[test]
+    fn lru_hit_only_order_is_bounded_and_unlimited_has_no_order() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let callable = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "lru_test_identity",
+                    lru_test_identity as *const (),
+                ),
+                1,
+            );
+            assert!(!callable.is_null());
+            let callable = MoltObject::from_ptr(callable).bits();
+            let value = MoltObject::from_int(73).bits();
+            let args = crate::alloc_tuple(py, &[value]);
+            assert!(!args.is_null());
+            let args = MoltObject::from_ptr(args).bits();
+            for limit in [
+                none,
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_int(2).bits(),
+            ] {
+                let wrapper = super::build_lru_wrapper(
+                    py,
+                    callable,
+                    limit,
+                    MoltObject::from_bool(false).bits(),
+                    none,
+                );
+                let ptr = obj_from_bits(wrapper).as_ptr().unwrap();
+                let bounded = limit == MoltObject::from_int(2).bits();
+                let first = super::molt_functools_lru_call(wrapper, args, none);
+                assert_eq!(first, value);
+                dec_ref_bits(py, first);
+                let capacity = unsafe {
+                    let order = super::lru_order_ptr(ptr);
+                    assert_eq!(order.is_null(), !bounded);
+                    if bounded {
+                        (*order).entries.capacity()
+                    } else {
+                        0
+                    }
+                };
+                for _ in 0..10_000 {
+                    let result = super::molt_functools_lru_call(wrapper, args, none);
+                    assert_eq!(result, value);
+                    dec_ref_bits(py, result);
+                }
+                unsafe {
+                    let order = super::lru_order_ptr(ptr);
+                    if bounded {
+                        assert_eq!((*order).entries.len(), 1);
+                        assert_eq!(
+                            (*order).entries.capacity(),
+                            capacity,
+                            "hits cannot retain historical order entries"
+                        );
+                    } else {
+                        assert!(order.is_null());
+                    }
+                    assert_eq!(
+                        super::lru_hits(ptr),
+                        if limit == MoltObject::from_int(0).bits() {
+                            0
+                        } else {
+                            10_000
+                        }
+                    );
+                }
+                super::molt_functools_lru_cache_clear(wrapper);
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, wrapper);
+            }
+            dec_ref_bits(py, args);
+            dec_ref_bits(py, callable);
+        });
+    }
+
+    unsafe fn lru_probe_order_stats(
+        ptr: *mut u8,
+    ) -> (usize, usize, usize, usize, usize, usize, usize) {
+        unsafe {
+            let order = super::lru_order_ptr(ptr);
+            if order.is_null() {
+                return (0, 0, 0, 0, 0, 0, 0);
+            }
+            let order = &*order;
+            (
+                order.entries.len(),
+                order.entries.len(),
+                order.entries.capacity() * std::mem::size_of::<(u64, super::LruLink)>(),
+                std::mem::size_of::<super::LruOrderState>(),
+                std::mem::size_of::<super::LruLink>(),
+                std::mem::size_of::<(u64, super::LruLink)>(),
+                order.entries.capacity(),
+            )
+        }
+    }
+
+    /// Informational matched-source cost probe. Run exactly this ignored test
+    /// in isolation; MOLT_PROFILE=1 additionally exposes managed allocations.
+    /// Capacity times entry size is a logical-capacity payload proxy only:
+    /// HashMap spare buckets, control bytes and allocator metadata are excluded.
+    /// Managed counters do not count Rust metadata allocations.
+    #[test]
+    #[ignore = "matched LRU cost probe; parent owns benchmark execution"]
+    fn lru_cache_cost_probe() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        const OPERATIONS: usize = 20_000;
+        const LIMIT: usize = 128;
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let callable = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "lru_test_identity",
+                    lru_test_identity as *const (),
+                ),
+                1,
+            );
+            assert!(!callable.is_null());
+            let callable = MoltObject::from_ptr(callable).bits();
+            let args: Vec<u64> = (0..OPERATIONS + LIMIT + 1)
+                .map(|value| {
+                    let tuple =
+                        crate::alloc_tuple(py, &[MoltObject::from_int(value as i64).bits()]);
+                    assert!(!tuple.is_null());
+                    MoltObject::from_ptr(tuple).bits()
+                })
+                .collect();
+            let profiled = crate::profile_enabled(py);
+            for (label, maxsize, churn) in [
+                (
+                    "bounded_hits",
+                    MoltObject::from_int(LIMIT as i64).bits(),
+                    false,
+                ),
+                (
+                    "bounded_churn",
+                    MoltObject::from_int(LIMIT as i64).bits(),
+                    true,
+                ),
+                ("unlimited_hits", none, false),
+                ("unlimited_growth", none, true),
+            ] {
+                let wrapper = super::build_lru_wrapper(
+                    py,
+                    callable,
+                    maxsize,
+                    MoltObject::from_bool(false).bits(),
+                    none,
+                );
+                let ptr = obj_from_bits(wrapper).as_ptr().unwrap();
+                for &arguments in &args[..LIMIT] {
+                    let result = super::molt_functools_lru_call(wrapper, arguments, none);
+                    dec_ref_bits(py, result);
+                }
+                assert!(!crate::exception_pending(py));
+                let alloc_before = crate::ALLOC_COUNT.load(Ordering::Relaxed);
+                let free_before = crate::DEALLOC_COUNT.load(Ordering::Relaxed);
+                let start = Instant::now();
+                let mut checksum = 0;
+                for index in 0..OPERATIONS {
+                    let key = if churn { LIMIT + index } else { index % LIMIT };
+                    let result = super::molt_functools_lru_call(wrapper, args[key], none);
+                    checksum ^= black_box(result);
+                    dec_ref_bits(py, result);
+                }
+                let elapsed_ns = start.elapsed().as_nanos();
+                let allocations =
+                    profiled.then(|| crate::ALLOC_COUNT.load(Ordering::Relaxed) - alloc_before);
+                let deallocations =
+                    profiled.then(|| crate::DEALLOC_COUNT.load(Ordering::Relaxed) - free_before);
+                let expected = (0..OPERATIONS).fold(0, |total, index| {
+                    let value = if churn { LIMIT + index } else { index % LIMIT };
+                    total ^ MoltObject::from_int(value as i64).bits()
+                });
+                assert_eq!(checksum, expected);
+                assert!(!crate::exception_pending(py));
+                let (
+                    live,
+                    records,
+                    capacity_payload_proxy_bytes,
+                    owner_bytes,
+                    link_bytes,
+                    pair_bytes,
+                    capacity,
+                ) = unsafe { lru_probe_order_stats(ptr) };
+                let start = Instant::now();
+                let result =
+                    super::molt_functools_lru_call(wrapper, args[OPERATIONS + LIMIT], none);
+                black_box(result);
+                dec_ref_bits(py, result);
+                let post_streak_miss_ns = start.elapsed().as_nanos();
+                assert!(!crate::exception_pending(py));
+                let clear_start = Instant::now();
+                super::molt_functools_lru_cache_clear(wrapper);
+                let clear_ns = clear_start.elapsed().as_nanos();
+                assert!(!crate::exception_pending(py));
+                println!(
+                    "LRU_COST {}",
+                    serde_json::json!({
+                        "case": label, "operations": OPERATIONS, "elapsed_ns": elapsed_ns,
+                        "post_streak_miss_ns": post_streak_miss_ns, "clear_ns": clear_ns,
+                        "order_live_entries": live, "order_records": records,
+                        "order_logical_capacity_payload_proxy_bytes": capacity_payload_proxy_bytes,
+                        "order_link_bytes": link_bytes, "order_occupied_pair_bytes": pair_bytes,
+                        "order_capacity": capacity,
+                        "order_owner_bytes": owner_bytes, "managed_allocations": allocations,
+                        "managed_deallocations": deallocations,
+                    })
+                );
+                dec_ref_bits(py, wrapper);
+            }
+            for arguments in args {
+                dec_ref_bits(py, arguments);
+            }
+            dec_ref_bits(py, callable);
+        });
+    }
+
     #[test]
     fn lru_cache_info_constructor_is_a_traced_owned_edge() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -1954,6 +2357,39 @@ mod tests {
             assert!(!crate::exception_pending(py));
             let wrapper_ptr = obj_from_bits(wrapper).as_ptr().unwrap();
             assert_eq!(refs(), baseline + 1);
+            // Exercise the real generic attribute owner used by the Python
+            // decorator, independently from the native CacheInfo constructor.
+            let marker_ptr = crate::alloc_list(py, &[]);
+            assert!(!marker_ptr.is_null());
+            let marker = MoltObject::from_ptr(marker_ptr).bits();
+            let marker_refs =
+                || unsafe { (*crate::header_from_obj_ptr(marker_ptr)).ref_count_snapshot() };
+            let marker_baseline = marker_refs();
+            let name = crate::attr_name_bits_from_bytes(py, b"cache_parameters").unwrap();
+            assert_eq!(unsafe { crate::instance_dict_bits(wrapper_ptr) }, 0);
+            let set_result = crate::molt_set_attr_name(wrapper, name, marker);
+            dec_ref_bits(py, set_result);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(marker_refs(), marker_baseline + 1);
+            assert_eq!(
+                unsafe { super::lru_cache_info_type_bits(wrapper_ptr) },
+                provider
+            );
+            assert_eq!(refs(), baseline + 1);
+            let dictionary = unsafe { crate::instance_dict_bits(wrapper_ptr) };
+            assert_eq!(
+                unsafe { crate::object_type_id(obj_from_bits(dictionary).as_ptr().unwrap()) },
+                crate::TYPE_ID_DICT
+            );
+            assert_eq!(
+                unsafe {
+                    crate::dict_get_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), name)
+                },
+                Ok(Some(marker))
+            );
+            let observed = crate::molt_get_attr_name(wrapper, name);
+            assert_eq!(observed, marker);
+            dec_ref_bits(py, observed);
             let shape = crate::object::ObjectShapeId::FunctoolsLruWrapper;
             let mut edges = Vec::new();
             unsafe {
@@ -1966,6 +2402,9 @@ mod tests {
             assert_eq!(refs(), baseline);
             dec_ref_bits(py, wrapper);
             assert_eq!(refs(), baseline);
+            assert_eq!(marker_refs(), marker_baseline);
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, marker);
             dec_ref_bits(py, provider);
         });
     }

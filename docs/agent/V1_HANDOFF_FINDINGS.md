@@ -103,20 +103,29 @@ are preserved. Executed image hashes remain recorded; those image bytes were
 already removed by the harness's normal cleanup. Subsequent failures requiring
 binary replay must use the existing explicit retention option.
 
+The subsequent focused native cohort completed **15 passed and 9 failed**
+with all 24 emitted binaries and complete process receipts retained. Argument
+binding, the three WebSocket cases, ChainMap, ConfigParser, class copy hooks,
+CSV, both math cases, filesystem codecs, pprint, sys, urllib and ZIP/argparse
+passed. Remaining failures expose shared metadata, decoding, cache storage,
+deferred-import and capability/lifecycle boundaries. The joined runtime suite
+passed 1,893 semantic tests before these consumer-driven follow-up repairs;
+those unit results do not qualify the failed public paths.
+
 The following families organize those failures; they are not new independent
 backlog IDs. Working repairs remain unqualified until their compiled consumers
 pass.
 
 | Shared boundary | Current action and remaining obligation |
 | --- | --- |
-| JSON and text codecs | Shared byte decoding and UTF-16/32 handler progress are repaired and independently source-reviewed. Execute the affected codec/JSON consumers (V1-18). |
-| Owned serial returns and error provenance | CSV row and ConfigParser fallback ownership are repaired and source-reviewed. CSV domain errors must preserve the original public class without translating callback exceptions; statistics exception provenance remains open (V1-05/V1-18). |
-| Python callable and copy protocols | Class-level shallow-copy dispatch and frame-binding diagnostics are repaired and source-reviewed. Public intrinsic names and distinct alias identities are migrating through one declaration authority. Broader copy/reduction obligations remain open (V1-05). |
-| Cache result representation and storage | The custom CacheInfo object, duplicate native decorator factory and metadata-default builders are replaced by the existing named-tuple and public decorator protocols. Compiled qualification remains pending. Independent review also exposes unbounded hit-history storage, callback-spanning mutable borrows, noncanonical key ownership after recursive insertion, and clear discarding reentrant publication. Repair bounded recency within the existing cache/dictionary owners; unlimited caches require no recency state (V1-05/V1-07). |
-| Filesystem and capability consumers | The filesystem codec pair now shares CPython's captured encoding policy; the duplicate native fsencode lane is removed. Source-level filesystem comparison and capability-context transport pass. Retired network grants are migrated through test metadata; actual affected programs, including three formerly misclassified expected failures, remain required (V1-11/V1-12). |
-| Deferred imports | Counter.most_common requires heapq absent from the current graph. Finish demand propagation through the existing binding/import owners and retire the manual helper allowlist; do not replace it with eager whole-library expansion (HF-126). |
-| Pretty-print recursion | Native pformat must inspect a container before enrolling it in the recursion set; PrettyPrinter.format must use its existing context-aware owner without catching and retrying user errors. Review also requires inherited builtin repr semantics (V1-05/V1-18). |
-| Type refinement | The 20-round sweep cap panics while compiling argparse. Replace it with the existing facts' dependency worklist, qualify finite convergence and replay the retained real backend job (HF-104). |
+| JSON and text codecs | The integrated shared decoder preserves the initial UnicodeDecodeError args while updating later handler attributes; direct constructor and differential controls cover the distinction. Compiled replay remains required. JSON raw_decode also encounters the existing deferred operator import gap (V1-18/HF-126). |
+| Owned serial returns and error provenance | Compiled CSV and ConfigParser consumers pass, including public CSV exception provenance. Statistics exception translation remains open (V1-05/V1-18). |
+| Python callable and copy protocols | Compiled class-level shallow-copy dispatch, frame-binding diagnostics, intrinsic names and distinct alias identities pass. The integrated role projection aligns lookup and dir; the existing callable configurator prepares fallible metadata before publishing class, signature and binder state. Its dictionary transfer reuses shared prehashed lookup and deferred identity removal. Allocation failure and equality-callback reentry controls await compiled execution. Broader copy/reduction obligations remain open (V1-05). |
+| Cache result representation and storage | The integrated wrapper uses the correct 72-byte extent, separating its CacheInfo owner from the canonical instance-dictionary tail. Recency uses one borrowed identity node per bounded entry, preserves callback/reentry ownership and allocates no recency storage for unlimited caches. The replaced heap/history path is deleted. Execute the wrapper/cache family and matched cost probe before qualification (V1-05/V1-07). |
+| Filesystem and capability consumers | Compiled filesystem codecs and three WebSocket cases pass. Explicit select/poll and child IPC fixture grants are integrated, preserving negative capability controls. Socket, WebSocket and future retirement now consult existing services; cleanup cannot start cold I/O or scheduler storage. The fresh-process regression and affected compiled consumers remain unexecuted. Child fixture grants do not qualify standalone multiprocessing without host Python (V1-11/V1-12). |
+| Deferred imports | Counter.most_common requires heapq, JSON raw_decode requires operator, and email requires email.generator absent from the current demand graph. Finish propagation through existing binding/import owners and retire the manual helper allowlist; do not replace it with eager whole-library expansion (HF-126). |
+| Pretty-print recursion | Compiled pprint passes corrected recursion enrollment, existing context propagation and inherited builtin repr semantics. Remaining public surface obligations stay in V1-05/V1-18. |
+| Type refinement | The deterministic dependency worklist replaces the arbitrary 20-round cap. Compiled ZIP/argparse now passes the previously failing current pipeline; all 74 existing refinement tests also pass (HF-104). |
 | Remaining public surfaces | RotatingFileHandler, HTTPMessage assignment, FileIO opener keywords, binary-protocol large-int pickle, epoll defaults, SSLContext.get_ciphers and SSL certificate-loading arity remain concrete failing consumers under the existing runtime/ABI and stdlib obligations. |
 
 Source comparison against main `599a81c571` confirms that the missing

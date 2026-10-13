@@ -122,7 +122,9 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                     && deadline.is_finite()
                     && monotonic_now_secs(_py) >= deadline
                 {
-                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                    if let Some(poller) = runtime_state(_py).io_poller.get() {
+                        poller.cancel_waiter(obj_ptr);
+                    }
                     return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
             }
@@ -291,7 +293,9 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                     && deadline.is_finite()
                     && monotonic_now_secs(_py) >= deadline
                 {
-                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                    if let Some(poller) = runtime_state(_py).io_poller.get() {
+                        poller.cancel_waiter(obj_ptr);
+                    }
                     return raise_exception::<i64>(_py, "TimeoutError", "timed out");
                 }
             }

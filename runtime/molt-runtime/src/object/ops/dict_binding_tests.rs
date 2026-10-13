@@ -3,6 +3,17 @@ use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+unsafe fn dict_find_entry_kv_in_place(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key_bits: u64,
+) -> Result<Option<(u64, u64)>, ()> {
+    unsafe {
+        let hash = dict_key_hash(py, key_bits).ok_or(())?;
+        dict_find_entry_kv_with_hash(py, dict, key_bits, hash)
+    }
+}
+
 const PROBE_UNEQUAL: u64 = 0;
 const PROBE_RAISE: u64 = 1;
 const PROBE_RESTRUCTURE: u64 = 2;
@@ -1086,6 +1097,149 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
                 assert_eq!(stored.get(), hash);
             }
             for bits in [MoltObject::from_ptr(dict).bits(), set, key, value] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn prehashed_setdefault_preserves_canonical_key_and_owned_result() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let key = string_key(py, b"cache-key");
+            let equal = string_key(py, b"cache-key");
+            let value = mortal_value(py);
+            let other = mortal_value(py);
+            let dict = alloc_dict_with_pairs(py, &[]);
+            assert!(!dict.is_null());
+            let hash = dict_key_hash(py, key).unwrap();
+            let baseline = owners(value);
+            let (published, inserted) =
+                dict_setdefault_with_hash_in_place(py, dict, key, Some(value), hash).unwrap();
+            assert!(inserted);
+            assert_eq!(published, value);
+            assert_eq!(owners(value), baseline + 2); // dictionary and returned owner
+            dec_ref_bits(py, published);
+            let other_before = owners(other);
+            let (resident, inserted) =
+                dict_setdefault_with_hash_in_place(py, dict, equal, Some(other), hash).unwrap();
+            assert!(!inserted);
+            assert_eq!(resident, value);
+            assert_eq!(owners(other), other_before);
+            assert_eq!(
+                dict_find_entry_kv_with_hash(py, dict, equal, hash).unwrap(),
+                Some((key, value))
+            );
+            dec_ref_bits(py, resident);
+            let retired = dict_remove_identity_with_hash_deferred(py, dict, key, hash).unwrap();
+            assert_eq!(dict_len(dict), 0);
+            assert_eq!(owners(value), baseline + 1, "retirement is deferred");
+            drop(retired);
+            assert_eq!(owners(value), baseline);
+            for bits in [MoltObject::from_ptr(dict).bits(), key, equal, value, other] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn exact_identity_retirement_does_not_call_colliding_equality() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let (probe, class, function) = same_hash_probe_key(py);
+            let key = string_key(py, b"identity-retirement");
+            let equal_but_not_stored = string_key(py, b"identity-retirement");
+            let value = mortal_value(py);
+            let dict = dict_with_same_hash_key(py, &[], probe, b"identity-retirement");
+            assert!(dict_set_in_place(py, dict, key, value));
+            let hash = dict_key_hash(py, key).unwrap();
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
+            assert!(
+                dict_remove_identity_with_hash_deferred(py, dict, equal_but_not_stored, hash)
+                    .is_none()
+            );
+            let retired = dict_remove_identity_with_hash_deferred(py, dict, key, hash).unwrap();
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            assert!(!exception_pending(py));
+            assert_eq!(dict_len(dict), 1);
+            drop(retired);
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [
+                MoltObject::from_ptr(dict).bits(),
+                key,
+                equal_but_not_stored,
+                value,
+                probe,
+                class,
+                function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn prehashed_setdefault_observes_reentrant_publication_and_lookup_errors() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let (probe, class, function) = same_hash_probe_key(py);
+            let removed = string_key(py, b"removed");
+            let query = string_key(py, b"inserted");
+            let inner_key = string_key(py, b"inserted");
+            let proposed = mortal_value(py);
+            let dict = dict_with_same_hash_key(
+                py,
+                &[removed, MoltObject::none().bits()],
+                probe,
+                b"inserted",
+            );
+            let hash = dict_key_hash(py, query).unwrap();
+            PROBE_DICT.store(MoltObject::from_ptr(dict).bits(), Ordering::SeqCst);
+            PROBE_DELETE.store(removed, Ordering::SeqCst);
+            PROBE_INSERT.store(inner_key, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            PROBE_MODE.store(PROBE_RESTRUCTURE, Ordering::SeqCst);
+            let before = owners(proposed);
+            let (actual, inserted) =
+                dict_setdefault_with_hash_in_place(py, dict, query, Some(proposed), hash).unwrap();
+            assert!(
+                !inserted,
+                "an equality callback already published the entry"
+            );
+            assert_eq!(actual, MoltObject::from_int(40).bits());
+            dec_ref_bits(py, actual);
+            assert_eq!(owners(proposed), before);
+            assert_eq!(
+                dict_find_entry_kv_with_hash(py, dict, query, hash).unwrap(),
+                Some((inner_key, MoltObject::from_int(40).bits()))
+            );
+            PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
+            assert!(
+                dict_setdefault_with_hash_in_place(py, dict, query, Some(proposed), hash).is_none()
+            );
+            take_pending_error(py, "RuntimeError");
+            assert_eq!(owners(proposed), before);
+            assert_eq!(dict_len(dict), 2);
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [
+                MoltObject::from_ptr(dict).bits(),
+                removed,
+                query,
+                inner_key,
+                proposed,
+                probe,
+                class,
+                function,
+            ] {
                 dec_ref_bits(py, bits);
             }
             assert!(!exception_pending(py));

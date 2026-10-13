@@ -44,6 +44,7 @@ from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
 ISOLATED = (
+    "async_rt::sockets::state::socket_runtime_state_tests::cold_socket_and_websocket_retirement_never_starts_services",
     "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
@@ -56,6 +57,7 @@ ISOLATED = (
     "state::runtime_state::tests::shutdown_refuses_attached_and_detached_foreign_thread_state_owners",
 )
 PROBES = (
+    "builtins::functools::tests::lru_cache_cost_probe",
     "c_api::tests::dictionary_snapshot_materialization_components",
     "cpython_abi_hooks::generic_attributes_tests::mutation_consumers::managed_mutation_projection_profile",
     "builtins::concurrent::tests::lifecycle_cost_probe",

@@ -118,6 +118,14 @@ handoff/proof records; do not add a second checklist or per-test receipt system.
   tests for build validity, reliable execution and incremental coverage. It
   supports reviewing generated tests as candidates, not accepting their volume
   as quality; coverage alone does not prove a correct oracle or semantic adequacy.
+- Microsoft's [TypeScript port](https://github.com/microsoft/typescript-go/blob/main/CONTRIBUTING.md)
+  pins the upstream TypeScript checkout used for tests and code generation.
+  Vercel's [scriptc harness](https://github.com/vercel-labs/scriptc/blob/main/tests/harness/README.md)
+  compares compiled programs with Node, separates sanitizer/reference-count
+  instrumentation, and binds its fetch compatibility inventory to a pinned
+  oracle and differential evidence. These examples support Molt's existing
+  reference, subset and target-test authorities; they do not establish Molt
+  conformance or require another framework or a copied full-suite schedule.
 
 The Meta study concerns earlier models; it does not measure Astra's defect rate.
 These sources inform the engineering policy, not a claim that one model always

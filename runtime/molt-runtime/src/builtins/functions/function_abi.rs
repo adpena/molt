@@ -1874,6 +1874,364 @@ mod function_type_execution_kind_tests {
         MoltObject::none().bits()
     }
 
+    #[test]
+    fn native_configuration_refusal_preserves_public_function_and_dictionary() {
+        use crate::builtins::functions::native_callable::{
+            NativeCallableKind as Kind, NativeCallableSpec, configure_native_callable,
+        };
+        use crate::object::function_metadata::FunctionMetadataField as Field;
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let classes = builtin_classes(py);
+                let key = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+                let original = attr_name_bits_from_bytes(py, b"original_callable").unwrap();
+                for (index, kind) in [
+                    Kind::Constructor,
+                    Kind::Function,
+                    Kind::CMethod,
+                    Kind::MethodDescriptor,
+                    Kind::WrapperDescriptor,
+                    Kind::ClassMethodDescriptor,
+                    Kind::MethodWrapper,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let function = alloc_runtime_function_obj(
+                        py,
+                        lexical_closure_probe as *const () as usize as u64,
+                        1,
+                    );
+                    assert!(!function.is_null());
+                    let bits = MoltObject::from_ptr(function).bits();
+                    let value = MoltObject::from_int(37).bits();
+                    crate::molt_set_attr_name(bits, key, value);
+                    drop(Field::Name.replace_deferred(py, function, original));
+                    let dictionary = function_dict_bits(function);
+                    inc_ref_bits(py, dictionary);
+                    let class = object_class_bits(function);
+                    let flags = (*header_from_obj_ptr(function)).load_metadata_flags();
+                    let name = format!("native_configuration_refusal_unique_{index}");
+                    set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                        max_memory: Some(0),
+                        ..Default::default()
+                    })));
+                    let reset = RestoreTracker;
+                    assert!(!configure_native_callable(
+                        py,
+                        function,
+                        NativeCallableSpec {
+                            kind,
+                            name: Some(&name),
+                            owner: Some(classes.object),
+                            self_bits: Some(classes.object),
+                            cache: None,
+                            text_signature: Some("($self, /)"),
+                        }
+                    ));
+                    drop(reset);
+                    assert!(exception_pending(py));
+                    clear_exception(py);
+                    assert_eq!(object_class_bits(function), class);
+                    assert_eq!(function_dict_bits(function), dictionary);
+                    assert_eq!(Field::Name.load(function), Some(original));
+                    assert_eq!(Field::QualName.load(function), None);
+                    assert_eq!(Field::TextSignature.load(function), None);
+                    assert_eq!(Field::Owner.load(function), None);
+                    assert_eq!(Field::SelfValue.load(function), None);
+                    assert_eq!(
+                        (*header_from_obj_ptr(function)).load_metadata_flags()
+                            & HEADER_FLAG_FUNC_REQUIRES_BINDER,
+                        flags & HEADER_FLAG_FUNC_REQUIRES_BINDER,
+                    );
+                    assert_eq!(
+                        crate::dict_get_in_place(py, ptr_from_bits(dictionary), key,),
+                        Ok(Some(value))
+                    );
+
+                    // A later preparation failure occurs after the new name
+                    // exists. It still must not replace class or display fields.
+                    assert!(!configure_native_callable(
+                        py,
+                        function,
+                        NativeCallableSpec {
+                            kind,
+                            name: Some(&name),
+                            owner: Some(original),
+                            ..NativeCallableSpec::uncached_function()
+                        }
+                    ));
+                    assert!(exception_pending(py));
+                    clear_exception(py);
+                    assert_eq!(object_class_bits(function), class);
+                    assert_eq!(Field::Name.load(function), Some(original));
+                    assert_eq!(Field::TextSignature.load(function), None);
+                    assert_eq!(function_dict_bits(function), dictionary);
+                    assert_eq!(
+                        crate::dict_get_in_place(py, ptr_from_bits(dictionary), key,),
+                        Ok(Some(value))
+                    );
+                    dec_ref_bits(py, dictionary);
+                    dec_ref_bits(py, bits);
+                }
+                dec_ref_bits(py, original);
+                dec_ref_bits(py, key);
+            }
+        });
+    }
+
+    static SIGNATURE_PROBE_MODE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static SIGNATURE_PROBE_FUNCTION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static SIGNATURE_PROBE_DICTIONARY: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static SIGNATURE_PROBE_CALLS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    extern "C" fn signature_key_hash(_self_bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let key = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+            let result = crate::molt_hash_builtin(key);
+            dec_ref_bits(py, key);
+            result
+        })
+    }
+
+    extern "C" fn signature_key_eq(_left: u64, _right: u64) -> u64 {
+        use std::sync::atomic::Ordering::SeqCst;
+        crate::with_gil_entry_nopanic!(py, {
+            SIGNATURE_PROBE_CALLS.fetch_add(1, SeqCst);
+            match SIGNATURE_PROBE_MODE.load(SeqCst) {
+                0 => raise_exception::<u64>(py, "RuntimeError", "signature lookup refused"),
+                1 => {
+                    unsafe {
+                        crate::object::field_storage::replace_dictionary(
+                            py,
+                            ptr_from_bits(SIGNATURE_PROBE_FUNCTION.load(SeqCst)),
+                            Some(SIGNATURE_PROBE_DICTIONARY.load(SeqCst)),
+                        )
+                        .unwrap();
+                    }
+                    MoltObject::from_bool(true).bits()
+                }
+                3 => {
+                    SIGNATURE_PROBE_MODE.store(2, SeqCst);
+                    function_set_builtin_class(py, SIGNATURE_PROBE_FUNCTION.load(SeqCst), false);
+                    MoltObject::from_bool(true).bits()
+                }
+                _ => MoltObject::from_bool(true).bits(),
+            }
+        })
+    }
+
+    #[test]
+    fn native_signature_transfer_uses_live_dictionary_and_actual_key_owner() {
+        use crate::object::function_metadata::FunctionMetadataField as Field;
+        use std::sync::atomic::Ordering::SeqCst;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let name = attr_name_bits_from_bytes(py, b"SignatureKey").unwrap();
+                let class = crate::molt_class_new(name);
+                crate::molt_class_set_base(class, builtin_classes(py).object);
+                let eq_name = attr_name_bits_from_bytes(py, b"__eq__").unwrap();
+                let eq = alloc_runtime_function_obj(
+                    py,
+                    signature_key_eq as *const () as usize as u64,
+                    2,
+                );
+                assert!(!eq.is_null());
+                let eq_bits = MoltObject::from_ptr(eq).bits();
+                crate::molt_set_attr_name(class, eq_name, eq_bits);
+                let hash_name = attr_name_bits_from_bytes(py, b"__hash__").unwrap();
+                let hash_function = alloc_runtime_function_obj(
+                    py,
+                    signature_key_hash as *const () as usize as u64,
+                    1,
+                );
+                assert!(!hash_function.is_null());
+                let hash_bits = MoltObject::from_ptr(hash_function).bits();
+                crate::molt_set_attr_name(class, hash_name, hash_bits);
+                let class_ptr = ptr_from_bits(class);
+                crate::object::class_finish_definition(py, class_ptr).unwrap();
+                let size = crate::object::layout::class_cached_layout_size(class_ptr).unwrap();
+                let collision = crate::object::builders::alloc_class_instance(py, size, class);
+                crate::object::gc::gc_publish_initialized(py, ptr_from_bits(collision));
+                let key = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+                for mode in [1, 2, 3] {
+                    let replace_dictionary = mode == 1;
+                    let function = alloc_runtime_function_obj(
+                        py,
+                        lexical_closure_probe as *const () as usize as u64,
+                        1,
+                    );
+                    assert!(!function.is_null());
+                    let bits = MoltObject::from_ptr(function).bits();
+                    let original_class = object_class_bits(function);
+                    let original = crate::alloc_dict_with_pairs(py, &[]);
+                    let replacement =
+                        crate::alloc_dict_with_pairs(py, &[key, MoltObject::from_int(29).bits()]);
+                    assert!(!original.is_null() && !replacement.is_null());
+                    assert!(crate::dict_set_in_place(
+                        py,
+                        original,
+                        collision,
+                        MoltObject::from_int(17).bits(),
+                    ));
+                    crate::object::field_storage::replace_dictionary(
+                        py,
+                        function,
+                        Some(MoltObject::from_ptr(original).bits()),
+                    )
+                    .unwrap();
+                    SIGNATURE_PROBE_FUNCTION.store(bits, SeqCst);
+                    SIGNATURE_PROBE_DICTIONARY
+                        .store(MoltObject::from_ptr(replacement).bits(), SeqCst);
+                    SIGNATURE_PROBE_MODE.store(0, SeqCst);
+                    SIGNATURE_PROBE_CALLS.store(0, SeqCst);
+                    function_set_builtin_class(py, bits, false);
+                    assert!(exception_pending(py));
+                    clear_exception(py);
+                    assert_eq!(SIGNATURE_PROBE_CALLS.load(SeqCst), 1);
+                    assert_eq!(object_class_bits(function), original_class);
+                    assert_eq!(Field::TextSignature.load(function), None);
+                    assert_eq!(
+                        function_dict_bits(function),
+                        MoltObject::from_ptr(original).bits()
+                    );
+                    assert_eq!(crate::dict_len(original), 1);
+
+                    SIGNATURE_PROBE_MODE.store(mode, SeqCst);
+                    function_set_builtin_class(py, bits, false);
+                    assert!(!exception_pending(py));
+                    assert_eq!(
+                        object_class_bits(function),
+                        builtin_classes(py).builtin_function_or_method
+                    );
+                    assert_eq!(
+                        Field::TextSignature.load(function),
+                        Some(MoltObject::from_int(if replace_dictionary { 29 } else { 17 }).bits())
+                    );
+                    // The displaced public alias keeps its binding; only the
+                    // selected live dictionary loses the actual found key.
+                    assert_eq!(crate::dict_len(original), usize::from(replace_dictionary));
+                    assert_eq!(
+                        crate::dict_len(replacement),
+                        usize::from(!replace_dictionary)
+                    );
+                    dec_ref_bits(py, bits);
+                    dec_ref_bits(py, MoltObject::from_ptr(original).bits());
+                    dec_ref_bits(py, MoltObject::from_ptr(replacement).bits());
+                }
+                SIGNATURE_PROBE_FUNCTION.store(0, SeqCst);
+                SIGNATURE_PROBE_DICTIONARY.store(0, SeqCst);
+                for bits in [
+                    key, collision, hash_bits, hash_name, eq_bits, eq_name, class, name,
+                ] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn builtin_promotion_moves_public_text_signature_into_its_typed_owner() {
+        use crate::object::function_metadata::FunctionMetadataField as Field;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let name = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+                let extra = attr_name_bits_from_bytes(py, b"promotion_control").unwrap();
+                let original = alloc_string(py, b"($module, value=19, /)");
+                assert!(!original.is_null());
+                let original_bits = MoltObject::from_ptr(original).bits();
+                let owners = || (*crate::header_from_obj_ptr(original)).ref_count_snapshot();
+                let baseline = owners();
+                for signature in [Some(original_bits), Some(MoltObject::none().bits()), None] {
+                    let function = alloc_runtime_function_obj(
+                        py,
+                        lexical_closure_probe as *const () as usize as u64,
+                        1,
+                    );
+                    assert!(!function.is_null());
+                    let bits = MoltObject::from_ptr(function).bits();
+                    let executable = function_fn_ptr(function);
+                    if let Some(signature) = signature {
+                        let _ = crate::molt_set_attr_name(bits, name, signature);
+                    }
+                    let _ = crate::molt_set_attr_name(bits, extra, MoltObject::from_int(41).bits());
+                    assert!(!exception_pending(py));
+                    assert_eq!(Field::TextSignature.load(function), None);
+                    let dictionary = crate::object::field_storage::current_dictionary(py, function)
+                        .unwrap()
+                        .unwrap();
+                    inc_ref_bits(py, dictionary); // independent public-dictionary observer
+                    let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
+                    assert_eq!(dict_get_in_place(py, dictionary_ptr, name), Ok(signature));
+                    if let Some(signature) = signature {
+                        let observed = crate::molt_get_attr_name(bits, name);
+                        assert_eq!(observed, signature);
+                        dec_ref_bits(py, observed);
+                    }
+
+                    let _ = function_set_builtin_class(py, bits, false);
+                    assert!(!exception_pending(py));
+                    assert_eq!(Field::TextSignature.load(function), signature);
+                    assert_eq!(function_fn_ptr(function), executable);
+                    assert_eq!(
+                        crate::call_callable1(py, bits, MoltObject::from_int(17).bits()),
+                        MoltObject::none().bits()
+                    );
+                    assert!(!exception_pending(py));
+                    assert_eq!(dict_get_in_place(py, dictionary_ptr, name), Ok(None));
+                    assert_eq!(
+                        dict_get_in_place(py, dictionary_ptr, extra),
+                        Ok(Some(MoltObject::from_int(41).bits()))
+                    );
+                    if signature == Some(original_bits) {
+                        assert_eq!(
+                            owners(),
+                            baseline + 1,
+                            "only the typed owner retains the signature"
+                        );
+                    }
+
+                    // An old dictionary alias cannot rewrite sealed native
+                    // metadata, including on a repeated builtin publication.
+                    assert!(dict_set_in_place(
+                        py,
+                        dictionary_ptr,
+                        name,
+                        MoltObject::from_int(99).bits()
+                    ));
+                    let _ = function_set_builtin_class(py, bits, false);
+                    let observed = crate::molt_get_attr_name(bits, name);
+                    assert_eq!(observed, signature.unwrap_or(MoltObject::none().bits()));
+                    dec_ref_bits(py, observed);
+                    let _ = crate::molt_set_attr_name(bits, name, MoltObject::none().bits());
+                    assert!(exception_pending(py), "native text signature is readonly");
+                    clear_exception(py);
+                    assert_eq!(Field::TextSignature.load(function), signature);
+                    dec_ref_bits(py, bits);
+                    dec_ref_bits(py, dictionary);
+                    assert_eq!(owners(), baseline);
+                }
+                for bits in [name, extra, original_bits] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
     fn empty_globals(_py: &crate::PyToken<'_>) -> u64 {
         let ptr = alloc_dict_with_pairs(_py, &[]);
         assert!(!ptr.is_null());

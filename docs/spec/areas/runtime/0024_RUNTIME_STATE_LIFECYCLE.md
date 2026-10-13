@@ -203,6 +203,10 @@ The lifecycle publishes a single ready-state pointer for the fast path:
 - Flushes TLS caches.
 - Decrefs builtin classes, tuples, and method objects.
 - Clears async registries and task metadata.
+- Cancellation and resource retirement use only existing scheduler/poller
+  storage. Removing a waiter, clearing deferred state, or closing/detaching a
+  socket must not initialize or start a service, including after service
+  admission has closed. Registration and execution remain the startup owners.
 
 ### Python frame namespace custody
 

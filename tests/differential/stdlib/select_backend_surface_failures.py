@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,select.poll,select.epoll,select.devpoll
 # MOLT_META: stderr=exact
 """Purpose: differential coverage for select backend object surface/failures."""
 

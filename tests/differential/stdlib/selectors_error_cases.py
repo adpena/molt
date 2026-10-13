@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net
+# MOLT_ENV: MOLT_CAPABILITIES=net,select.poll
 """Purpose: differential coverage for selectors error cases."""
 
 import selectors

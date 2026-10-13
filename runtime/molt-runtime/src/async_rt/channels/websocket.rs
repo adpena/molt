@@ -236,9 +236,9 @@ fn ws_ref_dec(_py: &PyToken<'_>, ws_ptr: *mut MoltWebSocket) {
     }
     #[cfg(molt_has_net_io)]
     {
-        runtime_state(_py)
-            .io_poller()
-            .deregister_socket(_py, ws_ptr as *mut u8);
+        if let Some(poller) = runtime_state(_py).io_poller.get() {
+            poller.deregister_socket(_py, ws_ptr as *mut u8);
+        }
     }
     release_ptr(ws_ptr as *mut u8);
     unsafe {
@@ -1294,7 +1294,9 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 && deadline.is_finite()
                 && monotonic_now_secs(_py) >= deadline
             {
-                runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                if let Some(poller) = runtime_state(_py).io_poller.get() {
+                    poller.cancel_waiter(obj_ptr);
+                }
                 return raise_exception::<i64>(_py, "TimeoutError", "timed out");
             }
         }
@@ -1410,7 +1412,9 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 && deadline.is_finite()
                 && monotonic_now_secs(_py) >= deadline
             {
-                runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                if let Some(poller) = runtime_state(_py).io_poller.get() {
+                    poller.cancel_waiter(obj_ptr);
+                }
                 return raise_exception::<i64>(_py, "TimeoutError", "timed out");
             }
         }
@@ -1528,9 +1532,9 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) -> u64 {
         }
         #[cfg(molt_has_net_io)]
         {
-            runtime_state(_py)
-                .io_poller()
-                .deregister_socket(_py, ws_ptr);
+            if let Some(poller) = runtime_state(_py).io_poller.get() {
+                poller.deregister_socket(_py, ws_ptr);
+            }
         }
         MoltObject::none().bits()
     })
