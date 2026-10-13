@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import TextIO
 
-BINARY_RECEIPT_SCHEMA = "molt.cargo-test-binary.v2"
+BINARY_RECEIPT_SCHEMA = "molt.cargo-test-binary.v3"
 ACCOUNTING_SCHEMA = "molt.libtest-accounting.v1"
 MAX_LINE_CHARS = 65_536
 MAX_TESTS = 100_000
@@ -242,7 +242,7 @@ def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
 
 
 def accounting_problem(receipt: dict) -> str | None:
-    """Validate the mandatory v2 accounting envelope, not text a second time."""
+    """Validate the mandatory accounting envelope, not text a second time."""
     if receipt.get("schema") != BINARY_RECEIPT_SCHEMA:
         return "unsupported binary receipt schema; replay required"
     accounting = receipt.get("result_accounting")

@@ -1,7 +1,7 @@
-"""Exclusive cold Cargo target custody and sealed candidate preservation.
+"""Exclusive Cargo workspaces for development and isolated producer custody.
 
-Process supervision and Git source capture do not enforce every build-script
-input. No candidate may be reused without a complete enforced input closure.
+Workspace reuse follows Cargo dependency declarations; its run receipts do not
+attest source-exact reconstruction of cached artifacts.
 """
 
 from __future__ import annotations
@@ -121,7 +121,62 @@ def input_identity(
         "command": list(command),
         "output_environment": outputs.identity(),
         "environment_sha256": canonical_json_sha256(semantic_env),
+        **(
+            {
+                # Python import closure includes the editable checkout and pyc
+                # bytes. Those remain exact execution evidence, not a storage
+                # partition. Keep the selected interpreter/launcher and location;
+                # other toolchains retain their compiler/native/SDK file closure.
+                "workspace_toolchains_sha256": canonical_json_sha256(
+                    {
+                        name: {
+                            "process_images": tool["process_images"],
+                            "location": tool["location"],
+                        }
+                        if isinstance(tool, Mapping)
+                        and tool.get("schema") == "molt.proof-python-toolchain.v3"
+                        else [
+                            row.as_dict()
+                            for row in toolchain_capture.frozen_files(tool)
+                        ]
+                        for name, tool in toolchains.items()
+                    }
+                ),
+                "workspace_environment_sha256": canonical_json_sha256(
+                    outputs.workspace_environment(semantic_env)
+                ),
+            }
+            if outputs.cache_domain == "cargo-workspace"
+            else {}
+        ),
     }
+
+
+def _workspace_identity(identity: Mapping[str, object]) -> str | None:
+    if identity["output_environment"].get("cache_domain") != "cargo-workspace":
+        return None
+    # Source/command facts belong to each execution receipt. Cargo manages
+    # edits, profiles, features and test filters within one source workspace.
+    source = identity["source"]["root"]
+    return canonical_json_sha256(
+        {
+            "source_root": source,
+            **{
+                name: identity[name]
+                for name in (
+                    "host",
+                    "workspace_toolchains_sha256",
+                    "output_environment",
+                    "workspace_environment_sha256",
+                )
+            },
+        }
+    )
+
+
+def _storage_identity(record: Mapping[str, object]) -> str:
+    cargo_output_layout.target_layout_fields(record)
+    return str(record.get("workspace_sha256", record["input_sha256"]))
 
 
 def _complete_custody(result: Mapping[str, object], *, cas_root: Path) -> bool:
@@ -222,7 +277,10 @@ def validate_prelaunch(
             "Cargo cache source/toolchain/command/environment identity mismatch"
         )
     target = Path(str(row.get("path")))
-    owned = cas_root.parent / "cargo-cache" / str(row["input_sha256"])
+    workspace = _workspace_identity(expected)
+    if row.get("workspace_sha256") != workspace:
+        raise ValueError("Cargo workspace differs from admitted cache domain")
+    owned = cas_root.parent / "cargo-cache" / _storage_identity(row)
     generation_id = row.get("generation_id")
     generation_owner = row.get("generation_owner")
     generation_run_id = row.get("generation_run_id")
@@ -238,7 +296,7 @@ def validate_prelaunch(
     ):
         raise ValueError("Cargo cache generation provenance is incomplete")
     if target != layout.target(
-        str(row["input_sha256"]),
+        _storage_identity(row),
         generation_id,
         version=cargo_output_layout.recorded_target_layout(row),
     ):
@@ -253,7 +311,18 @@ def validate_prelaunch(
         return
     if state != "reused":
         raise ValueError("Cargo cache prelaunch state is invalid")
-    raise CargoInputClosureUnproven(candidate=target, seal=row.get("seed"))
+    if workspace is None:
+        raise CargoInputClosureUnproven(candidate=target, seal=row.get("seed"))
+    seed = _read(row.get("seed"), cas_root, _TERMINAL_RECEIPT_KIND)["receipt"]
+    cargo_output_layout.require_same_target_layout(seed, row)
+    if (
+        seed.get("target") != str(target)
+        or seed.get("generation_id") != generation_id
+        or seed.get("process_cleanup_safe") is not True
+        or seed.get("cargo_cache_publication")
+        != {"state": "unsealed", "reason": "cargo-workspace", "reusable": True}
+    ):
+        raise ValueError("Cargo workspace seed lacks safe terminal ownership")
 
 
 def _source_descriptor(
@@ -280,7 +349,7 @@ def _generation_paths(
     """Resolve one metadata-owned generation without accepting caller path drift."""
     if provenance.get("schema") != SCHEMA or provenance.get("run_owned") is not True:
         raise ValueError("Cargo cache generation has no exclusive provenance")
-    digest = provenance.get("input_sha256")
+    digest = _storage_identity(provenance)
     generation_id = provenance.get("generation_id")
     if not isinstance(digest, str) or _HEX_64.fullmatch(digest) is None:
         raise ValueError("Cargo cache generation has no canonical input identity")
@@ -460,6 +529,12 @@ class CargoCacheLease:
                 publication = {
                     "state": "unsealed",
                     "reason": "incomplete-or-unstable-custody",
+                }
+            elif self.provenance.get("workspace_sha256") is not None:
+                publication = {
+                    "state": "unsealed",
+                    "reason": "cargo-workspace",
+                    "reusable": True,
                 }
             else:
                 started = time.perf_counter()
@@ -1478,7 +1553,9 @@ def acquire(
         env=env,
     )
     digest = canonical_json_sha256(identity)
-    root = file_publication.resolve_owned_path(result_root / "cargo-cache" / digest)
+    workspace = _workspace_identity(identity)
+    storage = workspace or digest
+    root = file_publication.resolve_owned_path(result_root / "cargo-cache" / storage)
     source_path = source_root.resolve(strict=True)
     if (
         root == source_path
@@ -1498,12 +1575,66 @@ def acquire(
         file_publication.resolve_owned_path(pointer)
         cas_root = result_root / "custody-cas"
         cold_reason = "no-sealed-generation"
+        reused_owner = None
+        seed = None
         if pointer.exists():
             file_publication.resolve_owned_path(pointer)
             previous = loads_exact(pointer.read_text(encoding="utf-8"))
             if not isinstance(previous, dict) or previous.get("schema") != SCHEMA:
                 raise ValueError("Cargo cache generation state is malformed")
             cargo_output_layout.recorded_target_layout(previous)
+            if (
+                workspace is not None
+                and previous.get("state") == "terminal-unsealed-reclaimable"
+            ):
+                previous_owner = Path(str(previous.get("generation_owner")))
+                if (
+                    previous_owner.parent.parent != root
+                    or previous_owner.name != "owner.json"
+                ):
+                    raise ValueError("Cargo workspace owner escaped its identity")
+                owner = _read_owner(previous_owner)
+                target = layout.target(storage, previous_owner.parent.name)
+                prior = {
+                    **owner,
+                    "schema": SCHEMA,
+                    "run_owned": True,
+                    "path": str(target),
+                    "generation_owner": str(previous_owner),
+                    "generation_run_id": owner.get("run_id"),
+                }
+                if owner.get("workspace_sha256") != workspace:
+                    raise ValueError("Cargo workspace owner identity mismatch")
+                _validate_owner(owner, prior, target)
+                if (
+                    _read_current_pointer(
+                        pointer,
+                        target=target,
+                        owner_path=previous_owner,
+                        provenance=prior,
+                    )
+                    is None
+                ):
+                    raise ValueError("Cargo workspace pointer target mismatch")
+                receipt = _read(
+                    owner.get("terminal_receipt"), cas_root, _TERMINAL_RECEIPT_KIND
+                )["receipt"]
+                _validate_terminal_payload(receipt, prior)
+                if (
+                    receipt.get("cargo_cache_publication") != owner.get("publication")
+                    or owner.get("lifecycle") != previous.get("state")
+                    or owner.get("terminal_receipt") != previous.get("terminal_receipt")
+                ):
+                    raise ValueError("Cargo workspace terminal authority mismatch")
+                if receipt.get("process_cleanup_safe") is True and owner.get(
+                    "publication"
+                ) == {
+                    "state": "unsealed",
+                    "reason": "cargo-workspace",
+                    "reusable": True,
+                }:
+                    reused_owner = previous_owner
+                    seed = owner["terminal_receipt"]
             if previous.get("state") == "sealed":
                 seed = previous.get("seal")
                 target = Path(str(previous.get("target")))
@@ -1517,7 +1648,7 @@ def acquire(
                     or previous_owner.name != "owner.json"
                     or target
                     != previous_layout.target(
-                        digest,
+                        storage,
                         previous_owner.parent.name,
                         version=cargo_output_layout.recorded_target_layout(previous),
                     )
@@ -1540,10 +1671,15 @@ def acquire(
                 )
             else:
                 raise ValueError("Cargo cache generation state is invalid")
-        generation = root / secrets.token_hex(8)
-        generation.mkdir(exist_ok=False)
-        file_publication.fsync_directory(root)
-        target = layout.target(digest, generation.name)
+        generation = (
+            reused_owner.parent
+            if reused_owner is not None
+            else root / secrets.token_hex(8)
+        )
+        if reused_owner is None:
+            generation.mkdir(exist_ok=False)
+            file_publication.fsync_directory(root)
+        target = layout.target(storage, generation.name)
         owner_path = generation / "owner.json"
         file_publication.resolve_owned_path(owner_path)
         inputs = _artifact(cas_root, _INPUT_KIND, identity=identity)
@@ -1553,12 +1689,15 @@ def acquire(
             "role": "build-output",
             "path": str(target),
             "run_owned": True,
-            "state": "cold",
+            "state": "reused" if reused_owner is not None else "cold",
+            **({"workspace_sha256": workspace} if workspace is not None else {}),
             "input_sha256": digest,
             "inputs": inputs,
-            "seed": None,
-            "initial_entry_count": 0,
-            "initial_manifest_sha256": canonical_json_sha256([]),
+            "seed": seed,
+            "initial_entry_count": None if reused_owner is not None else 0,
+            "initial_manifest_sha256": None
+            if reused_owner is not None
+            else canonical_json_sha256([]),
             "requested_target": requested_target,
             "effective_target": str(target),
             "selection_s": time.perf_counter() - started,
@@ -1585,6 +1724,7 @@ def acquire(
                 else {}
             ),
             "generation_id": generation.name,
+            **({"workspace_sha256": workspace} if workspace is not None else {}),
             "input_sha256": digest,
             "run_id": run_id,
             "execution_nonce_sha256": execution_nonce_sha256,
@@ -1600,8 +1740,9 @@ def acquire(
         custody_cas._durable_makedirs(target.parent)
         # The compact address is outside the exclusively created metadata
         # directory. Even an empty pre-existing payload has no fresh custody.
-        target.mkdir(exist_ok=False)
-        file_publication.fsync_directory(target.parent)
+        if reused_owner is None:
+            target.mkdir(exist_ok=False)
+            file_publication.fsync_directory(target.parent)
         bound_environment = outputs.bind(env, target=target)
         validate_prelaunch(
             provenance,
@@ -1623,6 +1764,11 @@ def acquire(
                     {
                         "schema": SCHEMA,
                         "cargo_target_layout": cargo_output_layout.TARGET_LAYOUT,
+                        **(
+                            {"workspace_sha256": workspace}
+                            if workspace is not None
+                            else {}
+                        ),
                         "state": "pending",
                         "run_id": run_id,
                         "target": str(target),

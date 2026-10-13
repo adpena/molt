@@ -56,6 +56,7 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     assert closure["descendants"] == "declared-toolchains"
     assert set(lane.toolchains) <= set(closure["toolchains"])
     assert envelope["cargo_native_units"] == lane.data.get("cargo_native_units", {})
+    assert command_admission.cargo_cache_domain(envelope) == lane.data["cache_domain"]
 
 
 @pytest.mark.parametrize(
@@ -657,6 +658,10 @@ def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     assert envelope["kind"] == "named-lane"
     assert envelope["proof_plan_command_ids"] == [lane_id]
     assert envelope["typed_command"]["environment_root"] == str(root)
+    assert (
+        command_admission.cargo_cache_domain(envelope)
+        == PLAN.named_lane(lane_id).data["cache_domain"]
+    )
     assert set(PLAN.named_lane(lane_id).toolchains) <= set(envelope["toolchains"])
     with pytest.raises(ValueError, match="must match its registered command exactly"):
         command_admission.envelope_for_command([*command, "--changed"])
@@ -1077,4 +1082,40 @@ def test_prepared_differential_lane_keeps_selected_files(
     with pytest.raises(ValueError, match="another named lane"):
         command_admission.prepared_named_lane_command(
             "runtime.public-consumers.wasm", python, command=command
+        )
+
+
+def test_cargo_workspace_admission_requires_registered_development_domain():
+    from tools.proof_queue_pkg.cargo_output_environment import CargoOutputEnvironment
+
+    command = next(
+        c for c in PLAN.commands if c.id == "rust.test.runtime-cold-lifecycle"
+    )
+    registered = command_admission.envelope_for_command(command.argv)
+    for envelope in (registered, {"delegated": registered}):
+        assert (
+            CargoOutputEnvironment.for_envelope(envelope).cache_domain
+            == "cargo-workspace"
+        )
+    direct = command_admission.envelope_for_command(
+        ["cargo", "test", "--lib", "unregistered_filter"]
+    )
+    assert CargoOutputEnvironment.for_envelope(direct).cache_domain == "none"
+    producer = command_admission.envelope_for_command(
+        list(PLAN.named_lane("runtime.lifecycle-cost-image").argv)
+    )
+    assert CargoOutputEnvironment.for_envelope(producer).cache_domain == "none"
+    with pytest.raises(ValueError, match="unknown"):
+        command_admission.cargo_cache_domain(
+            {**registered, "proof_plan_command_ids": ["foreign"]}
+        )
+    with pytest.raises(ValueError, match="disagree"):
+        command_admission.cargo_cache_domain(
+            {
+                "kind": "named-lane",
+                "proof_plan_command_ids": [
+                    "runtime.lifecycle-cost-image",
+                    "runtime.allocation-observer",
+                ],
+            }
         )

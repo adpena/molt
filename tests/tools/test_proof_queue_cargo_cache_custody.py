@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
 
 import pytest
+from tests.test_python_external_custody import standard_finders  # noqa: F401
 
 from tools.proof_queue_pkg import cargo_cache_custody as cache
 from tools.proof_queue_pkg import (
@@ -2083,6 +2085,7 @@ def test_native_build_process_closure_participates_in_cargo_cache_inputs(
         "outputs": _outputs(command),
         "env": env,
     }
+    arguments["outputs"] = replace(arguments["outputs"], cache_domain="cargo-workspace")
     before = cache.input_identity(**arguments)
     tools[member].write_bytes(b"replacement C build input")
     # A new generation must come from the actual capture producer, including
@@ -2106,7 +2109,9 @@ def test_native_build_process_closure_participates_in_cargo_cache_inputs(
     refreshed.pop("identity_sha256")
     refreshed["identity_sha256"] = cache.canonical_json_sha256(refreshed)
     arguments["toolchains"] = {"rustc": refreshed}
-    assert cache.input_identity(**arguments) != before
+    after = cache.input_identity(**arguments)
+    assert after != before
+    assert cache._workspace_identity(after) != cache._workspace_identity(before)
 
 
 def test_selected_ignored_differential_source_has_replay_capture_and_terminal_fences(
@@ -2282,3 +2287,394 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
                     validate(forged)
     finally:
         lease.close()
+
+
+def _workspace_inputs(tmp_path):
+    inputs = _inputs(tmp_path)
+    plan = command_admission._proof_command_registry()["plan"]
+    registered = next(
+        c for c in plan.commands if c.id == "rust.test.runtime-cold-lifecycle"
+    )
+    envelope = command_admission.envelope_for_command(registered.argv)
+    inputs["outputs"] = cargo_output_environment.CargoOutputEnvironment.for_envelope(
+        envelope
+    )
+    # The driver has a separate, run-owned scratch boundary.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    inputs["env"]["MOLT_PROOF_SCRATCH_ROOT"] = str(scratch)
+    return inputs
+
+
+def _finish_workspace(lease, inputs):
+    publication = lease.publish(_completed(lease))
+    lease.close()
+    return cache.record_terminal_receipt(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        terminal_receipt=_terminal_receipt(lease, publication),
+    )
+
+
+def test_workspace_reuses_after_edits_but_old_receipt_cannot_delete_new_owner(tmp_path):
+    inputs = _workspace_inputs(tmp_path)
+    first = cache.acquire(**inputs)
+    (first.target / "compiler-artifact").write_bytes(b"built")
+    projection = _finish_workspace(first, inputs)
+    inputs.update(run_id="unit-two", execution_nonce_sha256="d" * 64)
+    (inputs["source_root"] / "main.rs").write_text('fn main() {println!("edited");}\n')
+    _capture(inputs)
+    inputs["command"] = ["cargo", "test", "different-filter"]
+    second = cache.acquire(**inputs)
+    try:
+        assert second.target == first.target
+        assert second.provenance["input_sha256"] != first.provenance["input_sha256"]
+        assert second.provenance["state"] == "reused"
+        assert (second.target / "compiler-artifact").read_bytes() == b"built"
+        cache.validate_terminal_receipt(
+            result_root=inputs["result_root"],
+            projection=projection,
+            provenance=first.provenance,
+            run_id="unit-one",
+            execution_nonce_sha256="a" * 64,
+        )
+        # An old receipt is valid history, never current mutation authority.
+        with pytest.raises(ValueError, match="owner/provenance"):
+            cache._validate_terminal_generation_authority(
+                result_root=inputs["result_root"],
+                provenance=first.provenance,
+                projection=projection,
+                target=first.target,
+                owner_path=first.owner_path,
+            )
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("boundary", ["unacknowledged", "unstable", "environment"])
+def test_workspace_refuses_unsafe_or_incompatible_reuse(tmp_path, boundary):
+    inputs = _workspace_inputs(tmp_path)
+    first = cache.acquire(**inputs)
+    if boundary == "unstable":
+        publication = first.publish({"phase": "failed"})
+        first.close()
+        cache.record_terminal_receipt(
+            result_root=inputs["result_root"],
+            provenance=first.provenance,
+            terminal_receipt=_terminal_receipt(first, publication),
+        )
+    elif boundary == "unacknowledged":
+        first.publish(_completed(first))
+        first.close()
+    else:
+        _finish_workspace(first, inputs)
+        inputs["env"]["RUSTFLAGS"] = "-Cdebuginfo=1"
+    inputs.update(run_id="unit-two", execution_nonce_sha256="d" * 64)
+    second = cache.acquire(**inputs)
+    try:
+        assert second.target != first.target
+        assert second.provenance["state"] == "cold"
+    finally:
+        second.close()
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("standard_finders")
+def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
+    import shutil
+    import py_compile
+    from tests.test_python_external_custody import _ExternalFixture
+    from molt.python_environment_location import locate_current_python_environment
+    from tools.proof_queue_pkg.process_image_capture import capture_image
+    from tools.harness_memory_guard import guarded_completed_process
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("real Cargo oracle requires Cargo")
+    inputs = _workspace_inputs(tmp_path)
+    source = inputs["source_root"]
+    # Exercise the real editable-import inventory producer, including pyc.
+    # The fixture supplies a .pth declaration and active external import root;
+    # it does not fabricate hashes or exclude the checkout from custody.
+    editable = _ExternalFixture(tmp_path)
+    location = locate_current_python_environment()
+    python_images = [
+        capture_image(role, Path(location[field]), preserve_path=True)
+        for role, field in (
+            ("selected-interpreter", "selected_executable"),
+            ("base-interpreter", "base_executable"),
+        )
+    ]
+    (source / "Cargo.toml").write_text(
+        '[package]\nname="queue-workspace-oracle"\nversion="0.1.0"\nedition="2021"\n'
+        '[lib]\npath="main.rs"\n[workspace]\n'
+    )
+    script = """fn main() {
+        println!("cargo:rerun-if-changed=input.txt");
+        println!("cargo:rerun-if-changed=abi.txt");
+        println!("cargo:rerun-if-env-changed=WITNESS_ENV");
+        println!("cargo:rustc-env=WITNESS_INPUT={}", std::fs::read_to_string("input.txt").unwrap());
+        println!("cargo:rustc-env=WITNESS_ABI={}", std::fs::read_to_string("abi.txt").unwrap());
+        println!("cargo:rustc-env=WITNESS_ENV={}", std::env::var("WITNESS_ENV").unwrap());
+    }"""
+    (source / "build.rs").write_text(script)
+    (source / "input.txt").write_text("one")
+    (source / "abi.txt").write_text("abi1")
+    (source / "driver.py").write_text("# first Python driver\n")
+    program = '#[test] fn witness() { println!("WITNESS={}:{}:{}:A", env!("WITNESS_INPUT"), env!("WITNESS_ABI"), env!("WITNESS_ENV")); }\n'
+    (source / "main.rs").write_text(program)
+    ambient = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("CARGO_")
+        and key not in {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
+    }
+    inputs["env"].update(ambient)
+    inputs["env"].update(
+        WITNESS_ENV="alpha",
+        CARGO_INCREMENTAL="0",
+        MOLT_USE_SCCACHE="0",
+        MOLT_PROOF_SCRATCH_ROOT=str(tmp_path / "scratch"),
+    )
+    inputs["command"] = [
+        cargo,
+        "test",
+        "--offline",
+        "--message-format=json",
+        "--",
+        "--nocapture",
+    ]
+    overlays = [
+        source / name
+        for name in ("Cargo.toml", "build.rs", "input.txt", "abi.txt", "driver.py")
+    ]
+    rows = []
+    first = None
+    first_projection = None
+    retained_binary_receipts = tmp_path / "binary-receipts"
+    for index, (step, expected, fresh) in enumerate(
+        [
+            ("cold", "one:abi1:alpha:A", False),
+            ("warm", "one:abi1:alpha:A", True),
+            ("python-edit", "one:abi1:alpha:A", True),
+            ("rust-edit", "one:abi1:alpha:B", False),
+            ("declared-file-edit", "two:abi1:alpha:B", False),
+            ("abi-edit", "two:abi2:alpha:B", False),
+            ("declared-env-edit", "two:abi2:beta:B", False),
+        ]
+    ):
+        if step == "python-edit":
+            (source / "driver.py").write_text("# changed Python driver\n")
+            (editable.imports / "module.py").write_text("VALUE = 200\n")
+        elif step == "rust-edit":
+            (source / "main.rs").write_text(program.replace(":A", ":B"))
+        elif step == "declared-file-edit":
+            (source / "input.txt").write_text("two")
+        elif step == "abi-edit":
+            (source / "abi.txt").write_text("abi2")
+        elif step == "declared-env-edit":
+            inputs["env"]["WITNESS_ENV"] = "beta"
+        inputs.update(
+            run_id=f"oracle-{index}",
+            execution_nonce_sha256=hashlib.sha256(str(index).encode()).hexdigest(),
+        )
+        py_compile.compile(str(editable.imports / "module.py"), doraise=True)
+        external_custody = editable.capture()
+        editable.validate(external_custody)
+        inputs["toolchains"] = {
+            "python": {
+                "schema": "molt.proof-python-toolchain.v3",
+                "location": location,
+                "process_images": python_images,
+                "environment": {"external_import_custody": external_custody},
+                "file_custody": editable.context.file_custody(),
+            }
+        }
+        captured_paths = {
+            row["path"] for row in inputs["toolchains"]["python"]["file_custody"]
+        }
+        assert str(editable.imports / "module.py") in captured_paths
+        assert any(path.endswith(".pyc") for path in captured_paths)
+        _capture(inputs, overlays=overlays)
+        lease = cache.acquire(**inputs)
+        if step == "python-edit":
+            assert lease.provenance["input_sha256"] != first.provenance["input_sha256"]
+        try:
+            result = guarded_completed_process(
+                inputs["command"],
+                prefix="MOLT_QUEUE_REUSE_ORACLE",
+                cwd=source,
+                env=lease.environment,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "WITNESS=" + expected in result.stdout
+            artifacts = [
+                json.loads(line)
+                for line in result.stdout.splitlines()
+                if line.startswith('{"reason":')
+            ]
+            test_image = next(
+                row
+                for row in artifacts
+                if row.get("reason") == "compiler-artifact" and row.get("executable")
+            )
+            assert test_image["fresh"] is fresh
+            from tools import cargo_test_binary_runner, run_cargo_test_truth
+
+            if step == "cold":
+                assert (
+                    cargo_test_binary_runner.main(
+                        [
+                            "--timeout-seconds",
+                            "10",
+                            "--receipt-dir",
+                            str(retained_binary_receipts),
+                            "--run-id",
+                            "original-cargo-image",
+                            "--",
+                            test_image["executable"],
+                            "--nocapture",
+                        ]
+                    )
+                    == 0
+                )
+            # Original executed paths stay original; later Cargo edits must not
+            # invalidate byte evidence of the previous successful execution.
+            assert (
+                len(
+                    run_cargo_test_truth.load_binary_receipts(
+                        retained_binary_receipts, expected_run_id="original-cargo-image"
+                    )
+                )
+                == 1
+            )
+            if step not in {"cold", "declared-env-edit"}:
+                assert lease.target == first.target
+                assert lease.provenance["state"] == "reused"
+            publication = lease.publish(_completed(lease))
+        finally:
+            lease.close()
+        terminal = _terminal_receipt(lease, publication)
+        terminal.update(command_returncode=0)
+        terminal["queue_terminal"].update(
+            status="passed", returncode=0, command_returncode=0
+        )
+        projection = cache.record_terminal_receipt(
+            result_root=inputs["result_root"],
+            provenance=lease.provenance,
+            terminal_receipt=terminal,
+        )
+        if first is None:
+            first, first_projection = lease, projection
+        elif step == "warm":
+            with pytest.raises(ValueError, match="owner/provenance"):
+                cache.reclaim_terminal_unsealed(
+                    result_root=inputs["result_root"],
+                    provenance=first.provenance,
+                    projection=first_projection,
+                )
+            assert lease.target.is_dir()
+        rows.append(
+            {
+                "step": step,
+                "fresh": fresh,
+                "cargo_seconds": result.elapsed_s,
+                "output": expected,
+                "state": lease.provenance["state"],
+            }
+        )
+    print("QUEUE_CARGO_WORKSPACE_ORACLE=" + json.dumps(rows, sort_keys=True))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("target", "/foreign/target"), ("generation_owner", "/foreign/owner.json")],
+)
+def test_workspace_refuses_foreign_terminal_pointer(tmp_path, field, value):
+    inputs = _workspace_inputs(tmp_path)
+    first = cache.acquire(**inputs)
+    _finish_workspace(first, inputs)
+    pointer = first.owner_path.parent.parent / "state.json"
+    record = json.loads(pointer.read_text())
+    record[field] = value
+    pointer.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="(escaped|mismatch)"):
+        cache.acquire(**inputs)
+    assert first.target.is_dir()
+
+
+def test_workspace_uses_actual_run_context_scratch_and_session_provenance(tmp_path):
+    from molt.dx import RunContext, scratch_dir
+
+    inputs = _workspace_inputs(tmp_path)
+    source = inputs["source_root"]
+    targets = []
+    identities = []
+    for session in ("generated-one", "generated-two", "pinned-one", "pinned-two"):
+        base = {"PATH": os.environ.get("PATH", ""), "MOLT_USE_SCCACHE": "0"}
+        if session.startswith("pinned"):
+            base["MOLT_SESSION_ID"] = session
+        env = RunContext(source, session_prefix=session).canonical_env(
+            base, create_dirs=False
+        )
+        env["MOLT_DIFF_ROOT"] = str(scratch_dir(source, "diff-" + session, env))
+        env["MOLT_PROOF_SCRATCH_ROOT"] = str(tmp_path / "scratch")
+        inputs.update(
+            env=env,
+            run_id=session,
+            execution_nonce_sha256=hashlib.sha256(session.encode()).hexdigest(),
+        )
+        lease = cache.acquire(**inputs)
+        targets.append(lease.target)
+        identities.append(lease.provenance["input_sha256"])
+        _finish_workspace(lease, inputs)
+    assert targets[0] == targets[1]
+    assert len(set(targets[1:])) == 3
+    assert identities[0] != identities[1]
+
+
+@pytest.mark.parametrize("changed", ["interpreter", "location"])
+def test_workspace_python_selection_still_partitions_storage(tmp_path, changed):
+    from tools.proof_queue_pkg.process_image_capture import capture_image
+
+    inputs = _workspace_inputs(tmp_path)
+    interpreter = inputs["source_root"] / ".venv/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"selected interpreter")
+    interpreter.chmod(0o755)
+
+    def capture():
+        image = capture_image("selected-interpreter", interpreter)
+        return {
+            "python": {
+                "schema": "molt.proof-python-toolchain.v3",
+                "location": {"prefix": str(interpreter.parent.parent)},
+                "process_images": [image],
+                "file_custody": [
+                    {
+                        "path": image["path"],
+                        "size": image["size_bytes"],
+                        "sha256": image["sha256"],
+                    }
+                ],
+            }
+        }
+
+    inputs["toolchains"] = capture()
+    first = cache.acquire(**inputs)
+    _finish_workspace(first, inputs)
+    if changed == "interpreter":
+        interpreter.write_bytes(b"replacement interpreter")
+    inputs["toolchains"] = capture()
+    if changed == "location":
+        inputs["toolchains"]["python"]["location"]["prefix"] = str(
+            tmp_path / "other-env"
+        )
+    inputs.update(run_id="new-python-selection", execution_nonce_sha256="b" * 64)
+    second = cache.acquire(**inputs)
+    try:
+        assert second.target != first.target
+        assert second.provenance["state"] == "cold"
+    finally:
+        second.close()

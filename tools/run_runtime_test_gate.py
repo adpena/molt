@@ -586,6 +586,7 @@ def execute_child(
     source: dict,
     timeout: float,
     require_passed: bool,
+    retained_root: Path,
     environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     child_command = [
@@ -595,6 +596,8 @@ def execute_child(
         str(timeout),
         "--receipt-dir",
         str(directory),
+        "--retained-root",
+        str(retained_root),
         "--run-id",
         run_id,
         "--source-identity-json",
@@ -619,6 +622,7 @@ def execute_child(
         directory,
         expected_run_id=run_id,
         expected_source_identity=source,
+        retained_root=retained_root,
     )
     return child, receipts
 
@@ -777,7 +781,14 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
             aggregate["abi_dependency"] = observed_abi_dependency(
                 build.stdout, metadata, policy="semantic", source_root=ROOT
             )
+        if triple == WASI_TARGET:
+            aggregate["abi_dependency"]["retained_files"] = {
+                name: descendants.retain_file(Path(name), run)
+                for name in aggregate["abi_dependency"]["filenames"]
+                if Path(name).suffix != ".rlib"
+            }
         image["build"] = {
+            "retained_artifact": descendants.retain_file(binary, run),
             "artifact": artifact,
             "executable_size": identity[0],
             "executable_sha256": identity[1],
@@ -802,6 +813,7 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
             host_binary = Path(host_artifact["executable"])
             host_identity = truth._file_identity(host_binary)
             image["production_host"] = {
+                "retained_artifact": descendants.retain_file(host_binary, run),
                 "artifact": host_artifact,
                 "executable_size": host_identity[0],
                 "executable_sha256": host_identity[1],
@@ -839,6 +851,7 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         source=source,
         timeout=args.child_timeout_seconds,
         require_passed=True,
+        retained_root=run,
         environment=environment,
     )
     image = aggregate["images"]["wasi_runtime_lifecycle"]
@@ -869,6 +882,10 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         raise RuntimeError("lifecycle source/image changed during execution")
     # This is one integration pass. Its five semantic cases are enforced and
     # reported by Rust; no invented Python test count or native WASM inventory.
+    for path, row in aggregate["abi_dependency"]["retained_files"].items():
+        descendants.retained_file(row, root=run)
+        if truth._file_identity(Path(path)) != (row["size_bytes"], row["sha256"]):
+            raise RuntimeError("ABI dependency changed during execution")
     image["passed_test_count"] = aggregate["passed_test_count"] = 1
     aggregate["status"] = "success"
 
@@ -1028,6 +1045,11 @@ def main(argv: list[str] | None = None) -> int:
         aggregate["abi_dependency"] = observed_abi_dependency(
             build.stdout, metadata.stdout, policy=args.policy, source_root=ROOT
         )
+        aggregate["abi_dependency"]["retained_files"] = {
+            name: descendants.retain_file(Path(name), run)
+            for name in aggregate["abi_dependency"]["filenames"]
+            if Path(name).suffix != ".rlib"
+        }
         observed_images = {
             target: observed_build(
                 build.stdout, artifact, args.profile, aggregate["build_environment"]
@@ -1067,6 +1089,7 @@ def main(argv: list[str] | None = None) -> int:
             images[target] = (binary, identity, selection)
             aggregate["images"][target] = {
                 "build": {
+                    "retained_artifact": descendants.retain_file(binary, run),
                     "observed": observed,
                     "artifact": artifact,
                     "executable_size": identity[0],
@@ -1105,6 +1128,7 @@ def main(argv: list[str] | None = None) -> int:
                     source=source,
                     timeout=args.child_timeout_seconds,
                     require_passed=args.policy == "allocation-observer",
+                    retained_root=run,
                 )
                 image["children"][name] = {
                     "returncode": child.returncode,
@@ -1147,6 +1171,10 @@ def main(argv: list[str] | None = None) -> int:
             for binary, identity, _ in images.values()
         ):
             raise RuntimeError("source/binary changed during aggregate verification")
+        for path, row in aggregate["abi_dependency"]["retained_files"].items():
+            descendants.retained_file(row, root=run)
+            if truth._file_identity(Path(path)) != (row["size_bytes"], row["sha256"]):
+                raise RuntimeError("ABI dependency changed during execution")
         aggregate["passed_test_count"] = sum(
             image["passed_test_count"] for image in aggregate["images"].values()
         )

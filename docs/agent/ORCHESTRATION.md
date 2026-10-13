@@ -565,9 +565,11 @@ Everything else: parallel, lane-owned.
 - NEVER pay a cold crate compile for a single exact test. If your proof
   needs a compile, run the whole relevant test SHARD in that same compile.
 - Reuse the stable checkout target for bounded development checks through
-  `molt dx run`. The proof queue currently assigns isolated cold Cargo outputs;
-  warming another target does not warm those outputs. Batch the required
-  qualification after iteration and retain its exact receipts.
+  `molt dx run`. Registered queue commands declaring `cargo-workspace` reuse
+  their own exclusively leased target after terminal acknowledgement. Unknown
+  direct commands and exact installed/release producers retain isolated output;
+  warming another target does not warm those outputs. See PROOF_QUEUE.md for
+  the execution-receipt versus source-exact producer distinction.
 - Set an explicit `--timeout` matched to warm-compile reality; if a row is
   projected to blow it on a cold compile, re-shape, don't wait it out.
 - NEVER sit idle narrating a wait. Submit with `--detach`, do other lane

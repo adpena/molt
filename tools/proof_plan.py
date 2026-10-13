@@ -86,6 +86,7 @@ REQUIRED_SCHEDULED_FAMILY_FIELDS = (
     "resource_class",
 )
 REQUIRED_NAMED_LANE_FIELDS = (
+    "cache_domain",
     "description",
     "argv",
     "toolchains",
@@ -543,6 +544,8 @@ class ProofPlan:
                 cargo_native_units(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
+            if lane.data.get("cache_domain") not in {"none", "cargo-workspace"}:
+                errors.append(f"{lane.id}: invalid Cargo cache domain")
             cases = lane.data.get("differential_cases")
             if cases is not None and (
                 not isinstance(cases, list)

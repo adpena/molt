@@ -4189,6 +4189,7 @@ gates = [
 # =========================================================================
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "native.capability-cache-policy"
 description = "Exercise native shared-code reuse across embedded capability policies and different application code-slot layouts, with actual compiled output and constituent-cache observations."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-vv", "-s", "tests/test_manifest_pipeline_e2e.py::test_native_warm_code_cache_keeps_current_capability_policy", "tests/test_manifest_pipeline_e2e.py::test_native_stdlib_objects_reuse_across_code_slot_layouts"]
@@ -4199,6 +4200,7 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 3600
 
 [[named_lane]]
+cache_domain = "none"
 id = "runtime.lifecycle-cost-image"
 description = "Build the full default-feature runtime libtest image for independent lifecycle measurements; no semantic or performance acceptance is implied."
 argv = ["cargo", "test", "--locked", "--profile", "release-output", "-p", "molt-runtime", "--lib", "--no-run", "--message-format=json"]
@@ -4209,6 +4211,7 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 6300
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "runtime.allocation-observer"
 description = "Build the development-only runtime and public ABI observer images once, discover required allocation/refusal controls and execute each in a fresh process with source/image-bound receipts; no timed performance acceptance is implied."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "allocation-observer"]
@@ -4219,6 +4222,7 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 9000
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime ownership, mapping, numeric, path, encoding, stream and shared-call consumers against CPython 3.12 on native targets."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--no-retry-oom", "--json"]
@@ -4230,6 +4234,7 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 9000
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.wasm"
 description = "Compile and execute the shared mapping, numeric, serialization and error consumers against CPython 3.12 on WASM; native process and thread cells remain separate."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--no-retry-oom", "--json"]
@@ -4241,6 +4246,7 @@ contention_key = "cargo-native-runtime"
 timeout_seconds = 9000
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
@@ -4251,6 +4257,7 @@ contention_key = "cargo:molt-lang-cpython-abi"
 timeout_seconds = 1800
 
 [[named_lane]]
+cache_domain = "none"
 id = "pact.witness.acceptance.native"
 cargo_native_units = { target = ["c", "c++"] }
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
@@ -4261,6 +4268,7 @@ contention_key = "pact:witness"
 timeout_seconds = 1800
 
 [[named_lane]]
+cache_domain = "none"
 id = "pact.witness.acceptance.wasm"
 description = "Pact Kernel A WASM acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "wasm"]
@@ -4270,6 +4278,7 @@ contention_key = "pact:witness"
 timeout_seconds = 1800
 
 [[named_lane]]
+cache_domain = "none"
 id = "pact.witness.oracle"
 description = "Pact Kernel A fixture/reference regeneration and check_parity.py oracle proof."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_oracle.py"]
@@ -4283,6 +4292,7 @@ timeout_seconds = 900
 # One lane per version in src/molt/target_python.py; a test gates the set.
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py312"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
@@ -4294,6 +4304,7 @@ contention_key = "python:r6-target-version-py312"
 timeout_seconds = 900
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py313"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
@@ -4305,6 +4316,7 @@ contention_key = "python:r6-target-version-py313"
 timeout_seconds = 900
 
 [[named_lane]]
+cache_domain = "cargo-workspace"
 id = "r6.target-version-parity.py314"
 cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
