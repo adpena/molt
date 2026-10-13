@@ -355,7 +355,9 @@ def _default_molt_bin(
     )
 
 
-def protected_cache_roots(cache_root: Path) -> tuple[Path, ...]:
+def protected_cache_roots(
+    cache_root: Path, *, environ: Mapping[str, str] | None = None
+) -> tuple[Path, ...]:
     """Return the top-level cache children that hold the selected home or bin.
 
     The default Molt home lives in the cache and owns installed tool state
@@ -364,7 +366,7 @@ def protected_cache_roots(cache_root: Path) -> tuple[Path, ...]:
     ``--cache-dir`` names another namespace than the process's ``MOLT_CACHE``.
     """
     root = cache_root.resolve(strict=False)
-    environment = dict(os.environ)
+    environment = dict(os.environ if environ is None else environ)
     environment["MOLT_CACHE"] = os.fspath(root)
     protected = {cache_control_root(root), cache_home_root(root)}
     for selected in (

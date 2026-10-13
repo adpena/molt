@@ -1909,12 +1909,6 @@ def _run_one(
     print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
     _apply_automatic_retention(db=db, logs_root=logs_root)
-    # The terminal proof row is immutable evidence before maintenance admission.
-    # Admission does no cache/source walk; the queue owns the detached payload.
-    from tools.proof_queue_pkg.cache_retention import schedule_after_proof
-
-    if env is not None:
-        schedule_after_proof(args, conn, completed_run_id=run_id, environ=env)
     return (
         2
         if disposition_failed

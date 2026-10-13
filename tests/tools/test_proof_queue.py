@@ -220,7 +220,10 @@ def test_finalization_keeps_guard_failure_separate_from_command(
         "terminal_evidence_sha256",
         lambda *_args, **_kwargs: "a" * 64,
     )
-    record = {"command_returncode": child_returncode}
+    record = {
+        "command_returncode": child_returncode,
+        "cache_retention": {"status": "completed", "entries_removed": 1},
+    }
     outcome, context = runner._finalize_execution_receipt(
         execution_record=record,
         execution_path=tmp_path / "execution.json",
@@ -3714,6 +3717,118 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
 
 @pytest.mark.slow
 @capability_aware_proof_execution
+@pytest.mark.parametrize("payload_rc,prune_error", [(0, False), (7, True)])
+def test_guarded_retention_reuses_closed_payload_controller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+    payload_rc: int,
+    prune_error: bool,
+) -> None:
+    from molt import cache_eviction, default_paths, file_locks, file_publication
+    from tools.proof_queue_pkg import cache_retention, supervisor_generation
+
+    repo = tmp_path / "retention-repo"
+    _initialize_clean_git_repo(repo)
+    cache = tmp_path / "cache"
+    (cache / "module_lowering").mkdir(parents=True)
+    entry = cache / "module_lowering/entry.json"
+    entry.write_text("immutable cache payload")
+    marker = tmp_path / "payload-finished"
+    for name, value in {
+        "MOLT_CACHE": str(cache),
+        "MOLT_CACHE_PRUNE": "1",
+        "MOLT_CACHE_MAX_GB": "0",
+    }.items():
+        monkeypatch.setenv(name, value)
+    events = []
+    provision = supervisor_generation.provision
+    validate = supervisor_custody._validated_supervisor_receipt
+    prune = cache_retention._prune
+    snapshot = execution_environment._git_snapshot
+
+    def provision_once(**kwargs):
+        events.append("provision")
+        assert events.count("provision") == 1, (
+            "maintenance provisioned another supervisor"
+        )
+        return provision(**kwargs)
+
+    def closed_receipt(**kwargs):
+        receipt = validate(**kwargs)
+        assert supervisor_custody.supervisor_receipt_is_complete(receipt)
+        events.append("payload-closed")
+        return receipt
+
+    def sweep(root, **kwargs):
+        assert events[-1] == "payload-closed"
+        assert marker.read_text() == "done"
+        assert root == cache
+        assert kwargs["automatic"] is True
+        events.append("prune")
+        if prune_error:
+            raise OSError("independent cleanup failure")
+        return prune(root, **kwargs)
+
+    def observed_snapshot(*args, **kwargs):
+        if "prune" in events:
+            events.append("verify-source")
+        return snapshot(*args, **kwargs)
+
+    def no_queue(*args, **kwargs):
+        pytest.fail("in-process retention must not admit or dispatch another queue row")
+
+    monkeypatch.setattr(supervisor_generation, "provision", provision_once)
+    monkeypatch.setattr(
+        supervisor_custody, "_validated_supervisor_receipt", closed_receipt
+    )
+    monkeypatch.setattr(cache_retention, "_prune", sweep)
+    monkeypatch.setattr(execution_environment, "_git_snapshot", observed_snapshot)
+    monkeypatch.setattr(scheduling, "_insert_run", no_queue)
+    monkeypatch.setattr(runner, "_dispatch_detached_runner", no_queue)
+    rc, record = _execute_request(
+        repo,
+        tmp_path / "retention-execution.json",
+        [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('done'); raise SystemExit({payload_rc})",
+        ],
+        authorities=guarded_execution_authorities,
+    )
+    assert rc == payload_rc
+    assert record["phase"] == "complete" and record["command_returncode"] == payload_rc
+    assert events == ["provision", "payload-closed", "prune", "verify-source"]
+    context = execution_receipt_details.expand_context(
+        record["receipt_context"], cas_root=tmp_path / "custody-cas"
+    )
+    captured = {
+        Path(row["path"]).resolve()
+        for row in context["custody_authorities"]["prelaunch"]
+    }
+    assert {
+        Path(module.__file__).resolve()
+        for module in (
+            cache_retention,
+            cache_eviction,
+            default_paths,
+            file_locks,
+            file_publication,
+        )
+    } <= captured
+    if prune_error:
+        assert record["cache_retention"] == {
+            "status": "failed",
+            "error": "OSError: independent cleanup failure",
+        }
+        assert entry.exists()
+    else:
+        assert record["cache_retention"]["entries_removed"] == 1
+        assert not entry.exists()
+
+
+@pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_rejects_stable_dirty_source(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -4568,6 +4683,12 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
     def fail(*args, **kwargs):
         raise failure
 
+    def no_retention(_env):
+        pytest.fail("a prelaunch failure has no closed payload to follow with cleanup")
+
+    monkeypatch.setattr(
+        guarded_execution.cache_retention, "prune_after_payload", no_retention
+    )
     # Exercise the real guarded failure boundary before unrelated Git/Python
     # capture and supervisor provisioning. Publication itself is never mocked
     # in the successful variant, and no process should need to launch here.
@@ -5088,6 +5209,9 @@ assert 'tools.proof_queue_pkg.pact' not in sys.modules
 def _proof_queue_unit_git_snapshot(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Direct guarded-execution tests must not prune the developer's real cache.
+    # Retention controls opt in with their own disposable root.
+    monkeypatch.setenv("MOLT_CACHE_PRUNE", "0")
     # Lane-maturity admission has its own focused test module. Keep the broad
     # queue suite deterministic and scoped to the contract each test names;
     # otherwise a developer's shared .molt registry can reject a synthetic WASM

@@ -1380,7 +1380,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_CACHE_PRUNE",
       "owner": "tools/proof_queue_pkg/cache_retention.py",
-      "summary": "Enable automatic cache maintenance after source-development proof completion and throughput environment setup; only exact 0 disables automatic retention. Queue admission coalesces pending work and throttles attempts to five minutes per cache root; explicit molt.cache_eviction remains operator-directed.",
+      "summary": "Enable automatic cache maintenance after closed source-development proof payloads and throughput environment setup; only exact 0 disables automatic retention. The existing guarded controller prunes in process under its remaining time and memory budget; the canonical prune lock throttles attempts to five minutes per cache root, and explicit molt.cache_eviction remains operator-directed.",
       "values": []
     },
     {
