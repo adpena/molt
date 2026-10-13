@@ -659,7 +659,7 @@ pub extern "C" fn molt_configparser_get(
             }
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    return fallback_bits;
+                    return OwnedRuntimeValue::retain(_py, fallback_bits).into_bits();
                 }
                 let msg = format!("No option '{option}' in section '{section}'");
                 raise_exception::<u64>(_py, "KeyError", &msg)
@@ -701,7 +701,7 @@ pub extern "C" fn molt_configparser_getint(
             },
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    return fallback_bits;
+                    return OwnedRuntimeValue::retain(_py, fallback_bits).into_bits();
                 }
                 raise_exception::<u64>(
                     _py,
@@ -746,7 +746,7 @@ pub extern "C" fn molt_configparser_getfloat(
             },
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    return fallback_bits;
+                    return OwnedRuntimeValue::retain(_py, fallback_bits).into_bits();
                 }
                 raise_exception::<u64>(
                     _py,
@@ -796,7 +796,7 @@ pub extern "C" fn molt_configparser_getboolean(
             },
             None => {
                 if !obj_from_bits(fallback_bits).is_none() {
-                    return fallback_bits;
+                    return OwnedRuntimeValue::retain(_py, fallback_bits).into_bits();
                 }
                 raise_exception::<u64>(
                     _py,

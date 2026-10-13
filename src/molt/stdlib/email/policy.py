@@ -96,10 +96,6 @@ class EmailPolicy(Policy):
         if "header_factory" not in kw:
             object.__setattr__(self, "header_factory", HeaderRegistry())
         super().__init__(**kw)
-        # Register with runtime for intrinsic-backed policy dispatch.
-        _name = self.__class__.__name__
-        _utf8 = getattr(self, "utf8", False)
-        _MOLT_EMAIL_POLICY_NEW(_name, _utf8)
 
     def header_max_count(self, name):
         """+
@@ -240,9 +236,3 @@ strict = default.clone(raise_on_defect=True)
 SMTP = default.clone(linesep="\r\n")
 HTTP = default.clone(linesep="\r\n", max_line_length=None)
 SMTPUTF8 = SMTP.clone(utf8=True)
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_EMAIL_POLICY_NEW = _require_intrinsic("molt_email_policy_new")
-
-globals().pop("_require_intrinsic", None)

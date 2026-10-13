@@ -500,42 +500,6 @@ pub extern "C" fn molt_logging_filter_check(filter_name_bits: u64, record_name_b
     })
 }
 
-// ─── pprint format/isreadable/isrecursive with context ──────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_format_object(
-    obj_bits: u64,
-    max_depth_bits: u64,
-    level_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        use std::collections::HashSet;
-        let max_depth = crate::builtins::pprint_ext::i64_from_bits_default(max_depth_bits, -1);
-        let level = crate::builtins::pprint_ext::i64_from_bits_default(level_bits, 0);
-        let mut seen = HashSet::new();
-        let (repr, readable, recursive) = crate::builtins::pprint_ext::safe_repr_inner(
-            _py, obj_bits, &mut seen, level, max_depth, -1,
-        );
-        // Return a tuple (repr_str, readable_bool, recursive_bool)
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let repr_ptr = alloc_string(_py, &repr);
-        if repr_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let repr_bits = MoltObject::from_ptr(repr_ptr).bits();
-        let readable_bits = MoltObject::from_int(if readable { 1 } else { 0 }).bits();
-        let recursive_bits = MoltObject::from_int(if recursive { 1 } else { 0 }).bits();
-        let tup_ptr = crate::alloc_tuple(_py, &[repr_bits, readable_bits, recursive_bits]);
-        dec_ref_bits(_py, repr_bits);
-        if tup_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(tup_ptr).bits()
-    })
-}
-
 #[derive(Clone)]
 struct PkgutilModuleInfo {
     module_finder: String,

@@ -1141,28 +1141,6 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_email_policy_new(name_bits: u64, utf8_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "policy name must be str");
-        };
-        let utf8 = is_truthy(_py, obj_from_bits(utf8_bits));
-        let name_ptr = alloc_string(_py, name.as_bytes());
-        if name_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let name_obj_bits = MoltObject::from_ptr(name_ptr).bits();
-        let tuple_ptr = alloc_tuple(_py, &[name_obj_bits, MoltObject::from_bool(utf8).bits()]);
-        dec_ref_bits(_py, name_obj_bits);
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {

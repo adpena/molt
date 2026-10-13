@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for select.select timeout with no ready fds."""
 
 import select

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: cancelling a mid-queue recv waiter must preserve FIFO for survivors."""
 
 import asyncio

@@ -3,6 +3,7 @@
 import codecs
 import json
 import os
+from _json import scanstring
 
 print(codecs.decode(b"\xff", "utf-8", "replace").encode("unicode_escape").decode("ascii"))
 print(codecs.decode(b"\xff", "utf-8", "ignore"))
@@ -163,19 +164,19 @@ utf8_cases = (
 )
 
 
-def utf8_result(label, action):
+def decode_result(label, action):
     try:
         value = action()
-        print("utf8-ok", label, value.encode("unicode_escape").hex())
+        print("decode-ok", label, value.encode("unicode_escape").hex())
     except UnicodeDecodeError as exc:
-        print("utf8-error", label, exc.object.hex(), exc.encoding,
+        print("decode-error", label, exc.object.hex(), exc.encoding,
               exc.start, exc.end, exc.reason)
 
 
 for data in utf8_cases:
     for errors in ("strict", "replace", "ignore", "backslashreplace", "surrogateescape", "surrogatepass"):
         label = data.hex() + ":" + errors
-        utf8_result(label + ":full", lambda: data.decode("utf-8", errors))
+        decode_result(label + ":full", lambda: data.decode("utf-8", errors))
         # Every split uses the real incremental object. On an error the call
         # index and full exception input distinguish premature/delayed refusal.
         for split in range(len(data) + 1):
@@ -196,6 +197,65 @@ for data in utf8_cases:
 for encoding in ("utf-8", "utf-8-sig"):
     data = b"\xef\xbb\xbfa\xffz"
     show_decode_error(encoding + "-bom", lambda: codecs.decode(data, encoding))
+
+
+# Complete surrogates, malformed tails and partial surrogateescape consumption
+# use the same stateless authority through every public byte-input route.
+for encoding, data in (
+    ("utf-16-le", b"\x00\xd8\xff"),
+    ("utf-16-be", b"\xdc\x00A"),
+    ("utf-16-le", b"\x80\xd8A"),
+    ("utf-16-be", b"\xd8\x00\xdc\x00"),
+    ("utf-32-le", b"\x00\xd8\x00\x00\xff"),
+    ("utf-32-be", b"\x00\x00\xdc\x00"),
+    ("utf-32-le", b"\x80\x00\x11\x00"),
+):
+    for errors in ("strict", "surrogatepass", "surrogateescape", "replace", "ignore", "backslashreplace"):
+        label = encoding + ":" + data.hex() + ":" + errors
+        decode_result(label + ":bytes", lambda: data.decode(encoding, errors))
+        decode_result(label + ":bytearray", lambda: bytearray(data).decode(encoding, errors))
+        decode_result(label + ":codecs", lambda: codecs.decode(data, encoding, errors))
+
+
+# JSON byte coercion must decode before parsing and preserve typed error
+# objects/labels/offsets, including the different BOM treatment of UTF8-SIG.
+for data in (
+    b'\xef\xbb\xbf"\xff"',
+    b'\xff\xfe"\x00\x00\xd8\xff',
+    b'\xfe\xff\x00"\xdc\x00\xff',
+    b'\xff\xfe\x00\x00"\x00\x00\x00\x00\xd8\x00\x00\xff',
+    b'\x00\x00\xfe\xff\x00\x00\x00"\x00\x00\xdc\x00\xff',
+    b'\x00\x00\x01"\xff',
+):
+    show_decode_error("json-bytes-" + data.hex(), lambda: json.loads(data))
+    show_decode_error("json-bytearray-" + data.hex(), lambda: json.loads(bytearray(data)))
+
+
+# Raw surrogate code points remain distinct; adjacent JSON escapes combine.
+# Do not use dumps as an oracle for loads. CPython executes these exact inputs.
+for document in ('"\\ud800"', '"\\udfff"', '"\\ud800\\udfff"',
+                 '"\ud800\udfff"', '"\U00010000"', '"\U0010ffff"'):
+    print("json-text", document.encode("unicode_escape").hex(),
+          json.loads(document).encode("unicode_escape").hex())
+    for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be",
+                     "utf-32", "utf-32-le", "utf-32-be"):
+        data = document.encode(encoding, "surrogatepass")
+        for payload in (data, bytearray(data)):
+            print("json-bytes", encoding, type(payload).__name__,
+                  json.loads(payload).encode("unicode_escape").hex())
+
+document = 'x"\U00010000\ud800" tail'
+for value, end in (json.JSONDecoder().raw_decode(document, 1),
+                   scanstring(document, 2)):
+    print("json-end", value.encode("unicode_escape").hex(), end)
+for document in ('[\n "é\ud800",?]', '["\U00010000",\n"\udfff",?]'):
+    try:
+        json.loads(document)
+    except json.JSONDecodeError as exc:
+        print("json-position", exc.doc == document, exc.pos, exc.lineno, exc.colno,
+              str(exc), exc.doc.encode("unicode_escape").hex())
+    else:
+        raise AssertionError("invalid JSON unexpectedly parsed")
 
 
 # BufferedIncrementalDecoder owns the concatenated byte snapshot before final

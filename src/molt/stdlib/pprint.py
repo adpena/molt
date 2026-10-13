@@ -40,7 +40,6 @@ _MOLT_PPRINT_SAFE_REPR = _require_intrinsic("molt_pprint_safe_repr")
 _MOLT_PPRINT_PFORMAT = _require_intrinsic("molt_pprint_pformat")
 _MOLT_PPRINT_ISREADABLE = _require_intrinsic("molt_pprint_isreadable")
 _MOLT_PPRINT_ISRECURSIVE = _require_intrinsic("molt_pprint_isrecursive")
-_MOLT_PPRINT_FORMAT_OBJECT = _require_intrinsic("molt_pprint_format_object")
 
 
 __all__ = [
@@ -772,12 +771,6 @@ class PrettyPrinter:
         and flags indicating whether the representation is 'readable'
         and whether the object represents a recursive construct.
         """
-        try:
-            result = _MOLT_PPRINT_FORMAT_OBJECT(object, maxlevels, level)
-            if isinstance(result, tuple) and len(result) == 3:
-                return (str(result[0]), bool(result[1]), bool(result[2]))
-        except Exception:
-            pass
         return self._safe_repr(object, context, maxlevels, level)
 
     def _pprint_default_dict(
@@ -949,12 +942,12 @@ class PrettyPrinter:
 
         r = getattr(typ, "__repr__", None)
 
-        if typ is int and ((r is _INT_REPR) or (_INT_REPR is None)):
+        if issubclass(typ, int) and _INT_REPR is not None and r is _INT_REPR:
             if self._underscore_numbers:
                 return f"{object:_d}", True, False
             return repr(object), True, False
 
-        if typ is dict and ((r is _DICT_REPR) or (_DICT_REPR is None)):
+        if issubclass(typ, dict) and _DICT_REPR is not None and r is _DICT_REPR:
             obj_dict = cast(dict[Any, Any], object)
             if not obj_dict:
                 return "{}", True, False
@@ -983,9 +976,11 @@ class PrettyPrinter:
             del context[objid]
             return "{" + ", ".join(components) + "}", readable, recursive
 
-        if typ is list or typ is tuple:
+        if (issubclass(typ, list) and _LIST_REPR is not None and r is _LIST_REPR) or (
+            issubclass(typ, tuple) and _TUPLE_REPR is not None and r is _TUPLE_REPR
+        ):
             seq = cast(list[Any] | tuple[Any, ...], object)
-            if typ is list:
+            if issubclass(typ, list):
                 if not seq:
                     return "[]", True, False
                 open_char = "["

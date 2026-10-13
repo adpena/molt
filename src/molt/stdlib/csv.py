@@ -69,6 +69,10 @@ class Error(Exception):
     """CSV parsing error."""
 
 
+# Native CSV operations retain this original class, independent of public rebinding.
+_CSV_ERROR = Error
+
+
 def field_size_limit(new_limit: int | None = None) -> int:
     """Get or set the maximum field size."""
     if new_limit is None:
@@ -278,7 +282,7 @@ def _dialect_from_intrinsic(raw: object, cls: type = _Dialect) -> _Dialect:
 
 
 def _dialect_lookup_name(name: object) -> str:
-    return str(_MOLT_CSV_DIALECT_LOOKUP_NAME(name))
+    return str(_MOLT_CSV_DIALECT_LOOKUP_NAME(name, _CSV_ERROR))
 
 
 def register_dialect(
@@ -302,22 +306,12 @@ def register_dialect(
 
 def unregister_dialect(name: str) -> None:
     lookup_name = _dialect_lookup_name(name)
-    try:
-        _MOLT_CSV_UNREGISTER_DIALECT(lookup_name)
-    except ValueError as exc:
-        if str(exc) == "unknown dialect":
-            raise Error("unknown dialect") from None
-        raise
+    _MOLT_CSV_UNREGISTER_DIALECT(lookup_name, _CSV_ERROR)
 
 
 def get_dialect(name: str) -> _Dialect:
     lookup_name = _dialect_lookup_name(name)
-    try:
-        return _dialect_from_intrinsic(_MOLT_CSV_GET_DIALECT(lookup_name))
-    except ValueError as exc:
-        if str(exc) == "unknown dialect":
-            raise Error("unknown dialect") from None
-        raise
+    return _dialect_from_intrinsic(_MOLT_CSV_GET_DIALECT(lookup_name, _CSV_ERROR))
 
 
 def list_dialects() -> list[str]:
@@ -354,12 +348,18 @@ def _normalize_row(row: Iterable[object]) -> list[object] | tuple[object, ...]:
     result = _MOLT_CSV_NORMALIZE_ROW(row)
     if result is not None:
         return row  # type: ignore[return-value]
-    # Fallback: try to convert to list
     try:
-        return list(row)
+        iterator = iter(row)
     except TypeError:
         typename = type(row).__name__
-        raise Error(f"iterable expected, not {typename}") from None
+        raise _CSV_ERROR(f"iterable expected, not {typename}") from None
+    normalized = []
+    while True:
+        try:
+            field = next(iterator)
+        except StopIteration:
+            return normalized
+        normalized.append(field)
 
 
 def reader(*args: object, **fmtparams: object):
@@ -397,6 +397,7 @@ def writer(*args: object, **fmtparams: object):
 class _Reader:
     def __init__(self, csvfile: Iterable[str], dialect: _Dialect) -> None:
         self.dialect = dialect
+        self._error_type = _CSV_ERROR
         self._iter = iter(csvfile)
         self._pending = ""
         self._eof = False
@@ -434,7 +435,7 @@ class _Reader:
             return None
         if not isinstance(line, str):
             typename = type(line).__name__
-            raise Error(
+            raise self._error_type(
                 f"iterator should return strings, not {typename} "
                 "(the file should be opened in text mode)"
             )
@@ -450,23 +451,13 @@ class _Reader:
             if not self._pending:
                 raise StopIteration
 
-            try:
-                # Pass `self._eof` so the parser knows whether more physical
-                # lines can still follow. While not at EOF, an unterminated
-                # quoted field (a quote that opens but does not close before the
-                # buffer ends — e.g. a field with an embedded newline) raises
-                # "unexpected end of data"; we then read the next physical line
-                # and re-parse the accumulated buffer. At EOF a non-strict
-                # dialect instead commits the truncated field (no exception),
-                # while a strict dialect still raises — matching CPython's `_csv`.
-                row = _MOLT_CSV_READER_PARSE_LINE(
-                    self._handle, self._pending, self._eof
-                )
-            except ValueError as exc:
-                msg = str(exc)
-                if msg == "unexpected end of data" and not self._eof:
-                    continue
-                raise Error(msg) from None
+            # None means the typed parser needs another physical line; only
+            # actual EOF turns an incomplete strict record into a domain error.
+            row = _MOLT_CSV_READER_PARSE_LINE(
+                self._handle, self._pending, self._eof, self._error_type
+            )
+            if row is None:
+                continue
 
             self._pending = ""
             return cast(list[object], row)
@@ -475,6 +466,7 @@ class _Reader:
 class _Writer:
     def __init__(self, csvfile, dialect: _Dialect) -> None:
         self.dialect = dialect
+        self._error_type = _CSV_ERROR
         self._csvfile = csvfile
         self._handle = _MOLT_CSV_WRITER_NEW(
             dialect.delimiter,
@@ -497,19 +489,15 @@ class _Writer:
 
     def writerow(self, row: Iterable[object]) -> int:
         normalized = _normalize_row(row)
-        try:
-            record = _MOLT_CSV_WRITER_WRITEROW(self._handle, normalized)
-        except ValueError as exc:
-            raise Error(str(exc)) from None
+        record = _MOLT_CSV_WRITER_WRITEROW(self._handle, normalized, self._error_type)
         return self._csvfile.write(record)
 
     def writerows(self, rows: Iterable[Iterable[object]]) -> None:
         if isinstance(rows, (list, tuple)):
             normalized_rows = [_normalize_row(row) for row in rows]
-            try:
-                records = _MOLT_CSV_WRITER_WRITEROWS(self._handle, normalized_rows)
-            except ValueError as exc:
-                raise Error(str(exc)) from None
+            records = _MOLT_CSV_WRITER_WRITEROWS(
+                self._handle, normalized_rows, self._error_type
+            )
             self._csvfile.write(records)
             return
         for row in rows:
@@ -623,10 +611,7 @@ class Sniffer:
         return dialect
 
     def has_header(self, sample: str) -> bool:
-        try:
-            return bool(_MOLT_CSV_HAS_HEADER(sample))
-        except ValueError as exc:
-            raise Error(str(exc)) from None
+        return bool(_MOLT_CSV_HAS_HEADER(sample, _CSV_ERROR))
 
 
 globals().pop("_require_intrinsic", None)

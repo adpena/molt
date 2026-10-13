@@ -71,7 +71,7 @@ itemgetter = _MOLT_ITEMGETTER_TYPE()
 attrgetter = _MOLT_ATTRGETTER_TYPE()
 methodcaller = _MOLT_METHODCALLER_TYPE()
 
-inv = invert
+inv = _require_intrinsic("molt_operator_inv")
 
 __all__ = [
     "abs",

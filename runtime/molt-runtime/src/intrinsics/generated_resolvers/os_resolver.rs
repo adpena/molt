@@ -47,10 +47,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_os_name",
             crate::molt_os_name as *const (),
         )),
-        "molt_os_fsencode" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_fsencode",
-            crate::molt_os_fsencode as *const (),
-        )),
         "molt_os_stat" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_stat",
             crate::molt_os_stat as *const (),

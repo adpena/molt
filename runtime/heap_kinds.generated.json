@@ -1205,18 +1205,6 @@
       "resource_slot0": "none"
     },
     {
-      "family": "functools",
-      "id": 71,
-      "name": "FUNCTOOLS_LRU_FACTORY",
-      "resource_slot0": "none"
-    },
-    {
-      "family": "functools",
-      "id": 72,
-      "name": "FUNCTOOLS_CACHE_INFO",
-      "resource_slot0": "none"
-    },
-    {
       "family": "types",
       "id": 73,
       "name": "TYPES_MAPPING_PROXY",

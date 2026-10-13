@@ -288,7 +288,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + src/molt/rust_source_scan.py + tools/generator_io.py"
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
 toolchains = ["rustfmt"]
@@ -340,7 +340,7 @@ outputs = [
 # runtime/molt-runtime*/src/intrinsics_generated*/ ; those carry the standard
 # @generated header and are covered by the header-marker orphan scan + this
 # generator's own --check freshness, so they need not all be enumerated here.
-source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/generator_io.py"
+source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_intrinsics.py --check"
 toolchains = ["rustfmt"]

@@ -433,6 +433,27 @@ def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in
     )
 
 
+def test_dynamic_intrinsic_aliases_export_one_canonical_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import _wasm_runtime_exports as exports
+
+    source = tmp_path / "src/molt/alias_probe.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'from _intrinsics import require_intrinsic\n'
+        'invert = require_intrinsic("molt_operator_invert")\n'
+        'inv = require_intrinsic("molt_operator_inv")\n'
+        'hexlify = require_intrinsic("molt_binascii_hexlify")\n'
+        'b2a_hex = require_intrinsic("molt_binascii_b2a_hex")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(exports, "compiler_source_root", lambda: tmp_path)
+    assert exports.wasm_runtime_dynamic_export_names({"molt.alias_probe"}) == (
+        "molt_binascii_b2a_hex", "molt_operator_invert"
+    )
+
+
 def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics() -> (
     None
 ):

@@ -1,5 +1,5 @@
 # MOLT_META: backends=llvm,luau,native
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=net,env.read
 """Purpose: differential coverage for http client timeout error."""
 
 import http.client

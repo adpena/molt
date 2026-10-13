@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 """Purpose: handler exceptions should not kill serve_forever."""
 
 import http.server

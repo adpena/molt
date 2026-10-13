@@ -1,5 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,thread.spawn,thread.shared
-# MOLT_META: verified_subset_scope=capability_policy expect_fail=molt expect_fail_reason=requires_network_capability
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 """Purpose: differential coverage for WebSocket ping/pong frames."""
 
 import base64

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.bind,net.listen,net.outbound,net.connect
+# MOLT_ENV: MOLT_CAPABILITIES=net
 import asyncio
 import socket
 

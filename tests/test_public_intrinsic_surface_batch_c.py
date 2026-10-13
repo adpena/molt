@@ -11,6 +11,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import base64 as _host_base64
+import binascii as _host_binascii
 import importlib.util
 import operator as _host_operator
 import sys
@@ -105,8 +106,10 @@ install_registry({{
     "molt_uuid_uuid5_bytes": lambda ns, name: bytes.fromhex("55555555123452348123abcdef123456"),
     "molt_binascii_a2b_base64": lambda s, strict_mode=False: _host_base64.b64decode(s),
     "molt_binascii_b2a_base64": lambda b, newline=True: _host_base64.b64encode(bytes(b)) + (b"\\n" if newline else b""),
-    "molt_binascii_a2b_hex": lambda s: bytes.fromhex(bytes(s).decode() if not isinstance(s, str) else s),
-    "molt_binascii_b2a_hex": lambda b, sep=None, bytes_per_sep=1: bytes(bytes(b).hex(), "ascii"),
+    "molt_binascii_a2b_hex": _host_binascii.a2b_hex,
+    "molt_binascii_unhexlify": _host_binascii.unhexlify,
+    "molt_binascii_b2a_hex": _host_binascii.b2a_hex,
+    "molt_binascii_hexlify": _host_binascii.hexlify,
     "molt_binascii_a2b_qp": lambda s, header=False: bytes(s),
     "molt_binascii_b2a_qp": lambda b, quotetabs=False, istext=True, header=False: bytes(b),
     "molt_binascii_a2b_uu": lambda s: bytes(s),
@@ -155,6 +158,10 @@ checks = {{
     "binascii": (
         binascii_mod.hexlify(b"ab") == b"6162"
         and binascii_mod.unhexlify("6162") == b"ab"
+        and binascii_mod.hexlify is not binascii_mod.b2a_hex
+        and binascii_mod.unhexlify is not binascii_mod.a2b_hex
+        and binascii_mod.hexlify.__name__ == "hexlify"
+        and binascii_mod.unhexlify.__name__ == "unhexlify"
         and "molt_binascii_a2b_hex" not in binascii_mod.__dict__
         and "molt_capabilities_has" not in binascii_mod.__dict__
     ),

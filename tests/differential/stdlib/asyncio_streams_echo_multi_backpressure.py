@@ -1,6 +1,6 @@
 """Purpose: differential coverage for asyncio streams multi-message flow."""
 
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 import asyncio
 
 

@@ -62,7 +62,7 @@ pub struct AuditEvent {
     pub timestamp_ns: u64,
     /// Dot-separated operation identifier, e.g. `"fs.read"`, `"net.connect"`.
     pub operation: Cow<'static, str>,
-    /// Capability that was checked, e.g. `"fs.read"`, `"net.outbound"`.
+    /// Capability that was checked, e.g. `"fs.read"`, `"net.connect"`.
     pub capability: Cow<'static, str>,
     /// Operation-specific arguments.
     pub args: AuditArgs,
@@ -587,7 +587,7 @@ pub fn audit_capability_decision_owned(
 ///     AuditDecision::Allowed);
 ///
 /// // With explicit Python module name:
-/// audit_cap_check!("net.connect", "net.outbound",
+/// audit_cap_check!("net.connect", "net.connect",
 ///     AuditArgs::Network { host: host.clone(), port },
 ///     AuditDecision::Denied { reason: "sandbox policy".into() },
 ///     "myapp.http");
@@ -669,7 +669,7 @@ mod tests {
             ));
             audit_emit(AuditEvent::new(
                 "net.connect",
-                "net.outbound",
+                "net.connect",
                 AuditArgs::Network {
                     host: "example.com".into(),
                     port: 443,
@@ -928,7 +928,7 @@ mod tests {
             );
             audit_cap_check!(
                 "net.connect",
-                "net.outbound",
+                "net.connect",
                 AuditArgs::Network {
                     host: "h".into(),
                     port: 8080

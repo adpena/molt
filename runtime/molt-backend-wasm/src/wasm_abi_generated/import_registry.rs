@@ -3590,11 +3590,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::OsFsencode,
-        name: "os_fsencode",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::OsFspath,
         name: "os_fspath",
         type_idx: 2,
@@ -6358,11 +6353,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::EmailUtilsParsedateToDatetime,
         name: "email_utils_parsedate_to_datetime",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailPolicyNew,
-        name: "email_policy_new",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailHeaderregistryValue,
@@ -9837,7 +9827,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsLruCache,
         name: "functools_lru_cache",
-        type_idx: 3,
+        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::KeywordLists,
@@ -10487,12 +10477,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvGetDialect,
         name: "csv_get_dialect",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvHasHeader,
         name: "csv_has_header",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvListDialects,
@@ -10547,7 +10537,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvReaderParseLine,
         name: "csv_reader_parse_line",
-        type_idx: 5,
+        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvSniff,
@@ -10557,7 +10547,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvUnregisterDialect,
         name: "csv_unregister_dialect",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterDrop,
@@ -10572,12 +10562,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterWriterow,
         name: "csv_writer_writerow",
-        type_idx: 3,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvWriterWriterows,
         name: "csv_writer_writerows",
-        type_idx: 3,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeCtime,
@@ -13800,11 +13790,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PprintFormatObject,
-        name: "pprint_format_object",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::RandomRandbytes,
         name: "random_randbytes",
         type_idx: 3,
@@ -13912,7 +13897,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvDialectLookupName,
         name: "csv_dialect_lookup_name",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::CsvValidateDialect,
@@ -15713,8 +15698,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_os_extsep" => Some(WasmRuntimeImport::OsExtsep),
         "os_fdopen" => Some(WasmRuntimeImport::OsFdopen),
         "molt_os_fdopen" => Some(WasmRuntimeImport::OsFdopen),
-        "os_fsencode" => Some(WasmRuntimeImport::OsFsencode),
-        "molt_os_fsencode" => Some(WasmRuntimeImport::OsFsencode),
         "os_fspath" => Some(WasmRuntimeImport::OsFspath),
         "molt_os_fspath" => Some(WasmRuntimeImport::OsFspath),
         "os_fstat" => Some(WasmRuntimeImport::OsFstat),
@@ -17037,8 +17020,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_email_utils_parsedate_to_datetime" => {
             Some(WasmRuntimeImport::EmailUtilsParsedateToDatetime)
         }
-        "email_policy_new" => Some(WasmRuntimeImport::EmailPolicyNew),
-        "molt_email_policy_new" => Some(WasmRuntimeImport::EmailPolicyNew),
         "email_headerregistry_value" => Some(WasmRuntimeImport::EmailHeaderregistryValue),
         "molt_email_headerregistry_value" => Some(WasmRuntimeImport::EmailHeaderregistryValue),
         "email_header_encode_word" => Some(WasmRuntimeImport::EmailHeaderEncodeWord),
@@ -20271,8 +20252,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_lzma_file_read" => Some(WasmRuntimeImport::LzmaFileRead),
         "lzma_file_write" => Some(WasmRuntimeImport::LzmaFileWrite),
         "molt_lzma_file_write" => Some(WasmRuntimeImport::LzmaFileWrite),
-        "pprint_format_object" => Some(WasmRuntimeImport::PprintFormatObject),
-        "molt_pprint_format_object" => Some(WasmRuntimeImport::PprintFormatObject),
         "random_randbytes" => Some(WasmRuntimeImport::RandomRandbytes),
         "molt_random_randbytes" => Some(WasmRuntimeImport::RandomRandbytes),
         "random_randrange" => Some(WasmRuntimeImport::RandomRandrange),

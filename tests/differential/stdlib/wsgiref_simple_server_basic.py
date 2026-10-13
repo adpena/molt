@@ -1,5 +1,5 @@
 # MOLT_META: backends=llvm,luau,native
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,env.read,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,env.read,thread.spawn,thread.shared
 """Purpose: differential coverage for wsgiref simple server basic."""
 
 from wsgiref.simple_server import make_server

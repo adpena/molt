@@ -2431,6 +2431,35 @@ def test_function_task_definition_requires_complete_typed_layout(
         gen.map_ops_to_json([definition], function_name="probe")
 
 
+@pytest.mark.parametrize(
+    ("declaration", "symbol"),
+    [
+        ("molt_operator_inv", "molt_operator_invert"),
+        ("molt_binascii_hexlify", "molt_binascii_b2a_hex"),
+        ("molt_binascii_unhexlify", "molt_binascii_a2b_hex"),
+    ],
+)
+def test_intrinsic_alias_preserves_declaration_and_canonical_executable(
+    declaration: str, symbol: str
+) -> None:
+    gen = SimpleTIRGenerator(module_name="intrinsic_alias_probe")
+    gen.visit(ast.parse(
+        "from _intrinsics import require_intrinsic\n"
+        f"alias = require_intrinsic({declaration!r})\n"
+    ))
+    functions = gen.to_json()["functions"]
+    ops = [op for function in functions for op in function["ops"]]
+    (callable_op,) = [
+        op for op in ops
+        if op["kind"] == "builtin_func" and op.get("builtin_name") == declaration
+    ]
+    assert callable_op["s_value"] == symbol
+    assert callable_op["value"] == 1
+    (name_op,) = [op for op in ops if op.get("out") == callable_op["args"][0]]
+    assert name_op["kind"] == "const_str"
+    assert name_op["s_value"] == declaration
+
+
 def test_frontend_intrinsic_function_objects_use_runtime_default_authority() -> None:
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"

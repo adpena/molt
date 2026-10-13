@@ -125,18 +125,23 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         # The manifest-backed runtime constructor owns callable defaults.
         # Public attribute mutation is neither initialization nor permitted on
         # builtin_function_or_method objects.
-        return self._emit_runtime_function(canonical_name, arity)
+        return self._emit_runtime_function(
+            canonical_name, arity, declaration_name=runtime_name
+        )
 
-    def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
+    def _emit_runtime_function(
+        self, runtime_name: str, arity: int, *, declaration_name: str | None = None
+    ) -> MoltValue:
+        lookup_name = runtime_name if declaration_name is None else declaration_name
         name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))
+        self.emit(MoltOp(kind="CONST_STR", args=[lookup_name], result=name_val))
         func_val = MoltValue(self.next_var(), type_hint="function")
         self.emit(
             MoltOp(
                 kind="BUILTIN_FUNC",
                 args=[runtime_name, arity, name_val],
                 result=func_val,
-                metadata={"builtin_name": runtime_name},
+                metadata={"builtin_name": lookup_name},
             )
         )
         return func_val

@@ -404,21 +404,11 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 - **SL3:** I/O/network/system modules with capability gating and stronger sandboxing.
 
 ## 5. Capability Tokens (appendix)
-Modules that touch the host require explicit capabilities. Tokens are additive and must be declared by the binary.
-
-| Capability | Scope | Example modules |
-| --- | --- | --- |
-| `fs.read` | Read-only filesystem access | `io`, `pathlib`, `os`, `open` |
-| `fs.write` | Write filesystem access | `io`, `pathlib`, `os`, `open` |
-| `env.read` | Environment variable read | `os`, `sys` |
-| `env.write` | Environment variable write | `os` |
-| `net.outbound` | Outbound network access | `socket`, `http`, `urllib`, `ssl` |
-| `net.listen` | Bind/listen access | `socket`, `asyncio` |
-| `net.poll` | Network readiness/polling | `select`, `selectors`, `asyncio` |
-| `proc.spawn` | Process creation | `subprocess`, `multiprocessing` |
-| `time.wall` | Real time access | `datetime`, `time` |
-| `rand.secure` | Cryptographic RNG | `secrets`, `ssl` |
-| `ffi.unsafe` | Native extension/FFI | `ctypes` |
+Modules that touch the host require explicit capabilities declared by the binary.
+The [generated host-operation capability matrix](../../../security/host_capabilities.generated.md)
+is authoritative for exact grants, operation requirements, and profiles. Network
+integration programs can select the `net` profile; restricted applications grant
+only the required operations from that matrix.
 
 ## 6. TODOs (tracked in ROADMAP.md)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).

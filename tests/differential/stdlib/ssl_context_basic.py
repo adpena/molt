@@ -1,5 +1,5 @@
 # MOLT_META: stderr=exact
-# MOLT_ENV: MOLT_CAPABILITIES=net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for ssl context basic."""
 
 import ssl

@@ -586,7 +586,7 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
-        let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) else {
+        let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[], None) else {
             ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
             return None;
         };
@@ -611,7 +611,7 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
         let manifest = parse_manifest();
         if let Some(ref m) = manifest {
             for spec in INTRINSICS {
-                if !m.contains(spec.name) {
+                if !m.contains(spec.symbol) {
                     continue;
                 }
                 if crate::builtins::functions::runtime_callable_symbol_is_non_callable(spec.symbol)
@@ -621,7 +621,8 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
                 let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
                     continue;
                 };
-                let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)
+                let Some(func_bits) =
+                    build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
                 else {
                     ensure_registry_memory_error(_py, "intrinsic function allocation failed");
                     return None;
@@ -651,12 +652,12 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
 fn registry_lookup_helper(_py: &PyToken<'_>, registry: *mut u8) -> Option<u64> {
     let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
     if let Ok(Some(bits)) = unsafe { exact_name_value(_py, registry, LAZY_RESOLVE_NAME.as_bytes()) }
-        && is_runtime_materialization(_py, bits, resolver_fn_ptr, 1, &[])
+        && is_runtime_materialization(_py, bits, resolver_fn_ptr, 1, &[], None)
     {
         inc_ref_bits(_py, bits);
         return Some(bits);
     }
-    build_intrinsic_func(_py, resolver_fn_ptr, 1, &[])
+    build_intrinsic_func(_py, resolver_fn_ptr, 1, &[], None)
 }
 
 /// Bind a bounded set of names in a live namespace as one transition. Keys are
@@ -885,9 +886,28 @@ fn build_intrinsic_func(
     fn_ptr: u64,
     arity: u8,
     default_values: &[IntrinsicDefaultValue],
+    python_name: Option<&str>,
 ) -> Option<u64> {
     let defaults = materialize_intrinsic_defaults(_py, default_values)?;
-    build_runtime_function(_py, fn_ptr, arity, &defaults)
+    let bits = build_runtime_function(_py, fn_ptr, arity, &defaults)?;
+    if let Some(name) = python_name {
+        let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
+            name: Some(name),
+            ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
+        };
+        let pointer = obj_from_bits(bits)
+            .as_ptr()
+            .expect("allocated native callable");
+        if !unsafe {
+            crate::builtins::functions::native_callable::configure_native_callable(
+                _py, pointer, spec,
+            )
+        } {
+            dec_ref_bits(_py, bits);
+            return None;
+        }
+    }
+    Some(bits)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -938,14 +958,15 @@ fn published_registry(py: &PyToken<'_>) -> Result<Option<*mut u8>, ()> {
 /// Whether `bits` is the runtime's materialization of one callable: an exact
 /// builtin function with executable identity `fn_ptr`, this arity, the
 /// positional call ABI and exactly the canonical `__defaults__`, whose callable
-/// shape user code never mutated. A name, type name or callability alone never
-/// admits reuse.
+/// shape user code never mutated. Declared immutable public names must also
+/// match; a name, type name or callability alone never admits reuse.
 fn is_runtime_materialization(
     py: &PyToken<'_>,
     bits: u64,
     fn_ptr: u64,
     arity: u8,
     defaults: &[IntrinsicDefaultValue],
+    python_name: Option<&str>,
 ) -> bool {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return false;
@@ -961,11 +982,22 @@ fn is_runtime_materialization(
             && crate::function_mutation_version(ptr) == 0
             && crate::call::function::function_has_default_only_binding_metadata(py, ptr)
             && function_defaults_are(py, ptr, defaults)
+            && python_name.is_none_or(|name| {
+                use crate::object::function_metadata::FunctionMetadataField as Field;
+                [Field::Name, Field::QualName].into_iter().all(|field| {
+                    field.load(ptr).is_some_and(|value| {
+                        crate::object::ops_format::with_string_bytes(
+                            obj_from_bits(value),
+                            |bytes| bytes == name.as_bytes(),
+                        ) == Some(true)
+                    })
+                })
+            })
     }
 }
 
 /// Callback-free proof of an already materialized intrinsic. This does not
-/// create or publish a callable and never consults mutable public names.
+/// create or publish a callable; executable identity needs no public-name check.
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) fn is_named_runtime_materialization(py: &PyToken<'_>, bits: u64, name: &str) -> bool {
     let Some(spec) = find_spec(name) else {
@@ -974,7 +1006,7 @@ pub(crate) fn is_named_runtime_materialization(py: &PyToken<'_>, bits: u64, name
     let Some(target) = try_app_resolve_symbol(spec.symbol) else {
         return false;
     };
-    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults)
+    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults, None)
 }
 
 /// Recognize a positional Python builtin dependency from the existing builtin
@@ -1167,7 +1199,14 @@ unsafe fn bound_materialization(
 ) -> Option<u64> {
     let (canonical, spellings) = names.split_first()?;
     let bits = unsafe { exact_name_value(py, registry, canonical.as_bytes()) }.ok()??;
-    if !is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults) {
+    if !is_runtime_materialization(
+        py,
+        bits,
+        fn_ptr,
+        spec.arity,
+        spec.defaults,
+        spec.python_name,
+    ) {
         return None;
     }
     for name in spellings {
@@ -1198,14 +1237,22 @@ fn publish_materialization(
         Err(()) => named_dict_value(py, registry.ptr, canonical)
             .map_err(|()| IntrinsicResolveError::AllocFailed)?,
     };
-    let reusable = bound
-        .filter(|&bits| is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults));
+    let reusable = bound.filter(|&bits| {
+        is_runtime_materialization(
+            py,
+            bits,
+            fn_ptr,
+            spec.arity,
+            spec.defaults,
+            spec.python_name,
+        )
+    });
     let value = match reusable {
         Some(bits) => {
             inc_ref_bits(py, bits);
             bits
         }
-        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults)
+        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
             .ok_or(IntrinsicResolveError::AllocFailed)?,
     };
     let mut value_owner = obj_from_bits(value).as_ptr().map(crate::PtrDropGuard::new);
@@ -1252,7 +1299,7 @@ fn resolve_intrinsic_func(
         None
     };
     let Some(registry) = registry else {
-        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)
+        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
             .ok_or(IntrinsicResolveError::AllocFailed);
     };
     let alias = alias_name(spec.name);
@@ -1798,13 +1845,13 @@ mod tests {
         assert!(resolve_symbol("molt_re_match_group").is_none());
     }
 
-    /// Intrinsic names are the linker symbols the runtime resolves. Keeping this
-    /// invariant global prevents a second name-remapping authority from creeping
-    /// back into backend manifest generation.
+    /// Every declaration projects directly onto one canonical executable.
     #[test]
-    fn intrinsic_specs_use_public_name_as_runtime_symbol() {
+    fn intrinsic_specs_reference_canonical_runtime_signatures() {
         for spec in INTRINSICS {
-            assert_eq!(spec.name, spec.symbol, "intrinsic name/symbol drift");
+            let target = find_spec(spec.symbol).expect("canonical runtime declaration");
+            assert_eq!(target.name, target.symbol);
+            assert_eq!(spec.arity, target.arity);
         }
     }
 
@@ -1852,6 +1899,102 @@ mod tests {
             format!("{:?}", import_info.defaults),
             "[Missing, None, EmptyTuple, Int(0)]"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialization identity compares native callable addresses"
+    )]
+    fn public_intrinsic_names_survive_cached_and_private_materialization() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let owner = construct_registry_owner(py);
+                // Independent CPython method declarations: suffix stripping
+                // loses spelling/case; socketserver.time retains monotonic.
+                for (runtime, expected) in [
+                    ("molt_math_floor", "floor"),
+                    ("molt_operator_and", "and_"),
+                    ("molt_operator_countof", "countOf"),
+                    ("molt_operator_inv", "inv"),
+                    ("molt_binascii_hexlify", "hexlify"),
+                    ("molt_binascii_unhexlify", "unhexlify"),
+                    ("molt_json_scanstring_obj", "scanstring"),
+                    ("molt_time_monotonic", "monotonic"),
+                ] {
+                    let spec = find_spec(runtime).unwrap();
+                    let target = app_fn_ptr(runtime);
+                    let unnamed = build_intrinsic_func(py, target, spec.arity, spec.defaults, None)
+                        .expect("unnamed control callable");
+                    assert!(!is_runtime_materialization(
+                        py,
+                        unnamed,
+                        target,
+                        spec.arity,
+                        spec.defaults,
+                        Some(expected)
+                    ));
+                    dec_ref_bits(py, unnamed);
+                    for cache in [false, true] {
+                        let alias = alias_name(runtime).unwrap();
+                        let function = resolve_intrinsic_func(py, &alias, cache)
+                            .expect("public intrinsic materialization");
+                        for field in ["__name__", "__qualname__"] {
+                            let key = string_bits(py, field);
+                            let value = crate::molt_get_attr_name(function, key);
+                            assert_eq!(
+                                crate::string_obj_to_owned(obj_from_bits(value)).as_deref(),
+                                Some(expected),
+                                "{runtime}/{field}/{cache}"
+                            );
+                            dec_ref_bits(py, value);
+                            dec_ref_bits(py, key);
+                        }
+                        assert!(!exception_pending(py));
+                        dec_ref_bits(py, function);
+                    }
+                }
+                // CPython publishes distinct methods even with one implementation.
+                for (alias, original) in [
+                    ("molt_operator_inv", "molt_operator_invert"),
+                    ("molt_binascii_hexlify", "molt_binascii_b2a_hex"),
+                    ("molt_binascii_unhexlify", "molt_binascii_a2b_hex"),
+                ] {
+                    let original_bits = resolve_intrinsic_func(py, original, true).unwrap();
+                    let alias_bits = resolve_intrinsic_func(py, alias, true).unwrap();
+                    assert_ne!(alias_bits, original_bits);
+                    let original_ptr = obj_from_bits(original_bits).as_ptr().unwrap();
+                    let alias_ptr = obj_from_bits(alias_bits).as_ptr().unwrap();
+                    unsafe {
+                        assert_eq!(
+                            crate::function_fn_ptr(alias_ptr),
+                            crate::function_fn_ptr(original_ptr)
+                        );
+                    }
+                    // Swapping same-code objects in the mutable registry cannot
+                    // cause reuse under the wrong public declaration name.
+                    let registry = published_registry(py).unwrap().unwrap();
+                    assert!(checked_dict_insert(
+                        py,
+                        registry,
+                        alias.as_bytes(),
+                        original_bits
+                    ));
+                    let repaired = resolve_intrinsic_func(py, alias, true).unwrap();
+                    let key = string_bits(py, "__name__");
+                    let value = crate::molt_get_attr_name(repaired, key);
+                    assert_eq!(
+                        crate::string_obj_to_owned(obj_from_bits(value)).as_deref(),
+                        find_spec(alias).unwrap().python_name
+                    );
+                    for bits in [value, key, repaired, alias_bits, original_bits] {
+                        dec_ref_bits(py, bits);
+                    }
+                    assert!(!exception_pending(py));
+                }
+                dec_ref_bits(py, owner);
+            });
+        });
     }
 
     #[test]
@@ -2036,9 +2179,14 @@ mod tests {
                 let registry = runtime_registry(_py);
                 // The WASM bootstrap binds eager materializations exactly so.
                 let spec = find_spec("molt_operator_length_hint").expect("intrinsic with defaults");
-                let eager =
-                    build_intrinsic_func(_py, app_fn_ptr(spec.name), spec.arity, spec.defaults)
-                        .expect("eager materialization");
+                let eager = build_intrinsic_func(
+                    _py,
+                    app_fn_ptr(spec.name),
+                    spec.arity,
+                    spec.defaults,
+                    spec.python_name,
+                )
+                .expect("eager materialization");
                 assert!(checked_dict_insert(
                     _py,
                     registry,

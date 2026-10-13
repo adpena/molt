@@ -5194,7 +5194,11 @@ mod decimal_output_limits {
                 let row_ptr = crate::alloc_list(py, &[value.bits()]);
                 assert!(!row_ptr.is_null());
                 let row = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(row_ptr).bits());
-                let rendered = crate::molt_csv_writer_writerow(writer.0, row.bits());
+                let rendered = crate::molt_csv_writer_writerow(
+                    writer.0,
+                    row.bits(),
+                    crate::builtins::exceptions::exception_type_bits_from_name(py, "Exception"),
+                );
                 assert_eq!(rendered, crate::MoltObject::none().bits());
                 limit_failure(ptr::null_mut(), "failed bridge output publication");
             }

@@ -11,6 +11,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import importlib.util
+import _operator as _host_operator
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
@@ -44,7 +45,8 @@ install_registry({{
     "molt_operator_xor": lambda a, b: a ^ b,
     "molt_operator_neg": lambda a: -a,
     "molt_operator_pos": lambda a: +a,
-    "molt_operator_invert": lambda a: ~a,
+    "molt_operator_invert": _host_operator.invert,
+    "molt_operator_inv": _host_operator.inv,
     "molt_operator_not": lambda a: not a,
     "molt_operator_truth": lambda a: bool(a),
     "molt_operator_eq": lambda a, b: a == b,
@@ -111,6 +113,9 @@ checks = {{
         and _private.getitem(["a", "b"], 1) == "b"
         and _private.index(7.0) == 7
         and _private.inv(1) == -2
+        and _private.inv is not _private.invert
+        and _private.inv.__name__ == "inv"
+        and _private.invert.__name__ == "invert"
         and _private.itemgetter is itemgetter
         and _private.attrgetter is attrgetter
         and _private.methodcaller is methodcaller

@@ -21,7 +21,7 @@ install_registry({{
     "molt_functools_wraps": _host_functools.wraps,
     "molt_functools_partial": lambda func, args, kwargs: _host_functools.partial(func, *args, **kwargs),
     "molt_functools_reduce": _host_functools.reduce,
-    "molt_functools_lru_cache": _host_functools.lru_cache,
+    "molt_functools_lru_cache": _host_functools._lru_cache_wrapper,
     "molt_functools_cmp_to_key": _host_functools.cmp_to_key,
     "molt_functools_total_ordering": _host_functools.total_ordering,
     "molt_functools_singledispatch_new": lambda func: ("sd", func),

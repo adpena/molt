@@ -1,6 +1,6 @@
 """Purpose: differential coverage for HTTP upgrade via asyncio raw sockets."""
 
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 import asyncio
 
 _KEY = "dGhlIHNhbXBsZSBub25jZQ=="

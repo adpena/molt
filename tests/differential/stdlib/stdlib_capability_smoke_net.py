@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.outbound,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=net,env.read
 """Purpose: stdlib import smoke for net-capability modules."""
 
 import ftplib

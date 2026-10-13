@@ -84,6 +84,11 @@ pub fn exception_pending(_py: &PyToken) -> bool {
     unsafe { (vt().exception_pending)() != 0 }
 }
 
+/// Borrow the class and argument tuple; return an independently owned exception.
+pub fn exception_new_from_class(_py: &PyToken, class_bits: u64, args_bits: u64) -> u64 {
+    unsafe { (vt().exception_new_from_class)(class_bits, args_bits) }
+}
+
 /// Trait for exception return sentinels.
 pub trait ExceptionSentinel {
     fn from_bits(bits: u64) -> Self;

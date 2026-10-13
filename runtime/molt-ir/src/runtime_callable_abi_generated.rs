@@ -2294,7 +2294,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_dialect_lookup_name",
-        arity: 1,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -2309,12 +2309,12 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_get_dialect",
-        arity: 1,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_has_header",
-        arity: 1,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -2369,7 +2369,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_reader_parse_line",
-        arity: 3,
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -2384,7 +2384,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_unregister_dialect",
-        arity: 1,
+        arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -2409,12 +2409,12 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_writer_writerow",
-        arity: 2,
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
         symbol: "molt_csv_writer_writerows",
-        arity: 2,
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -3338,11 +3338,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_email_policy_new",
-        arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_email_quoprimime_body_check",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -4169,7 +4164,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_functools_lru_cache",
-        arity: 2,
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -7333,11 +7328,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_os_fsencode",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_os_fspath",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -8199,11 +8189,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_pow_mod",
-        arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_pprint_format_object",
         arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },

@@ -434,25 +434,25 @@ fn pformat_recursive(
             format!(" with id={bits}>").as_bytes(),
         ]);
     }
-    if is_container {
-        seen.insert(bits);
-    }
-
-    // Try simple single-line repr first
+    // The simple renderer owns the current container while inspecting it.
+    // Only ancestors belong in its initial recursion context.
     let simple = {
         let mut temp_seen = seen.clone();
         let (s, _, _) = safe_repr_inner(_py, bits, &mut temp_seen, level, config.max_depth, -1);
         s
     };
 
+    if exception_pending(_py) {
+        return Vec::new();
+    }
     let available = config.width - current_indent;
     if (text_len(&simple) as i64) <= available {
-        if is_container {
-            seen.remove(&bits);
-        }
         return simple;
     }
 
+    if is_container {
+        seen.insert(bits);
+    }
     // Multi-line formatting for containers
     let result = match type_id {
         TYPE_ID_DICT => {

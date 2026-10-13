@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 """Purpose: serve_forever/shutdown lifecycle should terminate the loop cleanly."""
 
 import http.server

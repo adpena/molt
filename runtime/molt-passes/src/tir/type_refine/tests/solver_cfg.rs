@@ -541,3 +541,243 @@ fn dense_check_exception_results_are_top_and_idempotent() {
         "dense exception refinement must be idempotent"
     );
 }
+
+fn copy_argument_chain(
+    length: u32,
+    reverse_block_ids: bool,
+    parameter_type: TirType,
+) -> (TirFunction, Vec<ValueId>) {
+    let block_id = |position| {
+        BlockId(if reverse_block_ids {
+            length - position
+        } else {
+            position
+        })
+    };
+    let mut func = single_block_func(vec![], length * 2 + 1);
+    func.name = "copy_argument_chain".into();
+    func.blocks.clear();
+    func.entry_block = block_id(0);
+    func.next_block = length + 1;
+    func.param_names = vec!["value".into()];
+    func.param_types = vec![parameter_type.clone()];
+    func.return_abi = molt_ir::FunctionReturnAbi::Value;
+    func.blocks.insert(
+        block_id(0),
+        TirBlock {
+            id: block_id(0),
+            args: vec![TirValue {
+                id: ValueId(0),
+                ty: parameter_type,
+            }],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: block_id(1),
+                args: vec![ValueId(0)],
+            },
+        },
+    );
+    let mut values = Vec::new();
+    for position in 1..=length {
+        let argument = ValueId(position * 2 - 1);
+        let result = ValueId(position * 2);
+        values.extend([argument, result]);
+        func.blocks.insert(
+            block_id(position),
+            TirBlock {
+                id: block_id(position),
+                args: vec![TirValue {
+                    id: argument,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![make_op(
+                    OpCode::Copy,
+                    vec![argument],
+                    vec![result],
+                    AttrDict::new(),
+                )],
+                terminator: if position == length {
+                    Terminator::Return {
+                        values: vec![result],
+                    }
+                } else {
+                    Terminator::Branch {
+                        target: block_id(position + 1),
+                        args: vec![result],
+                    }
+                },
+            },
+        );
+    }
+    (func, values)
+}
+
+#[test]
+fn long_block_argument_chains_reach_all_users_in_either_block_order() {
+    // The old ops-then-arguments sweep moves a fact only one copy/argument
+    // boundary per round. A non-scalar seed also prevents the independent exact
+    // scalar analysis from resolving this chain before the refinement solver.
+    let expected = TirType::List(Box::new(TirType::DynBox));
+    for reverse_block_ids in [false, true] {
+        let (mut func, values) = copy_argument_chain(96, reverse_block_ids, expected.clone());
+        refine_types(&mut func);
+        for value in values {
+            assert_eq!(func.value_types[&value], expected);
+        }
+        let once = func.value_types.clone();
+        refine_types(&mut func);
+        assert_eq!(func.value_types, once);
+    }
+}
+
+#[test]
+fn late_dynamic_fact_widens_the_entire_argument_chain() {
+    for reverse_block_ids in [false, true] {
+        let (mut func, values) = copy_argument_chain(96, reverse_block_ids, TirType::DynBox);
+        // Model precise argument facts left by an earlier optimization. The
+        // live entry parameter is dynamic; every downstream user must widen,
+        // including users that were processed before that change arrived.
+        for &value in &values {
+            func.value_types
+                .insert(value, TirType::List(Box::new(TirType::DynBox)));
+        }
+        refine_types(&mut func);
+        for value in values {
+            assert_eq!(func.value_types[&value], TirType::DynBox);
+        }
+        let once = func.value_types.clone();
+        refine_types(&mut func);
+        assert_eq!(func.value_types, once);
+    }
+}
+
+#[test]
+fn recursive_constructor_facts_stabilize_without_growing_nested_bottom() {
+    for constructor in [OpCode::BuildTuple, OpCode::BoxVal, OpCode::GetIter] {
+        let wrap = |inner| match constructor {
+            OpCode::BuildTuple => TirType::Tuple(vec![inner]),
+            OpCode::BoxVal => TirType::Box(Box::new(inner)),
+            OpCode::GetIter => TirType::Iterator(Box::new(inner)),
+            _ => unreachable!(),
+        };
+        for seed_inner in [TirType::I64, TirType::Never] {
+            let seed_type = wrap(seed_inner.clone());
+            let entry = BlockId(2);
+            let header = BlockId(0);
+            let body = BlockId(1);
+            let exit = BlockId(3);
+            let seed = ValueId(0);
+            let argument = ValueId(1);
+            let result = ValueId(2);
+            let condition = ValueId(3);
+            let mut func = single_block_func(vec![], 5);
+            func.name = "recursive_constructor".into();
+            func.blocks.clear();
+            func.entry_block = entry;
+            func.next_block = 4;
+            func.param_names = vec!["seed".into(), "condition".into()];
+            func.param_types = vec![seed_type.clone(), TirType::Bool];
+            func.return_abi = molt_ir::FunctionReturnAbi::Value;
+            func.blocks.insert(
+                entry,
+                TirBlock {
+                    id: entry,
+                    args: vec![
+                        TirValue {
+                            id: seed,
+                            ty: seed_type.clone(),
+                        },
+                        TirValue {
+                            id: condition,
+                            ty: TirType::Bool,
+                        },
+                    ],
+                    ops: vec![],
+                    terminator: Terminator::Branch {
+                        target: header,
+                        args: vec![seed],
+                    },
+                },
+            );
+            func.blocks.insert(
+                header,
+                TirBlock {
+                    id: header,
+                    args: vec![TirValue {
+                        id: argument,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![],
+                    terminator: Terminator::CondBranch {
+                        cond: condition,
+                        then_block: body,
+                        then_args: vec![],
+                        else_block: exit,
+                        else_args: vec![],
+                    },
+                },
+            );
+            // GetIter constructs Iterator(T) from a tuple containing T. This
+            // exercises the same recursive backedge as Tuple(T) and Box(T).
+            let body_ops = if constructor == OpCode::GetIter {
+                vec![
+                    make_op(
+                        OpCode::BuildTuple,
+                        vec![argument],
+                        vec![ValueId(4)],
+                        AttrDict::new(),
+                    ),
+                    make_op(constructor, vec![ValueId(4)], vec![result], AttrDict::new()),
+                ]
+            } else {
+                vec![make_op(
+                    constructor,
+                    vec![argument],
+                    vec![result],
+                    AttrDict::new(),
+                )]
+            };
+            func.blocks.insert(
+                body,
+                TirBlock {
+                    id: body,
+                    args: vec![],
+                    ops: body_ops,
+                    terminator: Terminator::Branch {
+                        target: header,
+                        args: vec![result],
+                    },
+                },
+            );
+            func.blocks.insert(
+                exit,
+                TirBlock {
+                    id: exit,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return {
+                        values: vec![argument],
+                    },
+                },
+            );
+
+            refine_types(&mut func);
+            if seed_inner == TirType::Never {
+                assert_eq!(func.value_types[&argument], seed_type);
+                assert_eq!(
+                    func.value_types[&result],
+                    TirType::DynBox,
+                    "a constructor must withhold its nested-bottom fact"
+                );
+            } else {
+                // At runtime the loop can nest its initial value arbitrarily
+                // deeply. The outer constructor is stable, its child is top.
+                assert_eq!(func.value_types[&argument], wrap(TirType::DynBox));
+                assert_eq!(func.value_types[&result], wrap(wrap(TirType::DynBox)));
+            }
+            let once = func.value_types.clone();
+            refine_types(&mut func);
+            assert_eq!(func.value_types, once);
+        }
+    }
+}

@@ -64,7 +64,6 @@ install_registry({{
     "molt_pprint_pformat": lambda obj, indent, width, depth, compact, sort_dicts, underscore_numbers: repr(obj),
     "molt_pprint_isreadable": lambda obj: True,
     "molt_pprint_isrecursive": lambda obj: False,
-    "molt_pprint_format_object": lambda *args, **kwargs: repr(args[0]) if args else "",
 }})
 
 http_pkg = types.ModuleType("http")

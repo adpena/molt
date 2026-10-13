@@ -3946,12 +3946,6 @@ runtime_name = "molt_os_fdopen"
 callable_arity = 3
 
 [[import]]
-name = "os_fsencode"
-type = 2
-runtime_name = "molt_os_fsencode"
-callable_arity = 1
-
-[[import]]
 name = "os_fspath"
 type = 2
 runtime_name = "molt_os_fspath"

@@ -29,6 +29,10 @@ from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
     load_intrinsic_availability,
 )
 from tools.generator_io import display_path, generator_main  # noqa: E402
+from tools.intrinsic_manifest import (  # noqa: E402
+    IntrinsicEntry,
+    parse_intrinsic_manifest,
+)
 
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
@@ -352,34 +356,6 @@ def _mechanically_derived_link_affecting_features(
     return tuple(sorted((mod_features | dep_features) & gate_features))
 
 
-_DEF_RE = re.compile(
-    r"^def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<params>.*)\)\s*->\s*(?P<ret>[^:]+):\s*\.\.\.\s*$"
-)
-
-
-class IntrinsicEntry:
-    __slots__ = ("name", "symbol", "arity", "defaults")
-
-    def __init__(
-        self,
-        name: str,
-        symbol: str,
-        arity: int,
-        defaults: tuple[str, ...] = (),
-    ) -> None:
-        self.name = name
-        self.symbol = symbol
-        self.arity = arity
-        self.defaults = defaults
-
-    def __iter__(self):
-        # Keep existing tuple-style tests and helper comprehensions working
-        # while generated metadata gains Python-call default information.
-        yield self.name
-        yield self.symbol
-        yield self.arity
-
-
 def _strip_manifest_header(text: str) -> str:
     lines = text.splitlines()
     idx = 0
@@ -390,134 +366,9 @@ def _strip_manifest_header(text: str) -> str:
     return "\n".join(lines[idx:]).rstrip() + "\n"
 
 
-def _iter_defs(text: str) -> list[str]:
-    lines = text.splitlines()
-    defs: list[str] = []
-    buf: list[str] = []
-    in_def = False
-    paren_depth = 0
-    for raw in lines:
-        line = raw.strip()
-        if not in_def:
-            if line.startswith("def "):
-                in_def = True
-                buf = [line]
-                paren_depth = line.count("(") - line.count(")")
-                if paren_depth <= 0 and line.endswith("..."):
-                    defs.append(" ".join(buf))
-                    in_def = False
-            continue
-        if not line:
-            continue
-        buf.append(line)
-        paren_depth += line.count("(") - line.count(")")
-        if paren_depth <= 0 and line.endswith("..."):
-            defs.append(" ".join(buf))
-            in_def = False
-    if in_def:
-        raise RuntimeError("unterminated def block in manifest")
-    return defs
-
-
-def _split_params(raw: str) -> list[str]:
-    params = raw.strip()
-    if not params:
-        return []
-    out: list[str] = []
-    cur: list[str] = []
-    depth = 0
-    for ch in params:
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-        if ch == "," and depth == 0:
-            part = "".join(cur).strip()
-            out.append(part)
-            cur = []
-            continue
-        cur.append(ch)
-    tail = "".join(cur).strip()
-    if tail:
-        out.append(tail)
-    return [p for p in out if p and p != "*"]
-
-
-def _param_default_expr(param: str) -> str | None:
-    depth = 0
-    for i, ch in enumerate(param):
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-        elif ch == "=" and depth == 0:
-            return param[i + 1 :].strip()
-    return None
-
-
-def _rust_intrinsic_default(default_expr: str, intrinsic_name: str) -> str | None:
-    if default_expr == "...":
-        return None
-    if default_expr == "None":
-        return "IntrinsicDefaultValue::None"
-    if default_expr == "True":
-        return "IntrinsicDefaultValue::Bool(true)"
-    if default_expr == "False":
-        return "IntrinsicDefaultValue::Bool(false)"
-    if re.fullmatch(r"-?\d+", default_expr):
-        return f"IntrinsicDefaultValue::Int({int(default_expr)})"
-    raise RuntimeError(
-        f"unsupported concrete default for {intrinsic_name}: {default_expr!r}"
-    )
-
-
-def _parse_intrinsic_defaults(name: str, params: list[str]) -> tuple[str, ...]:
-    parsed: list[str | None] = []
-    for param in params:
-        default_expr = _param_default_expr(param)
-        parsed.append(
-            None
-            if default_expr is None
-            else _rust_intrinsic_default(default_expr, name)
-        )
-    concrete_positions = [idx for idx, value in enumerate(parsed) if value is not None]
-    if not concrete_positions:
-        return ()
-    first = concrete_positions[0]
-    expected = list(range(first, len(parsed)))
-    if concrete_positions != expected:
-        raise RuntimeError(
-            f"concrete defaults for {name} must form a trailing positional suffix"
-        )
-    return tuple(value for value in parsed[first:] if value is not None)
-
-
 def _load_manifest() -> tuple[str, list[IntrinsicEntry]]:
-    if not MANIFEST.exists():
-        raise FileNotFoundError(f"manifest missing: {MANIFEST}")
     raw = MANIFEST.read_text(encoding="utf-8")
-    defs = _iter_defs(raw)
-    entries: list[IntrinsicEntry] = []
-    seen: set[str] = set()
-    for item in defs:
-        m = _DEF_RE.match(item)
-        if not m:
-            raise RuntimeError(f"failed to parse def: {item}")
-        name = m.group("name")
-        if name in seen:
-            raise RuntimeError(f"duplicate intrinsic name: {name}")
-        seen.add(name)
-        params = _split_params(m.group("params"))
-        arity = len(params)
-        entries.append(
-            IntrinsicEntry(
-                name=name,
-                symbol=name,
-                arity=arity,
-                defaults=_parse_intrinsic_defaults(name, params),
-            )
-        )
-    return raw, entries
+    return raw, parse_intrinsic_manifest(raw)
 
 
 def _validate_symbols(entries: list[IntrinsicEntry]) -> None:
@@ -1112,6 +963,7 @@ def _render_generated_rs(
     lines.append("    pub symbol: &'static str,\n")
     lines.append("    pub arity: u8,\n")
     lines.append("    pub defaults: &'static [IntrinsicDefaultValue],\n")
+    lines.append("    pub python_name: Option<&'static str>,\n")
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
     for entry in entries:
@@ -1121,6 +973,8 @@ def _render_generated_rs(
         lines.append(f"        arity: {entry.arity},\n")
         defaults = ", ".join(entry.defaults)
         lines.append(f"        defaults: &[{defaults}],\n")
+        python_name = f'Some("{entry.python_name}")' if entry.python_name else "None"
+        lines.append(f"        python_name: {python_name},\n")
         lines.append("    },\n")
     lines.append("];\n")
 

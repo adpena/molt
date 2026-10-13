@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: cancelling one sock_recv waiter must not poison later recv readiness."""
 
 import asyncio

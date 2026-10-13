@@ -894,18 +894,6 @@ family = "functools"
 resource_slot0 = "none"
 
 [[object_shape]]
-name = "FUNCTOOLS_LRU_FACTORY"
-id = 71
-family = "functools"
-resource_slot0 = "none"
-
-[[object_shape]]
-name = "FUNCTOOLS_CACHE_INFO"
-id = 72
-family = "functools"
-resource_slot0 = "none"
-
-[[object_shape]]
 name = "TYPES_MAPPING_PROXY"
 id = 73
 family = "types"
