@@ -233,6 +233,22 @@ mod tests {
             assert!(exception_pending(py));
             assert_eq!(object_method_bits(py, "__getattribute__"), Ok(Some(cached)));
             assert_eq!(object_method_bits(py, "missing_method"), Ok(None));
+            // IO signatures include defaults that may initialize a singleton.
+            // Cold publication and warm lookup both preserve the admitted error.
+            let file_io = builtin_classes(py).file_io;
+            for name in ["__new__", "__init__"] {
+                let method = builtin_class_method_bits(py, file_io, name)
+                    .expect("publication succeeds with an admitted error")
+                    .expect("FileIO publishes both constructor phases");
+                assert_ne!(method, 0);
+                assert_eq!(
+                    builtin_class_method_bits(py, file_io, name),
+                    Ok(Some(method))
+                );
+                let pending = molt_exception_last_pending();
+                assert_eq!(pending, failure.get());
+                dec_ref_bits(py, pending);
+            }
             let observed = molt_exception_last_pending();
             assert_eq!(observed, failure.get());
             molt_exception_clear();

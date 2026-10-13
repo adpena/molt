@@ -23,6 +23,13 @@ pub(crate) fn owns_constructor_descriptors(py: &PyToken<'_>, class: u64) -> bool
         b.float,
         b.complex,
         b.memoryview,
+        b.file_io,
+        b.buffered_reader,
+        b.buffered_writer,
+        b.buffered_random,
+        b.text_io_wrapper,
+        b.bytes_io,
+        b.string_io,
     ]
     .contains(&class)
 }

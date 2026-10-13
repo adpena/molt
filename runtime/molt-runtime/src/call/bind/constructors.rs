@@ -400,20 +400,6 @@ pub(super) unsafe fn call_type_with_arguments(
                 return crate::object::ops::zip_new_impl(_py, pos_args, strict);
             }
 
-            if class_bits == builtins.text_io_wrapper && !kw_names.is_empty() {
-                if let Some(bound_args) =
-                    builtin_args::bind_builtin_class_text_io_wrapper(_py, &args)
-                {
-                    return call_class_init_with_args(_py, call_ptr, &bound_args);
-                }
-                return MoltObject::none().bits();
-            }
-            if class_bits == builtins.string_io && !kw_names.is_empty() {
-                if let Some(bound_args) = builtin_args::bind_builtin_class_string_io(_py, &args) {
-                    return call_class_init_with_args(_py, call_ptr, &bound_args);
-                }
-                return MoltObject::none().bits();
-            }
             if !kw_names.is_empty() {
                 let class_name = class_name_for_error(class_bits);
                 let msg = format!("{class_name}() takes no keyword arguments");

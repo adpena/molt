@@ -9,6 +9,8 @@ enum BuiltinFunctionMetadata<'a> {
     Defaults(&'a [u64]),
     Variadic,
     Signature {
+        defaults: &'a [u64],
+        positional_only: usize,
         arg_names: &'a [&'a [u8]],
         has_vararg: bool,
         has_varkw: bool,
@@ -155,16 +157,29 @@ unsafe fn configure_builtin_function(
     unsafe {
         match metadata {
             BuiltinFunctionMetadata::Signature {
+                defaults,
+                positional_only,
                 arg_names,
                 has_vararg,
                 has_varkw,
-            } => configure_builtin_signature(
-                _py,
-                MoltObject::from_ptr(ptr).bits(),
-                arg_names,
-                has_vararg,
-                has_varkw,
-            ),
+            } => {
+                (defaults.is_empty() || set_function_defaults(_py, ptr, defaults))
+                    && (positional_only == 0
+                        || set_function_metadata_attr(
+                            _py,
+                            ptr,
+                            &runtime_state(_py).interned.molt_posonly,
+                            b"__molt_posonly__",
+                            MoltObject::from_int(positional_only as i64).bits(),
+                        ))
+                    && configure_builtin_signature(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        arg_names,
+                        has_vararg,
+                        has_varkw,
+                    )
+            }
             BuiltinFunctionMetadata::None => true,
             BuiltinFunctionMetadata::BindKind(bind_kind) => {
                 if !set_function_metadata_attr(
@@ -448,6 +463,8 @@ pub(crate) fn builtin_func_bits_with_signature(
     spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
+    defaults: &[u64],
+    positional_only: usize,
     arg_names: &[&[u8]],
     has_vararg: bool,
     has_varkw: bool,
@@ -458,6 +475,8 @@ pub(crate) fn builtin_func_bits_with_signature(
         fn_ptr,
         arity,
         BuiltinFunctionMetadata::Signature {
+            defaults,
+            positional_only,
             arg_names,
             has_vararg,
             has_varkw,

@@ -193,6 +193,7 @@ with tempfile.TemporaryDirectory() as directory:
         payload = b"abc" if base is io.BytesIO else "abc"
         stream.write(payload)
         print("memory-subclass-value", stream.getvalue() == payload)
+
         class MemorySibling(base):
             __slots__ = ("slot_token",)
 
@@ -248,3 +249,62 @@ for base in (io.RawIOBase, io.BufferedIOBase, io.TextIOBase):
         "flush" in base.__dict__,
         hasattr(base, "getvalue"),
     )
+
+# The same published signature binds exact roots and their heap subclasses.
+with tempfile.TemporaryDirectory() as directory:
+    path = os.path.join(directory, "keywords")
+    with open(path, "wb") as stream:
+        stream.write(b"payload")
+    for base in (
+        io.FileIO,
+        io.BufferedReader,
+        io.BufferedWriter,
+        io.BufferedRandom,
+        io.TextIOWrapper,
+        io.BytesIO,
+        io.StringIO,
+    ):
+
+        class KeywordStream(base):
+            __slots__ = ()
+
+        for constructor in (base, KeywordStream):
+            if base is io.FileIO:
+                arguments = {"file": path, "mode": "r"}
+            elif base in (io.BufferedReader, io.BufferedWriter, io.BufferedRandom):
+                arguments = {"raw": io.FileIO(path, "r+"), "buffer_size": 8}
+            elif base is io.TextIOWrapper:
+                arguments = {"buffer": io.BytesIO(b"payload"), "encoding": "utf-8"}
+            elif base is io.BytesIO:
+                arguments = {"initial_bytes": b"payload"}
+            else:
+                arguments = {"initial_value": "payload", "newline": "\n"}
+            stream = constructor(**arguments)
+            print("keyword-owner", base.__name__, type(stream) is constructor)
+            if base is io.BufferedWriter:
+                print("keyword-write", stream.write(b"payload"))
+            else:
+                print("keyword-read", stream.read())
+            try:
+                unexpected = constructor(**arguments, unexpected=True)
+            except TypeError:
+                print("keyword-refusal", base.__name__)
+            else:
+                print("keyword-accepted-unexpected", base.__name__)
+                unexpected.close()
+            stream.close()
+
+    try:
+        io.FileIO(file=path, mode=None)
+    except TypeError:
+        print("file-mode-none-refused")
+    try:
+        io.FileIO(path, file=path)
+    except TypeError:
+        print("file-duplicate-refused")
+    descriptor = os.open(path, os.O_RDONLY)
+    stream = io.FileIO(file=descriptor, closefd=None)
+    print("file-closefd-none", stream.closefd)
+    stream.close()
+    print("file-closefd-none-retained", os.read(descriptor, 1))
+    os.close(descriptor)

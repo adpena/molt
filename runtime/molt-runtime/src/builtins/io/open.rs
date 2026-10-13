@@ -1341,7 +1341,7 @@ pub extern "C" fn molt_file_io_new(
             return MoltObject::none().bits();
         }
         let mode_obj = obj_from_bits(mode_bits);
-        let mut mode = if mode_obj.is_none() {
+        let mut mode = if mode_bits == missing_bits(_py) {
             "r".to_string()
         } else if let Some(mode) = string_obj_to_owned(mode_obj) {
             mode
@@ -1363,11 +1363,6 @@ pub extern "C" fn molt_file_io_new(
         let mode_bits = MoltObject::from_ptr(mode_ptr).bits();
         let buffering_bits = MoltObject::from_int(0).bits();
         let none = MoltObject::none().bits();
-        let closefd_bits = if obj_from_bits(closefd_bits).is_none() {
-            MoltObject::from_bool(true).bits()
-        } else {
-            closefd_bits
-        };
         let out = open_impl(
             _py,
             name_bits,
