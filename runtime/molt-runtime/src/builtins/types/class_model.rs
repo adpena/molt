@@ -703,6 +703,23 @@ pub extern "C" fn molt_object_new() -> u64 {
     })
 }
 
+/// Intrinsic storage can share a physical kind while requiring a distinct
+/// native owner. Ordinary slot declarations do not introduce such an owner.
+unsafe fn intrinsic_layout_owner(py: &PyToken<'_>, class: *mut u8) -> Option<u64> {
+    unsafe {
+        crate::class_mro_view(py, class)
+            .iter()
+            .copied()
+            .find(|&base| {
+                use crate::object::class_storage::{ClassDeclaration, class_declares};
+                let base = obj_from_bits(base).as_ptr().expect("sealed class MRO");
+                class_declares(base, ClassDeclaration::IntrinsicLayout)
+                    || class_declares(base, ClassDeclaration::IntValue)
+                    || class_declares(base, ClassDeclaration::FloatValue)
+            })
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -722,16 +739,7 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             crate::object::class_instance_type_id(cls_ptr) == TYPE_ID_OBJECT
                 && crate::object::class_instance_shape_id(cls_ptr)
                     == crate::object::ObjectShapeId::Plain
-                && !crate::class_mro_view(_py, cls_ptr)
-                    .iter()
-                    .copied()
-                    .any(|base| {
-                        use crate::object::class_storage::{ClassDeclaration, class_declares};
-                        let base = obj_from_bits(base).as_ptr().expect("sealed class MRO");
-                        class_declares(base, ClassDeclaration::IntrinsicLayout)
-                            || class_declares(base, ClassDeclaration::IntValue)
-                            || class_declares(base, ClassDeclaration::FloatValue)
-                    })
+                && intrinsic_layout_owner(_py, cls_ptr).is_none()
         };
         if !owns_plain_object_layout {
             let class_name = class_name_for_error(cls_bits);
@@ -902,6 +910,8 @@ unsafe fn class_attachment_layouts_match(
                 != crate::object::class_instance_shape_id(target_class)
             || crate::object::class_exception_layout_root(current_class)
                 != crate::object::class_exception_layout_root(target_class)
+            || intrinsic_layout_owner(_py, current_class)
+                != intrinsic_layout_owner(_py, target_class)
         {
             return false;
         }
@@ -917,8 +927,8 @@ unsafe fn class_attachment_layouts_match(
             return false;
         }
 
-        // Assignment compares concrete rows, not solid-root identity: legal
-        // same-slot sibling classes can exchange identical instance storage.
+        // Ordinary slots may have different solid owners: same-slot siblings
+        // remain compatible after their intrinsic storage owner agrees.
         crate::object::class_layout::fields_match(_py, current_class, target_class)
     }
 }

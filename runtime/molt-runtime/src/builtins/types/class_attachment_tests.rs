@@ -499,3 +499,97 @@ fn tuple_subclass_admission_rejects_nominal_and_physical_layout_mismatches() {
         assert!(!exception_pending(_py));
     });
 }
+
+#[test]
+fn native_class_reassignment_preserves_intrinsic_owner_and_live_payload() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let classes = builtin_classes(py);
+        for (source_root, target_root, allowed) in [
+            (classes.bytes_io, classes.bytes_io, true),
+            (classes.string_io, classes.string_io, true),
+            (classes.bytes_io, classes.string_io, false),
+            (classes.string_io, classes.bytes_io, false),
+        ] {
+            for slotted in [false, true] {
+                let make_class = |name: &[u8], root| unsafe {
+                    if slotted {
+                        new_slotted_class_with_base(py, name, b"value", root)
+                    } else {
+                        new_class_with_base(py, name, root)
+                    }
+                };
+                let first = make_class(b"NativeFirst", source_root);
+                let second = make_class(b"NativeSecond", target_root);
+                let object = unsafe {
+                    crate::call::bind::call_bind_borrowed(py, first, None, &[], &[], &[])
+                };
+                assert!(!exception_pending(py));
+                let ptr = obj_from_bits(object).as_ptr().expect("native instance");
+                let value_name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                let value = MoltObject::from_int(42).bits();
+                molt_set_attr_name(object, value_name, value);
+                assert!(!exception_pending(py));
+
+                set_class_via_attribute(py, object, second);
+                assert_eq!(exception_pending(py), !allowed);
+                if !allowed {
+                    let error = crate::molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "TypeError"
+                    ));
+                    crate::molt_exception_clear();
+                    dec_ref_bits(py, error);
+                }
+                assert_eq!(
+                    unsafe { object_class_bits(ptr) },
+                    if allowed { second } else { first }
+                );
+                let loaded = crate::molt_get_attr_name(object, value_name);
+                assert_eq!(loaded, value);
+                dec_ref_bits(py, loaded);
+                let contents = crate::builtins::io::molt_file_getvalue(object);
+                assert!(!exception_pending(py));
+                assert_eq!(
+                    type_of_bits(py, contents),
+                    if source_root == classes.bytes_io {
+                        classes.bytes
+                    } else {
+                        classes.str
+                    }
+                );
+                for bits in [contents, value_name, object, second, first] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn ordinary_shared_base_slot_siblings_remain_class_compatible() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let base = unsafe { new_class_with_base(py, b"Common", builtin_classes(py).object) };
+        let first = unsafe { new_slotted_class_with_base(py, b"First", b"value", base) };
+        let second = unsafe { new_slotted_class_with_base(py, b"Second", b"value", base) };
+        let object =
+            unsafe { crate::call::bind::call_bind_borrowed(py, first, None, &[], &[], &[]) };
+        assert!(!exception_pending(py));
+        let name = attr_name_bits_from_bytes(py, b"value").unwrap();
+        let value = MoltObject::from_int(42).bits();
+        molt_set_attr_name(object, name, value);
+        set_class_via_attribute(py, object, second);
+        assert!(!exception_pending(py));
+        assert_eq!(type_of_bits(py, object), second);
+        let loaded = crate::molt_get_attr_name(object, name);
+        assert_eq!(loaded, value);
+        dec_ref_bits(py, loaded);
+        for bits in [name, object, second, first, base] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
