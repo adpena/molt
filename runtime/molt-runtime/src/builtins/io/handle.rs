@@ -1,5 +1,5 @@
 use super::*;
-use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
+use crate::object::native_instance::{self, NativePayload};
 
 pub(super) type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
 
@@ -98,31 +98,11 @@ pub(super) fn alloc_file_handle_with_state(
     buffer_bits: u64,
     mem_bits: u64,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut MoltFileHandle>();
-    let aux = if class_bits == 0 {
-        ObjectAuxPreselection::Default
-    } else {
-        ObjectAuxPreselection::ClassInline
+    let ptr = unsafe {
+        native_instance::alloc_unpublished(_py, class_bits, NativePayload::FileHandle, 0)
     };
-    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
-        _py,
-        total,
-        TYPE_ID_FILE_HANDLE,
-        aux,
-    );
     if ptr.is_null() {
         return ptr;
-    }
-    if class_bits != 0 {
-        // Ensure `type(handle)` and attribute resolution go through the intended IO wrapper class
-        // (TextIOWrapper / Buffered* / FileIO), rather than falling back to `object`.
-        unsafe {
-            if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned)
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return std::ptr::null_mut();
-            }
-        }
     }
     let handle = Box::new(MoltFileHandle {
         dict_bits: 0,
@@ -169,6 +149,10 @@ pub(super) fn alloc_file_handle_with_state(
     let handle_ptr = Box::into_raw(handle);
     unsafe {
         *(ptr as *mut *mut MoltFileHandle) = handle_ptr;
+        let ptr = native_instance::prepare_publication(_py, ptr, class_bits);
+        if ptr.is_null() {
+            return ptr;
+        }
         if !super::attributes::io_initialize_dictionary_members(_py, ptr) {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();

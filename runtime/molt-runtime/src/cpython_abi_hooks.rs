@@ -10153,13 +10153,13 @@ mod tests {
             let name = MoltObject::from_ptr(alloc_string(&py, b"AbiBytearrayStorage")).bits();
             let subclass = crate::molt_class_new(name);
             dec_ref_bits(&py, name);
-            crate::molt_class_set_base(subclass, NativePayload::Bytearray.owner(&py));
+            crate::molt_class_set_base(subclass, NativePayload::Bytearray.owner(&py).unwrap());
             crate::object::class_finish_definition(
                 &py,
                 MoltObject::from_bits(subclass).as_ptr().unwrap(),
             )
             .unwrap();
-            for class in [NativePayload::Bytearray.owner(&py), subclass] {
+            for class in [NativePayload::Bytearray.owner(&py).unwrap(), subclass] {
                 let input = MoltObject::from_ptr(alloc_bytes(&py, b"abc")).bits();
                 let bits =
                     crate::call::bind::call_bind_borrowed(&py, class, None, &[input], &[], &[]);

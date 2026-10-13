@@ -2430,6 +2430,9 @@ pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
             TYPE_ID_DATACLASS => return dataclass_dict_bits_ptr(ptr),
             TYPE_ID_EXCEPTION => return crate::builtins::exceptions::exception_dict_bits_ptr(ptr),
             TYPE_ID_FILE_HANDLE => {
+                // Exact and extended IO objects share this one dictionary owner.
+                // The shared native field extent reserves a tail word, but IO
+                // never publishes or traces a second dictionary in that word.
                 let handle = file_handle_ptr(ptr);
                 return if handle.is_null() {
                     std::ptr::null_mut()

@@ -1,14 +1,27 @@
 use super::*;
 
-fn class(py: &PyToken<'_>, name: &[u8], kind: NativePayload, slots: bool) -> u64 {
+fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
     let name = MoltObject::from_ptr(alloc_string(py, name)).bits();
     let class = crate::molt_class_new(name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, kind.owner(py));
+    crate::molt_class_set_base(class, base);
     if slots {
         let field = attr_name_bits_from_bytes(py, b"field").unwrap();
         let dict = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
-        let names = MoltObject::from_ptr(alloc_tuple(py, &[field, dict])).bits();
+        let inherited_dictionary = unsafe {
+            crate::object::layout::class_slot_policy(obj_from_bits(base).as_ptr().unwrap())
+                .unwrap()
+                .allows_dict
+        };
+        let names = MoltObject::from_ptr(alloc_tuple(
+            py,
+            if inherited_dictionary {
+                &[field]
+            } else {
+                &[field, dict]
+            },
+        ))
+        .bits();
         let key = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
         crate::molt_set_attr_name(class, key, names);
         for bits in [field, dict, names, key] {
@@ -19,7 +32,7 @@ fn class(py: &PyToken<'_>, name: &[u8], kind: NativePayload, slots: bool) -> u64
     unsafe { crate::object::class_finish_definition(py, ptr) }.unwrap();
     assert_eq!(
         unsafe { crate::object::class_instance_type_id(ptr) },
-        kind.type_id()
+        unsafe { crate::object::class_instance_type_id(obj_from_bits(base).as_ptr().unwrap()) }
     );
     assert!(!exception_pending(py));
     class
@@ -58,7 +71,7 @@ fn native_subtype_constructor_family_tracks_cycles_and_retires_membership() {
             NativePayload::Frozenset,
             NativePayload::Complex,
         ] {
-            let class = class(py, b"NativeCycle", kind, false);
+            let class = class(py, b"NativeCycle", kind.owner(py).unwrap(), false);
             let input = value(py, kind, 9);
             let object = construct(py, class, input);
             let ptr = obj_from_bits(object).as_ptr().unwrap();
@@ -92,8 +105,8 @@ fn native_subtype_slots_align_and_survive_dictionary_and_class_changes() {
             NativePayload::Frozenset,
             NativePayload::Complex,
         ] {
-            let first = class(py, b"NativeFirst", kind, true);
-            let second = class(py, b"NativeSecond", kind, true);
+            let first = class(py, b"NativeFirst", kind.owner(py).unwrap(), true);
+            let second = class(py, b"NativeSecond", kind.owner(py).unwrap(), true);
             for length in [0, 1, 4, 7, 8, 9] {
                 let input = value(py, kind, length);
                 let object = construct(py, first, input);
@@ -147,7 +160,7 @@ fn native_inline_terminator_precedes_slots_and_the_dictionary_through_c_abi_acce
         for kind in [NativePayload::String, NativePayload::Bytes] {
             // Bytes subclasses inherit a dictionary but reject nonempty slots.
             let has_slot = kind == NativePayload::String;
-            let class = class(py, b"TerminatedNative", kind, has_slot);
+            let class = class(py, b"TerminatedNative", kind.owner(py).unwrap(), has_slot);
             let key =
                 attr_name_bits_from_bytes(py, if has_slot { b"field" } else { b"extra" }).unwrap();
             for length in [0, 1, 7, 8, 9, 15, 16, 17] {
@@ -207,7 +220,7 @@ fn native_subtype_rejects_generic_allocation_and_overflow_without_class_attachme
             NativePayload::Frozenset,
             NativePayload::Complex,
         ] {
-            let class = class(py, b"NativeAdmission", kind, false);
+            let class = class(py, b"NativeAdmission", kind.owner(py).unwrap(), false);
             let ptr = obj_from_bits(class).as_ptr().unwrap();
             assert!(obj_from_bits(crate::molt_object_new_bound(class)).is_none());
             assert!(exception_pending(py));
@@ -243,12 +256,123 @@ fn native_subtype_rejects_generic_allocation_and_overflow_without_class_attachme
             NativePayload::Complex,
         ] {
             let input = value(py, kind, 4);
-            let exact = construct(py, kind.owner(py), input);
+            let exact = construct(py, kind.owner(py).unwrap(), input);
             let ptr = obj_from_bits(exact).as_ptr().unwrap();
             assert!(!unsafe { has_fields(ptr) });
             assert!(!unsafe { crate::object::gc::gc_is_tracked(ptr) });
             dec_ref_bits(py, exact);
             dec_ref_bits(py, input);
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        let classes = builtin_classes(py);
+        for root in [
+            classes.file,
+            classes.file_io,
+            classes.buffered_reader,
+            classes.buffered_writer,
+            classes.buffered_random,
+            classes.text_io_wrapper,
+            classes.bytes_io,
+            classes.string_io,
+        ] {
+            assert_eq!(
+                unsafe {
+                    crate::object::class_instance_type_id(obj_from_bits(root).as_ptr().unwrap())
+                },
+                TYPE_ID_FILE_HANDLE
+            );
+        }
+        for (root, text) in [(classes.bytes_io, false), (classes.string_io, true)] {
+            let input = MoltObject::from_ptr(if text {
+                alloc_string(py, b"payload")
+            } else {
+                alloc_bytes(py, b"payload")
+            })
+            .bits();
+            let exact = construct(py, root, input);
+            let exact_ptr = obj_from_bits(exact).as_ptr().unwrap();
+            assert!(!unsafe { has_fields(exact_ptr) });
+            assert_eq!(
+                unsafe { object_payload_size(exact_ptr) },
+                WORD // A 32-bit host pointer is padded to the existing allocation word.
+            );
+            assert_eq!(unsafe { object_class_bits(exact_ptr) }, root);
+            dec_ref_bits(py, exact);
+
+            let subclass = class(py, b"SlottedIO", root, true);
+            let object = construct(py, subclass, input);
+            let ptr = obj_from_bits(object).as_ptr().unwrap();
+            let native = unsafe { file_handle_ptr(ptr) };
+            assert!(!native.is_null());
+            let state = unsafe { std::sync::Arc::downgrade(&(*native).state) };
+            let field = attr_name_bits_from_bytes(py, b"field").unwrap();
+            let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
+            let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            crate::molt_set_attr_name(object, field, marker);
+            crate::molt_set_attr_name(object, extra, marker);
+            assert!(!exception_pending(py));
+            assert_eq!(unsafe { file_handle_ptr(ptr) }, native);
+            assert!(
+                unsafe { field_base(ptr) } as usize
+                    >= ptr as usize + size_of::<*mut MoltFileHandle>()
+            );
+            let loaded = crate::molt_get_attr_name(object, field);
+            assert_eq!(loaded, marker);
+            dec_ref_bits(py, loaded);
+            let output = crate::builtins::io::molt_file_getvalue(object);
+            assert!(!exception_pending(py));
+            if text {
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(output)).as_deref(),
+                    Some("payload")
+                );
+            } else {
+                let bytes = obj_from_bits(output).as_ptr().unwrap();
+                assert_eq!(unsafe { object_type_id(bytes) }, TYPE_ID_BYTES);
+                assert_eq!(
+                    unsafe { std::slice::from_raw_parts(bytes_data(bytes), bytes_len(bytes)) },
+                    b"payload"
+                );
+            }
+            dec_ref_bits(py, output);
+            let dictionary = unsafe { crate::object::instance_dict_bits(ptr) };
+            assert_eq!(dictionary, unsafe { (*native).dict_bits });
+            let mut edges = Vec::new();
+            unsafe {
+                crate::object::heap_lifecycle::visit_owned_values(py, ptr, &mut |bits| {
+                    edges.push(bits)
+                })
+            };
+            assert_eq!(edges.iter().filter(|&&bits| bits == dictionary).count(), 1);
+            assert_eq!(edges.iter().filter(|&&bits| bits == marker).count(), 1);
+            assert_eq!(edges.iter().filter(|&&bits| bits == subclass).count(), 1);
+            // Both real owners become cycles. Collection must retire the native
+            // resource after clearing the slot and the sole public dictionary.
+            crate::molt_set_attr_name(object, field, object);
+            crate::molt_set_attr_name(object, extra, object);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                unsafe {
+                    (*header_from_obj_ptr(obj_from_bits(marker).as_ptr().unwrap()))
+                        .ref_count_snapshot()
+                },
+                1
+            );
+            for bits in [marker, field, extra, object] {
+                dec_ref_bits(py, bits);
+            }
+            let _ = unsafe { crate::object::gc::collect_cycles(py) };
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(ptr) });
+            assert!(state.upgrade().is_none());
+            dec_ref_bits(py, input);
+            dec_ref_bits(py, subclass);
         }
         assert!(!exception_pending(py));
     });
