@@ -967,6 +967,13 @@ mod task_growth_refusal {
         (*inputs).map(super::refs)
     }
 
+    extern "C" fn return_raw_awaitable(receiver: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            inc_ref_bits(py, receiver);
+            receiver
+        })
+    }
+
     /// Run this exact test alone with --test-threads=1. The observer owns the
     /// process allocator and the runtime transaction owns shared runtime state.
     #[test]
@@ -980,16 +987,31 @@ mod task_growth_refusal {
             super::bind_code_target(py, code.bits(), TARGET);
             let globals = ExceptionValue::adopt(py, super::dict(py));
             let builtins = ExceptionValue::adopt(py, super::dict(py));
-            let generator = ExceptionValue::adopt(
+            // Isolate wrapper admission from acquisition of a second task.
+            // anext() accepts a raw result without invoking __await__ yet.
+            let name = ExceptionValue::adopt(
                 py,
-                crate::molt_task_new(
-                    0,
-                    crate::GEN_CONTROL_SIZE as u64,
-                    crate::TASK_KIND_GENERATOR,
-                ),
+                MoltObject::from_ptr(crate::alloc_string(py, b"RawAnextOwner")).bits(),
             );
-            assert!(obj_from_bits(generator.bits()).as_ptr().is_some());
-            let iterator = ExceptionValue::adopt(py, crate::molt_asyncgen_new(generator.bits()));
+            let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
+            let method_name = ExceptionValue::adopt(
+                py,
+                MoltObject::from_ptr(crate::alloc_string(py, b"__anext__")).bits(),
+            );
+            let method = ExceptionValue::adopt(
+                py,
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        return_raw_awaitable as *const (),
+                    ),
+                    1,
+                ))
+                .bits(),
+            );
+            crate::molt_set_attr_name(class.bits(), method_name.bits(), method.bits());
+            assert!(!crate::exception_pending(py));
+            let iterator = ExceptionValue::adopt(py, crate::molt_object_new(class.bits()));
             assert!(obj_from_bits(iterator.bits()).as_ptr().is_some());
             let default = ExceptionValue::adopt(
                 py,
