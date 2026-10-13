@@ -28,7 +28,7 @@ def _load_module(name, path_text):
 
 
 install_registry({{
-    "molt_http_client_execute": lambda *args, **kwargs: None,
+    "molt_http_client_connection_new": lambda *args, **kwargs: None,
     "molt_http_status_reason": lambda code: "OK" if code == 200 else "",
     "molt_http_cookies_parse": lambda raw: [("session", "abc")],
     "molt_http_cookies_render_morsel": lambda key, value, path, secure, httponly, max_age, expires: f"{{key}}={{value}}",
@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as td:
 checks = {{
     "http": (
         http_mod.HTTPStatus.OK.phrase == "OK"
-        and "molt_http_client_execute" not in http_mod.__dict__
+        and "molt_http_client_connection_new" not in http_mod.__dict__
         and "molt_http_status_reason" not in http_mod.__dict__
     ),
     "cookies": (

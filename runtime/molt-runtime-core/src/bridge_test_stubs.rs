@@ -156,7 +156,6 @@ aborting_bridge_stub!(__molt_http_molt_exception_init);
 aborting_bridge_stub!(__molt_http_molt_getattr_builtin);
 aborting_bridge_stub!(__molt_http_molt_is_callable);
 aborting_bridge_stub!(__molt_http_molt_iter);
-aborting_bridge_stub!(__molt_http_molt_iter_next);
 aborting_bridge_stub!(__molt_http_molt_list_insert);
 aborting_bridge_stub!(__molt_http_molt_module_import);
 aborting_bridge_stub!(__molt_http_molt_raise);

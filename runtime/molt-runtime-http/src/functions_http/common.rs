@@ -124,24 +124,3 @@ pub(super) fn alloc_qs_dict(
     }
     MoltObject::from_ptr(dict_ptr).bits()
 }
-
-pub(super) fn iter_next_pair(_py: &CoreGilToken, iter_bits: u64) -> Result<(u64, bool), u64> {
-    let pair_bits = molt_iter_next(iter_bits);
-    let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return Err(MoltObject::none().bits());
-    };
-    unsafe {
-        if object_type_id(pair_ptr) != crate::bridge::type_id_tuple() {
-            return Err(MoltObject::none().bits());
-        }
-        let elems = seq_snapshot(pair_ptr);
-        if elems.len() < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let val_bits = elems[0];
-        let done_bits = elems[1];
-        let done = is_truthy(_py, obj_from_bits(done_bits));
-        Ok((val_bits, done))
-    }
-}

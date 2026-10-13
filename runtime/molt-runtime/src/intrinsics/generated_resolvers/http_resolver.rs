@@ -39,11 +39,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_http_cookies_render_morsel as *const (),
         )),
         #[cfg(feature = "stdlib_http")]
-        "molt_http_client_execute" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_http_client_execute",
-            crate::molt_http_client_execute as *const (),
-        )),
-        #[cfg(feature = "stdlib_http")]
         "molt_http_client_connection_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_http_client_connection_new",
             crate::molt_http_client_connection_new as *const (),
@@ -63,28 +58,23 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             ))
         }
         #[cfg(feature = "stdlib_http")]
-        "molt_http_client_connection_putheader" => {
+        "molt_http_client_validate_header_name" => {
             Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_http_client_connection_putheader",
-                crate::molt_http_client_connection_putheader as *const (),
+                "crate::molt_http_client_validate_header_name",
+                crate::molt_http_client_validate_header_name as *const (),
             ))
         }
         #[cfg(feature = "stdlib_http")]
-        "molt_http_client_connection_endheaders" => {
+        "molt_http_client_validate_header_value" => {
             Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_http_client_connection_endheaders",
-                crate::molt_http_client_connection_endheaders as *const (),
+                "crate::molt_http_client_validate_header_value",
+                crate::molt_http_client_validate_header_value as *const (),
             ))
         }
         #[cfg(feature = "stdlib_http")]
         "molt_http_client_connection_send" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_http_client_connection_send",
             crate::molt_http_client_connection_send as *const (),
-        )),
-        #[cfg(feature = "stdlib_http")]
-        "molt_http_client_connection_request" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_http_client_connection_request",
-            crate::molt_http_client_connection_request as *const (),
         )),
         #[cfg(feature = "stdlib_http")]
         "molt_http_client_connection_getresponse" => {
@@ -103,13 +93,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_http_client_connection_drop",
             crate::molt_http_client_connection_drop as *const (),
         )),
-        #[cfg(feature = "stdlib_http")]
-        "molt_http_client_connection_get_buffer" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_http_client_connection_get_buffer",
-                crate::molt_http_client_connection_get_buffer as *const (),
-            ))
-        }
         #[cfg(feature = "stdlib_http")]
         "molt_http_message_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_http_message_new",

@@ -1831,7 +1831,7 @@ mod tests {
     #[cfg(not(feature = "stdlib_http"))]
     #[test]
     fn http_intrinsics_do_not_resolve_when_stdlib_http_is_disabled() {
-        assert!(resolve_symbol("molt_http_client_execute").is_none());
+        assert!(resolve_symbol("molt_http_client_connection_new").is_none());
     }
 
     #[cfg(not(feature = "stdlib_regex"))]

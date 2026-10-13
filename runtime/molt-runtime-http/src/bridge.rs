@@ -404,15 +404,10 @@ pub fn molt_dict_new(initial_capacity: usize) -> u64 {
 
 unsafe extern "C" {
     fn __molt_http_molt_iter(bits: u64) -> u64;
-    fn __molt_http_molt_iter_next(iter_bits: u64) -> u64;
 }
 
 pub fn molt_iter(bits: u64) -> u64 {
     unsafe { __molt_http_molt_iter(bits) }
-}
-
-pub fn molt_iter_next(iter_bits: u64) -> u64 {
-    unsafe { __molt_http_molt_iter_next(iter_bits) }
 }
 
 // ---------------------------------------------------------------------------

@@ -331,13 +331,8 @@ pub(super) fn http_client_connection_store(
             host,
             port,
             timeout,
-            method: None,
             url: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            buffer: Vec::new(),
-            skip_host: false,
-            skip_accept_encoding: false,
+            wire: Vec::new(),
             use_tls,
         },
     );
@@ -354,16 +349,6 @@ pub(super) fn http_client_connection_with_mut<T>(
     guard.connections.get_mut(&(handle as u64)).map(f)
 }
 
-pub(super) fn http_client_connection_with<T>(
-    handle: i64,
-    f: impl FnOnce(&MoltHttpClientConnection) -> T,
-) -> Option<T> {
-    let Ok(guard) = http_client_connection_runtime().lock() else {
-        return None;
-    };
-    guard.connections.get(&(handle as u64)).map(f)
-}
-
 pub(super) fn http_client_connection_drop(handle: i64) {
     if let Ok(mut guard) = http_client_connection_runtime().lock() {
         guard.connections.remove(&(handle as u64));
@@ -371,67 +356,139 @@ pub(super) fn http_client_connection_drop(handle: i64) {
 }
 
 pub(super) fn http_client_connection_reset_pending(conn: &mut MoltHttpClientConnection) {
-    conn.method = None;
     conn.url = None;
-    conn.headers.clear();
-    conn.body.clear();
-    conn.buffer.clear();
-    conn.skip_host = false;
-    conn.skip_accept_encoding = false;
+    conn.wire.clear();
 }
 
-pub(super) fn http_client_apply_default_headers(
-    headers: &mut Vec<(String, String)>,
-    host: &str,
-    port: u16,
-    skip_host: bool,
-    skip_accept_encoding: bool,
-) {
-    if !skip_host
-        && !headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
-    {
-        let host_value = if port == 80 {
-            host.to_string()
-        } else {
-            format!("{host}:{port}")
-        };
-        headers.insert(0, ("Host".to_string(), host_value));
-    }
-    if !skip_accept_encoding
-        && !headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("accept-encoding"))
-    {
-        headers.push(("Accept-Encoding".to_string(), "identity".to_string()));
-    }
-}
-
-pub(super) fn http_client_alloc_buffer_list(
-    _py: &molt_runtime_core::CoreGilToken,
-    buffer: &[Vec<u8>],
-) -> u64 {
-    let mut item_bits: Vec<u64> = Vec::with_capacity(buffer.len());
-    for chunk in buffer {
-        let item_ptr = alloc_bytes(_py, chunk.as_slice());
-        if item_ptr.is_null() {
-            for bits in item_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        item_bits.push(MoltObject::from_ptr(item_ptr).bits());
-    }
-    let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
-    for bits in item_bits {
-        dec_ref_bits(_py, bits);
-    }
-    if list_ptr.is_null() {
-        MoltObject::none().bits()
+pub(super) fn http_client_request_line_bytes(
+    py: &molt_runtime_core::CoreGilToken,
+    method: &str,
+    target: &str,
+) -> Result<Vec<u8>, u64> {
+    http_client_validate_method(py, method)?;
+    http_client_validate_path(py, target)?;
+    let line = format!("{method} {target} HTTP/1.1");
+    let mut bytes = if line.is_ascii() {
+        line.into_bytes()
     } else {
-        MoltObject::from_ptr(list_ptr).bits()
+        http_client_encode_text(py, &line, b"ascii")?.into_owned()
+    };
+    bytes.extend_from_slice(b"\r\n");
+    Ok(bytes)
+}
+
+// The typed urllib field owner has already coerced Python objects to String.
+// Use the existing codec for non-ASCII text and its typed encoding failures.
+fn http_client_encode_text<'a>(
+    py: &molt_runtime_core::CoreGilToken,
+    text: &'a str,
+    encoding_name: &[u8],
+) -> Result<std::borrow::Cow<'a, [u8]>, u64> {
+    if text.is_ascii() {
+        Ok(std::borrow::Cow::Borrowed(text.as_bytes()))
+    } else {
+        let ptr = alloc_string(py, text.as_bytes());
+        if ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        let text = unsafe { ProtectedRuntimeValue::from_owned_bits(py, bits) };
+        let method = attr_optional(py, text.bits(), b"encode")?
+            .ok_or_else(|| raise_exception::<u64>(py, "AttributeError", "str has no encode"))?;
+        let method = unsafe { ProtectedRuntimeValue::from_owned_bits(py, method) };
+        let encoding_ptr = alloc_string(py, encoding_name);
+        if encoding_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let encoding = unsafe {
+            ProtectedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(encoding_ptr).bits())
+        };
+        let encoded = unsafe {
+            ProtectedRuntimeValue::from_owned_bits(
+                py,
+                call_callable1(py, method.bits(), encoding.bits()),
+            )
+        };
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        Ok(std::borrow::Cow::Owned(
+            unsafe { bytes_like_slice(encoded.bits()) }
+                .ok_or_else(|| {
+                    raise_exception::<u64>(
+                        py,
+                        "TypeError",
+                        "request encoding must return bytes-like data",
+                    )
+                })?
+                .to_vec(),
+        ))
     }
+}
+
+// CPython 3.12 Lib/http/client.py: request controls and deliberately lenient
+// header grammar. Stored header text represents Latin-1 octets, not UTF-8 wire data.
+pub(super) fn http_client_validate_method(
+    py: &molt_runtime_core::CoreGilToken,
+    method: &str,
+) -> Result<(), u64> {
+    if method.bytes().any(|byte| byte < 0x20) {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "method can't contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn http_client_validate_path(
+    py: &molt_runtime_core::CoreGilToken,
+    value: &str,
+) -> Result<(), u64> {
+    if value.bytes().any(|byte| byte <= 0x20 || byte == 0x7f) {
+        return Err(http_client_raise_invalid_url(
+            py,
+            "URL can't contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn http_client_validate_header_name(
+    py: &molt_runtime_core::CoreGilToken,
+    name: &[u8],
+) -> Result<(), u64> {
+    let invalid_name = name.is_empty()
+        || name[0].is_ascii_whitespace()
+        || name[0] == 0x0b
+        || name.iter().any(|byte| matches!(byte, b':' | b'\r' | b'\n'));
+    if invalid_name {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "Invalid header name",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn http_client_validate_header_value(
+    py: &molt_runtime_core::CoreGilToken,
+    bytes: &[u8],
+) -> Result<(), u64> {
+    if bytes.iter().enumerate().any(|(index, byte)| match byte {
+        b'\n' => !matches!(bytes.get(index + 1), Some(b' ' | b'\t')),
+        b'\r' => !matches!(bytes.get(index + 1), Some(b' ' | b'\t' | b'\n')),
+        _ => false,
+    }) {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "Invalid header value",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn http_message_runtime() -> &'static Mutex<MoltHttpMessageRuntime> {
@@ -880,21 +937,6 @@ pub(super) fn http_cookies_render_morsel_impl(
     Ok(segments.join("; "))
 }
 
-pub(super) struct HttpClientExecuteInput {
-    pub(super) host: String,
-    pub(super) port: u16,
-    pub(super) timeout: Option<f64>,
-    pub(super) method: String,
-    pub(super) url: String,
-    pub(super) headers: Vec<(String, String)>,
-    pub(super) body: Vec<u8>,
-    pub(super) skip_host: bool,
-    pub(super) skip_accept_encoding: bool,
-    /// When true, the request is sent over TLS (HTTPS). The SNI server name is
-    /// taken from `host`.
-    pub(super) use_tls: bool,
-}
-
 pub(super) fn urllib_http_extract_headers_mapping(
     _py: &molt_runtime_core::CoreGilToken,
     mapping_bits: u64,
@@ -931,50 +973,52 @@ pub(super) fn urllib_http_extract_headers_mapping(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let mut out: Vec<(String, String)> = Vec::new();
-    loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
-            break;
-        }
-        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        };
-        let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
-        {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        }
-        let fields = unsafe { seq_snapshot(item_ptr) };
-        if fields.len() != 2 {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        }
-        let formatted: Result<_, u64> = (|| {
+    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, iter_bits) };
+    let result = (|| {
+        let mut out: Vec<(String, String)> = Vec::new();
+        loop {
+            let Some(item) =
+                iter_next_owned(_py, &iterator).map_err(|_| MoltObject::none().bits())?
+            else {
+                break;
+            };
+            let item = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, item.into_bits()) };
+            let item_bits = item.bits();
+            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            };
+            let item_type = unsafe { object_type_id(item_ptr) };
+            if item_type != crate::bridge::type_id_list()
+                && item_type != crate::bridge::type_id_tuple()
+            {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            }
+            let fields = unsafe { seq_snapshot(item_ptr) };
+            if fields.len() != 2 {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            }
             let name = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
                 .ok_or_else(|| MoltObject::none().bits())?;
             let value = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
                 .ok_or_else(|| MoltObject::none().bits())?;
-            Ok((name, value))
-        })();
-        dec_ref_bits(_py, item_bits);
-        out.push(formatted?);
-    }
-    Ok(out)
+            out.push((name, value));
+        }
+        Ok(out)
+    })();
+    drop(unsafe { ProtectedRuntimeValue::from_owned_bits(_py, iterator.into_bits()) });
+    result
 }
 
 pub(super) fn urllib_cookiejar_handles_from_handlers(
@@ -1245,67 +1289,6 @@ pub(super) fn urllib_http_headers_to_list(
     }
 }
 
-pub(super) fn http_client_extract_headers(
-    _py: &molt_runtime_core::CoreGilToken,
-    headers_bits: u64,
-) -> Result<Vec<(String, String)>, u64> {
-    if obj_from_bits(headers_bits).is_none() {
-        return Ok(Vec::new());
-    }
-    let iter_bits = molt_iter(headers_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let mut out: Vec<(String, String)> = Vec::new();
-    loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
-            break;
-        }
-        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers must be an iterable of pairs",
-            ));
-        };
-        let is_sequence = unsafe {
-            let ty = object_type_id(item_ptr);
-            ty == crate::bridge::type_id_tuple() || ty == crate::bridge::type_id_list()
-        };
-        if !is_sequence {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "header entries must be (name, value) pairs",
-            ));
-        }
-        let pair = unsafe { seq_snapshot(item_ptr) };
-        if pair.len() < 2 {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "header entries must be (name, value) pairs",
-            ));
-        }
-        let Some(name) = string_obj_to_owned(obj_from_bits(pair[0])) else {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "header name must be str",
-            ));
-        };
-        let value = crate::bridge::format_obj_str(_py, obj_from_bits(pair[1]));
-        dec_ref_bits(_py, item_bits);
-        out.push((name, value.ok_or_else(|| MoltObject::none().bits())?));
-    }
-    Ok(out)
-}
-
 pub(super) fn http_client_response_handle_from_bits(
     _py: &molt_runtime_core::CoreGilToken,
     handle_bits: u64,
@@ -1341,75 +1324,54 @@ pub(super) fn http_client_connection_handle_from_bits(
     Ok(handle)
 }
 
-pub(super) fn http_client_execute_request(
-    _py: &molt_runtime_core::CoreGilToken,
-    mut input: HttpClientExecuteInput,
+pub(super) fn http_client_execute_wire(
+    py: &molt_runtime_core::CoreGilToken,
+    host: &str,
+    port: u16,
+    timeout: Option<f64>,
+    url: &str,
+    wire: &[u8],
+    use_tls: bool,
 ) -> Result<i64, u64> {
-    http_client_apply_default_headers(
-        &mut input.headers,
-        input.host.as_str(),
-        input.port,
-        input.skip_host,
-        input.skip_accept_encoding,
-    );
-    let request_target = if input.url.is_empty() {
-        "/".to_string()
-    } else {
-        input.url.clone()
-    };
-    let default_port: u16 = if input.use_tls { 443 } else { 80 };
-    let host_header = if input.port == default_port {
-        input.host.clone()
-    } else {
-        format!("{}:{}", input.host, input.port)
-    };
-    let tls_server_name = if input.use_tls {
-        Some(input.host.clone())
-    } else {
-        None
-    };
-    let req = UrllibHttpRequest {
-        host: input.host.clone(),
-        port: input.port,
-        path: request_target.clone(),
-        method: input.method,
-        headers: input.headers,
-        body: input.body,
-        timeout: input.timeout,
-        tls_server_name,
-    };
     let (code, reason, resp_headers, resp_body) =
-        match urllib_http_try_inmemory_dispatch(_py, &req, &request_target, &host_header) {
+        match urllib_http_try_inmemory_dispatch(py, host, port, timeout, wire) {
             Ok(Some(value)) => value,
-            Ok(None) => match urllib_http_send_request(&req, &request_target, &host_header) {
-                Ok(value) => value,
-                Err(err) => {
-                    if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock {
-                        return Err(raise_exception::<u64>(_py, "TimeoutError", "timed out"));
+            Ok(None) => {
+                match urllib_http_send_request(host, port, timeout, use_tls.then_some(host), wire) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock
+                        {
+                            return Err(raise_exception::<u64>(py, "TimeoutError", "timed out"));
+                        }
+                        return Err(raise_exception::<u64>(py, "OSError", &err.to_string()));
                     }
-                    return Err(raise_exception::<u64>(_py, "OSError", &err.to_string()));
                 }
-            },
+            }
             Err(bits) => return Err(bits),
         };
-    let scheme_prefix = if input.use_tls { "https" } else { "http" };
-    let response_url = if input.url.starts_with("http://") || input.url.starts_with("https://") {
-        input.url
-    } else if request_target.starts_with('/') {
-        format!("{scheme_prefix}://{host_header}{request_target}")
+    let scheme = if use_tls { "https" } else { "http" };
+    let default_port = if use_tls { 443 } else { 80 };
+    let authority = if port == default_port {
+        host.to_string()
     } else {
-        format!("{scheme_prefix}://{host_header}/{request_target}")
+        format!("{host}:{port}")
     };
-    let Some(handle) = urllib_response_store(urllib_response_from_parts(
+    let response_url = if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else if url.starts_with('/') {
+        format!("{scheme}://{authority}{url}")
+    } else {
+        format!("{scheme}://{authority}/{url}")
+    };
+    urllib_response_store(urllib_response_from_parts(
         resp_body,
         response_url,
         code,
         reason,
         resp_headers,
-    )) else {
-        return Err(MoltObject::none().bits());
-    };
-    Ok(handle)
+    ))
+    .ok_or_else(|| MoltObject::none().bits())
 }
 
 pub(super) fn urllib_http_extract_request_headers(
@@ -1454,50 +1416,52 @@ pub(super) fn urllib_http_extract_request_headers(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let mut out: Vec<(String, String)> = Vec::new();
-    loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
-            break;
-        }
-        let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        };
-        let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
-        {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        }
-        let fields = unsafe { seq_snapshot(item_ptr) };
-        if fields.len() != 2 {
-            dec_ref_bits(_py, item_bits);
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "headers mapping items must be pairs",
-            ));
-        }
-        let formatted: Result<_, u64> = (|| {
+    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, iter_bits) };
+    let result = (|| {
+        let mut out: Vec<(String, String)> = Vec::new();
+        loop {
+            let Some(item) =
+                iter_next_owned(_py, &iterator).map_err(|_| MoltObject::none().bits())?
+            else {
+                break;
+            };
+            let item = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, item.into_bits()) };
+            let item_bits = item.bits();
+            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            };
+            let item_type = unsafe { object_type_id(item_ptr) };
+            if item_type != crate::bridge::type_id_list()
+                && item_type != crate::bridge::type_id_tuple()
+            {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            }
+            let fields = unsafe { seq_snapshot(item_ptr) };
+            if fields.len() != 2 {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "headers mapping items must be pairs",
+                ));
+            }
             let name = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
                 .ok_or_else(|| MoltObject::none().bits())?;
             let value = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
                 .ok_or_else(|| MoltObject::none().bits())?;
-            Ok((name, value))
-        })();
-        dec_ref_bits(_py, item_bits);
-        out.push(formatted?);
-    }
-    Ok(out)
+            out.push((name, value));
+        }
+        Ok(out)
+    })();
+    drop(unsafe { ProtectedRuntimeValue::from_owned_bits(_py, iterator.into_bits()) });
+    result
 }
 
 pub(super) fn urllib_http_extract_method_and_body(
@@ -1882,51 +1846,54 @@ pub(super) fn http_parse_header_pairs(raw: &[u8]) -> Vec<(String, String)> {
 }
 
 pub(super) fn urllib_http_build_request_bytes(
+    py: &molt_runtime_core::CoreGilToken,
     req: &UrllibHttpRequest,
     request_target: &str,
     host_header: &str,
-) -> Vec<u8> {
-    let mut request = Vec::<u8>::new();
-    request.extend_from_slice(format!("{} {} HTTP/1.1\r\n", req.method, request_target).as_bytes());
+) -> Result<Vec<u8>, u64> {
+    http_client_validate_path(py, &req.host)?;
+    http_client_validate_path(py, host_header)?;
+    let mut request = http_client_request_line_bytes(py, &req.method, request_target)?;
+    let mut append_header = |name: &str, value: &str| -> Result<(), u64> {
+        let name = http_client_encode_text(py, name, b"ascii")?;
+        http_client_validate_header_name(py, &name)?;
+        let value = http_client_encode_text(py, value, b"latin-1")?;
+        http_client_validate_header_value(py, &value)?;
+        request.extend_from_slice(&name);
+        request.extend_from_slice(b": ");
+        request.extend_from_slice(&value);
+        request.extend_from_slice(b"\r\n");
+        Ok(())
+    };
     let mut has_host = false;
     let mut has_connection = false;
     let mut has_content_length = false;
     for (name, value) in &req.headers {
-        if name.eq_ignore_ascii_case("Host") {
-            has_host = true;
-        }
-        if name.eq_ignore_ascii_case("Connection") {
-            has_connection = true;
-        }
-        if name.eq_ignore_ascii_case("Content-Length") {
-            has_content_length = true;
-        }
-        request.extend_from_slice(name.as_bytes());
-        request.extend_from_slice(b": ");
-        request.extend_from_slice(value.as_bytes());
-        request.extend_from_slice(b"\r\n");
+        has_host |= name.eq_ignore_ascii_case("Host");
+        has_connection |= name.eq_ignore_ascii_case("Connection");
+        has_content_length |= name.eq_ignore_ascii_case("Content-Length");
+        append_header(name, value)?;
     }
     if !has_host {
-        request.extend_from_slice(b"Host: ");
-        request.extend_from_slice(host_header.as_bytes());
-        request.extend_from_slice(b"\r\n");
+        append_header("Host", host_header)?;
     }
     if !has_connection {
-        request.extend_from_slice(b"Connection: close\r\n");
+        append_header("Connection", "close")?;
     }
     if !req.body.is_empty() && !has_content_length {
-        request.extend_from_slice(format!("Content-Length: {}\r\n", req.body.len()).as_bytes());
+        append_header("Content-Length", &req.body.len().to_string())?;
     }
     request.extend_from_slice(b"\r\n");
     request.extend_from_slice(&req.body);
-    request
+    Ok(request)
 }
 
 pub(super) fn urllib_http_try_inmemory_dispatch(
     _py: &molt_runtime_core::CoreGilToken,
-    req: &UrllibHttpRequest,
-    request_target: &str,
-    host_header: &str,
+    host: &str,
+    port: u16,
+    timeout: Option<f64>,
+    request: &[u8],
 ) -> Result<Option<HttpResponseParts>, u64> {
     let module_name_ptr = alloc_string(_py, b"socketserver");
     if module_name_ptr.is_null() {
@@ -1974,14 +1941,14 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
         return Ok(None);
     }
 
-    let host_ptr = alloc_string(_py, req.host.as_bytes());
+    let host_ptr = alloc_string(_py, host.as_bytes());
     if host_ptr.is_null() {
         dec_ref_bits(_py, lookup_bits);
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
     }
     let host_bits = MoltObject::from_ptr(host_ptr).bits();
-    let port_bits = MoltObject::from_int(req.port as i64).bits();
+    let port_bits = MoltObject::from_int(port as i64).bits();
     let server_bits = unsafe { call_callable2(_py, lookup_bits, host_bits, port_bits) };
     dec_ref_bits(_py, host_bits);
     dec_ref_bits(_py, lookup_bits);
@@ -2009,15 +1976,14 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
         return Ok(None);
     }
 
-    let request = urllib_http_build_request_bytes(req, request_target, host_header);
-    let request_ptr = crate::bridge::alloc_bytes(_py, &request);
+    let request_ptr = crate::bridge::alloc_bytes(_py, request);
     if request_ptr.is_null() {
         dec_ref_bits(_py, dispatch_bits);
         dec_ref_bits(_py, server_bits);
         return Err(MoltObject::none().bits());
     }
     let request_bits = MoltObject::from_ptr(request_ptr).bits();
-    let timeout_bits = MoltObject::from_float(req.timeout.unwrap_or(5.0)).bits();
+    let timeout_bits = MoltObject::from_float(timeout.unwrap_or(5.0)).bits();
     let response_bits = unsafe { call_callable2(_py, dispatch_bits, request_bits, timeout_bits) };
     dec_ref_bits(_py, request_bits);
     dec_ref_bits(_py, dispatch_bits);
@@ -2054,24 +2020,25 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
 }
 
 pub(super) fn urllib_http_send_request(
-    req: &UrllibHttpRequest,
-    request_target: &str,
-    host_header: &str,
+    host: &str,
+    port: u16,
+    timeout: Option<f64>,
+    tls_server_name: Option<&str>,
+    request: &[u8],
 ) -> Result<HttpResponseParts, std::io::Error> {
-    let request = urllib_http_build_request_bytes(req, request_target, host_header);
     let mut raw = Vec::new();
     {
         let _release = crate::bridge::GilReleaseGuard::suspend();
-        let mut stream = TcpStream::connect((req.host.as_str(), req.port))?;
-        if let Some(timeout) = req.timeout {
+        let mut stream = TcpStream::connect((host, port))?;
+        if let Some(timeout) = timeout {
             let timeout = Duration::from_secs_f64(timeout);
             stream.set_read_timeout(Some(timeout))?;
             stream.set_write_timeout(Some(timeout))?;
         }
-        if let Some(server_name) = req.tls_server_name.as_deref() {
+        if let Some(server_name) = tls_server_name {
             #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             {
-                urllib_https_send_over_tls(stream, server_name, &request, &mut raw)?;
+                urllib_https_send_over_tls(stream, server_name, request, &mut raw)?;
             }
             #[cfg(not(all(feature = "tls", not(target_arch = "wasm32"))))]
             {
@@ -2082,7 +2049,7 @@ pub(super) fn urllib_http_send_request(
                 ));
             }
         } else {
-            stream.write_all(&request)?;
+            stream.write_all(request)?;
             if let Err(err) = stream.read_to_end(&mut raw) {
                 if (err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock)
                     && !raw.is_empty()
@@ -2224,11 +2191,12 @@ pub(super) fn urllib_request_response_handle_from_bits(
     Ok(handle)
 }
 
-pub(super) fn urllib_error_class_bits(
+pub(super) fn http_module_error_class_bits(
     _py: &molt_runtime_core::CoreGilToken,
+    module_name: &[u8],
     class_name: &[u8],
 ) -> Result<u64, u64> {
-    let module_name_ptr = alloc_string(_py, b"urllib.error");
+    let module_name_ptr = alloc_string(_py, module_name);
     if module_name_ptr.is_null() {
         return Err(MoltObject::none().bits());
     }
@@ -2253,14 +2221,39 @@ pub(super) fn urllib_error_class_bits(
         return Err(raise_exception::<u64>(
             _py,
             "RuntimeError",
-            "urllib.error class is unavailable",
+            "HTTP exception class is unavailable",
         ));
     }
     Ok(class_bits)
 }
 
+pub(super) fn http_client_raise_invalid_url(
+    py: &molt_runtime_core::CoreGilToken,
+    reason: &str,
+) -> u64 {
+    let class = match http_module_error_class_bits(py, b"http.client", b"InvalidURL") {
+        Ok(bits) => bits,
+        Err(bits) => return bits,
+    };
+    let message = alloc_string(py, reason.as_bytes());
+    if message.is_null() {
+        dec_ref_bits(py, class);
+        return MoltObject::none().bits();
+    }
+    let message = MoltObject::from_ptr(message).bits();
+    let exception = unsafe { call_class_init_with_args(py, class, &[message]) };
+    dec_ref_bits(py, message);
+    dec_ref_bits(py, class);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let result = crate::bridge::molt_raise(exception);
+    dec_ref_bits(py, exception);
+    result
+}
+
 pub(super) fn urllib_raise_url_error(_py: &molt_runtime_core::CoreGilToken, reason: &str) -> u64 {
-    let class_bits = match urllib_error_class_bits(_py, b"URLError") {
+    let class_bits = match http_module_error_class_bits(_py, b"urllib.error", b"URLError") {
         Ok(bits) => bits,
         Err(bits) => return bits,
     };
@@ -2293,7 +2286,7 @@ pub(super) fn urllib_raise_http_error(
     headers: &[(String, String)],
     fp_bits: u64,
 ) -> u64 {
-    let class_bits = match urllib_error_class_bits(_py, b"HTTPError") {
+    let class_bits = match http_module_error_class_bits(_py, b"urllib.error", b"HTTPError") {
         Ok(bits) => bits,
         Err(bits) => return bits,
     };
