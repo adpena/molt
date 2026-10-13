@@ -841,7 +841,9 @@ def _default_cargo_target_dir() -> Path:
         return Path(configured).expanduser()
 
     session_id = os.environ.get("MOLT_SESSION_ID") or f"mutation-{os.getpid()}"
-    return cargo_target_dir_for_artifact_root(artifact_root(REPO_ROOT), session_id)
+    return cargo_target_dir_for_artifact_root(
+        artifact_root(REPO_ROOT), session_id, source_root=REPO_ROOT
+    )
 
 
 def create_mutant_workspace(

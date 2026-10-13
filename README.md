@@ -174,6 +174,11 @@ For compatibility and proof detail:
 
 ## Development
 
+Use `molt dx run -- <command>` for bounded local iteration. Its persistent Cargo
+intermediates belong to one checkout; sibling worktrees share compiler/download
+caches, not mutable Cargo targets. See the [developer build guidance](docs/DEVELOPER_GUIDE.md)
+for explicit target overrides and separate queued release qualification.
+
 - Contributor map: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 - Operations and multi-agent workflow: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 - Build storage, output lifetimes, and proof custody: [docs/agent/PROOF_QUEUE.md](docs/agent/PROOF_QUEUE.md#cargo-output-placement)

@@ -92,7 +92,7 @@ def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
     return cargo_target_dir_for_environment(
-        artifact_root(_REPO_ROOT, env_view), env_view
+        artifact_root(_REPO_ROOT, env_view), env_view, source_root=_REPO_ROOT
     )
 
 

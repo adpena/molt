@@ -502,7 +502,7 @@ def test_cli_doctor_strict_treats_warning_only_dx_advice_as_nonfatal(
                 "detail": f"defaulting to {ROOT / 'target'}",
                 "level": "warning",
                 "advice": [
-                    "Maintainer/agent DX: export CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID"
+                    "Maintainer/agent DX: use molt dx run -- <command> for the persistent checkout target"
                 ],
             }
         ],

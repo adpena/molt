@@ -313,7 +313,9 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
 
     resolved_external = external_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_external)
-    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_external / "target" / "checkouts" / dx.checkout_component(repo_root)
+    )
     assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
     assert resolved_external.is_dir()
 
@@ -340,7 +342,9 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
 
     resolved_external = external_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_external)
-    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_external / "target" / "checkouts" / dx.checkout_component(repo_root)
+    )
     assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
     assert env["TMPDIR"] == str(resolved_external / "tmp")
     assert resolved_external.is_dir()
@@ -420,7 +424,9 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
 
     resolved_output_root = user_output_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_output_root)
-    assert env["CARGO_TARGET_DIR"] == str(resolved_output_root / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_output_root / "target" / "checkouts" / dx.checkout_component(repo_root)
+    )
 
 
 def test_run_context_require_external_artifacts_forces_candidate(
@@ -441,7 +447,12 @@ def test_run_context_require_external_artifacts_forces_candidate(
     )
 
     assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
-    assert env["CARGO_TARGET_DIR"] == str(external_root.resolve() / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        external_root.resolve()
+        / "target"
+        / "checkouts"
+        / dx.checkout_component(repo_root)
+    )
 
 
 def test_development_artifacts_requested_is_explicit_dev_control_plane() -> None:
@@ -750,7 +761,9 @@ PYTHONPATH = "{root}/src"
 
     resolved_root = explicit_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_root)
-    assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_root / "target" / "checkouts" / dx.checkout_component(project_root)
+    )
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["PYTHONPATH"] == str(project_root / "src")
 
@@ -923,9 +936,13 @@ def test_root_env_enters_only_the_family_molt_roots(
     assert set(env) == set(caller) | set(dx.MOLT_ROOT_ENV_KEYS)
     assert {key: env[key] for key in caller} == caller
     assert env["MOLT_EXT_ROOT"] == str(family)
-    # A generated session id never scopes the target: the family's stable one.
-    assert env["CARGO_TARGET_DIR"] == str(family / "target")
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(family / "target")
+    # A generated session id never scopes the target: this checkout's stable one.
+    assert env["CARGO_TARGET_DIR"] == str(
+        family / "target" / "checkouts" / dx.checkout_component(lane)
+    )
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(
+        family / "target" / "checkouts" / dx.checkout_component(lane)
+    )
     for key in dx.MOLT_ROOT_ENV_KEYS:
         path = Path(env[key])
         assert lane not in (path, *path.parents), (key, path)
@@ -943,7 +960,14 @@ def test_root_env_keeps_explicit_roots_and_pinned_sessions(
 
     assert kept["CARGO_TARGET_DIR"] == str(explicit.resolve())
     assert kept["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit.resolve())
-    assert pinned["CARGO_TARGET_DIR"] == str(family / "target" / "sessions" / "shard-a")
+    assert pinned["CARGO_TARGET_DIR"] == str(
+        family
+        / "target"
+        / "checkouts"
+        / dx.checkout_component(lane)
+        / "sessions"
+        / "shard-a"
+    )
     assert pinned["MOLT_SESSION_ID"] == "shard-a"
 
 
@@ -1171,7 +1195,12 @@ def test_run_context_fallback_preserves_checkout_family_artifact_custody(
     ).dx_env({}, create_dirs=False)
 
     assert env["MOLT_EXT_ROOT"] == str(custody_root.resolve())
-    assert env["CARGO_TARGET_DIR"] == str(custody_root.resolve() / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        custody_root.resolve()
+        / "target"
+        / "checkouts"
+        / dx.checkout_component(worktree)
+    )
 
 
 def test_toolchain_root_is_child_of_canonical_custody_root(tmp_path: Path) -> None:
@@ -1812,3 +1841,95 @@ def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
             dx.canonical_toolchain_root(
                 source, {**env, "MOLT_BUNDLE_ROOT": "different"}, require_exists=False
             )
+
+
+@pytest.mark.parametrize("session", [None, "same-pinned-session"])
+def test_sibling_checkouts_reuse_only_their_own_cargo_intermediates(tmp_path, session):
+    artifact = tmp_path / "artifacts"
+    first, second = tmp_path / "a", tmp_path / "b"
+    caller = {"MOLT_EXT_ROOT": str(artifact), "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1"}
+    if session:
+        caller["MOLT_SESSION_ID"] = session
+    a = RunContext(first).canonical_env(caller, create_dirs=False)
+    b = RunContext(second).canonical_env(caller, create_dirs=False)
+    again = RunContext(first, session_prefix="another-process").canonical_env(
+        caller, create_dirs=False
+    )
+    assert a["CARGO_TARGET_DIR"] != b["CARGO_TARGET_DIR"]
+    assert a["CARGO_TARGET_DIR"] == again["CARGO_TARGET_DIR"]
+    assert a["MOLT_DIFF_CARGO_TARGET_DIR"] == a["CARGO_TARGET_DIR"]
+    assert a["MOLT_CACHE"] == b["MOLT_CACHE"]
+    assert (
+        DxProject(first).dx_env(caller, create_dirs=False)["SCCACHE_DIR"]
+        == (DxProject(second).dx_env(caller, create_dirs=False)["SCCACHE_DIR"])
+    )
+    assert dx.project_cargo_target_dir(first, caller) == Path(a["CARGO_TARGET_DIR"])
+    assert dx.project_cargo_target_dir(second, caller) == Path(b["CARGO_TARGET_DIR"])
+
+
+@pytest.mark.slow
+def test_workspace_targets_execute_own_cargo_sources(tmp_path):
+    """HF-45: identical package names and old mtimes must not select a sibling."""
+    import time
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("real Cargo execution requires Cargo")
+    artifact = tmp_path / "artifacts"
+    roots = {name: tmp_path / name for name in ("a", "b")}
+    environments = {}
+    for name, value in (("a", "11"), ("b", "22")):
+        root = roots[name]
+        (root / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(
+            '[package]\nname="workspace-target-oracle"\nversion="0.1.0"\nedition="2021"\n[workspace]\n',
+            encoding="utf-8",
+        )
+        source = root / "src/main.rs"
+        source.write_text(f'fn main() {{ println!("{value}"); }}\n', encoding="utf-8")
+        os.utime(source, (1_600_000_000, 1_600_000_000))
+        caller = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in CANONICAL_RUN_ENV_KEYS
+            and not key.startswith("CARGO_")
+            and key not in {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"}
+        }
+        caller.update(
+            MOLT_EXT_ROOT=str(artifact), CARGO_INCREMENTAL="0", MOLT_USE_SCCACHE="0"
+        )
+        environments[name] = RunContext(root).canonical_env(caller, create_dirs=False)
+
+    def build_and_run(name, expected, *, fresh):
+        env = environments[name]
+        built = run_guarded_test_process(
+            [cargo, "build", "--offline", "--message-format=json"],
+            cwd=roots[name],
+            env=env,
+            timeout=30,
+        )
+        assert built.returncode == 0, built.stderr
+        records = [json.loads(line) for line in built.stdout.splitlines()]
+        binary = next(
+            row
+            for row in records
+            if row.get("reason") == "compiler-artifact" and row.get("executable")
+        )
+        assert binary["fresh"] is fresh
+        ran = run_guarded_test_process(
+            [binary["executable"]], cwd=roots[name], env=env, timeout=10
+        )
+        assert (ran.returncode, ran.stdout, ran.stderr) == (0, expected + "\n", "")
+
+    build_and_run("a", "11", fresh=False)
+    build_and_run("b", "22", fresh=False)
+    build_and_run("a", "11", fresh=True)
+    build_and_run("b", "22", fresh=True)
+    # A normal edit in the same workspace must invalidate Cargo's warm artifact.
+    source = roots["a"] / "src/main.rs"
+    source.write_text('fn main() { println!("33"); }\n', encoding="utf-8")
+    # Timestamp resolution varies across filesystems; put the input after its build.
+    changed = time.time() + 2
+    os.utime(source, (changed, changed))
+    build_and_run("a", "33", fresh=False)
+    build_and_run("b", "22", fresh=True)

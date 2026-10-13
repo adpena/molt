@@ -740,11 +740,10 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         record(
             "cargo-target-dir",
             False,
-            f"DX target root should be under {root / 'target' / 'sessions'}/$MOLT_SESSION_ID",
+            "Use the canonical checkout target from molt dx env",
             level="warning",
             advice=[
-                "Maintainer/agent DX: export MOLT_SESSION_ID=<session-id>",
-                "Maintainer/agent DX: export CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID",
+                "Maintainer/agent DX: use molt dx run -- <command> for the persistent checkout target",
                 "Maintainer/agent DX: export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
@@ -827,7 +826,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             level="warning",
             advice=[
                 "Maintainer/agent DX: export MOLT_EXT_ROOT=<artifact-root>",
-                "Maintainer/agent DX: export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID",
+                "Maintainer/agent DX: use molt dx env to select this checkout's Cargo target",
                 "Maintainer/agent DX: export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
             ]
             if not ext_ok

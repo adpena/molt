@@ -19,7 +19,9 @@ def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
 
     artifact_root = Path(env["MOLT_EXT_ROOT"])
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "smoke-suite")
+        molt_dx.cargo_target_dir_for_artifact_root(
+            artifact_root, "smoke-suite", source_root=tmp_path
+        )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")

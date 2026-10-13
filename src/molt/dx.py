@@ -155,7 +155,7 @@ class CheckoutCustody:
         return self.kind == "github-actions-ephemeral"
 
 
-# A session's Cargo target (`target/sessions/<component>`) and its backend-daemon
+# A session's Cargo target (`<checkout-target>/sessions/<component>`) and its backend-daemon
 # sidecar label share one path component. It must be injective: two sessions
 # that map to one component share one "isolated" build and one daemon label.
 _SESSION_COMPONENT_SAFE = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -259,20 +259,38 @@ def session_targets_dir(target_root: Path) -> Path:
 def cargo_target_dir_for_artifact_root(
     artifact_root: Path,
     session_id: str | None,
+    *,
+    source_root: Path,
 ) -> Path:
-    return session_scoped_target_dir(artifact_root / "target", session_id)
+    """Select persistent Cargo intermediates for one source checkout.
+
+    Local targets already belong to their checkout. Shared artifact roots need
+    the same stable checkout identity used by uv environments; a session alone
+    cannot distinguish divergent worktrees. Explicit target overrides bypass
+    this default selector and remain caller-owned.
+    """
+    artifact = artifact_root.expanduser().resolve()
+    source = source_root.expanduser().resolve()
+    target = artifact / "target"
+    if artifact != source:
+        target = target / "checkouts" / checkout_component(source)
+    return session_scoped_target_dir(target, session_id)
 
 
 def cargo_target_dir_for_environment(
     artifact_root: Path,
     env: Mapping[str, str],
+    *,
+    source_root: Path,
 ) -> Path:
-    """Resolve Cargo custody from the canonical session provenance markers."""
+    """Resolve checkout targets with the canonical session provenance markers."""
 
     session_id = env.get("MOLT_SESSION_ID", "").strip()
     if not session_id or generated_session_id(env):
         session_id = None
-    return cargo_target_dir_for_artifact_root(artifact_root, session_id)
+    return cargo_target_dir_for_artifact_root(
+        artifact_root, session_id, source_root=source_root
+    )
 
 
 # Peak resident memory a single rustc codegen job for the heavy molt-runtime (and
@@ -1390,7 +1408,8 @@ def project_cargo_target_dir(
     working directory, as Cargo reads it. Without
     one, a development artifact request (``MOLT_PREFER_EXTERNAL_ARTIFACTS`` or
     ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``) builds under the run context's
-    `artifact_root`, as ``molt dx run`` does; otherwise the project keeps
+    `artifact_root/target/checkouts/<checkout>`, as ``molt dx run`` does;
+    otherwise the project keeps
     Cargo's own ``<project>/target``. A pinned ``MOLT_SESSION_ID`` scopes
     either default (`cargo_target_dir_for_environment`); a generated one, or
     ``session_scoped=False``, does not. With ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``
@@ -1407,9 +1426,9 @@ def project_cargo_target_dir(
     else:
         root = project_cargo_target_base(project, env)
         target = (
-            cargo_target_dir_for_environment(root, env)
+            cargo_target_dir_for_environment(root, env, source_root=project)
             if session_scoped
-            else cargo_target_dir_for_artifact_root(root, None)
+            else cargo_target_dir_for_artifact_root(root, None, source_root=project)
         )
     _require_external_path("CARGO_TARGET_DIR", target, env, repo_root=project)
     return target
@@ -1812,7 +1831,7 @@ class RunContext:
         # MOLT_SESSION_ID (perf/bench/test-shard isolation, e.g. perf_scoreboard,
         # bench_*, molt_dev difftest, development_artifact_env(session_id=...)). The
         # common interactive/CI build path leaves it unset -> a STABLE persistent
-        # target dir on the fast external volume, so incremental compilation
+        # target dir for this checkout on the external volume, so compilation
         # artifacts SURVIVE across sessions/processes instead of paying a full cold
         # compile every invocation. Cargo's own build lock plus the compiler-build
         # resource mutex serialize concurrent writers safely. This is the
@@ -1828,7 +1847,9 @@ class RunContext:
         target_session_id = env["MOLT_SESSION_ID"] if session_pinned else None
         install_default(
             "CARGO_TARGET_DIR",
-            cargo_target_dir_for_artifact_root(ext_root, target_session_id),
+            cargo_target_dir_for_artifact_root(
+                ext_root, target_session_id, source_root=self.root
+            ),
         )
         if create_dirs and target_session_id is not None:
             # This is an ISOLATED per-lane target dir; register it so a completed
@@ -1836,7 +1857,7 @@ class RunContext:
             _maybe_register_lane_target(Path(ext_root), Path(env["CARGO_TARGET_DIR"]))
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # Incremental ON by default (fast warm rebuilds against the persistent
-        # per-artifact-root CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
+        # per-checkout CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
         # it back to "0" wherever it actually enables sccache (mutually exclusive).
         install_default("CARGO_INCREMENTAL", "1")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")

@@ -191,7 +191,9 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch, tmp_path) -> None
     artifact_root = molt_dx.checkout_custody(module.ROOT).custody_root
     assert env["MOLT_EXT_ROOT"] == str(artifact_root)
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(artifact_root, env)
+        molt_dx.cargo_target_dir_for_environment(
+            artifact_root, env, source_root=module.ROOT
+        )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     scratch = custody_layout.scratch_root(artifact_root, module.ROOT)
