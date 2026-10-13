@@ -188,7 +188,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "67c0beee0204e80307b60b64148fddcd8374b63ea4eb86274664e6091d95575d",
+      "sha256": "077cff4968a5853e758990d82befd411554da9e7d8d9d4d4a454b44ed99aadbb",
       "source_type": "module"
     },
     "loader_bridge.js": {

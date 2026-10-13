@@ -4,7 +4,10 @@ use molt_runtime_core::prelude::*;
 use num_bigint::BigInt;
 use num_traits::One;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{ErrorKind, Read, Write};
+use std::io::ErrorKind;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};

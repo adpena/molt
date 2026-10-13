@@ -603,6 +603,7 @@ pub fn bytes_like_slice(bits: u64) -> Option<&'static [u8]> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    fn __molt_http_require_operation(name_ptr: *const u8, name_len: usize) -> i32;
     fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32;
     fn __molt_http_env_state_get(
         key_ptr: *const u8,
@@ -610,6 +611,18 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
+}
+
+pub fn require_operation(
+    _py: &CoreGilToken,
+    operation: molt_runtime_core::host_capabilities_generated::OperationId,
+) -> Result<(), u64> {
+    let name = operation.as_str();
+    if unsafe { __molt_http_require_operation(name.as_ptr(), name.len()) } != 0 {
+        Ok(())
+    } else {
+        Err(MoltObject::none().bits())
+    }
 }
 
 pub fn has_capability(_py: &CoreGilToken, name: &str) -> bool {

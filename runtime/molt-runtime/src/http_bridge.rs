@@ -559,6 +559,17 @@ pub extern "C" fn __molt_http_bytes_like_slice(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_require_operation(name_ptr: *const u8, name_len: usize) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        // The extracted caller passes the generated OperationId's static name.
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        i32::from(crate::require_named_operation::<u64>(py, name, AuditArgs::None).is_ok())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
@@ -768,7 +779,6 @@ mod request_serialization_tests {
 
     #[test]
     fn header_predicates_and_final_wire_use_the_real_connection_owner() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
@@ -800,72 +810,405 @@ mod request_serialization_tests {
                 .unwrap();
             wire
         });
-        crate::with_gil_entry_nopanic!(py, {
-            let string = |value: &str| {
-                let ptr = alloc_string(py, value.as_bytes());
-                assert!(!ptr.is_null());
-                ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
-            };
-            let bytes = |value: &[u8]| {
-                let ptr = alloc_bytes(py, value);
-                assert!(!ptr.is_null());
-                ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
-            };
-            for invalid in [b"a\nb".as_slice(), b"a\rb", b"a\r\nInjected: yes", b"a\n"] {
-                let value = bytes(invalid);
-                assert_eq!(
-                    molt_http_client_validate_header_value(value.bits()),
-                    MoltObject::none().bits()
-                );
-                let raised =
-                    crate::builtins::exceptions::thread_last_exception_bits_noinc(py).unwrap();
-                assert_eq!(
-                    crate::type_of_bits(py, raised),
-                    exception_type_bits_from_name(py, "ValueError")
-                );
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            "net.socket,net.resolve,net.connect",
+            |py| {
+                let string = |value: &str| {
+                    let ptr = alloc_string(py, value.as_bytes());
+                    assert!(!ptr.is_null());
+                    ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+                };
+                let bytes = |value: &[u8]| {
+                    let ptr = alloc_bytes(py, value);
+                    assert!(!ptr.is_null());
+                    ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+                };
+                for invalid in [b"a\nb".as_slice(), b"a\rb", b"a\r\nInjected: yes", b"a\n"] {
+                    let value = bytes(invalid);
+                    assert_eq!(
+                        molt_http_client_validate_header_value(value.bits()),
+                        MoltObject::none().bits()
+                    );
+                    let raised =
+                        crate::builtins::exceptions::thread_last_exception_bits_noinc(py).unwrap();
+                    assert_eq!(
+                        crate::type_of_bits(py, raised),
+                        exception_type_bits_from_name(py, "ValueError")
+                    );
+                    clear_exception(py);
+                }
+                let name = bytes(b"\x0bX");
+                molt_http_client_validate_header_name(name.bits());
+                assert!(exception_pending(py));
                 clear_exception(py);
-            }
-            let name = bytes(b"\x0bX");
-            molt_http_client_validate_header_name(name.bits());
-            assert!(exception_pending(py));
-            clear_exception(py);
-            let value = bytes(b"\xff\r\n\tvalue");
-            molt_http_client_validate_header_value(value.bits());
-            assert!(!exception_pending(py));
-            let host = string("127.0.0.1");
-            let method = string("GET");
-            let path = string("/");
-            let handle = molt_http_client_connection_new(
-                host.bits(),
-                MoltObject::from_int(i64::from(port)).bits(),
-                MoltObject::from_float(5.0).bits(),
-            );
-            assert!(!exception_pending(py));
-            let line = ExceptionValue::adopt(
-                py,
-                molt_http_client_connection_putrequest(handle, method.bits(), path.bits()),
-            );
-            assert!(!exception_pending(py));
-            assert_eq!(
-                unsafe {
-                    crate::object::memoryview::bytes_like_slice(
-                        MoltObject::from_bits(line.bits()).as_ptr().unwrap(),
-                    )
-                    .unwrap()
-                },
-                b"GET / HTTP/1.1"
-            );
-            let wire = bytes(b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n");
-            molt_http_client_connection_send(handle, wire.bits());
-            assert!(!exception_pending(py));
-            let response = molt_http_client_connection_getresponse(handle);
-            assert!(!exception_pending(py));
-            molt_http_client_response_drop(response);
-            molt_http_client_connection_drop(handle);
-        });
+                let value = bytes(b"\xff\r\n\tvalue");
+                molt_http_client_validate_header_value(value.bits());
+                assert!(!exception_pending(py));
+                let host = string("127.0.0.1");
+                let method = string("GET");
+                let path = string("/");
+                let handle = molt_http_client_connection_new(
+                    host.bits(),
+                    MoltObject::from_int(i64::from(port)).bits(),
+                    MoltObject::from_float(5.0).bits(),
+                );
+                assert!(!exception_pending(py));
+                let line = ExceptionValue::adopt(
+                    py,
+                    molt_http_client_connection_putrequest(handle, method.bits(), path.bits()),
+                );
+                assert!(!exception_pending(py));
+                assert_eq!(
+                    unsafe {
+                        crate::object::memoryview::bytes_like_slice(
+                            MoltObject::from_bits(line.bits()).as_ptr().unwrap(),
+                        )
+                        .unwrap()
+                    },
+                    b"GET / HTTP/1.1"
+                );
+                let wire = bytes(b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n");
+                molt_http_client_connection_send(handle, wire.bits());
+                assert!(!exception_pending(py));
+                let response = molt_http_client_connection_getresponse(handle);
+                assert!(!exception_pending(py));
+                molt_http_client_response_drop(response);
+                molt_http_client_connection_drop(handle);
+            },
+        );
         assert_eq!(
             server.join().unwrap(),
             b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n"
+        );
+    }
+
+    fn disable_proxy_environment(py: &PyToken<'_>, opener: u64) {
+        let name = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(alloc_string(py, b"http_no_proxy_handler")).bits(),
+        );
+        let handler = ExceptionValue::adopt(py, molt_module_new(name.bits()));
+        let key = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(alloc_string(py, b"proxies")).bits(),
+        );
+        let proxies = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
+        );
+        let dict = unsafe {
+            crate::object::layout::module_dict_bits(obj_from_bits(handler.bits()).as_ptr().unwrap())
+        };
+        assert!(unsafe {
+            dict_set_in_place(
+                py,
+                obj_from_bits(dict).as_ptr().unwrap(),
+                key.bits(),
+                proxies.bits(),
+            )
+        });
+        molt_urllib_request_add_handler(opener, handler.bits());
+        assert!(!exception_pending(py));
+    }
+
+    static LOCAL_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn forbidden_local_lookup(_host: u64, _port: u64) -> u64 {
+        LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            raise_exception::<u64>(py, "ValueError", "local lookup reached")
+        })
+    }
+
+    #[test]
+    fn request_admission_precedes_local_callbacks_and_tcp_for_both_public_consumers() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        for (tls, required) in [
+            (false, &["net.socket", "net.resolve", "net.connect"][..]),
+            (
+                true,
+                &[
+                    "net.socket",
+                    "net.resolve",
+                    "net.connect",
+                    "ssl.connect",
+                    "ssl.read",
+                    "ssl.write",
+                ][..],
+            ),
+        ] {
+            // No grants, each individually missing grant, then the actual allowed callback.
+            for missing_index in 0..=required.len() + 1 {
+                let grants = required
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &grant)| {
+                        (missing_index != 0 && missing_index != index + 1).then_some(grant)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let missing = required
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &grant)| {
+                        (missing_index == 0 || missing_index == index + 1).then_some(grant)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+                    &grants,
+                    |py| {
+                        let string = |text: &str| {
+                            let ptr = alloc_string(py, text.as_bytes());
+                            assert!(!ptr.is_null());
+                            ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+                        };
+                        let module_name = string("socketserver");
+                        let module = ExceptionValue::adopt(py, molt_module_new(module_name.bits()));
+                        assert!(!exception_pending(py));
+                        let callback_ptr = crate::alloc_function_obj(
+                            py,
+                            crate::provenance::abi::expose_function_address(
+                                forbidden_local_lookup as *const (),
+                            ),
+                            2,
+                        );
+                        assert!(!callback_ptr.is_null());
+                        unsafe {
+                            crate::object::layout::function_set_call_target_ptr(
+                                callback_ptr,
+                                forbidden_local_lookup as *const (),
+                            )
+                        };
+                        let callback =
+                            ExceptionValue::adopt(py, MoltObject::from_ptr(callback_ptr).bits());
+                        let lookup = string("_lookup_server");
+                        let dictionary = unsafe {
+                            crate::object::layout::module_dict_bits(
+                                obj_from_bits(module.bits()).as_ptr().unwrap(),
+                            )
+                        };
+                        assert!(unsafe {
+                            dict_set_in_place(
+                                py,
+                                obj_from_bits(dictionary).as_ptr().unwrap(),
+                                lookup.bits(),
+                                callback.bits(),
+                            )
+                        });
+                        molt_module_cache_set(module_name.bits(), module.bits());
+                        assert!(!exception_pending(py));
+                        LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
+                        let host = string("127.0.0.1");
+                        let method = string("GET");
+                        let path = string("/");
+                        let handle = if tls {
+                            molt_http_client_connection_new_https(
+                                host.bits(),
+                                MoltObject::from_int(i64::from(port)).bits(),
+                                MoltObject::from_float(0.01).bits(),
+                            )
+                        } else {
+                            molt_http_client_connection_new(
+                                host.bits(),
+                                MoltObject::from_int(i64::from(port)).bits(),
+                                MoltObject::from_float(0.01).bits(),
+                            )
+                        };
+                        let line = ExceptionValue::adopt(
+                            py,
+                            molt_http_client_connection_putrequest(
+                                handle,
+                                method.bits(),
+                                path.bits(),
+                            ),
+                        );
+                        assert!(!exception_pending(py));
+                        let ptr = alloc_bytes(py, b"GET / HTTP/1.1\r\n\r\n");
+                        assert!(!ptr.is_null());
+                        let wire = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
+                        molt_http_client_connection_send(handle, wire.bits());
+                        assert!(!exception_pending(py));
+                        let operation = if tls { "https.request" } else { "http.request" };
+                        let expected = if missing.is_empty() {
+                            ("ValueError", "local lookup reached".to_string())
+                        } else {
+                            (
+                                "PermissionError",
+                                format!("missing [{missing}] capabilities for '{operation}'"),
+                            )
+                        };
+                        let check_error = || {
+                            assert!(exception_pending(py));
+                            let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                            let message = ExceptionValue::adopt(
+                                py,
+                                crate::builtins::exceptions::molt_exception_message(error.bits()),
+                            );
+                            assert_eq!(
+                                crate::type_name(py, obj_from_bits(error.bits())).as_ref(),
+                                expected.0
+                            );
+                            assert_eq!(
+                                string_obj_to_owned(obj_from_bits(message.bits())).unwrap(),
+                                expected.1
+                            );
+                            clear_exception(py);
+                        };
+                        molt_http_client_connection_getresponse(handle);
+                        check_error();
+                        molt_http_client_connection_drop(handle);
+                        drop(line);
+                        // The real urllib intrinsic consumes the same shared boundary.
+                        let request_name = string("http_admission_request");
+                        let opener_name = string("http_admission_opener");
+                        let request =
+                            ExceptionValue::adopt(py, molt_module_new(request_name.bits()));
+                        let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
+                        let url = string(&format!(
+                            "{}://127.0.0.1:{port}/",
+                            if tls { "https" } else { "http" }
+                        ));
+                        let headers_ptr = alloc_dict_with_pairs(py, &[]);
+                        assert!(!headers_ptr.is_null());
+                        let headers =
+                            ExceptionValue::adopt(py, MoltObject::from_ptr(headers_ptr).bits());
+                        molt_urllib_request_request_init(
+                            request.bits(),
+                            url.bits(),
+                            MoltObject::none().bits(),
+                            headers.bits(),
+                            method.bits(),
+                        );
+                        molt_urllib_request_opener_init(opener.bits());
+                        disable_proxy_environment(py, opener.bits());
+                        assert!(!exception_pending(py));
+                        molt_urllib_request_open(opener.bits(), request.bits());
+                        check_error();
+                        assert_eq!(
+                            LOCAL_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst),
+                            if missing.is_empty() { 2 } else { 0 }
+                        );
+                        assert_eq!(
+                            listener.accept().unwrap_err().kind(),
+                            std::io::ErrorKind::WouldBlock
+                        );
+                    },
+                );
+            }
+        }
+    }
+
+    extern "C" fn redirect_lookup(_host: u64, _port: u64) -> u64 {
+        LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            let name = ExceptionValue::adopt(
+                py,
+                MoltObject::from_ptr(alloc_string(py, b"http_redirect_server")).bits(),
+            );
+            molt_module_cache_get(name.bits())
+        })
+    }
+
+    extern "C" fn redirect_dispatch(_request: u64, _timeout: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            MoltObject::from_ptr(alloc_bytes(py,
+                b"HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:1/next\r\nContent-Length: 0\r\n\r\n")).bits()
+        })
+    }
+
+    #[test]
+    fn redirect_reselects_https_admission_before_the_second_local_lookup() {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            "net.socket,net.resolve,net.connect",
+            |py| {
+                let string = |text: &str| {
+                    let ptr = alloc_string(py, text.as_bytes());
+                    assert!(!ptr.is_null());
+                    ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+                };
+                for (name, attribute, address) in [
+                    (
+                        "socketserver",
+                        "_lookup_server",
+                        redirect_lookup as *const (),
+                    ),
+                    (
+                        "http_redirect_server",
+                        "_dispatch",
+                        redirect_dispatch as *const (),
+                    ),
+                ] {
+                    let name = string(name);
+                    let module = ExceptionValue::adopt(py, molt_module_new(name.bits()));
+                    let function = crate::alloc_function_obj(
+                        py,
+                        crate::provenance::abi::expose_function_address(address),
+                        2,
+                    );
+                    assert!(!function.is_null());
+                    unsafe {
+                        crate::object::layout::function_set_call_target_ptr(function, address)
+                    };
+                    let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
+                    let attribute = string(attribute);
+                    let dict = unsafe {
+                        crate::object::layout::module_dict_bits(
+                            obj_from_bits(module.bits()).as_ptr().unwrap(),
+                        )
+                    };
+                    assert!(unsafe {
+                        dict_set_in_place(
+                            py,
+                            obj_from_bits(dict).as_ptr().unwrap(),
+                            attribute.bits(),
+                            function.bits(),
+                        )
+                    });
+                    molt_module_cache_set(name.bits(), module.bits());
+                    assert!(!exception_pending(py));
+                }
+                LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
+                let request_name = string("http_redirect_request");
+                let opener_name = string("http_redirect_opener");
+                let request = ExceptionValue::adopt(py, molt_module_new(request_name.bits()));
+                let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
+                let url = string("http://127.0.0.1:1/start");
+                let method = string("GET");
+                let headers = ExceptionValue::adopt(
+                    py,
+                    MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
+                );
+                molt_urllib_request_request_init(
+                    request.bits(),
+                    url.bits(),
+                    MoltObject::none().bits(),
+                    headers.bits(),
+                    method.bits(),
+                );
+                molt_urllib_request_opener_init(opener.bits());
+                disable_proxy_environment(py, opener.bits());
+                assert!(!exception_pending(py));
+                molt_urllib_request_open(opener.bits(), request.bits());
+                assert!(exception_pending(py));
+                let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                let message = ExceptionValue::adopt(
+                    py,
+                    crate::builtins::exceptions::molt_exception_message(error.bits()),
+                );
+                assert_eq!(
+                    crate::type_name(py, obj_from_bits(error.bits())).as_ref(),
+                    "PermissionError"
+                );
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(message.bits())).unwrap(),
+                    "missing [ssl.connect, ssl.read, ssl.write] capabilities for 'https.request'"
+                );
+                clear_exception(py);
+                assert_eq!(LOCAL_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst), 1);
+            },
         );
     }
 }

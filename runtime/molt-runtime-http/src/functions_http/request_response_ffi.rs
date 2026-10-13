@@ -283,15 +283,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         Ok(value) => value,
                         Err(bits) => return bits,
                     };
-                let proxy = match urllib_http_find_proxy_for_scheme(
-                    _py,
-                    opener_bits,
-                    &scheme,
-                    &target_host,
-                ) {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
+                let mut proxy: Option<String> = None;
                 let mut proxy_auth_header: Option<String> = None;
                 let mut proxy_auth_attempted = false;
                 let mut current_url = full_url.clone();
@@ -303,6 +295,14 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                     };
                 loop {
                     let parts = urllib_urlsplit_impl(&current_url, "", true);
+                    let hop_scheme = parts[0].as_str();
+                    if hop_scheme != "http" && hop_scheme != "https" {
+                        return urllib_raise_url_error(
+                            _py,
+                            "redirect target must use HTTP or HTTPS",
+                        );
+                    }
+                    let default_port = if hop_scheme == "https" { 443 } else { 80 };
                     let netloc_now = parts[1].clone();
                     let mut path = parts[2].clone();
                     if path.is_empty() {
@@ -316,6 +316,19 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         urllib_http_parse_host_port(&netloc_now, default_port);
                     if host_now.is_empty() {
                         return urllib_raise_url_error(_py, "no host given");
+                    }
+                    // Authentication retries keep the already selected peer.
+                    // Redirects reset this phase and select the new hop's route.
+                    if !proxy_auth_attempted {
+                        proxy = match urllib_http_find_proxy_for_scheme(
+                            _py,
+                            opener_bits,
+                            hop_scheme,
+                            &host_now,
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
                     }
                     let mut effective_headers = base_headers.clone();
                     urllib_cookiejar_apply_header_for_url(
@@ -348,7 +361,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         if proxy_host.is_empty() {
                             return urllib_raise_url_error(_py, "proxy URL is invalid");
                         }
-                        if scheme == "https" {
+                        if hop_scheme == "https" {
                             return urllib_raise_url_error(_py, "https proxies are not supported");
                         }
                         UrllibHttpRequest {
@@ -381,7 +394,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                             },
                             body: body.clone(),
                             timeout,
-                            tls_server_name: if scheme == "https" {
+                            tls_server_name: if hop_scheme == "https" {
                                 Some(host_now.clone())
                             } else {
                                 None
@@ -398,34 +411,25 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                             Ok(request) => request,
                             Err(bits) => return bits,
                         };
-                    let (code, reason, resp_headers, resp_body) =
-                        match urllib_http_try_inmemory_dispatch(
-                            _py,
-                            &req.host,
-                            req.port,
-                            req.timeout,
-                            &request,
-                        ) {
-                            Ok(Some(value)) => value,
-                            Ok(None) => match urllib_http_send_request(
-                                &req.host,
-                                req.port,
-                                req.timeout,
-                                req.tls_server_name.as_deref(),
-                                &request,
-                            ) {
-                                Ok(value) => value,
-                                Err(err) => {
-                                    if err.kind() == ErrorKind::TimedOut
-                                        || err.kind() == ErrorKind::WouldBlock
-                                    {
-                                        return urllib_http_timeout_error(_py);
-                                    }
-                                    return urllib_raise_url_error(_py, &err.to_string());
-                                }
-                            },
-                            Err(bits) => return bits,
-                        };
+                    let (code, reason, resp_headers, resp_body) = match urllib_http_send_request(
+                        _py,
+                        &req.host,
+                        req.port,
+                        req.timeout,
+                        req.tls_server_name.as_deref(),
+                        &request,
+                    ) {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(err)) => {
+                            if err.kind() == ErrorKind::TimedOut
+                                || err.kind() == ErrorKind::WouldBlock
+                            {
+                                return urllib_http_timeout_error(_py);
+                            }
+                            return urllib_raise_url_error(_py, &err.to_string());
+                        }
+                        Err(bits) => return bits,
+                    };
                     urllib_cookiejar_store_headers_for_url(
                         &cookiejar_handles,
                         &current_url,
@@ -470,6 +474,8 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         let next =
                             urllib_http_join_url(&current_url, location.as_deref().unwrap_or(""));
                         current_url = next;
+                        proxy_auth_header = None;
+                        proxy_auth_attempted = false;
                         if code == 303 || ((code == 301 || code == 302) && method != "HEAD") {
                             method = "GET".to_string();
                             body.clear();
