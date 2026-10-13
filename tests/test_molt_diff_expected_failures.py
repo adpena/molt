@@ -554,6 +554,7 @@ def test_run_diff_serial_emits_run_line_before_file_work(
         return {
             "path": file_path,
             "status": "pass",
+            "guard_signal": None,
             "stdout": "",
             "stderr": "",
             "duration_s": 0.25,
@@ -2157,6 +2158,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
         lambda *args, **kwargs: {
             "path": args[0],
             "status": "pass",
+            "guard_signal": None,
             "stdout": "",
             "stderr": "",
             "duration_s": 0.25,

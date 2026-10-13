@@ -176,17 +176,15 @@ pass.
 | Cache result representation and storage | The integrated wrapper uses the correct 72-byte extent, separating its CacheInfo owner from the canonical instance-dictionary tail. Recency uses one borrowed identity node per bounded entry, preserves callback/reentry ownership and allocates no recency storage for unlimited caches. The replaced heap/history path is deleted. Runtime controls, the matched cost probe and both compiled LRU programs pass at their recorded source coordinates; other target/profile cells remain unqualified (V1-05/V1-07). |
 | Filesystem and capability consumers | Compiled filesystem codecs and three WebSocket cases pass. Explicit select/poll and child IPC fixture grants are integrated, preserving negative capability controls. Socket, WebSocket and future retirement consult existing services. The fresh-process regression passes at `04d4c4d1b`, proving these cleanup paths leave cold I/O and scheduler storage unstarted. The corrected native capability consumers pass apart from the existing epoll and large-int pickle gaps. Child fixture grants do not qualify standalone multiprocessing without host Python (V1-11/V1-12). |
 | HTTP request fields and transport admission | Source integration `323675145` preserves putheader encoding, callback and finalizer order in its public frame; Python owns the pre-send buffer and Rust owns final wire bytes. Shared byte predicates reject invalid fields before dispatch. Five obsolete intrinsic entry points, duplicate connection state and the leaking iterator pair helper are deleted with their consumers and generated projections; 49 focused host checks pass; the changed native header and transport consumers pass at `d9850d279`. Shared transport inspection also exposed HTTP and urllib bypassing the canonical network/SSL capability authority before local dispatch and raw TCP/TLS. Integration `824a640c2` places aggregate operation admission in their existing common send boundary and deletes the duplicated caller dispatch paths. Canonical HTTP/HTTPS operations report every missing capability before effects. Redirects select each hop's actual scheme, default port and proxy, retiring the stale initial-scheme route that could send an HTTP-to-HTTPS redirect through plaintext; authentication retries retain their selected proxy peer. Thirty generator checks pass. The real wire/connection, full missing-grant matrix, callback/TCP ordering and redirected HTTPS denial controls pass at `d9850d279`. The earlier test-only exception-inspection failures are corrected without changing production oracles. All selected native public consumers pass at the same source; WASM execution remains separate. Broader body protocols, state/reentry, proxy, cookie and TLS policy obligations remain open (V1-11/V1-18). |
-| Deferred imports | Counter.most_common requires heapq, JSON raw_decode requires operator, and email requires email.generator absent from the current demand graph. Finish propagation through existing binding/import owners and retire the manual helper allowlist; do not replace it with eager whole-library expansion (HF-126). |
+| Deferred imports | The source-demand successor supplies the formerly missing heapq/operator/email.generator dependencies through the existing binding/import owners. Native Counter and both email consumers pass; JSON and actual WASM qualification remain explicit obligations. The retired manual helper allowlist is replaced by source value demand, not eager whole-library expansion (HF-126). |
 | Pretty-print recursion | Compiled pprint passes corrected recursion enrollment, existing context propagation and inherited builtin repr semantics. Remaining public surface obligations stay in V1-05/V1-18. |
 | Type refinement | The deterministic dependency worklist replaces the arbitrary 20-round cap. Compiled ZIP/argparse now passes the previously failing current pipeline; all 74 existing refinement tests also pass (HF-104). |
-| Remaining public surfaces | RotatingFileHandler, HTTPMessage assignment, FileIO opener keywords, binary-protocol large-int pickle, epoll defaults, SSLContext.get_ciphers and SSL certificate-loading arity remain concrete failing consumers under the existing runtime/ABI and stdlib obligations. |
+| Remaining public surfaces | RotatingFileHandler, HTTPMessage assignment, binary-protocol large-int pickle, epoll defaults, SSLContext.get_ciphers and SSL certificate-loading arity remain concrete failing consumers under the existing runtime/ABI and stdlib obligations. FileIO keyword qualification is recorded with the shared IO authority below. |
 
-Source comparison against main `599a81c571` confirms that the missing
-rotation, HTTP assignment and request-field validation, filecmp, FileIO keyword, binary pickle, epoll and SSL surfaces,
-the Counter deferred-import gap and statistics facade translation predate this
-candidate. They remain v1 release blockers. Keep their existing obligations
-separate from qualification of the changed authorities; do not classify a
-newly reached existing gap as a new migration regression without source evidence.
+Source comparison against main `599a81c571` confirms that the remaining
+rotation, HTTP assignment, binary pickle, epoll and SSL gaps predate this
+candidate. Their existing rows own the release obligations; the tables record
+the current qualification of corrected consumers.
 The focused declaration/frontend/heap and facade checks pass 678 cases after
 repairing one stale structural allocation assertion; generator freshness and
 the generator-authority audit pass. These are development-side results.
@@ -236,17 +234,27 @@ qualify the changed cleanup boundary on both targets. Preserve unrelated open
 release obligations without hiding failures behind expected-failure markers,
 fake implementations or permissive fixtures.
 
-The focused successor is still private. At `6a96d2498`, the native comparison
-cohort reports **11 passed and five failed**, with no skips, OOMs or guard
-failures. All 15 emitted images, the failed compiler case, and complete
-source/toolchain/process receipts are retained. Earlier failed-cohort evidence
-remains retained separately; matching prefixes are never whole-program passes.
+The focused successor is still private pending actual WASM qualification.
+At `8ff965f68`, the first selected async program aborts in the WASM backend
+after function optimization; the completed native results are not a WASM claim.
+The forced cohort stop leaves incomplete proof custody; no result from that
+run is qualified. The corrected differential runner carries the existing typed
+guard signal through its case record and compact worker result, stopping
+sequential, parallel, warmup and retry admission. Already-admitted parallel
+cases drain through their existing owners. Real subprocess closure and
+scheduler controls pass; unchanged-source controls expose the original
+continued-admission defect. This development-only repair adds no binary work.
+The remaining allocation diagnostic is one case with existing stage/limit
+evidence after safe disk recovery. The
+corrected native consumers below pass at their recorded source coordinates;
+these bounded Linux aarch64 results do not qualify the full release matrix.
+Earlier failed programs and their source/toolchain/process evidence are retained.
 
 | Changed authority | Current qualification and remaining work |
 | --- | --- |
-| Shared IO storage and intrinsic class ownership | Nineteen compiled Linux aarch64 micro-profile controls pass at `b24098d29`: slots/dictionaries, class reassignment, payloads, cycles and publication failure. Native file iteration and buffered/text IO pass; the full file-attribute fixture reaches a valid FileIO keyword rejection. All seven concrete constructors now share ordinary signature metadata; both custom IO class binders are deleted. This successor still needs compiled replay. |
-| Raised versus handled exception state | The compiled runtime control passes. Ordinary native exception flow passes. Async iteration compilation exposes an unlabeled lexical region; except-star drops a later clause after replacement. One labeled iteration handler and earlier replacement capture/clear repair the existing producer; 29 focused host controls and its generated protocol pass. Native/WASM replay remains required. |
-| Dictionary subclass backing and builtin parameter roles | Native dictionary-subclass storage, formatting, sorting, compile argument binding and enumerate pass. Counter reaches redundant hash callbacks; its successor reuses canonical subclass backing in the existing known-hash algorithm. The separate rich-comparison fixture still exposes GenericAlias result custody and unsigned-array conversion gaps. |
+| Shared IO storage and intrinsic class ownership | Nineteen compiled Linux aarch64 micro-profile controls pass at `b24098d29`: slots/dictionaries, class reassignment, payloads, cycles and publication failure. All seven concrete constructors now share ordinary signature metadata; both custom IO class binders are deleted. At `505c7ac53`, the complete native file-attribute and buffered/text fixtures pass, including keyword construction of all seven roots and their subclasses. Four compiled controls also pass for cold/warm signature publication with an incoming error, cache ownership and allocation failure. Actual WASM qualification remains required. |
+| Raised versus handled exception state | The compiled runtime control and ordinary native exception flow pass. One labeled iteration handler and earlier replacement capture/clear repair the producer; 29 focused host controls and its generated protocol pass, and the complete native except-star fixture passes at `505c7ac53`. Call-time anext acquisition passes both isolated allocation/retirement controls at `1476ca46a`. Custom await resumption now shares the native iterator dispatcher while retaining unboxed custom results; five ownership/failure controls pass at `e175193d8`. All four asyncio callback arities use canonical required attribute lookup, preserving missing-method name/object fields and descriptor failures without eager diagnostic-name allocation; both compiled controls and the complete native anext/await protocol programs pass at `104976f6c`. Actual WASM qualification and quantitative iterator cost remain open. |
+| Dictionary subclass backing and builtin parameter roles | Native formatting, sorting, compile argument binding and enumerate pass. Counter reuses canonical subclass backing in the existing known-hash algorithm and its complete native fixture passes at `505c7ac53`. Dictionary subclasses inherit the same physical repr renderer through the ordinary declaring slot; the replaced inline body is deleted. At `1476ca46a`, both extended dictionary storage/representation and count-elements custody comparisons pass, including callback mutation, ownership and exact exception controls. Actual WASM qualification remains required. The separate rich-comparison fixture still exposes GenericAlias result custody and unsigned-array conversion gaps. |
 | Regex, parsing and path consumers | Three compiled runtime regex controls pass; both native email fixtures pass with CPython FeedParser. Native path, pathlib, linecache and byte-glob comparisons pass. Five WASM attribute-emission controls pass on the host; affected actual WASM programs remain unqualified. |
 
 Existing gaps remain release obligations: ignored `compile(...,
@@ -289,6 +297,16 @@ build exposed one missing class-cleanup export reference; `19b4a05e9` corrects
 it before runtime qualification. This repair
 adds no work to emitted programs; broader build-footprint obligations remain
 with V1-07/HF-10.
+
+Successful compiler-cache reuse now refreshes the existing eviction owner at
+most once per five-minute maintenance interval. Shared archives, constituent
+objects, frontend JSON, optional native sidecars and WASM bundles use their
+existing admission and locks; stale eviction inventories are rechecked before
+removal. Immutable entry contents and required outputs remain unchanged.
+Focused controls distinguish hot-entry preservation from the old policy;
+source review retains approximate recency and explicit protected-file boundaries.
+Actual queued reuse, Rust/platform controls and end-to-end build savings remain
+unqualified. This is compiler/development work with no emitted-program cost.
 
 Matched optimized LRU images at `04d4c4d1b` and the preserved old algorithm
 at `2128fd3fa` differ only in the cache implementation. Seven alternating pairs

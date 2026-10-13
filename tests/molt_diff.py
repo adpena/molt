@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1951,7 +1952,7 @@ def _diff_worker(
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     with contextlib.redirect_stdout(buffer_out), contextlib.redirect_stderr(buffer_err):
-        status = diff_test(
+        record = diff_test(
             file_path,
             python_exe,
             build_profile=build_profile,
@@ -1960,7 +1961,8 @@ def _diff_worker(
         )
     return {
         "path": file_path,
-        "status": status,
+        "status": record["resolved_status"],
+        "guard_signal": record["guard_signal"],
         "stdout": buffer_out.getvalue(),
         "stderr": buffer_err.getvalue(),
         "duration_s": time.monotonic() - started,
@@ -2016,7 +2018,7 @@ def _diff_run_single(
     out_stream = _TeeStream(sys.stdout, buffer_out)
     err_stream = _TeeStream(sys.stderr, buffer_err)
     with contextlib.redirect_stdout(out_stream), contextlib.redirect_stderr(err_stream):
-        status = diff_test(
+        record = diff_test(
             file_path,
             python_exe,
             build_profile=build_profile,
@@ -2025,7 +2027,8 @@ def _diff_run_single(
         )
     return {
         "path": file_path,
-        "status": status,
+        "status": record["resolved_status"],
+        "guard_signal": record["guard_signal"],
         "stdout": buffer_out.getvalue(),
         "stderr": buffer_err.getvalue(),
         "duration_s": time.monotonic() - started,
@@ -4224,8 +4227,8 @@ def diff_test(
     build_profile: str = "dev",
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
-):
-    """Run one differential test across `targets` and return its RESOLVED status.
+) -> dict[str, object]:
+    """Run one differential test across `targets` and return its outcome record.
 
     The resolved status applies the expected-failure (xfail/xpass) overlay so the
     nightly suite stays green for by-design exclusions. The SUITE-HONESTY ratchet
@@ -4235,7 +4238,9 @@ def diff_test(
     (which would drift from these exact comparison semantics), the raw outcome is
     surfaced here, at the single chokepoint that computes it, and appended to the
     optional results sink keyed by MOLT_DIFF_RESULTS_JSONL. The sink is off by
-    default and never alters the returned (resolved) status.
+    default and never alters the returned outcome. The same record carries the
+    typed guard signal to cohort admission; process exit codes cannot establish
+    whether the operator interrupted the guard or the child exited itself.
 
     MULTI-BACKEND (doc 66): `targets` selects which backend(s) to validate
     (native / wasm / llvm / luau). Each backend is compared against CPython under
@@ -4265,9 +4270,10 @@ def diff_test(
         "resolved_status": None,
         "reason_tag": None,
         "expect_molt_fail": False,
+        "guard_signal": None,
     }
 
-    def _impl() -> str:
+    def _impl() -> None:
         meta = test_policy.parse_metadata(file_path)
         expect_molt_fail = meta.expect_molt_fail
         expect_fail_reason = meta.expected_failure_reason
@@ -4313,7 +4319,7 @@ def diff_test(
             record["raw_status"] = "skip"
             record["resolved_status"] = "skip"
             record["exclusion_reason"] = reason
-            return "skip"
+            return
 
         stdout_mode = meta.stdout_mode
         stderr_mode = meta.stderr_mode
@@ -4334,7 +4340,7 @@ def diff_test(
             memory_guard.infrastructure_failure_payload(cpython.infrastructure_failure)
         )
 
-        def _finalize_status(raw_status: str) -> str:
+        def _finalize_status(raw_status: str) -> None:
             resolved_status, reason_tag = test_policy.resolve_expected_failure_status(
                 expect_molt_fail=expect_molt_fail,
                 raw_status=raw_status,
@@ -4349,28 +4355,34 @@ def diff_test(
             elif reason_tag == "xpass":
                 reason_text = expect_fail_reason or "expected dynamic-semantics gap"
                 print(f"[XPASS] {file_path} ({reason_text})")
-            return resolved_status
 
+        if cpython.guard_signal is not None:
+            record["guard_signal"] = cpython.guard_signal
+            record["raw_status"] = record["resolved_status"] = "uncalibrated"
+            record["reason_tag"] = "guard_interrupted"
+            print(f"[UNCALIBRATED] {file_path} (cpython: operator interrupted)")
+            print(cpython.stderr)
+            return
         if cpython.infrastructure_failure is not None:
             print(f"[UNCALIBRATED] {file_path} (cpython infrastructure failed)")
             print(cpython.stderr)
             print(cpython.detail)
             record["raw_status"] = record["resolved_status"] = "uncalibrated"
             record["reason_tag"] = "infrastructure_error"
-            return "uncalibrated"
+            return
         if cpython.timed_out:
             print(f"[FAIL] {file_path} (cpython timed out)")
             print(cpython.stderr)
             record["raw_status"] = "fail"
             record["resolved_status"] = "fail"
             record["reason_tag"] = "timeout"
-            return "fail"
+            return
         if cpython.resource_failure is not None:
             print(f"[OOM] {file_path} (cpython)")
             print(cpython.stderr)
             record["raw_status"] = "oom"
             record["resolved_status"] = "oom"
-            return "oom"
+            return
         if cp_ret != 0 and (
             "msgpack is required for parse_msgpack fallback" in cp_err
             or "cbor2 is required for parse_cbor fallback" in cp_err
@@ -4378,7 +4390,7 @@ def diff_test(
             print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
             record["raw_status"] = "skip"
             record["resolved_status"] = "skip"
-            return "skip"
+            return
         record["cpython_stdout_sha256"] = hashlib.sha256(
             cp_out.encode("utf-8", errors="surrogateescape")
         ).hexdigest()
@@ -4441,6 +4453,22 @@ def diff_test(
                     execution_context,
                 )
                 continue
+            if outcome.guard_signal is not None:
+                _record_backend_result(
+                    record,
+                    file_path,
+                    backend,
+                    "uncalibrated",
+                    expect_molt_fail,
+                    outcome,
+                    execution_context,
+                )
+                record["guard_signal"] = outcome.guard_signal
+                record["raw_status"] = record["resolved_status"] = "uncalibrated"
+                record["reason_tag"] = "guard_interrupted"
+                print(f"[UNCALIBRATED] {file_path} ({backend}: operator interrupted)")
+                print(outcome.stderr)
+                return
             if outcome.infrastructure_failure is not None:
                 any_infrastructure_failure = True
                 _record_backend_result(
@@ -4472,7 +4500,7 @@ def diff_test(
                 print(outcome.stderr)
                 record["raw_status"] = "oom"
                 record["resolved_status"] = "oom"
-                return "oom"
+                return
             per_backend[backend] = outcome
             any_timeout |= outcome.timed_out
             ok, detail = _verdict(outcome)
@@ -4500,16 +4528,16 @@ def diff_test(
         if any_infrastructure_failure:
             record["raw_status"] = record["resolved_status"] = "uncalibrated"
             record["reason_tag"] = "infrastructure_error"
-            return "uncalibrated"
+            return
         if any_timeout:
             record["raw_status"] = "fail"
             record["resolved_status"] = "fail"
             record["reason_tag"] = "timeout"
-            return "fail"
+            return
         if any_unavailable:
             record["raw_status"] = "uncalibrated"
             record["resolved_status"] = "uncalibrated"
-            return "uncalibrated"
+            return
 
         # --- Cross-backend divergence sub-oracle (doc 66 FACT 2) --------------
         # When >=2 backends produced output, they must agree with EACH OTHER
@@ -4531,7 +4559,8 @@ def diff_test(
         return _finalize_status("pass")
 
     try:
-        return _impl()
+        _impl()
+        return record
     finally:
         _record_diff_result(record)
 
@@ -4557,6 +4586,9 @@ def _parallel_diff_results(
     while True:
         stopped |= trip_outcome() is not None
         while not stopped and len(pending) < jobs:
+            if trip_outcome() is not None:
+                stopped = True
+                break
             file_path = next(remaining, None)
             if file_path is None:
                 break
@@ -4585,6 +4617,7 @@ def _parallel_diff_results(
                 errors.append(exc)
                 stopped = True
                 continue
+            stopped |= result["guard_signal"] is not None
             stopped |= fail_fast and result["status"] in _FAILURE_STATUSES
             yield result
         stopped |= trip_outcome() is not None
@@ -4663,9 +4696,28 @@ def run_diff(
     sentinel_env_key = harness_memory_guard.repo_sentinel_active_env_key("MOLT_DIFF")
     sentinel_env_previous = os.environ.get(sentinel_env_key)
     sentinel_closed = False
+    guard_signal: int | None = None
+    signal_by_path: dict[str, int] = {}
+    previous_handlers: dict[int, object] = {}
+
+    def defer_suite_signal(signum: int, _frame: object) -> None:
+        nonlocal guard_signal
+        if guard_signal is None:
+            guard_signal = signum
 
     def suite_trip_outcome() -> compat_backends.BackendResult | None:
-        return _memory_guard_trip_outcome(suite_sentinel)
+        trip = _memory_guard_trip_outcome(suite_sentinel)
+        if trip is not None:
+            return trip
+        if guard_signal is not None:
+            return compat_backends.BackendResult(
+                None,
+                f"Operator interrupted cohort with {signal.Signals(guard_signal).name}; "
+                "new case admission stopped and running cases drained.\n",
+                128 + guard_signal,
+                guard_signal=guard_signal,
+            )
+        return None
 
     def close_suite_sentinel() -> None:
         nonlocal sentinel_closed
@@ -4683,6 +4735,18 @@ def run_diff(
                 os.environ[sentinel_env_key] = sentinel_env_previous
 
     try:
+        # A command guard temporarily owns these handlers while closing its
+        # children. Between commands and while waiting for parallel cases, defer
+        # the suite's stop until already-admitted cases have returned receipts.
+        if threading.current_thread() is threading.main_thread():
+            for signum in (
+                signal.SIGINT,
+                signal.SIGTERM,
+                getattr(signal, "SIGHUP", None),
+            ):
+                if signum is not None:
+                    previous_handlers[signum] = signal.getsignal(signum)
+                    signal.signal(signum, defer_suite_signal)
         if suite_sentinel is not None:
             os.environ[sentinel_env_key] = "1"
             atexit.register(close_suite_sentinel)
@@ -4735,11 +4799,16 @@ def run_diff(
                     build_profile,
                     execution_context=context,
                 )
+                if build_result.guard_signal is not None:
+                    defer_suite_signal(build_result.guard_signal, None)
+                    print(build_result.stderr)
                 if build_result.infrastructure_failure is not None:
                     raise RuntimeError(
                         f"warm-cache infrastructure failed for {file_path}: "
                         + "; ".join(build_result.infrastructure_failure.details)
                     )
+                if build_result.guard_signal is not None:
+                    break
                 if build_result.returncode != 0:
                     print(
                         f"[WARM-CACHE FAIL] {file_path}: {build_result.stderr.strip()}"
@@ -4758,6 +4827,9 @@ def run_diff(
                             targets,
                             compiler_target_python,
                         )
+                        if payload["guard_signal"] is not None:
+                            defer_suite_signal(payload["guard_signal"], None)
+                            signal_by_path[payload["path"]] = payload["guard_signal"]
                         path = payload["path"]
                         status = payload["status"]
                         assert isinstance(path, str) and isinstance(status, str)
@@ -4828,6 +4900,9 @@ def run_diff(
                             fail_fast=fail_fast,
                             trip_outcome=suite_trip_outcome,
                         ):
+                            if result["guard_signal"] is not None:
+                                defer_suite_signal(result["guard_signal"], None)
+                                signal_by_path[result["path"]] = result["guard_signal"]
                             path = result["path"]
                             status = result["status"]
                             assert isinstance(path, str) and isinstance(status, str)
@@ -4910,6 +4985,9 @@ def run_diff(
                     targets,
                     compiler_target_python,
                 )
+                if retry_payload["guard_signal"] is not None:
+                    defer_suite_signal(retry_payload["guard_signal"], None)
+                    signal_by_path[path] = retry_payload["guard_signal"]
                 retry_status = retry_payload["status"]
                 assert isinstance(retry_status, str)
                 status_by_path[path] = retry_status
@@ -4935,8 +5013,14 @@ def run_diff(
         skipped = len(skipped_files)
         oom = len([None for status in status_by_path.values() if status == "oom"])
         guard_infrastructure_failures = 0
-        if guard_trip_outcome is not None:
-            failed_files.append("<memory_guard>")
+        if guard_trip_outcome is not None and (
+            guard_trip_outcome.guard_signal is None or not signal_by_path
+        ):
+            failed_files.append(
+                "<operator_signal>"
+                if guard_trip_outcome.guard_signal is not None
+                else "<memory_guard>"
+            )
             failed += 1
             oom += int(guard_trip_outcome.resource_failure is not None)
             guard_infrastructure_failures += int(
@@ -4984,6 +5068,7 @@ def run_diff(
             "failed": failed,
             "oom": oom,
             "guard_infrastructure_failures": guard_infrastructure_failures,
+            "guard_signal": guard_signal,
             "skipped": skipped,
             "failed_files": failed_files,
             "skipped_files": skipped_files,
@@ -4992,6 +5077,11 @@ def run_diff(
                     "path": test_policy.normalize_repo_relative(path),
                     "status": status,
                     "duration_s": duration_by_path[path],
+                    **(
+                        {"guard_signal": signal_by_path[path]}
+                        if path in signal_by_path
+                        else {}
+                    ),
                 }
                 for path, status in sorted(status_by_path.items())
                 if path in duration_by_path
@@ -5067,7 +5157,11 @@ def run_diff(
         )
         return summary
     finally:
-        close_suite_sentinel()
+        try:
+            close_suite_sentinel()
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
 
 
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
@@ -5257,7 +5351,13 @@ if __name__ == "__main__":
             print(f"[LOCK] {exc}", file=sys.stderr)
             sys.exit(2)
         _emit_json(summary, args.json_output, args.json)
-        sys.exit(0 if summary["failed"] == 0 else 1)
+        sys.exit(
+            128 + summary["guard_signal"]
+            if summary["guard_signal"] is not None
+            else 0
+            if summary["failed"] == 0
+            else 1
+        )
     # Default test
     with open("temp_test.py", "w", encoding="utf-8") as f:
         f.write("print(1 + 2)\n")
@@ -5284,4 +5384,10 @@ if __name__ == "__main__":
         sys.exit(2)
     _emit_json(summary, args.json_output, args.json)
     os.remove("temp_test.py")
-    sys.exit(0 if summary["failed"] == 0 else 1)
+    sys.exit(
+        128 + summary["guard_signal"]
+        if summary["guard_signal"] is not None
+        else 0
+        if summary["failed"] == 0
+        else 1
+    )
