@@ -103,8 +103,12 @@ fn module_table_for(m: &TirModule, caller: &str) -> CallFactsTable {
     let cg = CallGraph::build(m);
     let summaries = ModuleSummaries::compute(m, &cg);
     let tti = TargetInfo::native_release_fast();
-    let mut tables = CallFactsTable::build_module(m, &cg, &summaries, &tti);
-    tables.remove(caller).expect("caller table present")
+    let func = m
+        .functions
+        .iter()
+        .find(|func| func.name == caller)
+        .expect("caller present");
+    CallFactsTable::build_for_function(func, m, &cg, &summaries, &tti)
 }
 
 // -- target classification (the #71 typed fact) ---------------------------
@@ -262,8 +266,8 @@ fn inlinable_leaf_is_eligible_and_matches_is_inlineable() {
     let cg = CallGraph::build(&m);
     let summaries = ModuleSummaries::compute(&m, &cg);
     let tti = TargetInfo::native_release_fast();
-    let tables = CallFactsTable::build_module(&m, &cg, &summaries, &tti);
-    let facts = tables["a"].get(res).unwrap();
+    let table = CallFactsTable::build_for_function(&m.functions[0], &m, &cg, &summaries, &tti);
+    let facts = table.get(res).unwrap();
     assert_eq!(facts.inlinable, InlineEligibility::Eligible);
     // EQUIVALENCE: the side-table eligibility bool == is_inlineable's bool.
     let b_body = m.functions.iter().find(|f| f.name == "b").unwrap();
@@ -486,10 +490,10 @@ fn local_floor_never_out_claims_module_table() {
     let cg = CallGraph::build(&m);
     let summaries = ModuleSummaries::compute(&m, &cg);
     let tti = TargetInfo::native_release_fast();
-    let module_tables = CallFactsTable::build_module(&m, &cg, &summaries, &tti);
     let a_body = m.functions.iter().find(|f| f.name == "a").unwrap();
+    let module_table = CallFactsTable::build_for_function(a_body, &m, &cg, &summaries, &tti);
     let local = CallFactsTable::build_local(a_body);
-    for (res, mfacts) in module_tables["a"].iter() {
+    for (res, mfacts) in module_table.iter() {
         let lfacts = local.get(res).expect("same call sites keyed");
         // The floor's target is always Opaque (weakest).
         assert_eq!(lfacts.target, CallTargetFact::Opaque);

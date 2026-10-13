@@ -1,70 +1,20 @@
-//! Whole-program **module pass phase** (Tier-0 substrate **S4**).
+//! Whole-program transformations over optimized TIR.
 //!
-//! Before this module existed, the TIR pipeline was *strictly per-function*:
-//! [`crate::tir::parallel::compile_module_parallel`] ran the S1
-//! [`PassManager`](crate::tir::pass_manager::PassManager) over each function
-//! independently, and the only whole-program structure (the call graph, the leaf
-//! set) lived in the SimpleIR layer of the native backend. There was no place to
-//! compute a module-level analysis that the interprocedural tier (inliner E1,
-//! IP-escape E3, IPSCCP E4, monomorphization E5) could read.
+//! The shared drivers run this phase after per-function optimization. It builds
+//! the call graph and summaries needed by inlining and generator fusion, then
+//! promotes slots, re-optimizes changed bodies, and finalizes terminal drops.
+//! The result names every changed function so SimpleIR consumers back-convert
+//! only those bodies. Owned-TIR consumers lower the transformed module directly.
 //!
-//! [`run_module_pipeline`] is that place. It runs **once, before** the
-//! per-function pipeline, over the whole [`TirModule`], and produces a
-//! [`ModuleAnalysis`] — the call graph plus bottom-up function summaries — that
-//! whole-program consumers read. It is the module-scope analog of S1's
-//! per-function [`AnalysisManager`](crate::tir::analysis::AnalysisManager): a
-//! single, shared, lazily-built source of interprocedural truth.
-//!
-//! ## How it composes with S1 + S2 + `parallel.rs` (the reconciliation)
-//!
-//! This phase **does not fork a parallel pipeline.** The contract is:
-//!
-//! 1. The driver lifts every function to TIR and assembles a [`TirModule`].
-//! 2. `run_module_pipeline(&mut module)` runs here, producing [`ModuleAnalysis`]
-//!    (read-only over the module — it builds the call graph + summaries, it does
-//!    not transform function bodies). The `&mut` is reserved for the future
-//!    module *transforms* (inlining splices bodies across functions); today the
-//!    phase is analysis-only, so it leaves bodies untouched.
-//! 3. The driver then runs the existing per-function pipeline
-//!    ([`compile_module_parallel`](crate::tir::parallel::compile_module_parallel),
-//!    rayon work-stealing, each function threading its own S1
-//!    [`AnalysisManager`] and the shared S2
-//!    [`TargetInfo`](crate::tir::target_info::TargetInfo)). The module phase
-//!    runs *before* this and its result is available for the duration of module
-//!    compilation.
-//!
-//! The S2 [`TargetInfo`] threads through unchanged: it is the same `&TargetInfo`
-//! that `compile_module_parallel` already shares with every function, and it is
-//! passed here so a future cost-model-gated module transform (the inliner's
-//! per-call ROI) consults the one source of truth rather than a fresh constant.
-//!
-//! ## The native-backend caveat (batching / per-function roundtrip)
-//!
-//! The native driver compiles in two shapes (see `native_backend::simple_backend`
-//! and `main.rs`):
-//!
-//! * **Non-batched**: the whole program is one object; the leaf set is computed
-//!   over all functions.
-//! * **Batched** (>64 functions): `main.rs` builds ONE whole-program module
-//!   context (including the leaf set) over *all* functions, then partitions into
-//!   batches that each receive that same whole-program context. So even in the
-//!   batched shape the leaf set this phase computes is whole-program — sound.
-//!
-//! Where a batch backend recomputes analysis over only its own function subset
-//! (the per-batch fallback when no module context is threaded), the call graph
-//! sees only that subset: any call to a function outside the batch resolves to
-//! [`crate::tir::call_graph::CallEdge::Opaque`] (the named callee is not in this
-//! sub-module), which *disqualifies* leaf-ness — strictly conservative, never
-//! unsound. A function the per-batch graph would have called a leaf can only be
-//! "more leaf" than the whole-program truth allows, and since opaque calls block
-//! leaf-ness, the per-batch set is a subset of the whole-program set. Skipping
-//! the recursion guard on a subset of the truly-safe leaves is sound (it just
-//! forgoes an optimization on the cross-batch callers).
+//! Analyses of the final module belong to their consumers: FactGraph requests
+//! precise call facts for its selected function, and native codegen computes its
+//! leaf set after its later lifetime and function-splitting transformations.
 
 use super::call_graph::CallGraph;
 use super::function::TirModule;
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -133,66 +83,8 @@ fn emit_module_stage_audit(
     );
 }
 
-/// The result of the whole-program module phase: the interprocedural analysis
-/// the IPO tier reads. Computed once per module, shared read-only.
-#[derive(Debug, Clone, Default)]
-pub struct ModuleAnalysis {
-    /// The whole-program call graph (static-direct + opaque edges, SCC /
-    /// bottom-up order / recursive set / leaf set).
-    pub call_graph: CallGraph,
-    /// Bottom-up function summaries (leaf / op-count / return-type), one per
-    /// function in the module.
-    pub summaries: ModuleSummaries,
-    /// Names of the functions the inliner CHANGED (had ≥1 callee spliced in).
-    /// Production codegen back-converts ONLY these functions' (post-inline) TIR
-    /// to SimpleIR; every other function keeps its byte-identical per-function
-    /// pipeline output (no redundant second TIR roundtrip).
-    pub changed_functions: Vec<String>,
-    /// **CallFacts** side-tables, one per function (keyed by function name), each
-    /// keyed internally by a call op's result `ValueId` (foundation design 47).
-    /// The IR-fact half of doc 46 §4.1 (FactGraph): the typed call target, typed
-    /// return, leaf / no-throw / inline-eligibility facts that backends and the
-    /// `tools/call_fact_coverage.py` census read. Built over the **post-inline**
-    /// module (same rebuild as `call_graph` / `summaries`), so the recorded facts
-    /// describe the program the backends actually lower. Phase 1a attaches these
-    /// (consumed by nothing on the hot path → byte-identical); later phases route
-    /// call lowering / RC elision / devirt through them.
-    pub call_facts: std::collections::BTreeMap<String, super::call_facts::CallFactsTable>,
-}
-
-impl ModuleAnalysis {
-    /// The leaf-function set — functions that make no call of any kind and so
-    /// cannot recurse. This is the SOUND, strictly-more-precise replacement for
-    /// the native backend's legacy SimpleIR "has no call op" leaf scan.
-    pub fn leaf_functions(&self) -> std::collections::BTreeSet<String> {
-        self.call_graph.leaf_functions()
-    }
-
-    /// The [`CallFactsTable`](super::call_facts::CallFactsTable) for the function
-    /// named `name`, if it is in the module. Each entry is keyed by a call op's
-    /// result `ValueId` (foundation design 47).
-    pub fn call_facts_for(&self, name: &str) -> Option<&super::call_facts::CallFactsTable> {
-        self.call_facts.get(name)
-    }
-}
-
-/// Run the whole-program module pass phase over `module`, returning the
-/// [`ModuleAnalysis`] for the duration of module compilation.
-///
-/// Runs **before** the per-function
-/// [`compile_module_parallel`](crate::tir::parallel::compile_module_parallel).
-/// The phase:
-///
-/// 1. Builds the call graph + bottom-up summaries over the lifted module.
-/// 2. Runs the **E1 function inliner** ([`run_inliner`](super::passes::inliner::run_inliner)):
-///    a module *transform* that splices in-budget, exception-free,
-///    non-recursive, non-generator leaf-ish callees at their static call sites,
-///    bottom-up, re-optimizing each merged caller via the per-function pipeline.
-/// 3. Because step 2 mutates bodies (calls disappear, op counts change), the
-///    call graph and summaries are **rebuilt** so the returned [`ModuleAnalysis`]
-///    reflects the post-inline module — the leaf set the native backend's
-///    recursion-guard skip consults must describe the *inlined* program, not the
-///    pre-inline one.
+/// Transform `module` and return changed function names in deterministic order.
+/// Bodies and ownership markers can both require SimpleIR back-conversion.
 ///
 /// `tti` is the unified cost model (Tier-0 S2): the single source of truth for
 /// the inliner's per-callee budget.
@@ -207,7 +99,7 @@ pub fn run_module_pipeline(
     module: &mut TirModule,
     tti: &TargetInfo,
     non_inlinable: &std::collections::HashSet<String>,
-) -> ModuleAnalysis {
+) -> BTreeSet<String> {
     let audit_start = Instant::now();
     emit_module_stage_audit("start", module, None, audit_start.elapsed().as_millis());
     let call_graph = CallGraph::build(module);
@@ -314,17 +206,10 @@ pub fn run_module_pipeline(
         audit_start.elapsed().as_millis(),
     );
 
-    let mut changed_functions = inline_stats.changed_functions;
-    for name in fusion_stats.changed_functions {
-        if !changed_functions.contains(&name) {
-            changed_functions.push(name);
-        }
-    }
-    for name in promo_changed {
-        if !changed_functions.contains(&name) {
-            changed_functions.push(name);
-        }
-    }
+    let mut changed_functions: BTreeSet<String> =
+        inline_stats.changed_functions.into_iter().collect();
+    changed_functions.extend(fusion_stats.changed_functions);
+    changed_functions.extend(promo_changed);
 
     // ── RC drop insertion: the terminal phase (design 20, round-7) ──────────
     //
@@ -359,60 +244,9 @@ pub fn run_module_pipeline(
         Some(drop_changed.len()),
         audit_start.elapsed().as_millis(),
     );
-    for name in drop_changed {
-        if !changed_functions.contains(&name) {
-            changed_functions.push(name);
-        }
-    }
+    changed_functions.extend(drop_changed);
     emit_module_stage_audit(
         "after-drop-change-merge",
-        module,
-        Some(changed_functions.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
-    // Rebuild over the post-inline module: inlining removed `Call` ops and grew
-    // caller bodies, so the leaf set / edges / op counts the returned analysis
-    // exposes must reflect the merged program.
-    emit_module_stage_audit(
-        "before-post-call-graph",
-        module,
-        Some(changed_functions.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    let call_graph = CallGraph::build(module);
-    emit_module_stage_audit(
-        "after-post-call-graph",
-        module,
-        Some(changed_functions.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    let summaries = ModuleSummaries::compute(module, &call_graph);
-    emit_module_stage_audit(
-        "after-post-summaries",
-        module,
-        Some(changed_functions.len()),
-        audit_start.elapsed().as_millis(),
-    );
-
-    // CallFacts (foundation design 47): the per-call-site fact records, built
-    // over the SAME post-inline module + call graph + summaries the backends
-    // lower. Pure analysis (read-only — it records facts onto a side-table keyed
-    // by each call op's result `ValueId`, it never mutates a body), so it is
-    // byte-identical: Phase 1a attaches the facts but nothing on the hot path
-    // consumes them yet. `is_inlineable`'s own eligibility classifier fills the
-    // `inlinable` field, so the recorded facts can never disagree with the
-    // inliner (single source of truth, doc 47 §7).
-    emit_module_stage_audit(
-        "before-call-facts",
-        module,
-        Some(changed_functions.len()),
-        audit_start.elapsed().as_millis(),
-    );
-    let call_facts =
-        super::call_facts::CallFactsTable::build_module(module, &call_graph, &summaries, tti);
-    emit_module_stage_audit(
-        "after-call-facts",
         module,
         Some(changed_functions.len()),
         audit_start.elapsed().as_millis(),
@@ -426,12 +260,7 @@ pub fn run_module_pipeline(
         report_memgvn_producer_effect(module);
     }
 
-    ModuleAnalysis {
-        call_graph,
-        summaries,
-        changed_functions,
-        call_facts,
-    }
+    changed_functions
 }
 
 /// Count, per module, how many functions have at least one MemGVN-forwardable
@@ -641,55 +470,10 @@ mod tests {
     }
 
     #[test]
-    fn module_phase_produces_call_graph_and_summaries() {
-        // `b` is a trivial inlinable leaf (no ops, just Return), so the module
-        // phase inlines the static call `a → b`. The returned analysis is
-        // rebuilt over the post-inline module: every function is summarized, and
-        // because a's only call was to the inlined-away b, the post-inline graph
-        // records no a→b edge (a is now a leaf).
-        let mut m = module(vec![func_calling("a", &["b"]), func_calling("b", &[])]);
-        let tti = TargetInfo::native_release_fast();
-        let analysis = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
-
-        // Both functions remain summarized (the post-inline rebuild covers all).
-        assert!(analysis.summaries.get("a").is_some());
-        assert!(analysis.summaries.get("b").is_some());
-        // b was inlined into a, so a no longer statically calls b.
-        assert!(
-            analysis.call_graph.callees("a").is_empty(),
-            "a's static call to b was inlined away"
-        );
-        // After inlining, a makes no call → it joins the leaf set alongside b.
-        assert!(analysis.leaf_functions().contains("a"));
-        assert!(analysis.leaf_functions().contains("b"));
-    }
-
-    #[test]
-    fn module_phase_leaf_set_matches_call_graph() {
-        let mut m = module(vec![
-            func_calling("a", &["b"]),
-            func_calling("b", &["c"]),
-            func_calling("c", &[]),
-            func_calling("d", &[]),
-        ]);
-        let tti = TargetInfo::native_release_fast();
-        let analysis = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
-        assert_eq!(
-            analysis.leaf_functions(),
-            analysis.call_graph.leaf_functions()
-        );
-        assert_eq!(
-            analysis.summaries.leaf_functions(),
-            analysis.leaf_functions()
-        );
-    }
-
-    #[test]
     fn module_phase_inlines_static_calls() {
         // The module phase now runs the E1 inliner (a body transform). A static
         // call `a → b` to an in-budget, exception-free, non-recursive leaf `b`
-        // is inlined: a's body no longer contains the `Call` to b, and the
-        // post-inline analysis no longer records the a→b edge.
+        // is inlined: a's body no longer contains the `Call` to b.
         let a = func_calling("a", &["b"]);
         // `b` is a trivial leaf: a single ConstNone op + Return. Inlinable.
         let mut b = TirFunction::new(
@@ -712,7 +496,15 @@ mod tests {
 
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
-        let _ = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
+        let changed = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
+        // Inlining changes a; terminal ownership markers change both a and b.
+        // Each name appears once even when multiple phases change the body.
+        assert_eq!(changed, BTreeSet::from(["a".into(), "b".into()]));
+        assert_eq!(
+            m.functions.len(),
+            2,
+            "inlining preserves function definitions"
+        );
 
         // a's body no longer has a Call op (b was inlined).
         let a_after = m.functions.iter().find(|f| f.name == "a").unwrap();

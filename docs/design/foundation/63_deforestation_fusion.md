@@ -301,10 +301,11 @@ op added to `op_kinds.toml` lands in K5 by default (fail-closed) until classifie
 genexpr returned from a helper, or a stdlib iterator-producer, defeats fusion entirely
 (the consumer sees an opaque `GetIter` on a call result).
 
-**The representation.** A per-function interprocedural summary, computed in the module
-phase and *seeded* via the existing `AnalysisManager::prepopulate` +
-`CallFactsTable::build_module` pattern (`call_facts.rs:46-63`) — the same seeding
-machinery, a new summary, NOT a side channel:
+**The proposed representation.** A per-function interprocedural summary requested
+by the fusion consumer with explicit current module context. The existing
+`CallFactsTable::build_for_function` demonstrates demand-scoped precise analysis;
+it does not prepopulate per-function managers. Any FusionSummary cache must own
+its invalidation and have an actual consumer before adding module-wide work:
 
 ```rust
 struct FusionSummary {
@@ -479,8 +480,8 @@ function — after inlining (the common case) or via the summary without inlinin
 fusable producer).
 
 **Gate:** a cross-call pipeline benchmark (a `def gen(): return (… for …)` consumed by
-`sum`/`list` in `main`) warm GREEN all backends; `FusionSummary` seeded via
-`prepopulate` (no side channel), self-validated against `call_fact_coverage.py`; the
+`sum`/`list` in `main`) warm GREEN all backends; `FusionSummary` requested by
+its consumer with explicit current module context and independently validated; the
 inliner's fuse-to-inline profitability proven (a fusable-producer callee gets inlined
 *and* the result fuses, measured); deopt/correctness differential (a callee whose
 returned producer is *not* actually fusable at a call site takes the unfused path); no red.
@@ -558,8 +559,8 @@ validator is a half-rung (doc 65 §4 invariant 4).
 
 **With doc 59 (the semantic fact plane):** every fusion fact follows the doc-59 workflow
 — `op_kinds.toml` columns generated + `--check`-gated (the two new columns §2.2), the
-analysis a registered `AnalysisId` with the standard invalidation, the IP summary a
-CallFacts member seeded via `prepopulate`. Zero hand-classified matches added; the new
+cached local analysis a registered `AnalysisId` with standard invalidation, and
+the IP summary requested with explicit current module context by its consumer. Zero hand-classified matches added; the new
 columns are rendered exhaustively (a new OpCode is a build error until classified into a
 killer class). This arc *exercises* doc 59's machinery; it adds no second authority.
 

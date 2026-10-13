@@ -43,4 +43,4 @@ pub use self::target_info::{
 pub use self::types::{FuncSignature, TirType};
 pub use self::value_range::ValueRangeResult;
 pub use self::values::{TirValue, ValueId};
-pub use module_phase::{ModuleAnalysis, run_module_pipeline};
+pub use module_phase::run_module_pipeline;

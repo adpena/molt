@@ -208,19 +208,18 @@ impl SimpleBackend {
             let non_inlinable: HashSet<String> = external_symbols.into_iter().collect();
             let native_cached_tir = native_cached_tir
                 .expect("native TIR custody missing for Cranelift module pipeline");
-            let _module_run =
-                crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
-                    &mut ir.functions,
-                    native_cached_tir,
-                    crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
-                        target_info: native_tti,
-                        module_name: "native_module",
-                        non_inlinable: &non_inlinable,
-                        missing_tir_context: "native TIR cache runner",
-                        backconvert_context: "native TIR module pipeline",
-                        stage_observer: None,
-                    },
-                );
+            crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
+                &mut ir.functions,
+                native_cached_tir,
+                crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
+                    target_info: native_tti,
+                    module_name: "native_module",
+                    non_inlinable: &non_inlinable,
+                    missing_tir_context: "native TIR cache runner",
+                    backconvert_context: "native TIR module pipeline",
+                    stage_observer: None,
+                },
+            );
         }
     }
 }

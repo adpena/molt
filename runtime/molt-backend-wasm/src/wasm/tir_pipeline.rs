@@ -67,7 +67,7 @@ pub(super) fn run_tir_pipeline(
     let mut stage_observer = |stage: crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage<
         '_,
     >| emit_wasm_tir_pipeline_stage(stage_audit, stage);
-    let _module_run = crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
+    crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
         &mut ir.functions,
         &mut cached_tir,
         crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {

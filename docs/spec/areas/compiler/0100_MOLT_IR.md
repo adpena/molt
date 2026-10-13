@@ -2,6 +2,26 @@
 
 Molt IR is typed SSA with explicit control flow, ownership, and effects. It exists in multiple layers (HIR, TIR, LIR), each enforcing stronger invariants to enable aggressive optimization while preserving soundness.
 
+## Module transformations and demanded analyses
+
+The shared cached TIR runner optimizes functions before the module phase.
+`molt-passes::tir::module_phase::run_module_pipeline` builds the initial call
+graph and summaries consumed by inlining and generator fusion, then performs
+slot promotion, changed-body optimization, and terminal ownership finalization.
+It returns a deterministic `BTreeSet<String>` of changed function names. The
+SimpleIR wrapper consumes this set directly for selective back-conversion and
+returns its count; the owned-TIR wrapper returns the transformed bodies. Changes
+from multiple passes name a function once. Body order and original SimpleIR
+indices remain independent of set order.
+
+Final analyses are requested where their inputs and consumers are known.
+FactGraph builds a graph and summaries over the final local module and requests
+`CallFactsTable::build_for_function` only for the selected function. Native leaf
+metadata is computed after its later lifetime and splitting transformations;
+it must account for every call in the bodies codegen will emit. Ordinary module
+transformation does not construct diagnostic CallFacts tables. These ownership
+rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
+
 ## IR stack
 - **HIR (High-level IR)**: desugared AST with explicit control flow.
 - **TIR (Typed IR)**: SSA with concrete `MoltType` for every value.

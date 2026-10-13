@@ -343,7 +343,7 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
 /// post-inline, post-lifetime-finalization, post-`split_megafunctions` program. The leaf set gates the
 /// recursion-guard skip at call sites in the *emitted* code, so it must
 /// describe exactly this final function set (megafunction chunk functions
-/// included), which the pre-split `ModuleAnalysis` cannot. Re-running the full
+/// included), which a graph built before lifetime finalization cannot. Re-running the full
 /// module pipeline here would re-inline; a plain `CallGraph::build` over the
 /// final bodies is the sound leaf authority.
 ///
