@@ -114,8 +114,10 @@ def _artifact_state_path_for_build_state_root(
 
 
 def _canonical_target_root(project_root: Path) -> Path:
-    """The project's shared, unscoped default target: the hydration source."""
-    return cargo_target_dir_for_artifact_root(project_root, None)
+    """The project's persistent local target: the hydration source."""
+    return cargo_target_dir_for_artifact_root(
+        project_root, None, source_root=project_root
+    )
 
 
 def _canonical_build_state_root(project_root: Path) -> Path:

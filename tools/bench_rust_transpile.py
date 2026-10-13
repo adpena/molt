@@ -33,7 +33,7 @@ Usage:
 
 Environment:
     MOLT_EXT_ROOT=<artifact-root>   # optional; defaults to the checkout family root
-    CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID
+    molt dx env selects the checkout target and the explicit session below it.
     RUSTC_WRAPPER=""
     PYTHONPATH=src
 """

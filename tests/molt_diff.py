@@ -45,7 +45,7 @@ from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     DX_ENV_KEYS,
     artifact_root as canonical_artifact_root,
-    cargo_target_dir_for_artifact_root,
+    cargo_target_dir_for_environment,
     development_artifact_env,
     scratch_root,
 )
@@ -424,8 +424,10 @@ class DiffArtifactLayout:
             cargo_target_root = (
                 configured_path("MOLT_DIFF_CARGO_TARGET_DIR")
                 or configured_path("CARGO_TARGET_DIR")
-                or cargo_target_dir_for_artifact_root(
-                    artifact_root, environment.get("MOLT_SESSION_ID")
+                or cargo_target_dir_for_environment(
+                    artifact_root,
+                    environment,
+                    source_root=repository,
                 )
             )
         else:

@@ -136,8 +136,7 @@ def test_run_cmd_uses_harness_memory_guard(
     artifact_root = Path(call["env"]["MOLT_EXT_ROOT"])
     assert call["env"]["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
-            artifact_root,
-            call["env"],
+            artifact_root, call["env"], source_root=compiler_source_root()
         )
     )
     # Scratch is <artifact root>/tmp, or out of tree when that would sit inside

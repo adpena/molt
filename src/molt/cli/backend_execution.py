@@ -502,7 +502,9 @@ def _sweep_orphaned_backend_daemon_locks(
         if artifact is not None:
             bases.append(artifact)
         sessions_roots = [
-            session_targets_dir(cargo_target_dir_for_artifact_root(base, None))
+            session_targets_dir(
+                cargo_target_dir_for_artifact_root(base, None, source_root=project_root)
+            )
             for base in bases
         ]
         for sessions_root in dict.fromkeys(sessions_roots):
@@ -575,7 +577,7 @@ def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
     """Run the orphan sweep at most once per (process, project_root).
 
     Cheap when no orphans exist, but we still don't want to walk
-    ``target/sessions`` on every compile request. The set is keyed on the
+    the checkout target's ``sessions`` on every compile request. The set is keyed on the
     resolved project root so multi-project test runs still get one sweep
     each.
     """

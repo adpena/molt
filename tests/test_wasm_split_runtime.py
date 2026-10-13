@@ -71,6 +71,7 @@ def _split_runtime_target_dirs(
         target_dir = cargo_target_dir_for_artifact_root(
             artifact_root(ROOT, env),
             env.get("MOLT_SESSION_ID") or session_id,
+            source_root=ROOT,
         )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     diff_target_dir = (
@@ -111,8 +112,7 @@ def test_split_runtime_target_dir_defaults_to_dx_session_target() -> None:
 
     # The canonical artifact root (the checkout family root), not the checkout.
     assert target_dir == cargo_target_dir_for_artifact_root(
-        artifact_root(ROOT, {}),
-        "test-wasm-split-runtime",
+        artifact_root(ROOT, {}), "test-wasm-split-runtime", source_root=ROOT
     )
     assert diff_target_dir == target_dir
 

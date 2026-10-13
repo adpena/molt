@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from molt.dx import cargo_target_dir_for_artifact_root
+from molt.dx import cargo_target_dir_for_artifact_root, checkout_component
 from tests.native_process_guard import run_native_test_process
 
 
@@ -95,16 +95,29 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
             # Only a pinned session gets its own Cargo target.
             assert session_id == pinned_session
             assert "MOLT_SESSION_ID_GENERATED" not in env_text
-            assert cargo_target.parent == artifact_root / "target" / "sessions"
+            assert (
+                cargo_target.parent
+                == artifact_root
+                / "target"
+                / "checkouts"
+                / checkout_component(REPO_ROOT)
+                / "sessions"
+            )
             assert cargo_target == cargo_target_dir_for_artifact_root(
-                artifact_root, session_id
+                artifact_root, session_id, source_root=REPO_ROOT
             )
         else:
             # A session init names itself shares the warm persistent target;
             # a per-PID target would build cold for every task.
             assert session_id.startswith(f"agent-{task}-")
             assert _export_value(env_text, "MOLT_SESSION_ID_GENERATED") == "1"
-            assert cargo_target == artifact_root / "target"
+            assert (
+                cargo_target
+                == artifact_root
+                / "target"
+                / "checkouts"
+                / checkout_component(REPO_ROOT)
+            )
         assert _export_value(env_text, "MOLT_DIFF_CARGO_TARGET_DIR") == str(
             cargo_target
         )

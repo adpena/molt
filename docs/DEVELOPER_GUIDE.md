@@ -241,7 +241,7 @@ lockfiles committed with the manifest change.
 - **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon behavior in diff runs; default is platform-safe auto (`0` on macOS, `1` elsewhere).
 - **dyld incident handling**: diff retries force `MOLT_BACKEND_DAEMON=0`; set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only if you explicitly want cold target/state quarantine.
 - **no-cache safety lane**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`; default is cache-enabled on all platforms, and dyld guard/retry can force no-cache for the active incident-scoped run.
-- **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one shared Cargo artifact root across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
+- **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one checkout-scoped Cargo target across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
 - **Diff run lock**: the harness uses `diff_run.lock` under the [resolved build-state root](OPERATIONS.md#build-throughput-multi-agent) to serialize overlapping full diff runs across agents sharing a Cargo target. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 
 ## Local Validation Entry Points
@@ -411,12 +411,21 @@ Key controls:
   partitioning while retaining per-function splitting and optimization. The backend
   `--native-output-kind object|archive` and daemon `native_output_kind` field carry
   the same explicit contract; filenames do not decide output semantics.
-- Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum
-  reuse; use the DX resolver's external root for maintainer/agent proof lanes
-  when available on every platform. Lock/fingerprint
+- Use `molt dx run -- <command>` for bounded development checks. At a shared
+  artifact root, the default Cargo target is
+  `target/checkouts/<checkout-component>`; pinned sessions live beneath that
+  checkout target. Ordinary sessions reuse the same target. A project-local
+  target remains `<project>/target`. The existing compiler/download caches may
+  be shared across checkouts; mutable Cargo intermediates must not be.
+  Explicit `CARGO_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR` or Cargo configuration
+  overrides remain caller-owned and must preserve that separation. Cargo locks
+  serialize writers but do not prevent wrong-source freshness across worktrees.
+  Lock/fingerprint
   state uses the [shared build-state projection](OPERATIONS.md#build-throughput-multi-agent),
   independent of disposable output and per-run receipt placement. Explicit shared
-  targets share Cargo rebuild locks. Daemon sockets default to
+  targets share Cargo rebuild locks. Development passes are not exact release
+  receipts; expensive/contentious qualification still uses the proof queue's
+  admitted isolated outputs. Daemon sockets default to
   `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp
   path).
 - Agent task scaffolds record the exact sourced environment in

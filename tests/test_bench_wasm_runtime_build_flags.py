@@ -519,7 +519,7 @@ def test_zero_duration_wasm_run_is_invalid_sample(monkeypatch) -> None:
     assert result.error_class == "invalid_timing"
 
 
-def test_runtime_target_is_shared_unless_a_session_is_pinned(
+def test_runtime_target_is_checkout_scoped_unless_a_session_is_pinned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """bench_wasm built cold into target/sessions/bench-wasm-<pid> (HF-144)."""
@@ -528,9 +528,15 @@ def test_runtime_target_is_shared_unless_a_session_is_pinned(
     monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
     monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    assert bench_wasm._cargo_target_root() == ext_root.resolve() / "target"
+    from molt.dx import checkout_component
+
+    target = (
+        ext_root.resolve()
+        / "target"
+        / "checkouts"
+        / checkout_component(bench_wasm._repo_root())
+    )
+    assert bench_wasm._cargo_target_root() == target
 
     monkeypatch.setenv("MOLT_SESSION_ID", "lane-a")
-    assert bench_wasm._cargo_target_root() == (
-        ext_root.resolve() / "target" / "sessions" / "lane-a"
-    )
+    assert bench_wasm._cargo_target_root() == (target / "sessions" / "lane-a")

@@ -117,8 +117,7 @@ def test_run_with_log_uses_memory_guard_and_canonical_env(
     artifact_root = Path(run_env["MOLT_EXT_ROOT"])
     assert run_env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_artifact_root(
-            artifact_root,
-            "runtime-safety-test",
+            artifact_root, "runtime-safety-test", source_root=runtime_safety.ROOT
         )
     )
     assert run_env["MOLT_DIFF_CARGO_TARGET_DIR"] == run_env["CARGO_TARGET_DIR"]

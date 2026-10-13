@@ -2083,8 +2083,26 @@ def test_diff_cargo_target_root_respects_priority_order(
         environment=environment,
     )
 
-    assert layout.cargo_target_root == tmp_path / expected
+    target = tmp_path / expected
+    if envs == {"MOLT_EXT_ROOT": "ext-root"}:
+        from molt.dx import checkout_component
+
+        target = target / "checkouts" / checkout_component(repo_root)
+    assert layout.cargo_target_root == target
     assert environment == original_environment
+    if not any(
+        key in envs for key in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR")
+    ):
+        environment.update(MOLT_SESSION_ID="worker-1", MOLT_SESSION_ID_GENERATED="1")
+        generated = module.DiffArtifactLayout.from_environment(
+            repo_root=repo_root, environment=environment
+        )
+        assert generated.cargo_target_root == target
+        environment.pop("MOLT_SESSION_ID_GENERATED")
+        pinned = module.DiffArtifactLayout.from_environment(
+            repo_root=repo_root, environment=environment
+        )
+        assert pinned.cargo_target_root == target / "sessions" / "worker-1"
 
 
 @pytest.mark.parametrize("infrastructure_failure", [False, True])

@@ -88,8 +88,8 @@ from molt.disk_capacity import (  # noqa: E402
 from molt.custody_layout import custody_root  # noqa: E402
 from molt.dx import (  # noqa: E402
     # noqa: E402,
-    cargo_target_dir_for_artifact_root,
     configured_artifact_root,
+    session_artifact_component,
     session_targets_dir,
 )
 from molt.file_deletion import delete_path  # noqa: E402
@@ -526,7 +526,9 @@ def reclaim_roots(root: Path) -> tuple[Path, ...]:
     return tuple(sorted((path for path in roots if path.is_dir()), key=_norm))
 
 
-def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | None:
+def _is_reclaimable(
+    path: Path, root: Path, lane_globs: Sequence[str], *, registered: bool = False
+) -> str | None:
     """Classify ``path`` as reclaimable, returning its kind, or None if not.
 
     This is the ALLOW-list authority: a path is reclaimable ONLY if it is one of
@@ -549,6 +551,15 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
     # sessions/<child>
     if len(parts) == len(sessions) + 1 and parts[: len(sessions)] == sessions:
         return "sessions"
+    # Checkout-scoped pinned targets enter custody only through registration.
+    # Never adopt or sweep an unregistered directory, or a persistent target.
+    if (
+        len(parts) == 5
+        and parts[:2] == ("target", "checkouts")
+        and parts[3] == "sessions"
+        and registered
+    ):
+        return "sessions"
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
         return "quarantine"
@@ -564,8 +575,8 @@ def _is_reclaimable(path: Path, root: Path, lane_globs: Sequence[str]) -> str | 
 
 
 def _target_root(owner_root: Path) -> Path:
-    """The artifact root's unscoped Cargo target, as molt.dx lays it out."""
-    return cargo_target_dir_for_artifact_root(owner_root, None)
+    """The artifact target container, including persistent checkout targets."""
+    return owner_root / "target"
 
 
 def _session_targets(owner_root: Path) -> Path:
@@ -579,7 +590,9 @@ def _fnmatch(name: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(name, pattern)
 
 
-def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> None:
+def assert_safe_to_delete(
+    path: Path, root: Path, lane_globs: Sequence[str], *, registered: bool = False
+) -> None:
     """Raise unless ``path`` is provably a reclaimable artifact dir under root.
 
     The single choke point every delete passes through. It fails CLOSED: any
@@ -594,7 +607,7 @@ def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> 
         raise ValueError(f"disk_guard: refuse to delete outside root: {rp}")
     if len(rp.parts) <= len(root.parts):
         raise ValueError(f"disk_guard: refuse to delete at/above root depth: {rp}")
-    if _is_reclaimable(rp, root, lane_globs) is None:
+    if _is_reclaimable(rp, root, lane_globs, registered=registered) is None:
         raise ValueError(f"disk_guard: {rp} is not in the reclaimable allow-set")
 
 
@@ -900,7 +913,15 @@ def discover_candidates(
             return
         if not path.is_dir():
             return
-        if _is_reclaimable(path, owner_root, config.lane_globs) is None:
+        if (
+            _is_reclaimable(
+                path,
+                owner_root,
+                config.lane_globs,
+                registered=registered_at is not None,
+            )
+            is None
+        ):
             return
         seen.add(norm)
         size = -1
@@ -1070,8 +1091,12 @@ def ensure_free(
             _write_log(resolved_root, result)
         return result
 
-    protected = _protected_paths(scope_roots, env)
     candidates = discover_candidates(resolved_root, cfg, roots=scope_roots)
+    protected = _protected_paths(
+        scope_roots,
+        env,
+        registered_targets=(c.path for c in candidates if c.registered_at is not None),
+    )
     live_lanes = [
         candidate.path
         for candidate in candidates
@@ -1109,7 +1134,12 @@ def ensure_free(
         if apply:
             owner_root = cand.owner_root or resolved_root
             try:
-                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
+                assert_safe_to_delete(
+                    cand.path,
+                    owner_root,
+                    cfg.lane_globs,
+                    registered=cand.registered_at is not None,
+                )
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
@@ -1158,7 +1188,13 @@ def gc(
         mode="apply" if apply else "dry-run",
     )
     registries = {owner_root: read_registry(owner_root) for owner_root in scope_roots}
-    protected = _protected_paths(scope_roots, env)
+    protected = _protected_paths(
+        scope_roots,
+        env,
+        registered_targets=(
+            Path(path) for registry in registries.values() for path in registry
+        ),
+    )
 
     cands: list[Candidate] = []
     for owner_root, registry in registries.items():
@@ -1167,7 +1203,7 @@ def gc(
             p = Path(str(rec.get("path", "")))
             if not p.is_dir():
                 continue
-            if _is_reclaimable(p, owner_root, cfg.lane_globs) is None:
+            if _is_reclaimable(p, owner_root, cfg.lane_globs, registered=True) is None:
                 # A registered path outside its owner's allow-set is forgotten
                 # during compaction but never deleted.
                 continue
@@ -1201,7 +1237,12 @@ def gc(
         if apply:
             owner_root = cand.owner_root or resolved_root
             try:
-                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
+                assert_safe_to_delete(
+                    cand.path,
+                    owner_root,
+                    cfg.lane_globs,
+                    registered=cand.registered_at is not None,
+                )
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
@@ -1257,6 +1298,7 @@ def reclaim_completed_lane(
         mode="apply" if apply else "dry-run",
     )
     target = target.resolve()
+    registry = read_registry(resolved_root)
     candidate = Candidate(
         path=target,
         kind="registered",
@@ -1269,7 +1311,9 @@ def reclaim_completed_lane(
         candidate,
         completed=True,
         active=candidate.guard_active,
-        protected=_protected_paths(scope_roots, env),
+        protected=_protected_paths(
+            scope_roots, env, registered_targets=(Path(path) for path in registry)
+        ),
     )
     if not allowed:
         result.skipped.append({"path": str(target), "reason": reason})
@@ -1278,14 +1322,15 @@ def reclaim_completed_lane(
         return result
     if not target.is_dir():
         return result
-    assert_safe_to_delete(target, resolved_root, cfg.lane_globs)
+    assert_safe_to_delete(
+        target, resolved_root, cfg.lane_globs, registered=_norm(target) in registry
+    )
     if apply:
         ok, error = delete_path(target)
         if not ok:
             result.errors.append(f"{target}: {error}")
             return result
     result.reclaimed.append({"path": str(target), "kind": "completed-lane"})
-    registry = read_registry(resolved_root)
     keep = {
         key: value
         for key, value in registry.items()
@@ -1312,20 +1357,30 @@ def reclaim_completed_lane_fail_open(
 
 
 def _protected_paths(
-    roots: Path | Sequence[Path], env: Mapping[str, str]
+    roots: Path | Sequence[Path],
+    env: Mapping[str, str],
+    *,
+    registered_targets: Iterable[Path],
 ) -> list[Path]:
     """Paths that must never be reclaimed even if they match the allow-set.
 
-    Currently the current session's target dir (``target/sessions/<component>``,
-    named by the DX session-component authority, and any registered dir under
-    it), protecting an in-flight build of THIS process.
+    Protect explicit Cargo targets and the current session component. With no
+    target alias or source context, all matching registered checkout sessions
+    stay protected. Reuse the operation's registry snapshot; never scan or adopt
+    unknown checkout directories to infer a target.
     """
     scan_roots = (roots,) if isinstance(roots, Path) else tuple(roots)
     protected: list[Path] = []
     session = str(env.get("MOLT_SESSION_ID", "")).strip()
     if session:
+        component = session_artifact_component(session)
         protected.extend(
-            cargo_target_dir_for_artifact_root(root, session) for root in scan_roots
+            session_targets_dir(_target_root(root)) / component for root in scan_roots
+        )
+        protected.extend(
+            target
+            for target in registered_targets
+            if target.name == component and target.parent.name == "sessions"
         )
     for name in (
         "CARGO_TARGET_DIR",
