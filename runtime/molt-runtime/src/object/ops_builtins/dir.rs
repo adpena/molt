@@ -112,6 +112,33 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
             } else if let Some(class) = optional(source.as_ptr(), c"__class__")? {
                 merge_class(py, dictionary.as_ptr(), class.as_ptr())?;
             }
+            if !type_directory
+                && let Some(pointer) = obj_from_bits(obj_bits).as_ptr()
+                && let Some(kind) =
+                    crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                        py,
+                        object_class_bits(pointer),
+                    )
+            {
+                // Project the same role declarations as callable lookup. A
+                // type's own metadata does not become instance metadata.
+                for field in crate::object::function_metadata::FunctionMetadataField::ALL {
+                    if kind.metadata_fields().contains(&field) {
+                        continue;
+                    }
+                    let name = std::ffi::CString::new(field.name()).unwrap();
+                    let value =
+                        mapping::_PyDict_GetItemStringWithError(dictionary.as_ptr(), name.as_ptr());
+                    if value.is_null() {
+                        if !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() {
+                            return Err(());
+                        }
+                    } else if mapping::PyDict_DelItemString(dictionary.as_ptr(), name.as_ptr()) < 0
+                    {
+                        return Err(());
+                    }
+                }
+            }
             let result = mapping::PyDict_Keys(dictionary.as_ptr());
             if result.is_null() {
                 return Err(());

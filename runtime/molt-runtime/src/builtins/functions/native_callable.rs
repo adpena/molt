@@ -1,6 +1,5 @@
 //! Native callable identity is declared before publication, independently of its
 //! portable function payload and private argument-binding metadata.
-use crate::call::class_init::function_set_attr_name;
 use crate::object::object_replace_class_edge;
 use crate::*;
 use std::sync::atomic::AtomicU64;
@@ -227,14 +226,127 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
     }
 }
 
+/// Prepare every fallible projection before publishing role or metadata. All
+/// callers, including promotion of an already reachable Python function, share
+/// this boundary; displaced owners retire only after the complete publication.
 pub(crate) unsafe fn configure_native_callable(
     py: &PyToken<'_>,
     pointer: *mut u8,
     spec: NativeCallableSpec<'_>,
 ) -> bool {
     unsafe {
+        if exception_pending(py) {
+            return false;
+        }
         let class = spec.kind.class(py);
-        if object_class_bits(pointer) != class
+        if exception_pending(py) {
+            return false;
+        }
+        // These declaration inputs are borrowed by the caller. Pin them across
+        // foreign owner-name inquiry and dictionary equality callbacks.
+        let _declaration_owners = [spec.owner, spec.self_bits].map(|value| {
+            value.and_then(|bits| {
+                obj_from_bits(bits).as_ptr().map(|ptr| {
+                    inc_ref_bits(py, bits);
+                    crate::PtrDropGuard::preserving(ptr)
+                })
+            })
+        });
+        let name = if let Some(name) = spec.name {
+            let Some(bits) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else {
+            None
+        };
+        let qualified = if let Some(name) = spec.name {
+            let mut bytes = if let Some(owner) = spec.owner {
+                let Ok(mut bytes) = owner_qualname_bytes(py, owner) else {
+                    return false;
+                };
+                bytes.push(b'.');
+                bytes
+            } else {
+                Vec::new()
+            };
+            bytes.extend_from_slice(name.as_bytes());
+            let Some(bits) = attr_name_bits_from_bytes(py, &bytes) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else {
+            None
+        };
+        let signature = if let Some(signature) = spec.text_signature {
+            let Some(bits) = attr_name_bits_from_bytes(py, signature.as_bytes()) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else {
+            None
+        };
+
+        // Python functions store __text_signature__ in their ordinary dict.
+        // Native roles own it in the typed tail. Probe before mutation, retaining
+        // the selected dict; a key callback may replace that public dictionary
+        // or recursively promote the function, so recheck its live owner.
+        let mut signature_source = None;
+        loop {
+            if NativeCallableKind::from_class(py, object_class_bits(pointer)).is_some() {
+                break;
+            }
+            let dictionary = match crate::object::field_storage::current_dictionary(py, pointer) {
+                Ok(Some(bits)) => bits,
+                Ok(None) => break,
+                Err(()) => return false,
+            };
+            inc_ref_bits(py, dictionary);
+            let dictionary_ptr = ptr_from_bits(dictionary);
+            let dictionary_owner = crate::PtrDropGuard::preserving(dictionary_ptr);
+            if !crate::object::ops::dict_require_writable(py, dictionary_ptr) {
+                return false;
+            }
+            let Some(key) = attr_name_bits_from_bytes(py, b"__text_signature__") else {
+                return false;
+            };
+            let _key_owner = crate::PtrDropGuard::preserving(ptr_from_bits(key));
+            let Some(hash) = crate::object::ops::dict_key_hash(py, key) else {
+                return false;
+            };
+            let entry = match crate::object::ops::dict_find_entry_kv_with_hash(
+                py,
+                dictionary_ptr,
+                key,
+                hash,
+            ) {
+                Ok(entry) => entry,
+                Err(()) => return false,
+            };
+            if instance_dict_bits(pointer) != dictionary {
+                continue;
+            }
+            if NativeCallableKind::from_class(py, object_class_bits(pointer)).is_some() {
+                break;
+            }
+            if !crate::object::ops::dict_require_writable(py, dictionary_ptr) {
+                return false;
+            }
+            signature_source = Some((dictionary_ptr, hash, entry, dictionary_owner));
+            break;
+        }
+        if exception_pending(py) {
+            return false;
+        }
+
+        // Retaining the displaced class makes its existing edge replacement
+        // callback-free. A rejected class edge changes neither dict nor fields.
+        let old_class = object_class_bits(pointer);
+        let _old_class_owner = obj_from_bits(old_class).as_ptr().map(|ptr| {
+            inc_ref_bits(py, old_class);
+            crate::PtrDropGuard::preserving(ptr)
+        });
+        if old_class != class
             && !object_replace_class_edge(py, pointer, class, ClassEdgeOwnership::Owned)
         {
             raise_exception::<u64>(
@@ -244,56 +356,47 @@ pub(crate) unsafe fn configure_native_callable(
             );
             return false;
         }
-        if let Some(owner) = spec.owner
-            && spec.kind.is_descriptor()
-            && !function_set_attr_name(py, pointer, b"__objclass__", owner)
-        {
-            return false;
-        }
-        if let Some(name) = spec.name {
-            let Some(name_bits) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
-                return false;
-            };
-            let named = function_set_attr_name(py, pointer, b"__name__", name_bits);
-            dec_ref_bits(py, name_bits);
-            if !named {
-                return false;
-            }
-            let mut qualified = if let Some(owner) = spec.owner {
-                let Ok(mut qualified) = owner_qualname_bytes(py, owner) else {
-                    return false;
-                };
-                qualified.push(b'.');
-                qualified
-            } else {
-                Vec::new()
-            };
-            qualified.extend_from_slice(name.as_bytes());
-            let Some(qualified_bits) = attr_name_bits_from_bytes(py, &qualified) else {
-                return false;
-            };
-            let named = function_set_attr_name(py, pointer, b"__qualname__", qualified_bits);
-            dec_ref_bits(py, qualified_bits);
-            if !named {
-                return false;
-            }
-        }
-        if let Some(signature) = spec.text_signature {
-            let Some(bits) = attr_name_bits_from_bytes(py, signature.as_bytes()) else {
-                return false;
-            };
-            let written = function_set_attr_name(py, pointer, b"__text_signature__", bits);
-            dec_ref_bits(py, bits);
-            if !written {
-                return false;
-            }
-        }
-        if let Some(value) = spec.self_bits
-            && !function_set_attr_name(py, pointer, b"__self__", value)
-        {
-            return false;
-        }
-        !exception_pending(py)
+
+        // No allocation, lookup callback, or owner release below this point
+        // until class, typed metadata, and binder facts have all been committed.
+        let removed = signature_source
+            .as_ref()
+            .and_then(|(dict, hash, entry, _)| {
+                entry.map(|(key, _)| {
+                    crate::object::ops::dict_remove_identity_with_hash_deferred(
+                        py, *dict, key, *hash,
+                    )
+                    .expect("prepared live signature entry")
+                })
+            });
+        let text_signature = signature.as_ref().map(|(bits, _)| *bits).or_else(|| {
+            signature_source
+                .as_ref()
+                .and_then(|(_, _, entry, _)| entry.map(|(_, value)| value))
+        });
+        let updates = [
+            (
+                CallableMetadata::Owner,
+                spec.owner.filter(|_| spec.kind.is_descriptor()),
+            ),
+            (CallableMetadata::Name, name.as_ref().map(|(bits, _)| *bits)),
+            (
+                CallableMetadata::QualName,
+                qualified.as_ref().map(|(bits, _)| *bits),
+            ),
+            (CallableMetadata::TextSignature, text_signature),
+            (CallableMetadata::SelfValue, spec.self_bits),
+        ];
+        let retired =
+            updates.map(|(field, bits)| bits.map(|bits| field.replace_deferred(py, pointer, bits)));
+        // Native display fields do not alter binding inputs. The existing
+        // typed projection neither allocates nor invokes user code.
+        crate::call::bind::refresh_function_requires_binder_flag(py, pointer);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            drop(retired);
+            drop(removed);
+        });
+        true
     }
 }
 

@@ -9,5 +9,5 @@ import nturl2path
 
 print(hasattr(msvcrt, 'kbhit'))
 print(hasattr(winreg, 'HKEY_CURRENT_USER'))
-print(ntpath.join('C:\', 'tmp'))
-print(nturl2path.pathname2url('C:\tmp'))
+print(ntpath.join('C:\\', 'tmp'))
+print(nturl2path.pathname2url('C:\\tmp'))

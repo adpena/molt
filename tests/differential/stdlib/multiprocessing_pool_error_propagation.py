@@ -1,5 +1,5 @@
 """Purpose: differential coverage for multiprocessing Pool error propagation."""
-# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read,fs.write
 
 import multiprocessing as mp
 

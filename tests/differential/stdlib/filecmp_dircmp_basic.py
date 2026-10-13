@@ -12,11 +12,9 @@ os.makedirs(left, exist_ok=True)
 os.makedirs(right, exist_ok=True)
 
 with open(os.path.join(left, 'a.txt'), 'w', encoding='utf-8') as handle:
-    handle.write('same
-')
+    handle.write('same\n')
 with open(os.path.join(right, 'a.txt'), 'w', encoding='utf-8') as handle:
-    handle.write('same
-')
+    handle.write('same\n')
 
 cmp = filecmp.dircmp(left, right)
 print(sorted(cmp.common))

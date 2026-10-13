@@ -107,7 +107,8 @@ def show_decode_error(label, action):
     except UnicodeDecodeError as exc:
         print("decode-payload", label, type(exc.object).__name__, exc.object.hex(),
               exc.encoding, exc.start, exc.end, exc.reason, str(exc),
-              exc.args == (exc.encoding, exc.object, exc.start, exc.end, exc.reason))
+              exc.args == (exc.encoding, exc.object, exc.start, exc.end, exc.reason),
+              exc.args[2:])
     else:
         raise AssertionError("invalid input unexpectedly decoded")
 
@@ -215,6 +216,38 @@ for encoding, data in (
         decode_result(label + ":bytes", lambda: data.decode(encoding, errors))
         decode_result(label + ":bytearray", lambda: bytearray(data).decode(encoding, errors))
         decode_result(label + ":codecs", lambda: codecs.decode(data, encoding, errors))
+
+
+# A handled error and a later fatal one share an exception within one decode
+# call: args retain the first span, attributes advance to the final span.
+for encoding, errors, data in (
+    ("utf-8", "surrogatepass", b"\xed\xa0\x80\xff"),
+    ("utf-8-sig", "surrogatepass", b"\xef\xbb\xbf\xed\xa0\x80\xff"),
+    ("utf-16-le", "surrogatepass", b"\x00\xd8\xff"),
+    ("utf-16-be", "surrogatepass", b"\xdc\x00\xff"),
+    ("utf-32-le", "surrogatepass", b"\x00\xd8\x00\x00\xff"),
+    ("utf-32-be", "surrogatepass", b"\x00\x00\xdc\x00\xff"),
+    ("utf-16-be", "surrogateescape", b"\xdc\x80A"),
+    ("utf-32-le", "surrogateescape", b"\x80\x00\x11\x00"),
+):
+    label = encoding + ":" + errors
+    show_decode_error(label + ":bytes", lambda: data.decode(encoding, errors))
+    show_decode_error(label + ":bytearray", lambda: bytearray(data).decode(encoding, errors))
+    show_decode_error(label + ":codecs", lambda: codecs.decode(data, encoding, errors))
+    show_decode_error(label + ":incremental",
+                      lambda: codecs.getincrementaldecoder(encoding)(errors).decode(data, True))
+
+# Surrogateescape refuses undefined ASCII. Both table and dictionary mappings
+# must retain an earlier escaped byte's arguments, but direct ASCII starts fresh.
+for mapping in ({}, ""):
+    for data in (b"A", b"\xffA"):
+        show_decode_error("charmap-escape-" + type(mapping).__name__ + data.hex(),
+                          lambda: codecs.charmap_decode(data, "surrogateescape", mapping))
+
+# Exception reuse is local to a decode call, not the incremental decoder object.
+decoder = codecs.getincrementaldecoder("utf-8")("surrogatepass")
+print("handled-before-next-call", decoder.decode(b"\xed\xa0\x80", False).encode("unicode_escape").hex())
+show_decode_error("fatal-in-next-call", lambda: decoder.decode(b"\xff", True))
 
 
 # JSON byte coercion must decode before parsing and preserve typed error

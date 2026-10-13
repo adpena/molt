@@ -615,9 +615,9 @@ pub(super) fn socket_close_ptr(_py: &PyToken<'_>, socket_ptr: *mut u8) {
         return;
     }
     socket_unregister_descriptor(socket_ptr);
-    runtime_state(_py)
-        .io_poller()
-        .deregister_socket(_py, socket_ptr);
+    if let Some(poller) = runtime_state(_py).io_poller.get() {
+        poller.deregister_socket(_py, socket_ptr);
+    }
     let mut guard = socket.inner.lock().unwrap();
     guard.kind = MoltSocketKind::Closed;
 }
@@ -632,9 +632,9 @@ pub(super) fn socket_detach_raw(_py: &PyToken<'_>, socket_ptr: *mut u8) -> i64 {
         return -1;
     }
     socket_unregister_descriptor(socket_ptr);
-    runtime_state(_py)
-        .io_poller()
-        .deregister_socket(_py, socket_ptr);
+    if let Some(poller) = runtime_state(_py).io_poller.get() {
+        poller.deregister_socket(_py, socket_ptr);
+    }
     let mut guard = socket.inner.lock().unwrap();
     let kind = std::mem::replace(&mut guard.kind, MoltSocketKind::Closed);
     #[cfg(all(unix, molt_has_net_io))]
@@ -752,6 +752,89 @@ pub(super) fn socket_take_stream_ancillary(
 #[cfg(all(test, molt_has_net_io))]
 mod socket_runtime_state_tests {
     use super::{NativeSocketDescriptor, SocketRuntimeState};
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run with serialized lifecycle shard"]
+    fn cold_socket_and_websocket_retirement_never_starts_services() {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("net", |py| {
+            let state = crate::runtime_state(py);
+            assert!(state.io_poller.get().is_none());
+            assert!(state.scheduler.get().is_none());
+            let sockets = std::array::from_fn::<_, 3, _>(|_| {
+                super::socket_alloc(
+                    super::MoltSocketKind::Pending(
+                        socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                            .unwrap(),
+                    ),
+                    libc::AF_INET,
+                    libc::SOCK_STREAM,
+                    0,
+                    None,
+                    false,
+                )
+            });
+            let mut left = 0;
+            let mut right = 0;
+            assert_eq!(unsafe { crate::molt_ws_pair(0, &mut left, &mut right) }, 0);
+            let futures = std::array::from_fn::<_, 2, _>(|_| {
+                crate::molt_io_wait_new(
+                    crate::opaque_handle_bits(sockets[0]),
+                    crate::MoltObject::from_int(crate::IO_EVENT_READ as i64).bits(),
+                    crate::MoltObject::none().bits(),
+                )
+            });
+            assert!(!crate::exception_pending(py));
+            let waiter = crate::ptr_from_bits(futures[0]);
+            let awaited = crate::ptr_from_bits(futures[1]);
+            assert!(!waiter.is_null() && !awaited.is_null());
+            crate::async_rt::await_waiter_register(py, waiter, awaited);
+            state.close_thread_borrow_admission();
+            // Neither future has registered I/O: cancellation must clear
+            // both await-graph paths without constructing a worker.
+            unsafe {
+                crate::molt_future_cancel(futures[0]);
+            }
+            assert!(crate::async_rt::task_cancel_pending(waiter));
+            assert!(
+                !crate::async_rt::task_waiting_on(py)
+                    .lock()
+                    .unwrap()
+                    .contains_key(&crate::PtrSlot(waiter))
+            );
+            for future in futures {
+                crate::dec_ref_bits(py, future);
+            }
+            super::socket_close_ptr(py, sockets[0]);
+            assert!(super::socket_debug_fd(sockets[0]).is_none());
+            let descriptor = super::socket_detach_raw(py, sockets[1]);
+            assert!(descriptor >= 0);
+            assert!(super::socket_debug_fd(sockets[1]).is_none());
+            #[cfg(unix)]
+            unsafe {
+                use std::os::fd::FromRawFd;
+                drop(std::os::fd::OwnedFd::from_raw_fd(descriptor as i32));
+            }
+            #[cfg(windows)]
+            unsafe {
+                use std::os::windows::io::FromRawSocket;
+                drop(std::os::windows::io::OwnedSocket::from_raw_socket(
+                    descriptor as usize,
+                ));
+            }
+            for socket in sockets {
+                super::socket_ref_dec(py, socket);
+            }
+            unsafe {
+                crate::molt_ws_close(left);
+                crate::molt_ws_drop(left);
+                crate::molt_ws_drop(right);
+            }
+            assert!(!crate::exception_pending(py));
+            assert!(state.io_poller.get().is_none());
+            assert!(state.scheduler.get().is_none());
+            assert_eq!(state.socket_state.descriptor_map_len(), 0);
+        });
+    }
 
     fn test_descriptor(value: i32) -> NativeSocketDescriptor {
         #[cfg(unix)]

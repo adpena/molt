@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,select.select
 """Purpose: differential coverage for select timeout edge cases."""
 
 import select

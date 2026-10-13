@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared,select.poll,select.select
 """Purpose: differential coverage for selectors with socket read readiness."""
 
 import selectors

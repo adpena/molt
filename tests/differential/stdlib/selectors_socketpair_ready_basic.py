@@ -1,6 +1,6 @@
 """Purpose: differential coverage for selectors readiness on socketpair."""
 
-# MOLT_ENV: MOLT_CAPABILITIES=net
+# MOLT_ENV: MOLT_CAPABILITIES=net,select.poll,select.select
 import selectors
 import socket
 

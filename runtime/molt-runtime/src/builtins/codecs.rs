@@ -80,7 +80,7 @@ pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_b
                 let msg = format!("unknown error handler name '{name}'");
                 return raise_exception::<_>(_py, "LookupError", &msg);
             }
-            Err(OpsDecodeTextError::Failure(_failure, _label, _input_start)) => {}
+            Err(OpsDecodeTextError::Failure(..)) => {}
         }
 
         let obj = obj_from_bits(obj_bits);

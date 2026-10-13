@@ -841,7 +841,9 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
     }
-    runtime_state(_py).scheduler().clear_deferred(task_ptr);
+    if let Some(scheduler) = runtime_state(_py).scheduler.get() {
+        scheduler.clear_deferred(task_ptr);
+    }
     if current_task_key() == Some(PtrSlot(task_ptr)) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {

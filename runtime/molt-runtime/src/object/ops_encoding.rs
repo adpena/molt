@@ -588,10 +588,20 @@ fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, Decod
     Ok(out)
 }
 
+/// The first handler-created UnicodeDecodeError keeps these arguments even
+/// when a later failure updates its public start/end/reason attributes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DecodeErrorSpan {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) reason: &'static str,
+}
+
 fn decode_utf8_bytes_with_errors(
     bytes: &[u8],
     errors: &str,
     final_input: bool,
+    initial_error: &mut Option<DecodeErrorSpan>,
 ) -> Result<(Vec<u8>, usize), DecodeFailure> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut idx = 0usize;
@@ -612,9 +622,12 @@ fn decode_utf8_bytes_with_errors(
                     &mut out,
                     bytes,
                     errors,
-                    idx,
-                    idx + 1,
-                    "invalid start byte",
+                    DecodeErrorSpan {
+                        start: idx,
+                        end: idx + 1,
+                        reason: "invalid start byte",
+                    },
+                    None,
                     None,
                 )?;
                 continue;
@@ -639,6 +652,11 @@ fn decode_utf8_bytes_with_errors(
                 let code = ((first & 0x0F) as u32) << 12
                     | ((bytes[idx + 1] & 0x3F) as u32) << 6
                     | (bytes[idx + 2] & 0x3F) as u32;
+                initial_error.get_or_insert(DecodeErrorSpan {
+                    start: idx,
+                    end: idx + 1,
+                    reason: "invalid continuation byte",
+                });
                 push_wtf8_codepoint(&mut out, code);
                 idx += 3;
                 continue;
@@ -670,7 +688,18 @@ fn decode_utf8_bytes_with_errors(
             code = (code << 6) | (byte & 0x3F) as u32;
         }
         if let Some((end, reason)) = failure {
-            idx = handle_decode_failure(&mut out, bytes, errors, idx, end, reason, None)?;
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                DecodeErrorSpan {
+                    start: idx,
+                    end,
+                    reason,
+                },
+                None,
+                None,
+            )?;
             continue;
         }
         push_wtf8_codepoint(&mut out, code);
@@ -686,11 +715,15 @@ fn handle_decode_failure(
     out: &mut Vec<u8>,
     bytes: &[u8],
     errors: &str,
-    start: usize,
-    end: usize,
-    message: &'static str,
+    span: DecodeErrorSpan,
     surrogate: Option<(u32, usize)>,
+    initial_error: Option<&mut Option<DecodeErrorSpan>>,
 ) -> Result<usize, DecodeFailure> {
+    let DecodeErrorSpan {
+        start,
+        end,
+        reason: message,
+    } = span;
     let failure = || {
         if end == start + 1 {
             DecodeFailure::Byte {
@@ -718,6 +751,9 @@ fn handle_decode_failure(
         }
         "surrogatepass" => {
             if let Some((code, width)) = surrogate {
+                if let Some(initial_error) = initial_error {
+                    initial_error.get_or_insert(span);
+                }
                 push_wtf8_codepoint(out, code);
                 Ok(start + width)
             } else {
@@ -733,6 +769,9 @@ fn handle_decode_failure(
             if next == start {
                 Err(failure())
             } else {
+                if let Some(initial_error) = initial_error {
+                    initial_error.get_or_insert(span);
+                }
                 Ok(next)
             }
         }
@@ -749,8 +788,9 @@ pub(crate) fn decode_utf8_incremental(
     errors: &str,
     final_input: bool,
 ) -> Result<(Vec<u8>, usize), DecodeTextError> {
-    decode_utf8_bytes_with_errors(bytes, errors, final_input)
-        .map_err(|failure| DecodeTextError::Failure(failure, "utf-8".to_string(), 0))
+    let mut initial_error = None;
+    decode_utf8_bytes_with_errors(bytes, errors, final_input, &mut initial_error)
+        .map_err(|failure| DecodeTextError::Failure(failure, "utf-8".to_string(), 0, initial_error))
 }
 
 fn hex_value(byte: u8) -> Option<u32> {
@@ -1037,6 +1077,7 @@ fn decode_utf16_with_errors(
     errors: &str,
     endian: Endian,
     offset: usize,
+    initial_error: &mut Option<DecodeErrorSpan>,
 ) -> Result<Vec<u8>, DecodeFailure> {
     let mut idx = offset;
     let mut out = Vec::new();
@@ -1047,10 +1088,13 @@ fn decode_utf16_with_errors(
                 &mut out,
                 bytes,
                 errors,
-                idx,
-                bytes.len(),
-                "truncated data",
+                DecodeErrorSpan {
+                    start: idx,
+                    end: bytes.len(),
+                    reason: "truncated data",
+                },
                 None,
+                Some(&mut *initial_error),
             )?;
             continue;
         }
@@ -1061,10 +1105,13 @@ fn decode_utf16_with_errors(
                     &mut out,
                     bytes,
                     errors,
-                    idx,
-                    bytes.len(),
-                    "unexpected end of data",
+                    DecodeErrorSpan {
+                        start: idx,
+                        end: bytes.len(),
+                        reason: "unexpected end of data",
+                    },
                     Some((u32::from(unit), 2)),
+                    Some(&mut *initial_error),
                 )?;
             } else {
                 let next = read_u16(bytes, idx + 2, endian);
@@ -1079,10 +1126,13 @@ fn decode_utf16_with_errors(
                         &mut out,
                         bytes,
                         errors,
-                        idx,
-                        idx + 2,
-                        "illegal UTF-16 surrogate",
+                        DecodeErrorSpan {
+                            start: idx,
+                            end: idx + 2,
+                            reason: "illegal UTF-16 surrogate",
+                        },
                         Some((u32::from(unit), 2)),
+                        Some(&mut *initial_error),
                     )?;
                 }
             }
@@ -1091,10 +1141,13 @@ fn decode_utf16_with_errors(
                 &mut out,
                 bytes,
                 errors,
-                idx,
-                idx + 2,
-                "illegal encoding",
+                DecodeErrorSpan {
+                    start: idx,
+                    end: idx + 2,
+                    reason: "illegal encoding",
+                },
                 Some((u32::from(unit), 2)),
+                Some(&mut *initial_error),
             )?;
         } else {
             push_wtf8_codepoint(&mut out, u32::from(unit));
@@ -1133,6 +1186,7 @@ fn decode_utf32_with_errors(
     errors: &str,
     endian: Endian,
     offset: usize,
+    initial_error: &mut Option<DecodeErrorSpan>,
 ) -> Result<Vec<u8>, DecodeFailure> {
     let mut idx = offset;
     let mut out = Vec::new();
@@ -1142,10 +1196,13 @@ fn decode_utf32_with_errors(
                 &mut out,
                 bytes,
                 errors,
-                idx,
-                bytes.len(),
-                "truncated data",
+                DecodeErrorSpan {
+                    start: idx,
+                    end: bytes.len(),
+                    reason: "truncated data",
+                },
                 None,
+                Some(&mut *initial_error),
             )?;
             continue;
         }
@@ -1155,20 +1212,26 @@ fn decode_utf32_with_errors(
                 &mut out,
                 bytes,
                 errors,
-                idx,
-                idx + 4,
-                "code point in surrogate code point range(0xd800, 0xe000)",
+                DecodeErrorSpan {
+                    start: idx,
+                    end: idx + 4,
+                    reason: "code point in surrogate code point range(0xd800, 0xe000)",
+                },
                 Some((code, 4)),
+                Some(&mut *initial_error),
             )?;
         } else if code > 0x10ffff {
             idx = handle_decode_failure(
                 &mut out,
                 bytes,
                 errors,
-                idx,
-                idx + 4,
-                "code point not in range(0x110000)",
+                DecodeErrorSpan {
+                    start: idx,
+                    end: idx + 4,
+                    reason: "code point not in range(0x110000)",
+                },
                 None,
+                Some(&mut *initial_error),
             )?;
         } else {
             push_wtf8_codepoint(&mut out, code);
@@ -1182,12 +1245,15 @@ fn decode_bytes_with_errors(
     bytes: &[u8],
     kind: EncodingKind,
     errors: &str,
-) -> Result<(Vec<u8>, String), (DecodeFailure, String, usize)> {
-    match kind.runtime_class() {
-        CodecRuntimeClass::Utf8 => match decode_utf8_bytes_with_errors(bytes, errors, true) {
-            Ok((text, _)) => Ok((text, "utf-8".to_string())),
-            Err(err) => Err((err, "utf-8".to_string(), 0)),
-        },
+) -> Result<(Vec<u8>, String), DecodeTextError> {
+    let mut initial_error = None;
+    let result = match kind.runtime_class() {
+        CodecRuntimeClass::Utf8 => {
+            match decode_utf8_bytes_with_errors(bytes, errors, true, &mut initial_error) {
+                Ok((text, _)) => Ok((text, "utf-8".to_string())),
+                Err(err) => Err((err, "utf-8".to_string(), 0)),
+            }
+        }
         CodecRuntimeClass::Utf8Sig => {
             let data =
                 if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
@@ -1195,7 +1261,7 @@ fn decode_bytes_with_errors(
                 } else {
                     bytes
                 };
-            match decode_utf8_bytes_with_errors(data, errors, true) {
+            match decode_utf8_bytes_with_errors(data, errors, true, &mut initial_error) {
                 Ok((text, _)) => Ok((text, "utf-8".to_string())),
                 Err(err) => Err((err, "utf-8".to_string(), bytes.len() - data.len())),
             }
@@ -1225,26 +1291,29 @@ fn decode_bytes_with_errors(
         }
         CodecRuntimeClass::Utf16 | CodecRuntimeClass::Utf16LE | CodecRuntimeClass::Utf16BE => {
             let (endian, label, offset) = utf16_decode_config(bytes, kind);
-            match decode_utf16_with_errors(bytes, errors, endian, offset) {
+            match decode_utf16_with_errors(bytes, errors, endian, offset, &mut initial_error) {
                 Ok(text) => Ok((text, label)),
                 Err(err) => Err((err, label, 0)),
             }
         }
         CodecRuntimeClass::Utf32 | CodecRuntimeClass::Utf32LE | CodecRuntimeClass::Utf32BE => {
             let (endian, label, offset) = utf32_decode_config(bytes, kind);
-            match decode_utf32_with_errors(bytes, errors, endian, offset) {
+            match decode_utf32_with_errors(bytes, errors, endian, offset, &mut initial_error) {
                 Ok(text) => Ok((text, label)),
                 Err(err) => Err((err, label, 0)),
             }
         }
-    }
+    };
+    result.map_err(|(failure, label, input_start)| {
+        DecodeTextError::Failure(failure, label, input_start, initial_error)
+    })
 }
 
 #[derive(Debug)]
 pub(crate) enum DecodeTextError {
     UnknownEncoding(String),
     UnknownErrorHandler(String),
-    Failure(DecodeFailure, String, usize),
+    Failure(DecodeFailure, String, usize, Option<DecodeErrorSpan>),
 }
 
 impl DecodeTextError {
@@ -1256,7 +1325,7 @@ impl DecodeTextError {
         py: &crate::PyToken<'_>,
         input: &[u8],
     ) -> T {
-        let (encoding, start, end, reason, input_start) = match self {
+        let (encoding, start, end, reason, input_start, initial_error) = match self {
             Self::UnknownEncoding(name) => {
                 return crate::raise_exception(
                     py,
@@ -1265,7 +1334,7 @@ impl DecodeTextError {
                 );
             }
             Self::UnknownErrorHandler(name)
-            | Self::Failure(DecodeFailure::UnknownErrorHandler(name), _, _) => {
+            | Self::Failure(DecodeFailure::UnknownErrorHandler(name), _, _, _) => {
                 // These registered handlers accept encoding errors only. Like
                 // CPython, consult them only after an actual decoding failure.
                 if matches!(name.as_str(), "xmlcharrefreplace" | "namereplace") {
@@ -1281,9 +1350,12 @@ impl DecodeTextError {
                     &format!("unknown error handler name '{name}'"),
                 );
             }
-            Self::Failure(DecodeFailure::Byte { pos, message, .. }, encoding, input_start) => {
-                (encoding, pos, pos + 1, message, input_start)
-            }
+            Self::Failure(
+                DecodeFailure::Byte { pos, message, .. },
+                encoding,
+                input_start,
+                initial_error,
+            ) => (encoding, pos, pos + 1, message, input_start, initial_error),
             Self::Failure(
                 DecodeFailure::Range {
                     start,
@@ -1292,15 +1364,30 @@ impl DecodeTextError {
                 },
                 encoding,
                 input_start,
-            ) => (encoding, start, end + 1, message, input_start),
+                initial_error,
+            ) => (
+                encoding,
+                start,
+                end + 1,
+                message,
+                input_start,
+                initial_error,
+            ),
         };
         let object = crate::alloc_bytes(py, &input[input_start..]);
         if object.is_null() {
             return T::exception_sentinel();
         }
         let object_bits = crate::MoltObject::from_ptr(object).bits();
-        let result =
-            crate::raise_unicode_decode_error(py, &encoding, object_bits, start, end, reason);
+        let result = crate::raise_unicode_decode_error(
+            py,
+            &encoding,
+            object_bits,
+            start,
+            end,
+            reason,
+            initial_error.map(|span| (span.start, span.end, span.reason)),
+        );
         crate::dec_ref_bits(py, object_bits);
         result
     }
@@ -1318,20 +1405,12 @@ pub(crate) fn decode_bytes_text(
         errors,
         "strict" | "ignore" | "replace" | "backslashreplace" | "surrogateescape" | "surrogatepass"
     );
-    let result = if errors_known {
+    if errors_known {
         decode_bytes_with_errors(bytes, kind, errors)
     } else {
         match decode_bytes_with_errors(bytes, kind, "strict") {
-            Ok((text, label)) => return Ok((text, label)),
-            Err((_failure, _label, _input_start)) => {
-                return Err(DecodeTextError::UnknownErrorHandler(errors.to_string()));
-            }
-        }
-    };
-    match result {
-        Ok((text, label)) => Ok((text, label)),
-        Err((failure, label, input_start)) => {
-            Err(DecodeTextError::Failure(failure, label, input_start))
+            Ok(result) => Ok(result),
+            Err(_) => Err(DecodeTextError::UnknownErrorHandler(errors.to_string())),
         }
     }
 }
@@ -1462,7 +1541,7 @@ mod encode_tests {
             ),
         ];
         for &(encoding, errors, input, label, start, end, reason) in failures {
-            let DecodeTextError::Failure(failure, actual_label, input_start) =
+            let DecodeTextError::Failure(failure, actual_label, input_start, _) =
                 decode_bytes_text(encoding, errors, input).unwrap_err()
             else {
                 panic!("expected a decode failure")
@@ -1507,7 +1586,8 @@ mod encode_tests {
             (b"a\xed\xa0", 1, 2, "invalid continuation byte"),
         ];
         for &(input, start, end, reason) in cases {
-            let failure = decode_utf8_bytes_with_errors(input, "strict", true).unwrap_err();
+            let failure =
+                decode_utf8_bytes_with_errors(input, "strict", true, &mut None).unwrap_err();
             let actual = match failure {
                 DecodeFailure::Byte { pos, message, .. } => (pos, pos + 1, message),
                 DecodeFailure::Range {
@@ -1562,35 +1642,96 @@ mod encode_tests {
             let py = &py;
             // CPython3.12 Objects/unicodeobject.c make_decode_exception and
             // UTF16/32/unicodeescape scanners: original bytes, exclusive end.
-            type Case<'a> = (&'a [u8], &'a str, usize, usize, &'a str);
+            type Span<'a> = (usize, usize, &'a str);
+            type Case<'a> = (&'a [u8], &'a str, &'a str, Span<'a>, Option<Span<'a>>);
             let cases: &[Case<'_>] = &[
-                (b"a\xffz", "utf-8", 1, 2, "invalid start byte"),
+                (
+                    b"a\xffz",
+                    "utf-8",
+                    "strict",
+                    (1, 2, "invalid start byte"),
+                    None,
+                ),
                 (
                     b"\xef\xbb\xbfa\xffz",
                     "utf-8-sig",
-                    1,
-                    2,
-                    "invalid start byte",
+                    "strict",
+                    (1, 2, "invalid start byte"),
+                    None,
                 ),
-                (b"a\xffz", "ascii", 1, 2, "ordinal not in range(128)"),
+                (
+                    b"a\xffz",
+                    "ascii",
+                    "strict",
+                    (1, 2, "ordinal not in range(128)"),
+                    None,
+                ),
                 (
                     b"A\x00\x00\xd8",
                     "utf-16-le",
-                    2,
-                    4,
-                    "unexpected end of data",
+                    "strict",
+                    (2, 4, "unexpected end of data"),
+                    None,
                 ),
                 (
                     b"\x00\x00\x11\x00",
                     "utf-32-le",
-                    0,
-                    4,
-                    "code point not in range(0x110000)",
+                    "strict",
+                    (0, 4, "code point not in range(0x110000)"),
+                    None,
                 ),
-                (b"\\x1", "unicode_escape", 0, 3, "truncated \\xXX escape"),
+                (
+                    b"\\x1",
+                    "unicode_escape",
+                    "strict",
+                    (0, 3, "truncated \\xXX escape"),
+                    None,
+                ),
+                // make_decode_exception reuses the first exception's args;
+                // the latest attributes still describe the fatal byte span.
+                (
+                    b"\xed\xa0\x80\xff",
+                    "utf-8",
+                    "surrogatepass",
+                    (3, 4, "invalid start byte"),
+                    Some((0, 1, "invalid continuation byte")),
+                ),
+                (
+                    b"\x00\xd8\xff",
+                    "utf-16-le",
+                    "surrogatepass",
+                    (2, 3, "truncated data"),
+                    Some((0, 3, "unexpected end of data")),
+                ),
+                (
+                    b"\x00\xd8\x00\x00\xff",
+                    "utf-32-le",
+                    "surrogatepass",
+                    (4, 5, "truncated data"),
+                    Some((
+                        0,
+                        4,
+                        "code point in surrogate code point range(0xd800, 0xe000)",
+                    )),
+                ),
+                (
+                    b"\xdc\x80A",
+                    "utf-16-be",
+                    "surrogateescape",
+                    (2, 3, "truncated data"),
+                    Some((0, 2, "illegal encoding")),
+                ),
+                (
+                    b"\x80\x00\x11\x00",
+                    "utf-32-le",
+                    "surrogateescape",
+                    (1, 4, "truncated data"),
+                    Some((0, 4, "code point not in range(0x110000)")),
+                ),
             ];
-            for &(input, encoding, start, end, reason) in cases {
-                let failure = decode_bytes_text(encoding, "strict", input).unwrap_err();
+            for &(input, encoding, errors, latest, initial) in cases {
+                let (start, end, reason) = initial.unwrap_or(latest);
+                let failure = decode_bytes_text(encoding, errors, input).unwrap_err();
                 let _: u64 = failure.raise(py, input);
                 let error = molt_exception_last_pending();
                 assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -1632,6 +1773,26 @@ mod encode_tests {
                     string_obj_to_owned(obj_from_bits(args[4])).as_deref(),
                     Some(reason)
                 );
+                use molt_obj_model::ExceptionTypedField;
+                let [latest_start, latest_end, latest_reason] = [
+                    ExceptionTypedField::UnicodeStart,
+                    ExceptionTypedField::UnicodeEnd,
+                    ExceptionTypedField::UnicodeReason,
+                ]
+                .map(|field| {
+                    crate::builtins::exceptions::exception_typed_field_get(py, ptr, field)
+                        .unwrap()
+                        .unwrap()
+                });
+                assert_eq!(to_i64(obj_from_bits(latest_start)), Some(latest.0 as i64));
+                assert_eq!(to_i64(obj_from_bits(latest_end)), Some(latest.1 as i64));
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(latest_reason)).as_deref(),
+                    Some(latest.2)
+                );
+                for bits in [latest_start, latest_end, latest_reason] {
+                    dec_ref_bits(py, bits);
+                }
                 drop(args);
                 molt_exception_clear();
                 dec_ref_bits(py, error);

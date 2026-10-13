@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net
+# MOLT_ENV: MOLT_CAPABILITIES=net,select.poll,select.select
 """Purpose: differential coverage for selectors modify key."""
 
 import selectors

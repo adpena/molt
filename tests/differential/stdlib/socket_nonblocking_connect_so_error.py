@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared,select.select
 """Purpose: differential coverage for nonblocking connect SO_ERROR."""
 
 import errno
