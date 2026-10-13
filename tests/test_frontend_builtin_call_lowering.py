@@ -2443,14 +2443,17 @@ def test_intrinsic_alias_preserves_declaration_and_canonical_executable(
     declaration: str, symbol: str
 ) -> None:
     gen = SimpleTIRGenerator(module_name="intrinsic_alias_probe")
-    gen.visit(ast.parse(
-        "from _intrinsics import require_intrinsic\n"
-        f"alias = require_intrinsic({declaration!r})\n"
-    ))
+    gen.visit(
+        ast.parse(
+            "from _intrinsics import require_intrinsic\n"
+            f"alias = require_intrinsic({declaration!r})\n"
+        )
+    )
     functions = gen.to_json()["functions"]
     ops = [op for function in functions for op in function["ops"]]
     (callable_op,) = [
-        op for op in ops
+        op
+        for op in ops
         if op["kind"] == "builtin_func" and op.get("builtin_name") == declaration
     ]
     assert callable_op["s_value"] == symbol
@@ -5441,3 +5444,37 @@ def test_deferred_and_starred_mutation_keep_frontend_relative_transaction(prefix
     )
     assert ("child", ("value",), 1) in _import_transaction_details(main_ops)
     assert ("pkg.child", ("value",), 0) not in _import_transaction_details(main_ops)
+
+
+@pytest.mark.parametrize("name", ["sorted", "enumerate", "format", "compile"])
+def test_public_builtin_parameter_roles_match_cpython(name: str) -> None:
+    import inspect
+
+    signature = inspect.signature(getattr(builtins, name))
+    expected = [(p.name, p.kind) for p in signature.parameters.values()]
+    if name == "compile":
+        # Existing six-slot compile ABI does not yet admit _feature_version.
+        expected = [p for p in expected if p[0] != "_feature_version"]
+    spec = BUILTIN_FUNC_SPECS[name]
+    actual = (
+        [(p, inspect.Parameter.POSITIONAL_ONLY) for p in spec.params]
+        + [(p, inspect.Parameter.POSITIONAL_OR_KEYWORD) for p in spec.pos_or_kw_params]
+        + [(p, inspect.Parameter.KEYWORD_ONLY) for p in spec.kwonly_params]
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "source,runtime_name",
+    [
+        ("sorted([2, 1], reverse=True)", "molt_sorted_builtin"),
+        ("sorted([2, 1], None, True)", "molt_sorted_builtin"),
+        ("enumerate(iterable=[2], start=4)", "molt_enumerate_builtin"),
+        ("format(12, format_spec='x')", "molt_format_builtin"),
+        ("compile(source='1', filename='x', mode='eval')", "molt_compile_builtin"),
+    ],
+)
+def test_public_builtin_role_calls_use_live_binder(
+    source: str, runtime_name: str
+) -> None:
+    assert _first_builtin_call_kind(source, runtime_name) == "call_bind"

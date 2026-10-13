@@ -666,9 +666,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "format": BuiltinFuncSpec(
         "molt_format_builtin",
-        ("value",),
+        ("value", "format_spec"),
         (ast.Constant(""),),
-        pos_or_kw_params=("format_spec",),
         text_signature="($module, value, format_spec='', /)",
     ),
     "callable": BuiltinFuncSpec(
@@ -677,8 +676,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "id": BuiltinFuncSpec("molt_id", ("obj",), text_signature="($module, obj, /)"),
     "enumerate": BuiltinFuncSpec(
         "molt_enumerate_builtin",
-        ("iterable", "start"),
+        (),
         (_MOLT_MISSING,),
+        pos_or_kw_params=("iterable", "start"),
         text_signature="(iterable, start=0)",
     ),
     "pow": BuiltinFuncSpec(
@@ -739,8 +739,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "sorted": BuiltinFuncSpec(
         "molt_sorted_builtin",
-        ("iterable", "key", "reverse"),
-        defaults=(ast.Constant(None), ast.Constant(False)),
+        ("iterable",),
+        kwonly_params=("key", "reverse"),
+        kw_defaults=(ast.Constant(None), ast.Constant(False)),
         text_signature="($module, iterable, /, *, key=None, reverse=False)",
     ),
     # CPython: dir([object]) uses the caller's locals() when called with no args.
@@ -801,8 +802,16 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "compile": BuiltinFuncSpec(
         "molt_compile_builtin",
-        ("source", "filename", "mode", "flags", "dont_inherit", "optimize"),
+        (),
         (ast.Constant(0), ast.Constant(False), ast.Constant(-1)),
+        pos_or_kw_params=(
+            "source",
+            "filename",
+            "mode",
+            "flags",
+            "dont_inherit",
+            "optimize",
+        ),
         text_signature="($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)",
     ),
     "print": BuiltinFuncSpec(
