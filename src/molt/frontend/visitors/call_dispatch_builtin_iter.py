@@ -69,22 +69,11 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                         Diagnostic.OPERAND_VALUE,
                         "Unsupported default in anext()",
                     )
-                placeholder = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-                res = MoltValue(self.next_var(), type_hint="Future")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_ASYNC",
-                        args=[
-                            "molt_anext_default_poll",
-                            iter_obj,
-                            default_val,
-                            placeholder,
-                        ],
-                        result=res,
-                    )
+                return self._emit_runtime_call(
+                    BUILTIN_FUNC_SPECS[func_id].runtime,
+                    [iter_obj, default_val],
+                    type_hint="Future",
                 )
-                return res
             res = MoltValue(self.next_var(), type_hint="Future")
             self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=res))
             return res

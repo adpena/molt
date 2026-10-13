@@ -157,3 +157,61 @@ async def anext_with_handled_owner():
 
 
 asyncio.run(anext_with_handled_owner())
+
+
+# Acquisition happens even without awaiting; conversion stays deferred.
+import builtins
+
+
+class DeferredConversion:
+    def __init__(self, events, error=None):
+        self.events = events
+        self.error = error
+
+    def __await__(self):
+        self.events.append("await")
+        if self.error is not None:
+            raise self.error
+        return iter(())
+
+
+class ReturningIterator:
+    def __init__(self, events, result):
+        self.events = events
+        self.result = result
+
+    def __anext__(self):
+        self.events.append("anext")
+        return self.result
+
+
+async def acquisition_boundaries():
+    for next_call in (anext, builtins.anext):
+        events = []
+        wrapped = next_call(ReturningIterator(events, DeferredConversion(events)), 91)
+        print("anext-call-time", events)
+        print("anext-converted-value", await wrapped, events)
+        for error in (DerivedStop("conversion stop"), ValueError("conversion failure")):
+            events = []
+            wrapped = next_call(ReturningIterator(events, DeferredConversion(events, error)), 92)
+            try:
+                await wrapped
+            except Exception as caught:
+                print("anext-conversion-error", caught is error, events)
+            else:
+                print("anext-conversion-error", False)
+        immediate = DerivedStop("call stop")
+        try:
+            next_call(ImmediateIterator(immediate), 93)
+        except DerivedStop as caught:
+            print("anext-call-error", caught is immediate)
+        else:
+            print("anext-call-error", False)
+        invalid = next_call(ReturningIterator([], 42), 94)
+        try:
+            await invalid
+        except TypeError:
+            print("anext-invalid-deferred", True)
+
+
+asyncio.run(acquisition_boundaries())

@@ -5563,3 +5563,20 @@ def test_except_star_captures_and_clears_replacement_before_cleanup(
             assert ops[position + 1]["kind"] == "exception_clear"
             captured += 1
     assert captured == 2
+
+
+def test_known_anext_default_acquires_through_runtime_call_before_await() -> None:
+    gen = SimpleTIRGenerator(module_name="main")
+    result = gen._try_emit_named_builtin_iter_call(
+        ast.parse("anext(1, 2)", mode="eval").body, "anext", False
+    )
+    ops = gen.current_ops
+    call_index = next(
+        i
+        for i, op in enumerate(ops)
+        if op.kind == "CALL" and op.args[0] == "molt_anext_builtin"
+    )
+    assert ops[call_index].result is result
+    assert len(ops[call_index].args) == 3
+    assert ops[call_index + 1].kind == "CHECK_EXCEPTION"
+    assert not any(op.kind == "CALL_ASYNC" for op in ops)

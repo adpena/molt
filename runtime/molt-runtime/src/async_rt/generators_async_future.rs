@@ -894,16 +894,17 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let payload_ptr = _obj_ptr as *mut u64;
-            let iter_bits = *payload_ptr;
+            let raw_awaitable = *payload_ptr;
             let default_bits = *payload_ptr.add(1);
             if crate::object::object_state(_obj_ptr) == 0 {
-                let raw = molt_anext(iter_bits);
-                let await_bits = if exception_pending(_py) {
-                    MoltObject::none().bits()
-                } else {
-                    crate::molt_get_awaitable(raw)
-                };
-                dec_ref_bits(_py, raw);
+                let await_bits = crate::molt_get_awaitable(raw_awaitable);
+                if exception_pending(_py) {
+                    // Conversion is not iteration: a StopAsyncIteration raised
+                    // by __await__ must propagate, not select the default.
+                    dec_ref_bits(_py, await_bits);
+                    crate::object::payload_refs::clear_prefix::<3>(_py, _obj_ptr);
+                    return MoltObject::none().bits() as i64;
+                }
                 *payload_ptr.add(2) = await_bits;
                 crate::object::object_set_state(_obj_ptr, 1);
             }

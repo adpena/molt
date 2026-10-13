@@ -620,6 +620,13 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         if default_bits == missing {
             return molt_anext(iter_bits);
         }
+        // __anext__ is a call-time operation; its failures are never exhaustion
+        // of the returned awaitable, even when a default was supplied.
+        let awaitable = molt_anext(iter_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, awaitable);
+            return MoltObject::none().bits();
+        }
         let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
         let obj_ptr = alloc_object_zeroed_with_aux(
             _py,
@@ -628,6 +635,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
             ObjectAuxPreselection::Sidecar,
         );
         if obj_ptr.is_null() {
+            dec_ref_bits(_py, awaitable);
             return MoltObject::none().bits();
         }
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -641,11 +649,11 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
                 || !object_init_state_unpublished(obj_ptr, 0)
             {
                 dec_ref_bits(_py, obj_bits);
+                dec_ref_bits(_py, awaitable);
                 return MoltObject::none().bits();
             }
             let payload_ptr = obj_ptr as *mut u64;
-            *payload_ptr = iter_bits;
-            inc_ref_bits(_py, iter_bits);
+            *payload_ptr = awaitable; // transfer the acquired result
             *payload_ptr.add(1) = default_bits;
             inc_ref_bits(_py, default_bits);
             *payload_ptr.add(2) = MoltObject::none().bits();
