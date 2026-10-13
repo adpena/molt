@@ -3,7 +3,11 @@ use super::super::*;
 #[test]
 fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
     for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
-        for receiver_type in [TirType::DynBox, TirType::I64] {
+        for (receiver_type, raw_carrier) in [
+            (TirType::DynBox, false),
+            (TirType::I64, false),
+            (TirType::I64, true),
+        ] {
             let func_name = "generic_obj_literal_name_attr";
             let source_op_idx = 23usize;
             let mut func = TirFunction::new(
@@ -36,7 +40,32 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
                 values: vec![result_id],
             };
 
-            let output = lower_tir_to_wasm(&func).test_view();
+            // A semantic Python int parameter remains boxed without raw-carrier
+            // proof. Exercise the actual full-width carrier separately, using
+            // the same representation admission as the integer ABI controls.
+            let lir = if raw_carrier {
+                let repr = HashMap::from([
+                    (ValueId(0), Repr::RawI64FullDeopt),
+                    (result_id, Repr::DynBox),
+                ]);
+                lower_function_to_lir_with_inline_proof(
+                    &func,
+                    &repr,
+                    &crate::representation_plan::value_range_for(&func),
+                )
+            } else {
+                crate::tir::lower_to_lir::lower_function_to_lir(&func)
+            };
+            assert_eq!(
+                lir.blocks[&lir.entry_block].args[0].repr,
+                if raw_carrier {
+                    crate::tir::lir::LirRepr::I64
+                } else {
+                    crate::tir::lir::LirRepr::DynBox
+                },
+                "{kind}: fixture must admit the intended physical receiver"
+            );
+            let output = lower_lir_to_wasm(&lir).test_view();
 
             assert!(
                 !output.bails_to_generic_path,
@@ -71,10 +100,22 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
                     "{kind} must not resolve a boxed receiver as a pointer"
                 );
             }
-            if receiver_type == TirType::I64 {
+            assert_eq!(
+                output
+                    .runtime_calls
+                    .iter()
+                    .filter(|&&call| call == "int_from_i64")
+                    .count(),
+                usize::from(raw_carrier),
+                "{kind}: full-width raw integers require one overflow-safe box; already-boxed receivers require none"
+            );
+            if raw_carrier {
                 assert!(
-                    output.runtime_calls.contains(&"int_from_i64"),
-                    "full-width raw integers must be boxed before lookup"
+                    output
+                        .instructions
+                        .iter()
+                        .any(|inst| matches!(inst, Instruction::I64LtU)),
+                    "{kind}: full-width boxing must retain its inline-range guard"
                 );
             }
         }
