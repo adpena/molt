@@ -61,9 +61,10 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-The runtime/ABI, public-consumer and developer-cost integration below is
-qualified through `13590c299` and lands as one main update. The parent integrator
-continues to own preserved WIP reconciliation. Coordination records own active
+Main contains the runtime/ABI, public-consumer and developer-cost integration
+through `02c0a71c0`. The focused successor below remains under qualification;
+its private commits are not a main landing. The parent integrator continues to
+own preserved WIP reconciliation. Coordination records own active
 write scopes and private receipts; this ledger owns release status. The current
 inventory has 98 open
 finding records and no ledger identity defects. Rows are obligations, not a
@@ -235,7 +236,39 @@ qualify the changed cleanup boundary on both targets. Preserve unrelated open
 release obligations without hiding failures behind expected-failure markers,
 fake implementations or permissive fixtures.
 
+The focused successor is still private. At `6a96d2498`, the native comparison
+cohort reports **11 passed and five failed**, with no skips, OOMs or guard
+failures. All 15 emitted images, the failed compiler case, and complete
+source/toolchain/process receipts are retained. Earlier failed-cohort evidence
+remains retained separately; matching prefixes are never whole-program passes.
+
+| Changed authority | Current qualification and remaining work |
+| --- | --- |
+| Shared IO storage and intrinsic class ownership | Nineteen compiled Linux aarch64 micro-profile controls pass at `b24098d29`: slots/dictionaries, class reassignment, payloads, cycles and publication failure. Native file iteration and buffered/text IO pass; the full file-attribute fixture reaches a valid FileIO keyword rejection. All seven concrete constructors now share ordinary signature metadata; both custom IO class binders are deleted. This successor still needs compiled replay. |
+| Raised versus handled exception state | The compiled runtime control passes. Ordinary native exception flow passes. Async iteration compilation exposes an unlabeled lexical region; except-star drops a later clause after replacement. One labeled iteration handler and earlier replacement capture/clear repair the existing producer; 29 focused host controls and its generated protocol pass. Native/WASM replay remains required. |
+| Dictionary subclass backing and builtin parameter roles | Native dictionary-subclass storage, formatting, sorting, compile argument binding and enumerate pass. Counter reaches redundant hash callbacks; its successor reuses canonical subclass backing in the existing known-hash algorithm. The separate rich-comparison fixture still exposes GenericAlias result custody and unsigned-array conversion gaps. |
+| Regex, parsing and path consumers | Three compiled runtime regex controls pass; both native email fixtures pass with CPython FeedParser. Native path, pathlib, linecache and byte-glob comparisons pass. Five WASM attribute-emission controls pass on the host; affected actual WASM programs remain unqualified. |
+
+Existing gaps remain release obligations: ignored `compile(...,
+_feature_version=...)`, broader regex escapes/categories/bytes/error projection,
+direct IO reinitialization, explicit buffered-size and StringIO newline
+semantics. Locale, filesystem codecs and logging remain separate preserved work.
+No new runtime registry, host-Python fallback or IO-specific slot layout is added.
+Windows and other unexecuted coordinates remain unqualified; these bounded
+results do not close the broader open rows.
+
+
 ### Development cost and release discipline
+
+The runtime's shared path-join builder replaces repeated accumulated-prefix copies
+with linear accumulation and removes the duplicated join intrinsics. A retained
+paired macOS arm64 lexical-core measurement at 16,384 24-byte components records
+32,770 to 17 allocation/reallocation requests and 10,065,911,841 to 950,255
+cumulative requested bytes. Median local latency is 69,604.12 to 58.14 microseconds.
+The measurement harness runs only during development. These are lexical-core
+measurements, not peak memory, whole-program speedup or Windows qualification. The native path, pathlib, linecache and byte-glob
+consumers pass their affected comparisons; WASM and remaining platform cells
+retain their explicit acceptance obligations.
 
 Source-local bounded compiler batches and symbolic module/code ownership remove
 cross-program recompilation without adding a guest registry or per-call lookup.
