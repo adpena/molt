@@ -1107,6 +1107,81 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
     }
 }
 
+/// Exact dictionaries and the declaring dict slot share this physical renderer.
+/// Recursion belongs to the public receiver, which may own separate backing.
+unsafe fn dict_repr_contents(
+    py: &PyToken<'_>,
+    receiver: *mut u8,
+    storage: *mut u8,
+) -> FormatOutput {
+    unsafe {
+        let guard = ReprGuard::new(py, receiver);
+        if !guard.active() {
+            return "{...}".into();
+        }
+        let mut out = FormatBuffer::from("{");
+        let mut idx = 0;
+        let mut first = true;
+        while let Some(row) = dict_next_entry(storage, &mut idx) {
+            let (key, value) = (row.key, row.value);
+            inc_ref_bits(py, key);
+            inc_ref_bits(py, value);
+            let _key_owner =
+                PtrDropGuard::new(obj_from_bits(key).as_ptr().unwrap_or(std::ptr::null_mut()));
+            let _value_owner = PtrDropGuard::new(
+                obj_from_bits(value)
+                    .as_ptr()
+                    .unwrap_or(std::ptr::null_mut()),
+            );
+            if !first {
+                out.push_str(", ");
+            }
+            first = false;
+            out.push_output(py, format_obj_output(py, obj_from_bits(key)));
+            if exception_pending(py) {
+                break;
+            }
+            out.push_str(": ");
+            out.push_output(py, format_obj_output(py, obj_from_bits(value)));
+            if exception_pending(py) {
+                break;
+            }
+        }
+        out.push('}');
+        out.into()
+    }
+}
+
+pub(crate) extern "C" fn dict_repr_slot(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let backing = match crate::object::ops::dict_backing_bits(py, bits) {
+            Ok(Some(backing)) => backing,
+            Err(()) => return MoltObject::none().bits(),
+            Ok(None) => {
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    "descriptor '__repr__' requires a 'dict' object",
+                );
+            }
+        };
+        let receiver = obj_from_bits(bits)
+            .as_ptr()
+            .expect("admitted dict receiver");
+        let storage = obj_from_bits(backing)
+            .as_ptr()
+            .expect("admitted dict backing");
+        // The physical table remains owned through arbitrary element repr calls.
+        inc_ref_bits(py, backing);
+        let _backing_owner = PtrDropGuard::new(storage);
+        let rendered = unsafe { dict_repr_contents(py, receiver, storage) };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        rendered.into_bits(py)
+    })
+}
+
 unsafe fn list_repr_contents(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     let guard = ReprGuard::new(py, ptr);
     if !guard.active() {
@@ -1549,41 +1624,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 return out.into();
             }
             if type_id == TYPE_ID_DICT {
-                let guard = ReprGuard::new(_py, ptr);
-                if !guard.active() {
-                    return "{...}".into();
-                }
-                let mut out = FormatBuffer::from("{");
-                let mut idx = 0;
-                let mut first = true;
-                while let Some(row) = dict_next_entry(ptr, &mut idx) {
-                    let (key, value) = (row.key, row.value);
-                    inc_ref_bits(_py, key);
-                    inc_ref_bits(_py, value);
-                    let _key_owner = PtrDropGuard::new(
-                        obj_from_bits(key).as_ptr().unwrap_or(std::ptr::null_mut()),
-                    );
-                    let _value_owner = PtrDropGuard::new(
-                        obj_from_bits(value)
-                            .as_ptr()
-                            .unwrap_or(std::ptr::null_mut()),
-                    );
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    first = false;
-                    out.push_output(_py, format_obj_output(_py, obj_from_bits(key)));
-                    if exception_pending(_py) {
-                        break;
-                    }
-                    out.push_str(": ");
-                    out.push_output(_py, format_obj_output(_py, obj_from_bits(value)));
-                    if exception_pending(_py) {
-                        break;
-                    }
-                }
-                out.push('}');
-                return out.into();
+                return dict_repr_contents(_py, ptr, ptr);
             }
             if type_id == TYPE_ID_SET {
                 let guard = ReprGuard::new(_py, ptr);
