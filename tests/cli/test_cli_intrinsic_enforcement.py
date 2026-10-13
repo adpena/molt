@@ -646,7 +646,9 @@ def test_python_stream_protocol_does_not_manufacture_an_intrinsic_provider(tmp_p
 
 
 @pytest.mark.parametrize("provider", ["real", "missing", "python-compiled"])
-def test_real_tk_widgets_keep_python_ownership_across_callable_providers(tmp_path, provider):
+def test_real_tk_widgets_keep_python_ownership_across_callable_providers(
+    tmp_path, provider
+):
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     graph = {
         "tkinter": root / "tkinter" / "__init__.py",
