@@ -299,7 +299,7 @@ impl<'a> SsaContext<'a> {
                 // If the variable has no reaching definition on this path
                 // (e.g., a loop-body variable at the loop entry edge), use
                 // the construction placeholder. It is materialized locally
-                // only if edge repair leaves it live. This is SSA semantics:
+                // only if an actual use consumes it. This is SSA semantics:
                 // on the first iteration the value is undefined, and the
                 // loop header's phi merges undef (entry edge) with the
                 // actual value (back-edge).
