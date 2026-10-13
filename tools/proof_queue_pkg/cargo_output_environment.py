@@ -9,11 +9,10 @@ from typing import Mapping
 
 from molt.dx import (
     PROOF_SCRATCH_ROOT_ENV,
-    SCRATCH_ENV_KEYS,
     generated_session_id,
     proof_scratch_root,
 )
-from tools.proof_queue_pkg import command_admission
+from tools.proof_queue_pkg import command_admission, command_identity
 
 TEMPORARY_VARIABLE_NAMES = ("TEMP", "TMP", "TMPDIR")
 
@@ -152,15 +151,16 @@ class CargoOutputEnvironment:
         return _name_key(name) in self.names
 
     def workspace_environment(self, env: Mapping[str, str]) -> dict[str, str]:
-        """Project existing run scratch/session roles out of Cargo workspace storage."""
-        ignored = set(SCRATCH_ENV_KEYS)
-        if generated_session_id(env):
-            ignored.update(("MOLT_SESSION_ID", "MOLT_SESSION_ID_GENERATED"))
-        return {
-            name: value
-            for name, value in self.caller_environment(env).items()
-            if name not in ignored
-        }
+        """Use the existing compiler-input projection, retaining pinned isolation.
+
+        Full execution environment remains per-run evidence. Live guard budgets,
+        output paths and generated sessions do not define Cargo compilation.
+        Cargo still checks each build script's declared environment dependencies.
+        """
+        return command_identity.compile_environment_selection(
+            self.caller_environment(env),
+            configured_names=() if generated_session_id(env) else ("MOLT_SESSION_ID",),
+        )
 
     def caller_environment(self, env: Mapping[str, str]) -> dict[str, str]:
         return {name: value for name, value in env.items() if not self.owns(name)}

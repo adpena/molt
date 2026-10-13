@@ -2549,7 +2549,7 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
                 )
                 == 1
             )
-            if step not in {"cold", "declared-env-edit"}:
+            if step != "cold":
                 assert lease.target == first.target
                 assert lease.provenance["state"] == "reused"
             publication = lease.publish(_completed(lease))
@@ -2672,6 +2672,81 @@ def test_workspace_python_selection_still_partitions_storage(tmp_path, changed):
             tmp_path / "other-env"
         )
     inputs.update(run_id="new-python-selection", execution_nonce_sha256="b" * 64)
+    second = cache.acquire(**inputs)
+    try:
+        assert second.target != first.target
+        assert second.provenance["state"] == "cold"
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("domain", ["cargo-workspace", "none"])
+def test_actual_guard_memory_changes_reuse_only_development_workspace(tmp_path, domain):
+    from tools.memory_guard_core.process_custody import (
+        _inject_guard_memory_contract_env,
+    )
+
+    inputs = _workspace_inputs(tmp_path)
+    inputs["outputs"] = replace(inputs["outputs"], cache_domain=domain)
+    base = {
+        **inputs["env"],
+        "MOLT_SESSION_ID": "proof-native-build-cargo-native-runtime",
+    }
+    leases = []
+    selected_envs = []
+    for index, limit in enumerate((4.644984245300293, 4.67650032043457)):
+        env = dict(base)
+        _inject_guard_memory_contract_env(
+            env,
+            max_rss_kb=int(limit * 1024 * 1024),
+            child_rlimit_kb=int(limit * 1024 * 1024),
+        )
+        selected, _contract = (
+            execution_environment._deterministic_execution_environment(
+                env, override_names=[]
+            )
+        )
+        selected_envs.append(selected)
+        inputs.update(
+            env=selected,
+            run_id=f"guard-{index}",
+            execution_nonce_sha256=str(index) * 64,
+        )
+        lease = cache.acquire(**inputs)
+        leases.append(lease)
+        _finish_workspace(lease, inputs)
+    assert (
+        selected_envs[0]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"]
+        != selected_envs[1]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"]
+    )
+    assert (
+        selected_envs[0]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"]
+        != selected_envs[1]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"]
+    )
+    assert leases[0].provenance["input_sha256"] != leases[1].provenance["input_sha256"]
+    assert (leases[0].target == leases[1].target) is (domain == "cargo-workspace")
+    assert leases[1].provenance["state"] == (
+        "reused" if domain == "cargo-workspace" else "cold"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("RUSTFLAGS", "-Ctarget-cpu=native"),
+        ("CARGO_PROFILE_RELEASE_LTO", "true"),
+        ("CC", "/selected-other-compiler"),
+        ("MOLT_SESSION_ID", "explicit-other-session"),
+    ],
+)
+def test_workspace_compile_environment_and_pinned_session_still_partition(
+    tmp_path, name, value
+):
+    inputs = _workspace_inputs(tmp_path)
+    first = cache.acquire(**inputs)
+    _finish_workspace(first, inputs)
+    inputs["env"][name] = value
+    inputs.update(run_id="changed-compilation-input", execution_nonce_sha256="b" * 64)
     second = cache.acquire(**inputs)
     try:
         assert second.target != first.target
