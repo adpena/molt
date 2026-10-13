@@ -23,6 +23,8 @@ The tests have teeth:
 from __future__ import annotations
 
 import os
+import time
+import json
 from pathlib import Path
 
 import pytest
@@ -161,6 +163,9 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
         path, module_name="m", is_package=False, import_scan_mode="module_init"
     )
     assert shared_slot is not None and shared_slot.is_file()
+    old = time.time() - 86400
+    os.utime(shared_slot, (old, old))
+    prior_shared = shared_slot.read_bytes()
 
     # Session B: cold session-local dir; the ONLY way it can read a hit is by
     # hydrating from the shared tier. Prove the session-local slot did not exist
@@ -188,10 +193,13 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
     assert defaults["f"]["params"] == 2
     # Hydration materialized the shared entry into the cold session dir.
     assert session_slot_b.is_file()
+    assert shared_slot.stat().st_mtime > old
+    assert shared_slot.read_bytes() == prior_shared
 
 
+@pytest.mark.parametrize("protected", [False, True])
 def test_lowering_reuse_across_sessions_no_relower(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protected: bool
 ) -> None:
     project_root = tmp_path / "proj"
     project_root.mkdir()
@@ -215,6 +223,11 @@ def test_lowering_reuse_across_sessions_no_relower(
         path, module_name="m", is_package=False, context_digest=context_digest
     )
     assert shared_slot is not None and shared_slot.is_file()
+    old = time.time() - 86400
+    os.utime(shared_slot, (old, old))
+    prior_shared = shared_slot.read_bytes()
+    if protected:
+        monkeypatch.setenv("MOLT_HOME", str(shared_slot.parent))
 
     # Teeth: in session B, a re-write must NOT happen -- if the shared tier is
     # working, the read hits and the caller never re-lowers. Spy on the write.
@@ -247,6 +260,11 @@ def test_lowering_reuse_across_sessions_no_relower(
     # occurred: the frontend never ran in session B.
     assert write_calls == []
     assert session_slot_b.is_file()
+    if protected:
+        assert shared_slot.stat().st_mtime == old
+    else:
+        assert shared_slot.stat().st_mtime > old
+    assert shared_slot.read_bytes() == prior_shared
 
 
 def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
@@ -837,3 +855,57 @@ def test_lowering_cache_summary_reports_hit_rate() -> None:
     )
     assert mixed is not None
     assert mixed["hit_rate"] == pytest.approx(0.5)
+
+
+def test_refused_shared_lowering_does_not_refresh_recency(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = _write_module(project, "m", "def f():\n    return 1\n")
+    digest = "ab" * 32
+    _use_session(monkeypatch, "writer")
+    MC._write_persisted_module_lowering(
+        project,
+        source,
+        module_name="m",
+        is_package=False,
+        context_digest=digest,
+        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
+    )
+    slot = MC._shared_module_lowering_cache_path_for(
+        source, module_name="m", is_package=False, context_digest=digest
+    )
+    assert slot is not None
+    payload = json.loads(slot.read_text())
+    payload["context_digest"] = "cd" * 32
+    slot.write_text(json.dumps(payload))
+    old = time.time() - 86400
+    os.utime(slot, (old, old))
+    before = slot.stat().st_mtime_ns
+    _use_session(monkeypatch, "reader")
+    assert (
+        MC._read_persisted_module_lowering(
+            project, source, module_name="m", is_package=False, context_digest=digest
+        )
+        is None
+    )
+    assert slot.stat().st_mtime_ns == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX character-device control")
+def test_shared_frontend_hydration_refuses_special_file_before_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stat
+
+    device = Path(os.devnull)
+    assert stat.S_ISCHR(device.lstat().st_mode)
+    monkeypatch.setattr(
+        MFC,
+        "_atomic_copy_file",
+        lambda *args: pytest.fail("special file reached copy admission"),
+    )
+    output = tmp_path / "owned.json"
+    assert MFC._hydrate_shared_frontend_cache(cache_path=device, dest=output) is None
+    assert not output.exists()

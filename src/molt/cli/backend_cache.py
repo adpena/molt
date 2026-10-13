@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Collection, Generator, Mapping, Sequence, cast
 
+from molt.cache_eviction import refresh_cache_entry_recency
 from molt.default_paths import (
+    _default_molt_cache,
+    is_backend_cache_artifact_name,
+    shared_stdlib_archive_cache_root,
     validate_required_stdlib_output,
     backend_cache_artifact_filename,
     shared_stdlib_cache_entry,
@@ -382,10 +386,11 @@ def _materialize_cached_backend_artifact(
     candidate_identity: StableRegularFileIdentity | None = None,
 ) -> bool:
     try:
+        observed = candidate.lstat()
         candidate_identity = _validate_backend_cache_artifact(
             candidate, artifact_contract=artifact_contract, identity=candidate_identity
         )
-    except BackendArtifactValidationError as exc:
+    except (OSError, BackendArtifactValidationError) as exc:
         warnings.append(f"Cache candidate admission failed: {exc}")
         return False
     if state_path is None:
@@ -408,6 +413,13 @@ def _materialize_cached_backend_artifact(
             except BackendArtifactValidationError as exc:
                 warnings.append(str(exc))
                 return False
+            if (
+                candidate.parent == _default_molt_cache()
+                and is_backend_cache_artifact_name(candidate.name)
+            ):
+                refresh_cache_entry_recency(
+                    candidate, cache_root=candidate.parent, observed=observed
+                )
             return True
     sync_tier = tier
     sync_source_key = source_key
@@ -447,6 +459,12 @@ def _materialize_cached_backend_artifact(
             )
         except OSError as exc:
             warnings.append(f"Backend cache sync receipt write failed: {exc}")
+        if candidate.parent == _default_molt_cache() and is_backend_cache_artifact_name(
+            candidate.name
+        ):
+            refresh_cache_entry_recency(
+                candidate, cache_root=candidate.parent, observed=observed
+            )
         return True
     except OSError as exc:
         warnings.append(f"Cache copy failed: {exc}")
@@ -1179,6 +1197,8 @@ def _hydrate_shared_stdlib_archive(
                     f"Shared stdlib staging cleanup also failed: {cleanup_error}"
                 )
             raise
+        if shared_stdlib_archive_cache_root(stdlib_object_path) is not None:
+            refresh_cache_entry_recency(stdlib_object_path.parent)
     return staged_stdlib_obj
 
 

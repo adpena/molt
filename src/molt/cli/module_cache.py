@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cache_eviction import refresh_cache_entry_recency
+
 import ast
 import contextlib
 import hashlib
@@ -1003,15 +1005,21 @@ def _read_persisted_module_analysis(
         import_scan_mode=import_scan_mode,
         target_python=target_python,
     )
-    if not _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path):
+    observed = _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path)
+    if observed is None:
         return None
-    return _validate_persisted_module_analysis_payload(
+    result = _validate_persisted_module_analysis_payload(
         _read_artifact_sync_state(cache_path),
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
         snapshot=snapshot,
     )
+    if result is not None and shared_path is not None:
+        refresh_cache_entry_recency(
+            shared_path, cache_root=shared_path.parent.parent, observed=observed
+        )
+    return result
 
 
 @_source_tree_fingerprint_transaction()
@@ -1769,9 +1777,10 @@ def _read_persisted_module_lowering(
         context_digest=context_digest,
         target_python=target_python,
     )
-    if not _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path):
+    observed = _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path)
+    if observed is None:
         return None
-    return _validate_persisted_module_lowering_payload(
+    result = _validate_persisted_module_lowering_payload(
         _read_cached_json_object(cache_path),
         path,
         module_name=module_name,
@@ -1779,6 +1788,11 @@ def _read_persisted_module_lowering(
         path_stat=path_stat,
         known_modules=known_modules,
     )
+    if result is not None and shared_path is not None:
+        refresh_cache_entry_recency(
+            shared_path, cache_root=shared_path.parent.parent, observed=observed
+        )
+    return result
 
 
 def _write_persisted_module_lowering(

@@ -1,5 +1,6 @@
 use std::{io, path::Path};
 
+use super::files::refresh_cache_entry_recency;
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::paths::stdlib_cache_count_sidecar_path;
 use super::sidecars::{
@@ -70,6 +71,9 @@ pub(crate) fn hydrate_shared_stdlib_cache_archive(
             manifest.as_deref(),
             partition,
         )?;
+        if super::paths::canonical_stdlib_cache_root(source)?.is_some() {
+            refresh_cache_entry_recency(source.parent().expect("archive entry owner"));
+        }
         Ok(true)
     })
 }

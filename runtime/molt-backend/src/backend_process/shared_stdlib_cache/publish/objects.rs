@@ -11,7 +11,7 @@ use molt_ir::content_digest::bytes_to_lower_hex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::files::sha256_file_hex;
+use super::files::{refresh_cache_entry_recency, sha256_file_hex};
 use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::paths::stdlib_archive_cache_root;
 use crate::backend_process::native_batch::{NativeBatchObjectJob, validate_native_object_bytes};
@@ -145,6 +145,7 @@ impl StdlibObjectCache {
             let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }?;
             let object = admitted_object(&bytes, key)?;
             molt_artifact_publish::write_bytes_atomically(output, object)?;
+            refresh_cache_entry_recency(path.parent().expect("entry owner"));
             Ok(Some(object.len() as u64))
         })
     }

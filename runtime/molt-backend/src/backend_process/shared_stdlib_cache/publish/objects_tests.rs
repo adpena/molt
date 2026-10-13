@@ -172,11 +172,51 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     let bytes = object_bytes("original");
     std::fs::write(&source, &bytes).unwrap();
     assert_eq!(cache.publish(&key, &source).unwrap(), bytes.len() as u64);
+    let entry = cache.path(&key);
+    let owner = entry.parent().unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86400);
+    let mut options = std::fs::File::options();
+    #[cfg(not(windows))]
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        options
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    let directory = options.open(owner).unwrap();
+    directory.set_modified(old).unwrap();
+    let aged = owner.metadata().unwrap().modified().unwrap();
+    let stored_modified = entry.metadata().unwrap().modified().unwrap();
     assert_eq!(
         cache.restore(&key, &restored).unwrap(),
         Some(bytes.len() as u64)
     );
     assert_eq!(std::fs::read(&restored).unwrap(), bytes);
+    let reused = owner.metadata().unwrap().modified().unwrap();
+    assert!(
+        reused > old,
+        "admitted reuse must refresh its eviction owner"
+    );
+    assert_eq!(
+        entry.metadata().unwrap().modified().unwrap(),
+        stored_modified
+    );
+    assert_eq!(
+        cache.restore(&key, &restored).unwrap(),
+        Some(bytes.len() as u64)
+    );
+    assert_eq!(owner.metadata().unwrap().modified().unwrap(), reused);
+    directory.set_modified(old).unwrap();
+    assert!(
+        cache.restore(&key, owner).is_err(),
+        "a failed copy is not reuse"
+    );
+    assert_eq!(owner.metadata().unwrap().modified().unwrap(), aged);
     let stored = std::fs::read(cache.path(&key)).unwrap();
     std::fs::write(&source, object_bytes("different")).unwrap();
     assert!(
@@ -202,6 +242,8 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     );
     // Failed admission must not overwrite the caller's existing private object.
     assert_eq!(std::fs::read(&restored).unwrap(), bytes);
+    assert_eq!(owner.metadata().unwrap().modified().unwrap(), aged);
+    drop(directory);
     std::fs::remove_dir_all(cache.root).unwrap();
 }
 

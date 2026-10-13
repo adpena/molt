@@ -16,6 +16,7 @@ import pytest
 from molt.cli.wasm_link_cache import (
     _locked_wasm_link_cache_entry,
     _publish_wasm_link_cache_entry,
+    _read_wasm_link_cache_entry,
     _wasm_link_cache_entry,
 )
 from tests.process_guard_common import (
@@ -916,3 +917,107 @@ def test_canonical_home_physical_target_remains_protected_when_selected_home_cha
     (root / "home").unlink()
     _load_molt_cache_prune()._prune(root, max_bytes=0, max_age_days=0, dry_run=False)
     assert not owned.exists()
+
+
+@pytest.mark.parametrize("hit_after_inventory", [False, True])
+def test_real_cache_hit_survives_cold_entry_and_stale_eviction_inventory(
+    tmp_path: Path, monkeypatch, hit_after_inventory: bool
+) -> None:
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    hot, cold = _cache_entry(cache, "aa-hot"), _cache_entry(cache, "bb-cold")
+    old = time.time() - 86400
+    for index, entry in enumerate((hot, cold)):
+        with _locked_wasm_link_cache_entry(entry):
+            _publish_wasm_link_cache_entry(entry, WASM_BYTES)
+        os.utime(entry.root, (old + index, old + index))
+    content_before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in (hot.artifact, hot.metadata)
+    }
+    inventory = module._collect_entries(cache)
+
+    def hit():
+        with _locked_wasm_link_cache_entry(hot):
+            assert _read_wasm_link_cache_entry(hot).data == WASM_BYTES
+        if not hit_after_inventory:
+            refreshed = hot.root.stat().st_mtime_ns
+            with _locked_wasm_link_cache_entry(hot):
+                assert _read_wasm_link_cache_entry(hot).status == "hit"
+            assert hot.root.stat().st_mtime_ns == refreshed, "no hot-read write churn"
+
+    if hit_after_inventory:
+        collect = module._collect_entries
+
+        def stale_inventory(root, **kwargs):
+            assert root == cache
+            hit()
+            return inventory
+
+        monkeypatch.setattr(module, "_collect_entries", stale_inventory)
+    else:
+        hit()
+    result = module._prune(
+        cache,
+        max_bytes=module._entry_size_bytes(hot.root),
+        max_age_days=None,
+        dry_run=False,
+    )
+    assert result["entries_removed"] == 1
+    assert hot.artifact.read_bytes() == WASM_BYTES
+    assert not cold.root.exists()
+    assert result["bytes_remaining"] <= module._entry_size_bytes(hot.root)
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in content_before
+    } == content_before
+    if hit_after_inventory:
+        monkeypatch.setattr(module, "_collect_entries", collect)
+
+
+def test_corrupt_cache_read_does_not_refresh_eviction_owner(tmp_path: Path) -> None:
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    entry = _cache_entry(cache, "bad")
+    with _locked_wasm_link_cache_entry(entry):
+        _publish_wasm_link_cache_entry(entry, WASM_BYTES)
+    entry.artifact.write_bytes(WASM_BYTES + b"corruption")
+    old = time.time() - 86400
+    os.utime(entry.root, (old, old))
+    before = entry.root.stat().st_mtime_ns
+    with _locked_wasm_link_cache_entry(entry):
+        assert _read_wasm_link_cache_entry(entry).status == "corrupt"
+    assert entry.root.stat().st_mtime_ns == before
+    result = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+    assert result["entries_removed"] == 1
+
+
+def test_lockless_hit_never_refreshes_a_replaced_or_busy_entry(tmp_path: Path) -> None:
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    path = cache / "module_lowering" / "entry.json"
+    path.parent.mkdir(parents=True)
+    old = time.time() - 86400
+    path.write_bytes(b"first")
+    os.utime(path, (old, old))
+    observed = path.stat()
+    replacement = path.with_suffix(".tmp")
+    replacement.write_bytes(b"replacement")
+    os.utime(replacement, (old, old))
+    replacement.replace(path)
+    module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
+    assert path.stat().st_mtime == pytest.approx(old)
+    observed = path.stat()
+    lock = _acquire_file_lock(
+        cache / "locks" / "prune.lock", timeout_s=1, timeout_message="test lock"
+    )
+    try:
+        module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
+        assert path.stat().st_mtime_ns == observed.st_mtime_ns
+    finally:
+        _release_file_lock(lock)
+    module.refresh_cache_entry_recency(path, cache_root=cache, observed=observed)
+    assert path.stat().st_mtime_ns > observed.st_mtime_ns
+    assert path.read_bytes() == b"replacement"

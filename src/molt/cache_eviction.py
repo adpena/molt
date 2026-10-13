@@ -44,8 +44,12 @@ def _default_cache_root() -> Path:
 class CacheEntry:
     path: Path
     size_bytes: int
-    mtime: float
+    metadata: os.stat_result
     lock_path: Path | None = None
+
+    @property
+    def mtime(self) -> float:
+        return self.metadata.st_mtime
 
 
 class PruneCompleted(TypedDict):
@@ -180,9 +184,7 @@ def _collect_entries(
             metadata = path.lstat()
         except FileNotFoundError:
             return
-        entries.append(
-            CacheEntry(path, _entry_size_bytes(path), metadata.st_mtime, lock)
-        )
+        entries.append(CacheEntry(path, _entry_size_bytes(path), metadata, lock))
 
     children = _children(cache_root)
     standalone_names = _LegacyStandaloneNames()
@@ -275,6 +277,69 @@ def _collect_entries(
     return entries
 
 
+# Match the maintenance cadence: hot readers need no metadata write per access.
+AUTOMATIC_PRUNE_INTERVAL_SECONDS = 300.0
+
+
+def _same_cache_generation(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        os.path.samestat(left, right)
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+        and left.st_ctime_ns == right.st_ctime_ns
+    )
+
+
+def refresh_cache_entry_recency(
+    path: Path,
+    *,
+    cache_root: Path | None = None,
+    observed: os.stat_result | None = None,
+) -> None:
+    """Record admitted reuse on its optional eviction owner, never owned output.
+
+    Directory entries already hold their canonical publication stripe. Lockless
+    JSON/flat-file readers pass their cache root and the observation preceding
+    admission; the existing prune lock serializes their metadata-only update.
+    Recency is advisory: ordinary optional-cache I/O failure cannot fail a build.
+    """
+    handle = None
+    try:
+        metadata = observed if observed is not None else path.lstat()
+        if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
+            return
+        now = time.time_ns()
+        if now - metadata.st_mtime_ns < int(AUTOMATIC_PRUNE_INTERVAL_SECONDS * 1e9):
+            return
+        if cache_root is not None:
+            if observed is None:
+                return
+            absolute = path.absolute()
+            resolved = path.resolve(strict=False)
+            if any(
+                absolute.is_relative_to(root) or resolved.is_relative_to(root)
+                for root in protected_cache_roots(cache_root)
+            ):
+                return
+            lock_path = cache_control_root(cache_root) / "prune.lock"
+            handle = _try_acquire_file_lock(lock_path)
+            if handle is None:
+                return
+            with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
+                metadata = path.lstat()
+                if not _same_cache_generation(metadata, observed):
+                    return
+                os.utime(path, ns=(metadata.st_atime_ns, now), follow_symlinks=False)
+        else:
+            os.utime(path, ns=(metadata.st_atime_ns, now), follow_symlinks=False)
+    except OSError:
+        # The value has already been admitted and copied into reader custody.
+        pass
+    finally:
+        if handle is not None:
+            _release_file_lock(handle)
+
+
 def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
     lock_handle = None
     try:
@@ -291,6 +356,14 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
             else:
                 if lock_handle is None:
                     return "busy"
+        try:
+            current = entry.path.lstat()
+        except FileNotFoundError:
+            return "removed"
+        if not _same_cache_generation(current, entry.metadata):
+            # A reader refreshed this entry (or a publisher replaced it) after
+            # inventory. The old observation no longer owns its eviction.
+            return "busy"
         if dry_run:
             return "removed"
         if _is_direct_directory(entry.path):
@@ -414,10 +487,6 @@ def resolve_budget(
         )
     )
     return gb, days
-
-
-# One shared admission interval, not one scan per object or compiler process.
-AUTOMATIC_PRUNE_INTERVAL_SECONDS = 300.0
 
 
 def _prune(
