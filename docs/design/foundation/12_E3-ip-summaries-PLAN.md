@@ -28,16 +28,12 @@ The per-function escape analysis is fully functional. `OpCode::Call` arm (line 3
 Anchors escape analysis as the S5 points-to phase. `AliasAnalysisResult.escape` is computed by `escape_analysis::analyze(func)` (line 437). The alias oracle's `is_barrier_for`, `may_observe_slot`, and `is_local_allocation` all flow from this escape map. Improving the escape map improves all three queries transitively.
 
 **`module_phase.rs` — `run_module_pipeline()` (line 115)**
-Pipeline order today (verified lines 116-178):
-1. `CallGraph::build(module)` — line 116
-2. `ModuleSummaries::compute(module, &call_graph)` — line 117
-3. `run_inliner(module, &call_graph, &summaries, tti)` — line 120
-4. `run_module_slot_promotion(module)` — line 139
-5. Re-optimize changed functions via `run_pipeline` — lines 153-158
-6. Rebuild `CallGraph` + `ModuleSummaries` over post-inline module — lines 172-173
-7. Return `ModuleAnalysis { call_graph, summaries, changed_functions }` — line 174
-
-`ModuleAnalysis.summaries` (`ModuleSummaries`) is returned but currently only consumed by the inliner (for `op_count` / `is_leaf`). It is NOT threaded into the per-function pipeline; there is no `Option<&ModuleSummaries>` anywhere in `alias_analysis.rs`, `escape_analysis.rs`, or `licm.rs`.
+The current phase builds initial graph/summaries for inlining and fusion, then
+performs slot promotion, re-optimization, and terminal drop finalization. It
+returns changed names as a `BTreeSet<String>`; it does not rebuild or export
+post-transform summaries. A future escape/alias/LICM consumer must request
+explicit summaries over the current module and own their invalidation. See
+[the IR contract](../../spec/areas/compiler/0100_MOLT_IR.md).
 
 **`effects.rs` — `builtin_effects()` / `method_effects()` (lines 448, 488)**
 `builtin_effects` covers `len`, `sorted`, `abs`, `min`, `max`, `sum`, `bool`, `int`, `float`, `str`, `repr`, `hash`, `chr`, `ord`, `hex`, `oct`, `bin`, `range`, `enumerate`, `zip`, `map`, `filter`, `tuple`, `frozenset`, `math.*`. `method_effects` covers immutable types: `str`, `tuple`, `frozenset`, `int`, `float`. Neither covers user-defined callees — that is the E3 gap.

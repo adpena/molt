@@ -7,7 +7,7 @@
 //! directly for this pipeline.
 
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
@@ -140,10 +140,6 @@ pub struct TirSimpleIrModulePipelineOptions<'a> {
     pub stage_observer: Option<TirSimpleIrModuleStageObserver<'a>>,
 }
 
-pub struct TirSimpleIrModulePipelineRun {
-    pub module_analysis: super::module_phase::ModuleAnalysis,
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TirOwnedModulePipelineMode {
     ModulePhase,
@@ -156,11 +152,6 @@ pub struct TirOwnedModulePipelineOptions<'a> {
     pub non_inlinable: &'a HashSet<String>,
     pub missing_tir_context: &'a str,
     pub mode: TirOwnedModulePipelineMode,
-}
-
-pub struct TirOwnedModulePipelineRun {
-    pub tir_functions: Vec<(bool, TirFunction)>,
-    pub module_analysis: Option<super::module_phase::ModuleAnalysis>,
 }
 
 struct PreparedTirFunction {
@@ -665,7 +656,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
     functions: &mut [FunctionIR],
     cached_tir: &mut CachedTirCustody,
     mut options: TirSimpleIrModulePipelineOptions<'_>,
-) -> TirSimpleIrModulePipelineRun {
+) -> usize {
     emit_simple_ir_module_stage(
         &mut options.stage_observer,
         TirSimpleIrModulePipelineStage::BeforeModuleLower { functions },
@@ -685,7 +676,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
         .stage_observer
         .is_some()
         .then(std::time::Instant::now);
-    let module_analysis = super::module_phase::run_module_pipeline(
+    let changed_functions = super::module_phase::run_module_pipeline(
         &mut module,
         options.target_info,
         options.non_inlinable,
@@ -695,7 +686,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
             &mut options.stage_observer,
             TirSimpleIrModulePipelineStage::AfterModulePipeline {
                 module: &module,
-                changed_functions: module_analysis.changed_functions.len(),
+                changed_functions: changed_functions.len(),
                 elapsed_ms: start.elapsed().as_millis(),
             },
         );
@@ -704,17 +695,17 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
         functions,
         module,
         &idx_map,
-        &module_analysis.changed_functions,
+        &changed_functions,
         options.backconvert_context,
     );
     emit_simple_ir_module_stage(
         &mut options.stage_observer,
         TirSimpleIrModulePipelineStage::AfterModuleBackconvert {
             functions,
-            changed_functions: module_analysis.changed_functions.len(),
+            changed_functions: changed_functions.len(),
         },
     );
-    TirSimpleIrModulePipelineRun { module_analysis }
+    changed_functions.len()
 }
 
 pub fn finalize_simple_ir_drops_from_cached_tir(
@@ -733,13 +724,13 @@ pub fn run_owned_module_pipeline_from_cached_tir(
     functions: &[FunctionIR],
     cached_tir: &mut CachedTirCustody,
     options: TirOwnedModulePipelineOptions<'_>,
-) -> TirOwnedModulePipelineRun {
+) -> Vec<(bool, TirFunction)> {
     let mut tir_functions = take_ordered_tir_functions_from_cached_tir(
         functions,
         cached_tir,
         options.missing_tir_context,
     );
-    let module_analysis = match options.mode {
+    match options.mode {
         TirOwnedModulePipelineMode::ModulePhase => {
             let mut externs: Vec<TirFunction> = Vec::new();
             let mut module = TirModule {
@@ -753,7 +744,7 @@ pub fn run_owned_module_pipeline_from_cached_tir(
                     module.functions.push(tir_func);
                 }
             }
-            let module_analysis = super::module_phase::run_module_pipeline(
+            super::module_phase::run_module_pipeline(
                 &mut module,
                 options.target_info,
                 options.non_inlinable,
@@ -761,7 +752,6 @@ pub fn run_owned_module_pipeline_from_cached_tir(
             tir_functions = Vec::with_capacity(externs.len() + module.functions.len());
             tir_functions.extend(externs.into_iter().map(|func| (true, func)));
             tir_functions.extend(module.functions.into_iter().map(|func| (false, func)));
-            Some(module_analysis)
         }
         TirOwnedModulePipelineMode::TerminalDropsOnly => {
             for (is_extern, tir_func) in tir_functions.iter_mut() {
@@ -770,13 +760,9 @@ pub fn run_owned_module_pipeline_from_cached_tir(
                         super::drop_phase::finalize_function_drops(tir_func, options.target_info);
                 }
             }
-            None
         }
-    };
-    TirOwnedModulePipelineRun {
-        tir_functions,
-        module_analysis,
     }
+    tir_functions
 }
 
 fn emit_simple_ir_module_stage(
@@ -835,7 +821,7 @@ fn backconvert_changed_tir_module_to_simple_ir(
     functions: &mut [FunctionIR],
     module: TirModule,
     idx_map: &[usize],
-    changed_functions: &[String],
+    changed_functions: &BTreeSet<String>,
     backconvert_context: &str,
 ) {
     assert_eq!(
@@ -843,11 +829,10 @@ fn backconvert_changed_tir_module_to_simple_ir(
         idx_map.len(),
         "module optimization must preserve the local function index mapping"
     );
-    let changed: HashSet<&str> = changed_functions.iter().map(String::as_str).collect();
     // This is the terminal consumer of the module's TIR bodies. Retire each
     // body as its SimpleIR replacement is installed, including unchanged TIR.
     for (tir_func, &orig_idx) in module.functions.into_iter().zip(idx_map) {
-        if !changed.contains(tir_func.name.as_str()) {
+        if !changed_functions.contains(tir_func.name.as_str()) {
             continue;
         }
         let function = &mut functions[orig_idx];
@@ -1032,7 +1017,7 @@ mod tests {
             &mut functions,
             module,
             &[1, 2, 4],
-            &["changed_left".into(), "changed_right".into()],
+            &BTreeSet::from(["changed_right".into(), "changed_left".into()]),
             "selective module test",
         );
         let after = serde_json::to_value(&functions).unwrap();
@@ -1078,7 +1063,7 @@ mod tests {
                     functions: vec![tir],
                 },
                 &[0],
-                &["authored_void".into()],
+                &BTreeSet::from(["authored_void".into()]),
                 "ABI refusal test",
             );
         }));
@@ -1113,7 +1098,7 @@ mod tests {
                     &mut functions,
                     module,
                     &[0],
-                    &[],
+                    &BTreeSet::new(),
                     "index mapping refusal test",
                 );
             }));
@@ -1753,7 +1738,6 @@ mod tests {
         );
 
         let (_, tir_func) = owned_run
-            .tir_functions
             .iter()
             .find(|(_, func)| func.name == "molt_main")
             .expect("molt_main TIR");

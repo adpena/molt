@@ -126,13 +126,11 @@ the shape-blind lowering is now structurally absent when the shape is `Proven`.
   (`tir/analysis/mod.rs:66`, currently 14 variants ending at `ExceptionRegions`),
   the `Analysis` trait (`:123`: `CFG_SENSITIVE`/`OPS_SENSITIVE`/`compute`), fail-closed
   `invalidate_cfg`/`invalidate_ops`, the `MOLT_VERIFY_ANALYSIS=1` self-check.
-- The interprocedural seeding pattern: a new `ShapeFactsTable::build_module` in the
-  module phase + `AnalysisManager::prepopulate` (`analysis/mod.rs:349`), mirroring
-  `CallFactsTable::build_module` (`call_facts.rs:368`). Class layout is a *module-wide*
-  fact (the class def + MRO live across functions), so the precise table is built
-  whole-program and seeded; the per-function `compute` is the fail-closed `Unknown`
-  floor — sound by construction, never out-claiming the precise table (the exact model
-  doc 47 §1 / `call_facts.rs:55-63` established and proved monotone).
+- Explicit interprocedural context: precise class facts require class definitions
+  and MRO across the module. Request the proposed table where its consumer needs
+  it, following `CallFactsTable::build_for_function`; the existing CallFacts
+  producer does not prepopulate per-function managers. A local `compute` must
+  remain a conservative floor, with owned invalidation for any future cache.
 - The generated op-semantics registry: `op_kinds.toml` -> `gen_op_kinds.py --check`
   (doc 25, doc 59). The shape-guard ops are *already* in the registry vocabulary; this
   rung makes the registry the **one generated authority** for their semantics (§6).
@@ -479,7 +477,8 @@ vocabulary; this rung completes their registry authority:
 Build `shape_facts.rs`: the `ClassShape`/`FieldSlot`/`FieldAccessFact` types, the
 `ShapeStability` lattice, `AnalysisId::ShapeFacts` (the 15th variant), `ShapeFactsTable`
 (per-function, keyed by `ValueId`, mirroring `CallFactsTable` at `call_facts.rs:330`),
-and `ShapeFactsTable::build_module` (interprocedural, mirroring `call_facts.rs:368`)
+and an explicitly requested interprocedural ShapeFacts table (following the
+demand-scoped context contract in doc 47)
 that *surfaces* the frontend `ClassInfo` layout (carried through the existing op `"class"`
 attr + a new module-side class-layout descriptor) into `ClassShape`, validated against
 the runtime `class_field_offset` walk (§5.4). Fields filled for `@dataclass` and simple

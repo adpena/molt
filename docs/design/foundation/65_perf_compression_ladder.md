@@ -91,9 +91,10 @@ structurally absent. "We added a peephole that recovers 10%" is **not** a rung.
   fail-closed invalidation (`invalidate_cfg`), the `MOLT_VERIFY_ANALYSIS=1` self-check
   (`tir/analysis/mod.rs:33`). New facts are new `AnalysisId` variants with the same
   invalidation contract — never a side channel.
-- The interprocedural seeding pattern: `CallFactsTable::build_module` in the module
-  phase + `AnalysisManager::prepopulate` (`call_facts.rs:46-63`). Callee-side facts are
-  built whole-program and *seeded*; the per-function `compute` is the fail-closed floor.
+- Explicit interprocedural context: `CallFactsTable::build_for_function` requests
+  precise facts only where needed, using the current module graph and summaries.
+  The per-function `compute` supplies the conservative local floor. Demand and
+  invalidation belong to the consumer; ordinary module codegen does not seed tables.
 - The generated op-semantics registry: `op_kinds.toml` → `gen_op_kinds.py --check`
   (doc 25, doc 46 §1). Per-op facts (`may_throw`, `operand_ownership`, mints-fresh-ref)
   are generated and `--check`-gated; a rung that needs a per-op fact *adds a column to
@@ -637,10 +638,10 @@ dimension).
    (`call_facts.rs:117`). `Unknown` is always the fail-closed default. A wrong `Proven`
    is always a miscompile; a conservative `Unknown` is always a missed opt. No rung
    forks this.
-2. **One cache contract.** Every fact is an `AnalysisId` with the `AnalysisManager`
-   fail-closed invalidation + `MOLT_VERIFY_ANALYSIS=1` self-check (`analysis/mod.rs`).
-   Interprocedural facts use the `build_module` + `prepopulate` seeding pattern
-   (`call_facts.rs:46`), never a side channel.
+2. **Owned analysis lifetime.** Cached local facts use `AnalysisId` and the
+   `AnalysisManager` invalidation/self-check contract. Precise interprocedural
+   facts take explicit current module context and are requested by their
+   consumers. A cache or whole-module table requires a demonstrated consumer.
 3. **One op-semantics authority.** Per-op facts (borrow signature, may_throw,
    backend-lowered, mints-fresh-ref) are generated columns in `op_kinds.toml` checked by
    `gen_op_kinds.py --check`. A rung that needs a per-op fact adds a column; it never

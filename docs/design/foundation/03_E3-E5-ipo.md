@@ -39,8 +39,8 @@ run_module_pipeline(module, tti)
   2. ModuleSummaries::compute(module, cg)      ← E3: now computes does_not_capture[i] + is_pure
   3. run_inliner(module, cg, summaries, tti)   ← E1 (existing)
   4. run_specializer(module, cg, summaries, tti)  ← E5: clone per Repr-tuple
-  5. Rebuild cg + summaries over post-transform module
-  6. Return ModuleAnalysis
+  5. Return the set of changed function names
+  6. Consumers request final analyses only when needed
 ```
 
 Steps 2 and 4 are the two new arcs. They are additive over the existing skeleton — no structural rewrites to the surrounding machinery.
@@ -263,29 +263,12 @@ pub fn is_specialization_enabled(&self) -> bool {
 
 ### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs`
 
-`run_module_pipeline` (line 110): add E5 call between E1 and the rebuild:
-
-```rust
-pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAnalysis {
-    let call_graph = CallGraph::build(module);
-    let summaries = ModuleSummaries::compute(module, &call_graph, None);
-
-    // E1: inline (existing)
-    let _inline_stats = super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti);
-
-    // E5: specialization (new — currently a no-op when tti.specialization_budget == 0)
-    if tti.is_specialization_enabled() {
-        let _spec_stats = super::passes::specializer::run_specializer(
-            module, &call_graph, &summaries, tti,
-        );
-    }
-
-    // Rebuild post-transform
-    let call_graph = CallGraph::build(module);
-    let summaries = ModuleSummaries::compute(module, &call_graph, None);
-    ModuleAnalysis { call_graph, summaries }
-}
-```
+A future specialization pass belongs inside the shared transformation owner.
+It must contribute every changed or newly created function to the existing
+changed-function authority, and preserve the wrapper's body/index contract.
+The current pipeline returns `BTreeSet<String>`; analyses needed by a later
+consumer must be requested over that consumer's current module. Do not add an
+unconditional final graph or summary rebuild without a consumer.
 
 ### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs`
 
@@ -293,16 +276,10 @@ Add `pub mod specializer;` (line ~34, after `pub mod sccp;`).
 
 ### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/parallel.rs`
 
-The per-function `compile_module_parallel` currently creates a `PassManager` with no module summaries. Thread `Arc<ModuleSummaries>` from the `ModuleAnalysis` returned by `run_module_pipeline` into each per-function `PassManager`:
-
-```rust
-// After run_module_pipeline returns analysis:
-let summaries = Arc::new(analysis.summaries.clone());
-// In the rayon closure per function:
-let mut pm = build_default_pipeline(tti.clone())
-    .with_module_summaries(Arc::clone(&summaries));
-pm.run(func)
-```
+The proposed interprocedural consumers must receive explicit current summary
+context. The current module pipeline does not export final summaries to
+per-function managers. Establish the consuming pass and its invalidation scope
+before adding shared summary lifetime or cache state.
 
 ### MIGRATE: `passes.rs` `compute_return_alias_summaries` → `ip_summary.rs`
 

@@ -129,7 +129,10 @@ measurable, lets backends specialize calls, and is the substrate for #67/#68/#71
 --output <path>` routes the normal frontend/backend pipeline into that
 compiler-emitted artifact, and `tools/fact_graph_dump.py` validates and renders
 the graph (including `--why-boxed`). The CLI, backend flag, and dump tool share
-the same JSON contract; none is a second fact authority. **Full implementation spec:
+the same JSON contract; none is a second fact authority. Compiler emission builds
+precise facts only for the selected function, using final module context and the
+producer label `CallFactsTable::build_for_function` under schema version 3.
+Ordinary module codegen does not construct the diagnostic tables. **Full implementation spec:
 `docs/design/foundation/47_call_facts_leaf_coverage.md`** (the `CallFacts` struct,
 `FactValue` confidence lattice, per-field producers, the "pop many reds into
 place" benchmark map, and the 4-phase plan).

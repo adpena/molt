@@ -44,33 +44,34 @@ pub(crate) fn emit_fact_graph_for_ir(
         |_| {},
     );
     let non_inlinable = HashSet::new();
-    let module_run = molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-        &functions,
-        &mut tir_run.cached_tir,
-        molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
-            target_info: request.target_info,
-            module_name: "fact_graph_module",
-            non_inlinable: &non_inlinable,
-            missing_tir_context: "fact graph TIR cache runner",
-            mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
-        },
-    );
-    let module_analysis = module_run
-        .module_analysis
-        .expect("fact graph owned TIR run must execute module phase");
-
-    let selected = module_run
-        .tir_functions
+    let tir_functions =
+        molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+            &functions,
+            &mut tir_run.cached_tir,
+            molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+                target_info: request.target_info,
+                module_name: "fact_graph_module",
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "fact graph TIR cache runner",
+                mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+            },
+        );
+    let module = molt_backend::tir::TirModule {
+        name: "fact_graph_module".to_string(),
+        functions: tir_functions
+            .into_iter()
+            .filter_map(|(is_extern, func)| (!is_extern).then_some(func))
+            .collect(),
+    };
+    let selected = module
+        .functions
         .iter()
-        .filter(|(is_extern, _)| !*is_extern)
-        .map(|(_, func)| func)
         .find(|func| func.name == request.function_name)
         .ok_or_else(|| {
-            let mut names: Vec<_> = module_run
-                .tir_functions
+            let mut names: Vec<_> = module
+                .functions
                 .iter()
-                .filter(|(is_extern, _)| !*is_extern)
-                .map(|(_, func)| func.name.as_str())
+                .map(|func| func.name.as_str())
                 .collect();
             names.sort_unstable();
             io::Error::new(
@@ -83,14 +84,21 @@ pub(crate) fn emit_fact_graph_for_ir(
             )
         })?;
 
-    let graph = match module_analysis.call_facts_for(&selected.name) {
-        Some(call_facts) => molt_backend::tir::FactGraph::build_with_call_facts(
-            selected,
-            call_facts,
-            "ModuleAnalysis::call_facts",
-        ),
-        None => molt_backend::tir::FactGraph::build_local(selected),
-    };
+    let call_graph = molt_backend::tir::call_graph::CallGraph::build(&module);
+    let summaries =
+        molt_backend::tir::passes::ip_summary::ModuleSummaries::compute(&module, &call_graph);
+    let call_facts = molt_backend::tir::call_facts::CallFactsTable::build_for_function(
+        selected,
+        &module,
+        &call_graph,
+        &summaries,
+        request.target_info,
+    );
+    let graph = molt_backend::tir::FactGraph::build_with_call_facts(
+        selected,
+        &call_facts,
+        "CallFactsTable::build_for_function",
+    );
     write_json_artifact_path(request.output_path, &graph)
 }
 
@@ -163,7 +171,7 @@ mod tests {
         assert_eq!(graph["kind"], "molt_tir_fact_graph");
         assert_eq!(graph["function"], "molt_main");
         assert_eq!(graph["summary"]["call_fact_count"], 6);
-        let call_target_from_module_analysis = graph["values"]
+        let precise_call_target = graph["values"]
             .as_array()
             .expect("values array")
             .iter()
@@ -171,11 +179,11 @@ mod tests {
             .any(|fact| {
                 fact["kind"] == "call.target"
                     && fact["value"] == "Opaque"
-                    && fact["producer"] == "ModuleAnalysis::call_facts"
+                    && fact["producer"] == "CallFactsTable::build_for_function"
             });
         assert!(
-            call_target_from_module_analysis,
-            "fact graph must serialize the module-analysis call target, not a local fallback: {graph}"
+            precise_call_target,
+            "fact graph must serialize the requested precise call target: {graph}"
         );
         let sourced_call_fact = graph["values"]
             .as_array()
@@ -190,6 +198,90 @@ mod tests {
             "fact graph source sites must carry FunctionIR.source_file: {graph}"
         );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fact_graph_emit_resolves_recursive_scc_but_keeps_extern_calls_opaque() {
+        let calling = |name: &str, targets: &[&str]| FunctionIR {
+            name: name.into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            source_file: Some("recursive.py".into()),
+            ops: targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| OpIR {
+                    kind: "call".into(),
+                    s_value: Some((*target).into()),
+                    args: Some(Vec::new()),
+                    out: Some(format!("result_{index}")),
+                    source_line: Some(7 + index as i64),
+                    ..OpIR::default()
+                })
+                .chain(std::iter::once(OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec![format!("result_{}", targets.len() - 1)]),
+                    ..OpIR::default()
+                }))
+                .collect(),
+            ..FunctionIR::default()
+        };
+        let ir = SimpleIR {
+            functions: vec![
+                calling("selected", &["recursive_a", "external"]),
+                calling("recursive_a", &["recursive_b"]),
+                calling("recursive_b", &["recursive_a"]),
+                FunctionIR {
+                    name: "external".into(),
+                    is_extern: true,
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    ..FunctionIR::default()
+                },
+            ],
+            profile: None,
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "molt-fact-graph-scc-{}-{nonce}",
+            std::process::id()
+        ));
+        let output = root.join("graph.json");
+        let target_info = molt_backend::tir::target_info::TargetInfo::native_release_fast();
+        emit_fact_graph_for_ir(
+            &ir,
+            FactGraphEmitRequest {
+                output_path: &output,
+                function_name: "selected",
+                target_info: &target_info,
+            },
+        )
+        .expect("fact graph emission");
+        let graph: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        let facts: Vec<_> = graph["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|value| value["facts"].as_array().unwrap())
+            .collect();
+        for (line, kind, expected) in [
+            (7, "call.target", "StaticDirect(recursive_a)"),
+            (7, "call.leaf", "False"),
+            (7, "call.inlinable", "WhyNot(Recursive)"),
+            (8, "call.target", "Opaque"),
+            (8, "call.leaf", "Unknown"),
+        ] {
+            let fact = facts
+                .iter()
+                .find(|fact| fact["kind"] == kind && fact["source_site"]["line"] == line)
+                .unwrap_or_else(|| panic!("missing {kind} at line {line}: {graph}"));
+            assert_eq!(fact["value"], expected);
+            assert_eq!(fact["producer"], "CallFactsTable::build_for_function");
+            assert_eq!(fact["source_site"]["source_file"], "recursive.py");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

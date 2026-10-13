@@ -28,7 +28,7 @@ pub(crate) fn run_luau_tir_module_pipeline(
         |_| {},
     );
     let non_inlinable = std::collections::HashSet::new();
-    let module_run =
+    let module_changed =
         molt_backend::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
             &mut ir.functions,
             &mut tir_run.cached_tir,
@@ -44,6 +44,6 @@ pub(crate) fn run_luau_tir_module_pipeline(
 
     Ok(LuauTirModulePipelineStats {
         functions: local_function_count,
-        module_changed: module_run.module_analysis.changed_functions.len(),
+        module_changed,
     })
 }

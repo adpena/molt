@@ -29,9 +29,9 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
 
 ## Verified contracts (no drift)
 
-- `run_module_pipeline(&mut TirModule, &TargetInfo) -> ModuleAnalysis` (`module_phase.rs:110`)
-  mutates bodies (inliner wired at 115), builds the call graph TWICE (post-inline at 120),
-  `ModuleAnalysis::leaf_functions() -> BTreeSet<String>` is the POST-inline leaf set.
+- `run_module_pipeline` mutates optimized TIR and returns a `BTreeSet<String>`
+  of changed function names. Initial graph/summaries feed its transformations;
+  final native leaf metadata belongs to the lifetime/splitting consumer.
 - `run_inliner` triple-refines every changed caller (`inliner.rs:1169-1172`:
   refine→pipeline→refine) → back-conversion sees fully-refined TIR.
 - `lower_to_simple_ir(&TirFunction) -> Vec<OpIR>` (`lower_to_simple.rs:159`) is PURE
@@ -57,7 +57,7 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
   existing post-split `compute_leaf_functions_via_call_graph` on the inlined SimpleIR is
   correct, and the `module_context` pre-inline path is conservative-safe (a stale-subset
   leaf set keeps extra recursion guards = correct, just slower). **Leaf-set change is NOT
-  required for correctness of the first cut** — defer threading `module_analysis.leaf_functions()`.
+  required for correctness of the first cut** — retain the final native leaf-metadata owner.
 
 ## The first-cut implementation (native e-1) — bounded + safe
 
@@ -65,7 +65,8 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
 `inliner.rs`:
 - Change `InlinerStats` to carry `changed_functions: Vec<String>` (or return it alongside);
   push the caller name when `changed_this_fn` (the existing flag at the splice loop).
-  Thread it out through `run_module_pipeline` → `ModuleAnalysis` (add `changed_functions`).
+  The module phase merges pass changes into its one deterministic set, which
+  the shared backconverter queries directly.
 
 ### Step 2 — `lower_functions_to_tir_module` helper
 `tir/lower_from_simple.rs`:
@@ -88,27 +89,15 @@ pub fn lower_functions_to_tir_module(
 ```
 Unit-test it (round-trips a 2-fn module; externs skipped; idx_map aligned).
 
-### Step 3 — replace the native `inline_functions` block (`simple_backend.rs:2617-2632`)
-Hoist `let native_tti = TargetInfo::native_from_simd_caps(SimdCaps::detect_host());` before
-the block. Replace the `if analysis.needs_inlining { inline_functions(...) }` body with:
-```rust
-if analysis.needs_inlining && !self.skip_ir_passes {
-    let (mut tir_module, idx_map) = lower_functions_to_tir_module(&ir.functions);
-    let module_analysis = run_module_pipeline(&mut tir_module, &native_tti);
-    // Back-convert ONLY the inliner-changed functions; leave the rest byte-identical.
-    let changed: std::collections::HashSet<&str> =
-        module_analysis.changed_functions.iter().map(|s| s.as_str()).collect();
-    for (pos, &orig_idx) in idx_map.iter().enumerate() {
-        let f = &tir_module.functions[pos];
-        if changed.contains(f.name.as_str()) {
-            ir.functions[orig_idx].ops = lower_to_simple_ir(f);
-        }
-    }
-}
-```
-Keep `passes::inline_functions` (deleted in e-4 after WASM/LLVM migrate). The leaf set is
-unchanged (the post-split analysis runs on the inlined SimpleIR). `split_megafunctions`
-(2642) already runs after, sees merged sizes (blueprint §9.5 — correct, no change).
+### Step 3 — consume the shared module wrapper
+
+The current native driver uses
+`run_simple_ir_module_pipeline_from_cached_tir`. The wrapper takes cached TIR
+custody, runs the module transforms, and consumes each changed body at its
+original SimpleIR index. It queries the module's ordered changed-name set
+directly and returns only the count. Do not add a second lift loop, membership
+table, or backend-local backconverter. Final native leaf metadata remains after
+lifetime processing and splitting.
 
 ### Step 4 — validate (the gate, in order)
 - `cargo build --profile release-fast -p molt-backend --features native-backend` 0 warn.

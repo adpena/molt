@@ -1,69 +1,33 @@
-//! **CallFacts** — the per-call-site fact record (foundation design 47).
+//! Per-call-site facts requested by a consumer (foundation design 47).
 //!
-//! `tools/call_fact_coverage.py` measured that only **2 of 7** call-site facts a
-//! world-class compiler records are actually *attached* to the call op
-//! (`direct_target` as an `s_value` attr string and `typed_return` as the result
-//! `Repr`). The other five — `leaf`, `no_throw`, `no_alloc`, `inlinable`,
-//! `noescape_args` — are *computed inside a pass and discarded*, so no backend can
-//! consume them and no tool can measure their site-level coverage. That missing
-//! representation is the perf root: a large share of molt's runtime-helper traffic
-//! exists because the compiler **cannot carry the proof needed to remove it**.
+//! [`CallFactsTable::build_for_function`] records precise facts for one function
+//! using an explicit, current module, call graph, summaries, and target. FactGraph
+//! uses this path after module transformations. Ordinary code generation does
+//! not build these tables. [`CallFactsTable::build_local`] supplies the sound
+//! intraprocedural floor used by [`CallFactsAnalysis`] and local FactGraph views.
 //!
-//! This module is the IR primitive that stops the discarding. A [`CallFacts`]
-//! record is attached to every result-bearing site in the shared
-//! [`FunctionCallSites`] projection (Python callbacks and proven GPU runtime
-//! primitives), keyed by the op's first result [`ValueId`] in a per-function
-//! [`CallFactsTable`]. Each field is a [`FactValue`] — a confidence lattice, not a
-//! bare bool — so the compiler distinguishes *proven* from *unknown* and **never
-//! silently assumes** (doc 47 §1, §7).
+//! Both paths use the shared [`FunctionCallSites`] projection and key each
+//! result-bearing site by its first result [`ValueId`]. Unknown facts remain
+//! pessimistic; neither path changes the function body.
 //!
-//! ## Phase 1a scope (this module)
-//!
-//! Phase 1a is **pure representation**: it *attaches* what the existing analyses
-//! (`call_graph`, `ip_summary`, `inliner`, `effects`/`op_kinds`) already compute,
-//! it is **consumed by nothing on the hot compile path**, and it is therefore
-//! byte-identical (additive). The fields filled:
-//!
-//! | field | source | lattice rule (Phase 1) |
+//! | field | source | conservative rule |
 //! | --- | --- | --- |
 //! | [`CallFacts::target`] | `call_targets` operation provenance + module membership | typed [`CallTargetFact`] — `StaticDirect{name}` only for proven direct user calls, else `Opaque` |
 //! | [`CallFacts::typed_return`] | the result `ValueId`'s semantic type and `Repr::default_for` | conservative `Some(repr)` for a known semantic type (possibly `DynBox`); `None` for an unknown type |
 //! | [`CallFacts::leaf`] | `CallGraph::makes_any_call` | `Proven` iff the resolved callee makes no call of any kind; `False` iff it provably does; `Unknown` for an unresolved (opaque) target |
 //! | [`CallFacts::no_throw`] | shared operation-aware effect contract | `Proven` only when the operation contract is statically no-throw; else `Unknown`. Handler absence and builtin names are not effect proofs. |
-//! | [`CallFacts::inlinable`] | `inliner::classify_inline_eligibility` | the typed [`InlineEligibility`] (Eligible \| WhyNot(reason)) — the SAME value `inliner::is_inlineable` derives its bool from (single source of truth, doc 47 §7) |
+//! | [`CallFacts::inlinable`] | `inliner::classify_inline_eligibility` | the typed [`InlineEligibility`] (Eligible \| WhyNot(reason)) — the SAME value `inliner::is_inlineable` derives its bool from (single source of truth) |
 //!
-//! `no_alloc` and `no_escape_args` are **Phase 2** (escape-analysis-sourced) and
-//! are deliberately *not* fabricated here — an unsound `Proven` is a miscompile,
-//! whereas their absence is only a missed optimization. They are tracked as
-//! `Unknown` in the lattice until Phase 2 fills them (doc 47 §5).
+//! `no_alloc` and `no_escape_args` remain conservative until a sound producer
+//! and consumer are implemented. Unknown facts cannot authorize optimizations.
 //!
-//! ## Why this is an interprocedural (module-phase) analysis
+//! Precise `leaf`, `inlinable`, and target classification require callee bodies
+//! and module membership. The per-function [`Analysis`] trait cannot provide
+//! that context; its cached local floor makes no callee-side claims. Precise
+//! facts are built explicitly at the consumer, without prepopulating unrelated
+//! per-function analysis managers.
 //!
-//! `leaf`, `inlinable`, and the `StaticDirect`/`Opaque` classification are
-//! **callee-side facts**: they need
-//! the whole-program [`CallGraph`], the bottom-up [`ModuleSummaries`], and the
-//! callee bodies — exactly the inputs [`ModuleSummaries::compute`] and
-//! [`is_inlineable`](super::passes::inliner::is_inlineable) already consume. So the
-//! precise table is built by [`CallFactsTable::build_module`] in the module phase
-//! (alongside the call graph + summaries it reads), NOT by the strictly
-//! *intraprocedural* [`Analysis`] trait (whose `compute(&TirFunction)` cannot see
-//! the module). Forcing the interprocedural computation through the
-//! intraprocedural trait would require smuggling module context through a side
-//! channel — a workaround this codebase forbids.
-//!
-//! The [`Analysis`] trait IS still implemented ([`CallFactsAnalysis`], keyed by
-//! [`AnalysisId::CallFacts`]) so the per-function manager can **cache** a table
-//! and so the FactGraph / coverage contract has a stable cache key (doc 47 §1).
-//! Its `compute(func)` produces the **fail-closed intraprocedural floor**: every
-//! callee-side fact that cannot be proven from `func` alone is `Unknown`, and only
-//! the purely-local facts (`typed_return`; `no_throw` via a statically-no-throw
-//! operation contract) can be `Proven`. This floor is *sound by
-//! construction* — it can only ever say `Unknown` where the precise module-phase
-//! table would say `Proven`, never the reverse — so a cache miss can never yield a
-//! wrong `Proven`. The module phase seeds the precise table via
-//! [`AnalysisManager::prepopulate`](super::analysis::AnalysisManager::prepopulate).
-//!
-//! ## Invariants (doc 47 §7)
+//! ## Invariants
 //!
 //! * `Unknown` is the **fail-closed default**: every consumer treats it as the
 //!   pessimistic answer. A wrong `Proven` is a miscompile; a conservative
@@ -99,17 +63,10 @@ use site_analysis::{analyze_call_site_local, analyze_call_site_module};
 /// Per-function side-table of [`CallFacts`], keyed by each call op's **result
 /// `ValueId`**. A `BTreeMap` for deterministic iteration (the coverage tool and
 /// any dump walk it in a stable order). Built precisely by
-/// [`CallFactsTable::build_module`] (interprocedural) or as a fail-closed floor by
+/// [`CallFactsTable::build_for_function`] (interprocedural) or as a fail-closed floor by
 /// [`CallFactsTable::build_local`] (intraprocedural).
 ///
-/// Keyed internally by the call op's result [`ValueId`]'s raw index (`ValueId.0`,
-/// a `u32`) rather than by `ValueId` itself: `ValueId` derives only `Hash`/`Eq`
-/// (the codebase keys it with `HashMap` everywhere — `DefMap`, `value_types`),
-/// not `Ord`, so a `BTreeMap<ValueId, _>` would not compile and adding `Ord` to a
-/// shared core type for one side-table's iteration order would be a wrong-layer
-/// change. The `u32` index *is* the canonical SSA-definition order, so a
-/// `BTreeMap<u32, _>` gives the promised deterministic walk while the public API
-/// stays `ValueId`-typed (the `.0` translation lives only at this boundary).
+/// The internal key is the raw `ValueId` index; the public API stays typed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallFactsTable {
     facts: BTreeMap<u32, CallFacts>,
@@ -140,20 +97,16 @@ impl CallFactsTable {
         self.facts.iter().map(|(&v, f)| (ValueId(v), f))
     }
 
-    /// Build the **precise** per-function table for every function in `module`,
-    /// using the whole-program interprocedural context. Returns one table per
-    /// function, keyed by function name — the module phase prepopulates each into
-    /// its function's [`AnalysisManager`](super::analysis::AnalysisManager).
-    ///
-    /// `call_graph` + `summaries` + `tti` are the same instances
-    /// [`run_module_pipeline`](super::module_phase::run_module_pipeline) already
-    /// builds; this analysis reads them, it never mutates a body.
-    pub fn build_module(
+    /// Build precise facts only for `func`, using analyses of the same current
+    /// `module`. The caller owns the module context and requests the table when
+    /// it has a consumer; this read-only analysis does not transform any body.
+    pub fn build_for_function(
+        func: &TirFunction,
         module: &TirModule,
         call_graph: &CallGraph,
         summaries: &ModuleSummaries,
         tti: &TargetInfo,
-    ) -> BTreeMap<String, CallFactsTable> {
+    ) -> Self {
         // Function bodies by name for inline eligibility. The ordered index
         // provides deterministic traversal and logarithmic callee lookup.
         let by_name: BTreeMap<&str, &TirFunction> = module
@@ -162,27 +115,22 @@ impl CallFactsTable {
             .map(|f| (f.name.as_str(), f))
             .collect();
 
-        let mut out: BTreeMap<String, CallFactsTable> = BTreeMap::new();
-        for func in &module.functions {
-            let mut table = CallFactsTable::default();
-            let sites = FunctionCallSites::for_function(func);
-            for (&bid, block) in &func.blocks {
-                for (index, op) in block.ops.iter().enumerate() {
-                    let Some(site) = sites.at((bid, index)) else {
-                        continue;
-                    };
-                    let Some(result) = op.results.first().copied() else {
-                        continue;
-                    };
-                    let facts = analyze_call_site_module(
-                        op, site, func, call_graph, summaries, tti, &by_name,
-                    );
-                    table.facts.insert(result.0, facts);
-                }
+        let mut table = CallFactsTable::default();
+        let sites = FunctionCallSites::for_function(func);
+        for (&bid, block) in &func.blocks {
+            for (index, op) in block.ops.iter().enumerate() {
+                let Some(site) = sites.at((bid, index)) else {
+                    continue;
+                };
+                let Some(result) = op.results.first().copied() else {
+                    continue;
+                };
+                let facts =
+                    analyze_call_site_module(op, site, func, call_graph, summaries, tti, &by_name);
+                table.facts.insert(result.0, facts);
             }
-            out.insert(func.name.clone(), table);
         }
-        out
+        table
     }
 
     /// Build the **fail-closed intraprocedural floor** for `func` alone (no module
@@ -190,7 +138,7 @@ impl CallFactsTable {
     /// `Unknown`; only purely-local facts (`typed_return`; `no_throw` via a
     /// statically-no-throw operation contract) can be proven. This is the
     /// [`Analysis::compute`] path — sound by construction, never out-claiming the
-    /// precise [`Self::build_module`] table.
+    /// precise [`Self::build_for_function`] table.
     pub fn build_local(func: &TirFunction) -> CallFactsTable {
         let mut table = CallFactsTable::default();
         let sites = FunctionCallSites::for_function(func);
@@ -212,19 +160,17 @@ impl CallFactsTable {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// AnalysisManager registration (the cached AnalysisId, doc 47 §1)
+// AnalysisManager registration (the cached AnalysisId)
 // ───────────────────────────────────────────────────────────────────────────
 
 /// The cached [`Analysis`] for the per-function [`CallFactsTable`], keyed by
 /// [`AnalysisId::CallFacts`].
 ///
-/// `compute(func)` produces the **fail-closed intraprocedural floor**
-/// ([`CallFactsTable::build_local`]) — sound on a cache miss. The precise,
-/// interprocedural table is computed once in the module phase
-/// ([`CallFactsTable::build_module`]) and seeded into each function's manager via
-/// [`prepopulate`](super::analysis::AnalysisManager::prepopulate). The two paths
-/// are monotone: the floor never out-claims the precise table, so a consumer that
-/// reads a floor on a miss can only ever miss an optimization, never miscompile.
+/// `compute(func)` produces the fail-closed intraprocedural floor through
+/// [`CallFactsTable::build_local`]. A consumer with current module context can
+/// request [`CallFactsTable::build_for_function`] directly. The floor never
+/// out-claims that precise table, so a local analysis can miss an optimization
+/// but cannot invent a callee-side proof.
 ///
 /// CFG- and ops-sensitive: the table is keyed by call-op result `ValueId`, and a
 /// removed block (CFG) or a rewritten/removed op (ops) can delete a call site, so

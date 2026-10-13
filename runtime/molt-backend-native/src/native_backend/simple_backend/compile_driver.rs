@@ -166,17 +166,12 @@ impl SimpleBackend {
             )
             .cached_tir;
 
-            //  Whole-program module phase (Tier-2 E1 inliner activation, LLVM)
-            // This is the LLVM lane's parity point with native/wasm: it runs the
-            // SAME `run_module_pipeline` (CallGraph  ModuleSummaries  bottom-up
-            // E1 inliner  module-slot promotion  post-inline rebuild) the
-            // Cranelift and WASM drivers run  but on the LLVM lane's own TIR
-            // functions, with the LLVM cost model (`llvm_tti`), and it lowers the
-            // resulting inlined `TirModule` *directly* to LLVM IR below. There is
-            // NO SimpleIR round-trip on the LLVM path: the merged bodies stay in
-            // TIR from the inliner straight through `try_lower_tir_to_llvm`. The
-            // Cranelift-lane SimpleIR module phase above is skipped for `use_llvm`
-            // (see the `!use_llvm` guard) so the program is inlined exactly once.
+            // Run the shared module transformations on the LLVM lane's owned
+            // TIR, then lower those bodies directly to LLVM. The per-function
+            // cache runner above still produces its SimpleIR projection; this
+            // module consumer does not back-convert the transformed bodies.
+            // The Cranelift module phase is skipped for `use_llvm`, so inlining
+            // runs once under the LLVM target's cost model.
             //
             // Extern functions are runtime declarations with empty bodies (the
             // shared-stdlib partition's `stdlib_shared.o` symbols, already
@@ -189,23 +184,21 @@ impl SimpleBackend {
             // is empty here (the native lane needs it only because its module
             // phase runs *before* externalization).
             let non_inlinable = std::collections::HashSet::new();
-            let owned_tir_run =
-                crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-                    &ir.functions,
-                    &mut llvm_cached_tir,
-                    crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
-                        target_info: &llvm_tti,
-                        module_name: "llvm_module",
-                        non_inlinable: &non_inlinable,
-                        missing_tir_context: "LLVM TIR cache runner",
-                        mode: if self.skip_ir_passes {
-                            crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
-                        } else {
-                            crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
-                        },
+            let tir_funcs = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+                &ir.functions,
+                &mut llvm_cached_tir,
+                crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+                    target_info: &llvm_tti,
+                    module_name: "llvm_module",
+                    non_inlinable: &non_inlinable,
+                    missing_tir_context: "LLVM TIR cache runner",
+                    mode: if self.skip_ir_passes {
+                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
+                    } else {
+                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
                     },
-                );
-            let tir_funcs = owned_tir_run.tir_functions;
+                },
+            );
             // Build LLVM representation facts from the exact post-module-phase
             // TIR the LLVM backend is about to lower. The trusted-unbox gate is
             // pure TIR/value-range authority, so fresh ValueIds introduced by
