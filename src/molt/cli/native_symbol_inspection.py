@@ -27,7 +27,8 @@ from typing import Literal, Sequence, TypeVar
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
-from molt.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache, is_backend_cache_artifact_name
+from molt.cache_eviction import refresh_cache_entry_recency
 from molt.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
@@ -1244,6 +1245,7 @@ def _native_symbol_facts_admission(
     fences precede either persistent or process-cache publication.
     """
     computed = False
+    used_sidecar: tuple[Path, os.stat_result] | None = None
     with _open_native_symbol_artifact(path, identity) as (opened, admitted):
         if validate_shape is not None:
             validate_shape(opened)
@@ -1294,6 +1296,14 @@ def _native_symbol_facts_admission(
                     persistent_cache_path, cache_key=cache_key, members=members
                 )
             else:
+                sidecar = _native_object_symbol_facts_sidecar_path(path)
+                if (
+                    not publish
+                    and sidecar.parent == _default_molt_cache()
+                    and is_backend_cache_artifact_name(sidecar.name)
+                ):
+                    with contextlib.suppress(OSError):
+                        used_sidecar = sidecar, sidecar.lstat()
                 facts = _read_native_object_symbol_facts(
                     path,
                     object_digest=admitted.sha256,
@@ -1319,6 +1329,11 @@ def _native_symbol_facts_admission(
     # Facts describe bytes read during the admitted interval. They remain valid
     # under that content key if the pathname changes after custody is released;
     # a later lookup must independently admit its then-current content.
+    if used_sidecar is not None and not computed:
+        sidecar, observed = used_sidecar
+        refresh_cache_entry_recency(
+            sidecar, cache_root=sidecar.parent, observed=observed
+        )
     _remember_native_symbol_facts(cache, cache_key, facts, limit=limit)
     if archive:
         if computed:

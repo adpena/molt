@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import contextmanager
 import hashlib
 import importlib
@@ -2800,7 +2801,12 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    obj = tmp_path / "module.o"
+    from molt.default_paths import backend_cache_artifact_filename
+
+    obj = (
+        native_symbol_inspection._default_molt_cache()
+        / backend_cache_artifact_filename("a" * 64 + "|artifact:" + "b" * 64, ".o")
+    )
     obj.write_bytes(native_relocatable_object(symbols=("original",)))
     reads = _counted_symbol_reads(monkeypatch)
 
@@ -2814,14 +2820,23 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
         obj
     ).exists()
 
+    sidecar = native_symbol_inspection._native_object_symbol_facts_sidecar_path(obj)
+    old = time.time() - 86400
+    os.utime(sidecar, (old, old))
+    before = sidecar.read_bytes()
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert len(reads) == 1
+    assert sidecar.stat().st_mtime > old
+    assert sidecar.read_bytes() == before
 
+    # A digest refusal must not make a stale sidecar appear recently used.
+    os.utime(sidecar, (old, old))
     obj.write_bytes(native_relocatable_object(symbols=("changed",)))
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) == ({"changed"}, set())
     assert len(reads) == 2
+    assert sidecar.stat().st_mtime == old
 
 
 @pytest.mark.parametrize("archive", [False, True])
@@ -3356,3 +3371,54 @@ def test_hydration_copy_failure_cleans_only_while_destination_lock_is_owned(
             stdlib_object_manifest=None,
         )
     assert output.read_bytes() == b"next successful generation"
+
+
+def test_shared_archive_hydration_refreshes_only_optional_entry_owner(tmp_path):
+    from molt import cache_eviction
+    from molt.default_paths import shared_stdlib_cache_entry
+
+    contract = resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    cache = tmp_path / "cache"
+    hot, _ = shared_stdlib_cache_entry(cache, "a" * 64)
+    cold, _ = shared_stdlib_cache_entry(cache, "b" * 64)
+    old = time.time() - 86400
+    for index, entry in enumerate((hot, cold)):
+        _write_stdlib_archive_fixture(
+            entry / "stdlib.a", entry.name, target_triple=contract.target_triple
+        )
+        # Seed the real persisted symbol contract before aging the entry:
+        # initial sidecar publication must not masquerade as read recency.
+        assert BACKEND_CACHE._shared_stdlib_cache_matches_key_locked(
+            entry / "stdlib.a",
+            entry.name,
+            stdlib_object_manifest=_manifest(entry.name),
+            target_triple=contract.target_triple,
+        )
+        os.utime(entry, (old + index, old + index))
+    source = hot / "stdlib.a"
+    before = (source.read_bytes(), source.stat().st_mtime_ns, source.stat().st_ctime_ns)
+    output = tmp_path / "build" / "owned.a"
+    assert (
+        BACKEND_CACHE._hydrate_shared_stdlib_archive(
+            source,
+            output_path=output,
+            stdlib_object_cache_key=hot.name,
+            stdlib_object_manifest=_manifest(hot.name),
+            target_triple=contract.target_triple,
+        )
+        == output
+    )
+    result = cache_eviction._prune(
+        cache,
+        max_bytes=cache_eviction._entry_size_bytes(hot),
+        max_age_days=None,
+        dry_run=False,
+    )
+    assert result["entries_removed"] == 1
+    assert hot.is_dir() and not cold.exists()
+    assert (
+        source.read_bytes(),
+        source.stat().st_mtime_ns,
+        source.stat().st_ctime_ns,
+    ) == before
+    assert output.read_bytes() == before[0]

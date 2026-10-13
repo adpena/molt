@@ -49,6 +49,7 @@ authority (see :mod:`molt.cli.module_cache`); there is no separate shared lane.
 from __future__ import annotations
 
 import os
+import stat
 import re
 from pathlib import Path
 
@@ -136,24 +137,27 @@ def _shared_module_lowering_cache_path(
     )
 
 
-def _hydrate_shared_frontend_cache(*, cache_path: Path | None, dest: Path) -> bool:
+def _hydrate_shared_frontend_cache(
+    *, cache_path: Path | None, dest: Path
+) -> os.stat_result | None:
     """Copy a warm shared-tier entry into the session-local ``dest``.
 
-    Returns ``True`` only when ``dest`` now holds the reused entry. Best-effort:
+    Returns its source observation only when ``dest`` holds the copied entry. Best-effort:
     any OS error (including a shared root that does not exist) is a miss, and the
     caller falls back to running the frontend. The copied entry is still validated
     by the caller's normal read path (schema / fingerprint / context digest /
     source content sha256), so hydration can never bypass correctness.
     """
-    if _frontend_lowering_cache_disabled():
-        return False
-    if cache_path is None or not cache_path.is_file():
-        return False
+    if _frontend_lowering_cache_disabled() or cache_path is None:
+        return None
     try:
+        observed = cache_path.lstat()
+        if not stat.S_ISREG(observed.st_mode):
+            return None
         _atomic_copy_file(cache_path, dest)
     except OSError:
-        return False
-    return dest.is_file()
+        return None
+    return observed if dest.is_file() else None
 
 
 def _publish_shared_frontend_cache(*, src: Path, cache_path: Path | None) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import os
 import re
 import time
 from contextlib import contextmanager
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Collection, Generator, Mapping
 
+from molt.cache_eviction import refresh_cache_entry_recency
 from molt.default_paths import (
     WASM_LINK_CACHE_DIRECTORY,
     _default_molt_cache,
@@ -136,10 +136,7 @@ def _read_wasm_link_cache_entry(entry: WasmLinkCacheEntry) -> WasmLinkCacheRead:
         return WasmLinkCacheRead(None, None, "corrupt", len(data))
     if len(data) < 8 or data[:8] != b"\x00asm\x01\x00\x00\x00":
         return WasmLinkCacheRead(None, None, "corrupt", len(data))
-    now = time.time()
-    for path in (entry.root, entry.artifact, entry.metadata):
-        with contextlib.suppress(OSError):
-            os.utime(path, (now, now))
+    refresh_cache_entry_recency(entry.root)
     return WasmLinkCacheRead(
         data,
         payload,
@@ -227,9 +224,7 @@ def _read_wasm_link_cache_bundle(
         ):
             return WasmLinkCacheBundleRead(None, "corrupt", bytes_read)
         files[role] = data
-    now = time.time()
-    with contextlib.suppress(OSError):
-        os.utime(entry.root, (now, now))
+    refresh_cache_entry_recency(entry.root)
     return WasmLinkCacheBundleRead(files, "hit", bytes_read)
 
 

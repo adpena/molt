@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -406,3 +408,58 @@ def test_native_object_publication_is_one_admitted_transaction(
             assert runtime_state.native_runtime_codegen_binding is None
             assert runtime_state.native_runtime_build_identity is None
             assert runtime_state.installed_native_admission is None
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_backend_cache_recency_requires_admitted_owned_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid: bool
+) -> None:
+    from molt import cache_eviction
+    from molt.default_paths import backend_cache_artifact_filename
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("MOLT_CACHE", str(cache))
+    key = "a" * 64 + "|artifact:" + "b" * 64
+    candidate = cache / backend_cache_artifact_filename(key, ".o")
+    payload = (
+        native_relocatable_object(symbols=("molt_main",)) if valid else b"not an object"
+    )
+    candidate.write_bytes(payload)
+    old = time.time() - 86400
+    os.utime(candidate, (old, old))
+    observed = candidate.stat()
+    output = tmp_path / "required.o"
+    warnings: list[str] = []
+    assert (
+        backend_cache._materialize_cached_backend_artifact(
+            tmp_path,
+            candidate,
+            output,
+            tier="module",
+            source_key=key,
+            cache_path=candidate,
+            warnings=warnings,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="obj"
+            ),
+        )
+        is valid
+    )
+    assert candidate.read_bytes() == payload
+    if valid:
+        assert candidate.stat().st_mtime_ns > observed.st_mtime_ns
+        output_metadata = output.stat()
+        result = cache_eviction._prune(
+            cache, max_bytes=0, max_age_days=None, dry_run=False
+        )
+        assert result["entries_removed"] >= 1
+        assert not candidate.exists()
+        assert output.read_bytes() == payload
+        assert (output.stat().st_mtime_ns, output.stat().st_ctime_ns) == (
+            output_metadata.st_mtime_ns,
+            output_metadata.st_ctime_ns,
+        )
+    else:
+        assert candidate.stat().st_mtime_ns == observed.st_mtime_ns
+        assert not output.exists()
