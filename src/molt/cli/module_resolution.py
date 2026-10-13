@@ -14,7 +14,10 @@ from molt.cli.models import (
     _ImportDiscoveryProjection,
     _RuntimeImportScanCustody,
 )
-from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    _PythonAstDigestAdmission,
+)
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -29,6 +32,8 @@ _ImportScanCacheKey = tuple[
     str | None,
     bool,
     ImportScanMode,
+    PythonSourceKey | None,
+    tuple[str, ...],
     str,
     str,
     _RuntimeImportScanCustody | None,
@@ -306,6 +311,17 @@ def _resolve_module_path_parts(
     return None
 
 
+@dataclass(frozen=True)
+class _ParsedModuleAst:
+    """One parsed source generation; discovery keeps it read-only."""
+
+    tree: ast.Module
+
+    @functools.cached_property
+    def admission(self) -> _PythonAstDigestAdmission:
+        return _PythonAstDigestAdmission(self.tree)
+
+
 @dataclass
 class _ModuleResolutionCache:
     roots_cache: dict[tuple[str, _ResolutionContext], list[Path]] = field(
@@ -323,14 +339,24 @@ class _ModuleResolutionCache:
     )
     source_cache: dict[Path, str] = field(default_factory=dict)
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
-    ast_cache: dict[tuple[Path, str, str, str], ast.Module] = field(
+    ast_cache: dict[tuple[Path, str, str, str], _ParsedModuleAst] = field(
         default_factory=dict
     )
     ast_error_cache: dict[tuple[Path, str, str, str], SyntaxError] = field(
         default_factory=dict
     )
     runtime_import_protocol_cache: dict[
-        tuple[Path, str | None, bool, ImportScanMode, str, str], bool
+        tuple[
+            Path,
+            str | None,
+            bool,
+            ImportScanMode,
+            PythonSourceKey | None,
+            tuple[str, ...],
+            str,
+            str,
+        ],
+        bool,
     ] = field(default_factory=dict)
     module_name_cache: dict[
         tuple[Path, tuple[Path, ...], Path, Path | None, _ModuleRootAliases], str
@@ -546,13 +572,15 @@ class _ModuleResolutionCache:
         filename: str,
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         retain: bool = True,
-    ) -> ast.Module:
+    ) -> _ParsedModuleAst:
         cache_key = (self.resolved_path(path), filename, target_python.tag, source)
         if not retain:
-            return _parse_source_for_target(
-                source,
-                filename=filename,
-                target_python=target_python,
+            return _ParsedModuleAst(
+                _parse_source_for_target(
+                    source,
+                    filename=filename,
+                    target_python=target_python,
+                )
             )
         tree = self.ast_cache.get(cache_key)
         if tree is not None:
@@ -561,10 +589,12 @@ class _ModuleResolutionCache:
         if cached_error is not None:
             raise cached_error
         try:
-            tree = _parse_source_for_target(
-                source,
-                filename=filename,
-                target_python=target_python,
+            tree = _ParsedModuleAst(
+                _parse_source_for_target(
+                    source,
+                    filename=filename,
+                    target_python=target_python,
+                )
             )
         except SyntaxError as exc:
             self.ast_error_cache[cache_key] = exc
@@ -581,6 +611,8 @@ class _ModuleResolutionCache:
         module_name: str | None = None,
         is_package: bool = False,
         import_scan_mode: ImportScanMode = "full",
+        source_owner: PythonSourceKey | None = None,
+        source_arguments: tuple[str, ...] = (),
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
@@ -592,6 +624,10 @@ class _ModuleResolutionCache:
         source_path = path.resolve() if runtime_import_custody is not None else path
         if runtime_import_custody is not None:
             if runtime_import_custody.owns(module_name, source_path):
+                if source_owner is not None:
+                    raise ValueError(
+                        "runtime import custody requires full-depth owner scans"
+                    )
                 runtime_import_custody.validate_scan_mode(
                     module_name, source_path, import_scan_mode
                 )
@@ -605,6 +641,8 @@ class _ModuleResolutionCache:
             module_name,
             is_package,
             import_scan_mode,
+            source_owner,
+            source_arguments,
             target_python.tag,
             ast_digest_admission.digest,
             runtime_import_custody,
@@ -625,6 +663,8 @@ class _ModuleResolutionCache:
             module_name,
             is_package,
             import_scan_mode=import_scan_mode,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
             **custody_kwargs,
@@ -640,6 +680,8 @@ class _ModuleResolutionCache:
         module_name: str | None,
         is_package: bool,
         import_scan_mode: ImportScanMode,
+        source_owner: PythonSourceKey | None = None,
+        source_arguments: tuple[str, ...] = (),
         target_python_tag: str,
     ) -> bool:
         # Cache the complete protocol decision, not just its call-expression
@@ -655,6 +697,8 @@ class _ModuleResolutionCache:
             module_name,
             is_package,
             import_scan_mode,
+            source_owner,
+            source_arguments,
             target_python_tag,
             digest,
         )

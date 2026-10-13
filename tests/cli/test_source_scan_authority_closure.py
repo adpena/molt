@@ -111,12 +111,8 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
         )
 
 
-@pytest.mark.parametrize(
-    "left_mode", ["module_init", "module_init_static_helpers", "full"]
-)
-@pytest.mark.parametrize(
-    "right_mode", ["module_init", "module_init_static_helpers", "full"]
-)
+@pytest.mark.parametrize("left_mode", ["module_init", "full"])
+@pytest.mark.parametrize("right_mode", ["module_init", "full"])
 @pytest.mark.parametrize(
     "left_dynamic,right_dynamic",
     [(False, False), (False, True), (True, False), (True, True)],
@@ -146,7 +142,7 @@ def test_scan_merge_preserves_depth_and_dynamic_package_requirement(
     merged = left.merged(right)
     assert merged == right.merged(left)
     assert merged.merged(left).merged(right) == merged
-    modes = ["module_init", "module_init_static_helpers", "full"]
+    modes = ["module_init", "full"]
     assert merged.by_module["pkg.owner"].mode == max(
         (left_mode, right_mode), key=modes.index
     )
@@ -267,7 +263,11 @@ def test_runtime_policy_memo_covers_statements_and_binds_source_and_mode(
     path.write_text("pass\n", encoding="utf-8")
     assert not detect("full")
     assert len(reads) == 3
-    assert not cache.ast_cache
+    assert len(cache.ast_cache) == 1
+    assert (
+        next(iter(cache.ast_cache.values())).admission.tree
+        is next(iter(cache.ast_cache.values())).tree
+    )
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "rust", "luau", "mlir"])
@@ -788,9 +788,13 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         is_package: bool,
         *,
         import_scan_mode: str,
+        source_owner=None,
+        source_arguments=(),
         target_python: TargetPythonVersion,
         ast_digest_admission: _PythonAstDigestAdmission,
     ) -> _ImportDiscoveryProjection:
+        assert source_owner is None
+        assert source_arguments == ()
         assert ast_digest_admission.tree is tree
         calls.append(target_python.tag)
         return _ImportDiscoveryProjection((target_python.tag,))

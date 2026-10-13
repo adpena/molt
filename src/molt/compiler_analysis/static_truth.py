@@ -104,6 +104,8 @@ def _expression_result_semantic_key(
     publication_release_stable: bool,
     identities: IdentityMask,
     exposes_module_globals: bool,
+    source_origins: frozenset[PythonSourceKey],
+    exposed_source_origins: frozenset[PythonSourceKey],
     deferred: frozenset[DeferredExecution],
     exposed_deferred: frozenset[DeferredExecution],
     deferred_complete: bool,
@@ -127,6 +129,8 @@ def _expression_result_semantic_key(
         publication_release_stable,
         identities,
         exposes_module_globals,
+        source_origins,
+        exposed_source_origins,
         deferred,
         exposed_deferred,
         deferred_complete,
@@ -171,6 +175,10 @@ class StaticExpressionResult:
     exposes_module_globals: bool = False
     # Direct execution and contained escape are distinct. Copying (generator,)
     # does not resume generator; passing the aggregate to foreign code may.
+    # Source-value provenance is availability evidence, not an execution effect.
+    # Keys address nodes in this source; consumers qualify them with source custody.
+    source_origins: frozenset[PythonSourceKey] = frozenset()
+    exposed_source_origins: frozenset[PythonSourceKey] = frozenset()
     deferred: frozenset[DeferredExecution] = frozenset()
     exposed_deferred: frozenset[DeferredExecution] = frozenset()
     # An unknown alternative can replace a source callable at a callback.
@@ -211,12 +219,30 @@ class StaticExpressionResult:
         elif len(scalar_kinds) == 1:
             object.__setattr__(self, "kind", next(iter(scalar_kinds)))
         object.__setattr__(self, "scalar_kinds", scalar_kinds)
-        exposed = self.exposed_deferred | self.deferred
-        for item in self.items or ():
-            exposed |= item.result.exposed_deferred
-        if self.element_result is not None:
-            exposed |= self.element_result.exposed_deferred
-        object.__setattr__(self, "exposed_deferred", exposed)
+        if not self.items and self.element_result is None:
+            object.__setattr__(
+                self,
+                "exposed_source_origins",
+                self.exposed_source_origins | self.source_origins,
+            )
+            object.__setattr__(
+                self, "exposed_deferred", self.exposed_deferred | self.deferred
+            )
+        else:
+            source_origins = set(self.exposed_source_origins)
+            source_origins.update(self.source_origins)
+            exposed = set(self.exposed_deferred)
+            exposed.update(self.deferred)
+            for item in self.items or ():
+                source_origins.update(item.result.exposed_source_origins)
+                exposed.update(item.result.exposed_deferred)
+            if self.element_result is not None:
+                source_origins.update(self.element_result.exposed_source_origins)
+                exposed.update(self.element_result.exposed_deferred)
+            object.__setattr__(
+                self, "exposed_source_origins", frozenset(source_origins)
+            )
+            object.__setattr__(self, "exposed_deferred", frozenset(exposed))
         exposes_globals = (
             self.exposes_module_globals
             or bool(self.identities & _GLOBAL_NAMESPACE_IDENTITIES)
@@ -264,6 +290,8 @@ class StaticExpressionResult:
             publication_release_stable,
             self.identities,
             self.exposes_module_globals,
+            self.source_origins,
+            self.exposed_source_origins,
             self.deferred,
             self.exposed_deferred,
             self.deferred_complete,
@@ -397,10 +425,13 @@ def expression_result_without_value_facts(
             if not symbols
             and not current.exposes_module_globals
             and projected is None
+            and not current.exposed_source_origins
             and not current.exposed_deferred
             else StaticExpressionResult(
                 identities=OTHER_IDENTITY | symbols,
                 exposes_module_globals=current.exposes_module_globals,
+                source_origins=current.source_origins,
+                exposed_source_origins=current.exposed_source_origins,
                 deferred=current.deferred,
                 exposed_deferred=current.exposed_deferred,
                 element_result=projected,
@@ -602,7 +633,8 @@ def static_expression_result(
         nonempty = False
         release_may_call = False
         exposes_module_globals = False
-        exposed_deferred: frozenset[DeferredExecution] = frozenset()
+        exposed_source_origins: set[PythonSourceKey] = set()
+        exposed_deferred: set[DeferredExecution] = set()
         ordered_length = 0
         ordered_length_known = True
         if isinstance(expr, ast.Dict):
@@ -611,7 +643,8 @@ def static_expression_result(
                 value_result = child(value)
                 release_may_call |= value_result.release_may_call
                 exposes_module_globals |= value_result.exposes_module_globals
-                exposed_deferred |= value_result.exposed_deferred
+                exposed_source_origins.update(value_result.exposed_source_origins)
+                exposed_deferred.update(value_result.exposed_deferred)
                 if key is not None:
                     key_result = child(key)
                     release_may_call |= key_result.release_may_call
@@ -667,7 +700,8 @@ def static_expression_result(
             kind=kind,
             identities=int(PythonIdentity.INERT_VALUE),
             exposes_module_globals=exposes_module_globals,
-            exposed_deferred=exposed_deferred,
+            exposed_source_origins=frozenset(exposed_source_origins),
+            exposed_deferred=frozenset(exposed_deferred),
             evaluation_required=True,
             items=None if uncertain else tuple(members),
             release_may_call=release_may_call,
@@ -681,12 +715,16 @@ def static_expression_result(
         yielded = replace(
             UNKNOWN_EXPRESSION_RESULT,
             exposes_module_globals=child(expr.elt).exposes_module_globals,
+            source_origins=child(expr.elt).source_origins,
+            exposed_source_origins=child(expr.elt).exposed_source_origins,
             deferred=child(expr.elt).deferred,
             exposed_deferred=child(expr.elt).exposed_deferred,
         )
         return (
             StaticExpressionResult(element_result=yielded)
-            if yielded.exposes_module_globals or yielded.exposed_deferred
+            if yielded.exposes_module_globals
+            or yielded.exposed_deferred
+            or yielded.exposed_source_origins
             else UNKNOWN_EXPRESSION_RESULT
         )
     if isinstance(expr, (ast.ListComp, ast.SetComp, ast.DictComp)):
@@ -701,6 +739,11 @@ def static_expression_result(
                 child(expr.value).exposes_module_globals
                 if isinstance(expr, ast.DictComp)
                 else False
+            ),
+            exposed_source_origins=(
+                child(expr.value).exposed_source_origins
+                if isinstance(expr, ast.DictComp)
+                else frozenset()
             ),
             exposed_deferred=(
                 child(expr.value).exposed_deferred
@@ -901,6 +944,7 @@ def static_subscription_shape(
     unknown = replace(
         UNKNOWN_EXPRESSION_RESULT,
         exposes_module_globals=owner.exposes_module_globals,
+        source_origins=owner.exposed_source_origins,
         deferred=owner.exposed_deferred,
     )
     if owner.kind == "unknown":
@@ -913,6 +957,7 @@ def static_subscription_shape(
             unknown = replace(
                 expression_result_without_value_facts(owner.element_result),
                 exposes_module_globals=owner.exposes_module_globals,
+                source_origins=owner.exposed_source_origins | unknown.source_origins,
                 deferred=owner.exposed_deferred | unknown.deferred,
             )
         return StaticSubscriptionShape(unknown)
@@ -960,6 +1005,7 @@ def static_subscription_shape(
             unknown = replace(
                 expression_result_without_value_facts(element),
                 exposes_module_globals=owner.exposes_module_globals,
+                source_origins=owner.exposed_source_origins | unknown.source_origins,
                 deferred=owner.exposed_deferred | unknown.deferred,
             )
         return StaticSubscriptionShape(unknown)
@@ -1367,6 +1413,12 @@ def join_static_expression_results(
         exposes_module_globals = any(
             result.exposes_module_globals for result in current
         )
+        source_origins = frozenset().union(
+            *(result.source_origins for result in current)
+        )
+        exposed_source_origins = frozenset().union(
+            *(result.exposed_source_origins for result in current)
+        )
         deferred = frozenset().union(*(result.deferred for result in current))
         exposed_deferred = frozenset().union(
             *(result.exposed_deferred for result in current)
@@ -1399,6 +1451,8 @@ def join_static_expression_results(
             publication_release_stable,
             identities,
             exposes_module_globals,
+            source_origins,
+            exposed_source_origins,
             deferred,
             exposed_deferred,
             deferred_complete,
@@ -1430,6 +1484,8 @@ def join_static_expression_results(
                 _publication_release_stable=publication_release_stable,
                 identities=identities,
                 exposes_module_globals=exposes_module_globals,
+                source_origins=source_origins,
+                exposed_source_origins=exposed_source_origins,
                 deferred=deferred,
                 exposed_deferred=exposed_deferred,
                 deferred_complete=deferred_complete,

@@ -24,6 +24,8 @@ from typing import Final, Literal, Sequence, cast
 
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    _PythonAstDigestAdmission,
     python_source_digest,
     python_node_source_key,
 )
@@ -190,7 +192,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 54
+_ANALYSIS_SCHEMA: Final = 55
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -1916,6 +1918,7 @@ class _Scope:
     annotation_evaluator: bool = False
     needs_annotation_namespace: bool = False
     escaped_deferred: frozenset[DeferredExecution] = frozenset()
+    escaped_source_origins: frozenset[PythonSourceKey] = frozenset()
     escaped_metadata_effects: EffectMask = NO_EFFECTS
     module_metadata_effects: EffectMask = NO_EFFECTS
     deferred_execution: frozenset[DeferredExecution] = frozenset()
@@ -2321,6 +2324,15 @@ class _Analyzer:
         self.slot_names: list[str] = []
         self.slot_owner_scope_ids: list[int] = []
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
+        self.source_attributes: dict[
+            PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
+        ] = {}
+        self.source_namespaces: dict[
+            PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
+        ] = {}
+        self.source_namespace_exposure: dict[
+            PythonSourceKey, frozenset[PythonSourceKey]
+        ] = {}
         self.statements: dict[PythonNodeKey, PythonStatementFact] = {}
         self.iterations: dict[PythonNodeKey, PythonIterationFact] = {}
         self.assignment_effects: dict[PythonNodeKey, EffectMask] = {}
@@ -2938,6 +2950,7 @@ class _Analyzer:
         )
         return StaticExpressionResult(
             identities=int(PythonIdentity.USER_FUNCTION),
+            source_origins=frozenset({python_node_source_key(node)}),
             deferred=frozenset(
                 {
                     DeferredExecution(
@@ -2997,6 +3010,14 @@ class _Analyzer:
             # and their eager descendants inherit that unproven receiver type.
             # Class-local mappings do not change the activation's globals type.
             result = replace(result, kind="dict")
+        if isinstance(node, ast.Attribute) and result.source_origins:
+            source_key = python_node_source_key(node)
+            origins = self._known_expression_result(node.value).exposed_source_origins
+            previous = self.source_attributes.get(source_key)
+            self.source_attributes[source_key] = (
+                node.attr,
+                origins | (previous[1] if previous else frozenset()),
+            )
         result = replace(result, identities=identities)
         if identities and not _identity_can_release(identities):
             # Rooted retirement is a result fact, not just a STORE exemption.
@@ -3591,6 +3612,11 @@ class _Analyzer:
             )
             owner_identities = assignment_target.owner_identities
             result_override = StaticExpressionResult(
+                source_origins=(
+                    frozenset({python_node_source_key(node)})
+                    if assignment_target.owner_result.exposed_source_origins
+                    else frozenset()
+                ),
                 deferred=frozenset(
                     DeferredExecution(
                         ref.source,
@@ -3831,6 +3857,10 @@ class _Analyzer:
             invocation_effects = call_semantics.invocation_effects
             state_id = call_semantics.state_id
             result_override = call_semantics.result
+            if callee_result.result.source_origins:
+                result_override = replace(
+                    result_override, source_origins=callee_result.result.source_origins
+                )
             # Exact builtins follow their invocation effects: copying retains
             # deferred values; hashing/repr/index protocols can reach elements.
             # Foreign calls may invoke or resume every value they receive.
@@ -5235,6 +5265,17 @@ class _Analyzer:
     ) -> tuple[int, EffectMask]:
         slot = self._slot_for_name(scope, name)
         if (
+            self._active_module_states is None
+            and slot is not None
+            and self.module_slot_mask & (1 << slot)
+        ):
+            # Another importer may observe a publication before a later overwrite
+            # or deletion. Deferred function writes are admitted by body demand.
+            namespace = self.source_namespaces.setdefault(self._module_source, {})
+            namespace[name] = (
+                namespace.get(name, frozenset()) | result.exposed_source_origins
+            )
+        if (
             scope.kind == "class"
             and name not in scope.globals
             and name not in scope.nonlocals
@@ -5242,6 +5283,7 @@ class _Analyzer:
             # Namespace publication is the value authority, including aliases,
             # descriptors and conditional assignments, not just method syntax.
             scope.escaped_deferred |= result.exposed_deferred
+            scope.escaped_source_origins |= result.exposed_source_origins
             if result.exposes_module_globals:
                 scope.escaped_metadata_effects |= WRITES_MODULE_METADATA
         if scope.namespace_can_call(
@@ -5656,11 +5698,14 @@ class _Analyzer:
                 identity_module = (
                     alias.name if alias.asname else alias.name.split(".", 1)[0]
                 )
-                state_id, bind_effects = self._bind_name(
-                    bound,
-                    self._import_identity(identity_module, state_id),
+                state_id, bind_effects = self._write_name(
                     state_id,
                     scope,
+                    bound,
+                    self._import_identity(identity_module, state_id),
+                    result=StaticExpressionResult(
+                        source_origins=frozenset({python_node_source_key(alias)})
+                    ),
                 )
                 effects |= bind_effects
         elif isinstance(node, ast.ImportFrom):
@@ -5689,15 +5734,18 @@ class _Analyzer:
             for alias in node.names:
                 if alias.name == "*":
                     continue
-                state_id, bind_effects = self._bind_name(
+                state_id, bind_effects = self._write_name(
+                    state_id,
+                    scope,
                     alias.asname or alias.name,
                     self._from_import_identity(
                         node.module if node.level == 0 else None,
                         alias.name,
                         state_id,
                     ),
-                    state_id,
-                    scope,
+                    result=StaticExpressionResult(
+                        source_origins=frozenset({python_node_source_key(alias)})
+                    ),
                 )
                 effects |= bind_effects
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
@@ -5930,6 +5978,20 @@ class _Analyzer:
                     for name, slot in class_scope.slots.items()
                     if self.states.binding(class_state, slot) != UNBOUND_IDENTITY
                 }
+                owner_key = python_node_source_key(node)
+                source_namespace = self.source_namespaces.setdefault(owner_key, {})
+                for name, result in namespace.items():
+                    source_namespace[name] = (
+                        source_namespace.get(name, frozenset())
+                        | result.exposed_source_origins
+                    )
+                self.source_namespace_exposure[owner_key] = (
+                    self.source_namespace_exposure.get(owner_key, frozenset())
+                    | class_scope.escaped_source_origins
+                    | frozenset().union(
+                        *(value.exposed_source_origins for value in argument_results)
+                    )
+                )
                 namespace_values = tuple(namespace.values())
                 namespace_refs = frozenset().union(
                     *(result.exposed_deferred for result in namespace_values),
@@ -6014,6 +6076,7 @@ class _Analyzer:
                     node.name,
                     possible_identity(PythonIdentity.USER_CLASS),
                     result=StaticExpressionResult(
+                        source_origins=frozenset({python_node_source_key(node)}),
                         deferred=constructors
                         | frozenset(
                             {DeferredExecution(python_node_source_key(node), "class")}
@@ -6048,11 +6111,14 @@ class _Analyzer:
                 node.value, definition_scope, state_id, ()
             )
             if isinstance(node.name, ast.Name):
-                state_id, bind_effects = self._bind_name(
-                    node.name.id,
-                    exact_identity(PythonIdentity.INERT_VALUE),
+                state_id, bind_effects = self._write_name(
                     state_id,
                     scope,
+                    node.name.id,
+                    exact_identity(PythonIdentity.INERT_VALUE),
+                    result=StaticExpressionResult(
+                        source_origins=frozenset({python_node_source_key(node)})
+                    ),
                 )
                 effects |= bind_effects
             effects |= ALLOCATES
@@ -6684,7 +6750,23 @@ class _Analyzer:
         self._observed_stack.append(_ObservedStateFrame(observed))
         self._active_lexical_history = observed
         try:
-            self.exec_statements(tree.body, 0, module)
+            module_flow = self.exec_statements(tree.body, 0, module)
+            if module_flow.normal is not None:
+                namespace = self.source_namespaces.setdefault(
+                    python_node_source_key(tree), {}
+                )
+                for name, slot in module.slots.items():
+                    if (
+                        self.states.binding(module_flow.normal, slot)
+                        != UNBOUND_IDENTITY
+                    ):
+                        namespace[name] = (
+                            namespace.get(name, frozenset())
+                            | self.states.result(
+                                module_flow.normal, slot
+                            ).exposed_source_origins
+                        )
+
         finally:
             self._observed_stack.pop()
         self._active_lexical_history = None
@@ -6760,6 +6842,18 @@ class _Analyzer:
         )
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
+            source_namespaces=tuple(
+                (
+                    owner,
+                    tuple(sorted(namespace.items())),
+                    self.source_namespace_exposure.get(owner, frozenset()),
+                )
+                for owner, namespace in sorted(self.source_namespaces.items())
+            ),
+            source_attributes=tuple(
+                (owner, name, origins)
+                for owner, (name, origins) in sorted(self.source_attributes.items())
+            ),
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
             expressions=tuple(
@@ -6992,11 +7086,17 @@ def analyze_python_bindings(
     tree: ast.Module,
     *,
     source_digest: str,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
     policy: PythonBindingPolicy = PythonBindingPolicy(),
 ) -> PythonBindingIndex:
     """Analyze an AST through the canonical content-addressed index cache."""
 
-    resolve_python_private_names(tree)
+    if ast_digest_admission is None:
+        resolve_python_private_names(tree)
+    else:
+        if ast_digest_admission.digest != source_digest:
+            raise ValueError("binding source digest does not match AST admission")
+        ast_digest_admission.resolved_private_tree(tree)
     return _cached_binding_index(lambda: tree, source_digest, policy)
 
 
@@ -7039,10 +7139,16 @@ def analyze_python_binding_facts(
     tree: ast.Module,
     *,
     source_digest: str,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
     policy: PythonBindingFlowPolicy = PythonBindingFlowPolicy(),
 ) -> PythonBindingFacts:
     """Query shared lexical facts without computing an unused import context."""
-    resolve_python_private_names(tree)
+    if ast_digest_admission is None:
+        resolve_python_private_names(tree)
+    else:
+        if ast_digest_admission.digest != source_digest:
+            raise ValueError("binding source digest does not match AST admission")
+        ast_digest_admission.resolved_private_tree(tree)
     return _binding_analysis(lambda: tree, source_digest, policy).facts
 
 

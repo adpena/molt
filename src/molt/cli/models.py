@@ -21,6 +21,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
 from molt.native_callable_exports import (
@@ -53,7 +54,7 @@ FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str
-ImportScanMode = Literal["full", "module_init", "module_init_static_helpers"]
+ImportScanMode = Literal["full", "module_init"]
 BinaryImageKind = Literal[
     "entry_script",
     "entry_module",
@@ -77,9 +78,10 @@ class _ModuleSourceScanAuthority:
     mode: ImportScanMode
     is_package: bool | None = None
     requires_runtime_package_anchor: bool = False
+    deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
 
     def __post_init__(self) -> None:
-        if self.mode not in {"module_init", "module_init_static_helpers", "full"}:
+        if self.mode not in {"module_init", "full"}:
             raise ValueError(f"invalid module scan mode: {self.mode!r}")
         object.__setattr__(self, "source_path", self.source_path.resolve())
         if self.is_package is None:
@@ -117,7 +119,7 @@ class _ModuleGraphScanAuthority:
 
     def merged(self, other: "_ModuleGraphScanAuthority") -> "_ModuleGraphScanAuthority":
         sources = {source.module_name: source for source in self.sources}
-        ranks = {"module_init": 0, "module_init_static_helpers": 1, "full": 2}
+        ranks = {"module_init": 0, "full": 1}
         for source in other.sources:
             prior = sources.get(source.module_name)
             if prior is not None:
@@ -130,15 +132,18 @@ class _ModuleGraphScanAuthority:
                     prior.requires_runtime_package_anchor
                     or source.requires_runtime_package_anchor
                 )
+                deferred_owners = prior.deferred_owners | source.deferred_owners
                 if ranks[prior.mode] >= ranks[source.mode]:
                     source = prior
                 if (
-                    requires_runtime_package_anchor
+                    deferred_owners != source.deferred_owners
+                    or requires_runtime_package_anchor
                     != source.requires_runtime_package_anchor
                 ):
                     source = replace(
                         source,
                         requires_runtime_package_anchor=requires_runtime_package_anchor,
+                        deferred_owners=deferred_owners,
                     )
             sources[source.module_name] = source
         return _ModuleGraphScanAuthority(
@@ -168,6 +173,10 @@ class _ModuleGraphScanAuthority:
                     source.module_name, os.fspath(source.source_path)
                 ),
                 "mode": source.mode,
+                "deferred_bodies": [
+                    {"source": list(owner), "arguments": list(arguments)}
+                    for owner, arguments in sorted(source.deferred_owners)
+                ],
                 "is_package": source.is_package,
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
@@ -192,6 +201,31 @@ class _StaticSourceExecutionRequest(NamedTuple):
     path: str | _StaticSourcePath
 
 
+class _SourceValueDemand(NamedTuple):
+    source: PythonSourceKey
+    phase: Literal["read", "call", "escape"]
+
+
+class _SourceImportBinding(NamedTuple):
+    source: PythonSourceKey
+    modules: tuple[str, ...]
+    attribute: str | None
+
+
+class _SourceValueSummary(NamedTuple):
+    """Immutable source-owned values; no AST or resolved filesystem edges."""
+
+    namespaces: tuple[
+        tuple[
+            PythonSourceKey,
+            tuple[tuple[str, frozenset[PythonSourceKey]], ...],
+            frozenset[PythonSourceKey],
+        ],
+        ...,
+    ] = ()
+    attributes: tuple[tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...] = ()
+
+
 class _ImportScanRequests(NamedTuple):
     """Source-only requests, before package exports and filesystem resolution."""
 
@@ -202,6 +236,9 @@ class _ImportScanRequests(NamedTuple):
     requires_runtime_package_anchor: bool = False
     # Keep call-star discovery distinct even when its base is also imported.
     dynamic_star_modules: tuple[str, ...] = ()
+    source_demands: tuple[_SourceValueDemand, ...] = ()
+    source_bindings: tuple[_SourceImportBinding, ...] = ()
+    source_values: _SourceValueSummary = _SourceValueSummary()
 
 
 class _CompleteImportScan(NamedTuple):
@@ -209,6 +246,9 @@ class _CompleteImportScan(NamedTuple):
     source_executions: tuple[tuple[str | None, Path], ...]
     dynamic_relative_import_candidates: tuple[str, ...] = ()
     requires_runtime_package_anchor: bool = False
+    source_demands: tuple[_SourceValueDemand, ...] = ()
+    source_bindings: tuple[_SourceImportBinding, ...] = ()
+    source_values: _SourceValueSummary = _SourceValueSummary()
 
 
 class _ImportDiscoveryProjection(NamedTuple):
@@ -219,6 +259,9 @@ class _ImportDiscoveryProjection(NamedTuple):
     requires_runtime_package_anchor: bool = False
     star_modules: tuple[str, ...] = ()
     dynamic_star_modules: tuple[str, ...] = ()
+    source_demands: tuple[_SourceValueDemand, ...] = ()
+    source_bindings: tuple[_SourceImportBinding, ...] = ()
+    source_values: _SourceValueSummary = _SourceValueSummary()
 
 
 @dataclass(frozen=True)

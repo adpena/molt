@@ -2901,7 +2901,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
         "\n".join(
             [
                 "from collections.abc import Iterable",
-                "import math",
+                "import never_needed_artifact_dependency",
                 "",
                 "def gaussian_filter(value):",
                 "    if isinstance(value, Iterable):",
@@ -2916,6 +2916,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
         "from nativepkg import doccer\n\ndocfiller = doccer.filldoc({})\n",
         encoding="utf-8",
     )
+    (external_root / "never_needed_artifact_dependency.py").write_text("VALUE = 1\n")
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     doc_sha = hashlib.sha256(doc_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
@@ -3000,8 +3001,11 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     assert "collections" in import_plan.compile_modules
     assert "collections.abc" in import_plan.compile_modules
     assert "collections.abc" in import_plan.runtime_import_dispatch_roots
-    assert "math" not in import_plan.module_graph
-    assert "math" not in import_plan.runtime_import_dispatch_roots
+    assert "never_needed_artifact_dependency" not in import_plan.module_graph
+    assert (
+        "never_needed_artifact_dependency"
+        not in import_plan.runtime_import_dispatch_roots
+    )
     assert "nativepkg.ndimage._docstrings" not in import_plan.module_graph
     assert (
         "nativepkg.ndimage._docstrings" not in import_plan.runtime_import_dispatch_roots
@@ -3010,11 +3014,13 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     assert "native_support_source_closure" in module_reasons["collections.abc"]
 
 
-def test_entry_collections_closure_preserves_static_helper_import_edges(
+def test_entry_collections_closure_preserves_demanded_body_import_edges(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import collections\n", encoding="utf-8")
+    entry_path.write_text(
+        "import collections\ncollections.UserDict().copy()\n", encoding="utf-8"
+    )
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3037,18 +3043,18 @@ def test_entry_collections_closure_preserves_static_helper_import_edges(
     assert prepared is not None
     assert "collections" in prepared.module_graph
     assert "copy" in prepared.module_graph
-    assert "warnings" not in prepared.module_graph
-    assert "re" not in prepared.module_graph
     assert "entry_closure" in module_reasons["copy"]
 
 
 @_source_tree_fingerprint_transaction()
-def test_collections_static_helper_copy_reaches_backend_symbol_contract(
+def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import collections\n", encoding="utf-8")
+    entry_path.write_text(
+        "import collections\ncollections.UserDict().copy()\n", encoding="utf-8"
+    )
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -4409,7 +4415,6 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             stdlib_allowlist,
             full_scan_roots=False,
             stub_parents=cli.STUB_PARENT_MODULES,
-            stdlib_static_import_helper_modules=set(),
         )
         core_graph = discovery_result.graph
         for name, path in core_graph.items():
@@ -11743,6 +11748,11 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
         "    return importlib.import_module(module_name)\n"
         "_probe(MODULE_NAME)\n"
     )
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    admission = _PythonAstDigestAdmission(tree)
+    # Populate immutable lexical facts once before repeated projections.
+    cli_module_import_scanner._collect_imports(tree, ast_digest_admission=admission)
     module_tree_walks = 0
     original_walk = cli_module_import_scanner.ast.walk
 
@@ -11754,12 +11764,15 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
 
     monkeypatch.setattr(cli_module_import_scanner.ast, "walk", wrapped_walk)
 
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = cli_module_import_scanner._collect_imports(
+        tree, ast_digest_admission=admission
+    )
     uses_runtime_import_protocol = (
         cli_module_import_scanner._tree_uses_runtime_import_protocol(
             tree,
             module_name=None,
             is_package=False,
+            ast_digest_admission=admission,
         )
     )
 
@@ -13302,14 +13315,18 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     assert first_parse_calls > 0
     for module_path in graph.values():
         source = shared_cache.read_module_source(module_path)
-        shared_cache.parse_module_ast(module_path, source, filename=str(module_path))
+        shared_cache.parse_module_ast(
+            module_path, source, filename=str(module_path)
+        ).tree
     retained_read_calls = read_calls
     retained_parse_calls = parse_calls
     assert retained_read_calls == first_read_calls
     assert retained_parse_calls == first_parse_calls
     for module_path in graph.values():
         source = shared_cache.read_module_source(module_path)
-        shared_cache.parse_module_ast(module_path, source, filename=str(module_path))
+        shared_cache.parse_module_ast(
+            module_path, source, filename=str(module_path)
+        ).tree
     assert read_calls == retained_read_calls
     assert parse_calls == retained_parse_calls
 
@@ -13452,13 +13469,12 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
 
     for module_name, module_path in graph.items():
         source = cache.read_module_source(module_path)
-        tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
+        tree = cache.parse_module_ast(
+            module_path, source, filename=str(module_path)
+        ).tree
         import_scan_mode = cli_module_import_scanner._module_import_scan_mode(
             module_name=module_name,
             full_scan=cache.resolved_path(module_path) == cache.resolved_path(entry),
-            static_import_helper_modules=(
-                cli_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES
-            ),
         )
         cache.collect_graph_imports(
             module_path,
@@ -18988,7 +19004,7 @@ def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> 
     assert "re" not in imports
 
 
-def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
+def test_typing_graph_keeps_collections_abc_with_conservative_class_demand(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "main.py"
@@ -18996,108 +19012,77 @@ def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
     graph = _discover_with_core_modules(entry)
     assert "typing" in graph
     assert "_collections_abc" in graph
-    assert "warnings" not in graph
-    assert "re" not in graph
+    # Class construction in typing exposes protocol families. The source-only
+    # initialization scanner above still excludes its lexical lazy imports.
 
 
-def test_collections_static_helper_scan_includes_userdict_copy_only() -> None:
+@pytest.mark.parametrize(
+    ("module_name", "relative_path", "qualname", "required", "excluded"),
+    [
+        (
+            "collections",
+            "collections/__init__.py",
+            ("UserDict", "copy"),
+            {"copy"},
+            {"warnings", "re"},
+        ),
+        (
+            "email.message",
+            "email/message.py",
+            ("MIMEPart", "__init__"),
+            {"email.policy"},
+            {"email.generator"},
+        ),
+        (
+            "argparse",
+            "argparse.py",
+            ("HelpFormatter", "_split_lines"),
+            {"textwrap"},
+            set(),
+        ),
+        (
+            "unittest.case",
+            "unittest/case.py",
+            ("TestCase", "assertLogs"),
+            {"unittest._log"},
+            set(),
+        ),
+    ],
+)
+def test_source_owned_stdlib_body_scan_retains_exact_deferred_imports(
+    module_name, relative_path, qualname, required, excluded
+) -> None:
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
     tree = ast.parse(
-        (ROOT / "src/molt/stdlib/collections/__init__.py").read_text(encoding="utf-8")
+        (ROOT / "src/molt/stdlib" / relative_path).read_text(encoding="utf-8")
     )
-
-    module_init = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="collections",
-            is_package=True,
-            import_scan_mode="module_init",
+    owner = tree
+    for name in qualname:
+        owner = next(
+            node
+            for node in owner.body
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name == name
         )
+    initial = cli_module_import_scanner._collect_imports_for_graph(
+        tree,
+        module_name=module_name,
+        is_package=relative_path.endswith("__init__.py"),
+        import_scan_mode="module_init",
     )
-    helper_scan = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="collections",
-            is_package=True,
-            import_scan_mode="module_init_static_helpers",
-        )
+    body = cli_module_import_scanner._collect_imports_for_graph(
+        tree,
+        module_name=module_name,
+        is_package=relative_path.endswith("__init__.py"),
+        import_scan_mode="module_init",
+        source_owner=python_node_source_key(owner),
     )
-
-    assert "copy" not in module_init
-    assert "copy" in helper_scan
-    assert "warnings" not in helper_scan
-    assert "re" not in helper_scan
-
-
-def test_email_message_static_helper_scan_includes_policy_default_only() -> None:
-    tree = ast.parse(
-        (ROOT / "src/molt/stdlib/email/message.py").read_text(encoding="utf-8")
+    assert required.isdisjoint(
+        set(initial.imports) | set(initial.dynamic_relative_import_candidates)
     )
-
-    module_init = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="email.message",
-            import_scan_mode="module_init",
-        )
-    )
-    helper_scan = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="email.message",
-            import_scan_mode="module_init_static_helpers",
-        )
-    )
-
-    assert "email.policy" not in module_init
-    assert "email.policy" in helper_scan
-    assert "email.generator" not in helper_scan
-
-
-def test_argparse_static_helper_scan_includes_formatter_imports() -> None:
-    # Usage and help formatting (every parse error prints usage) imports
-    # shutil and textwrap lazily; `append` defaults import copy.
-    tree = ast.parse((ROOT / "src/molt/stdlib/argparse.py").read_text(encoding="utf-8"))
-    lazy = {"copy", "shutil", "textwrap"}
-
-    module_init = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="argparse",
-            import_scan_mode="module_init",
-        )
-    )
-    helper_scan = set(
-        cli_module_import_scanner._collect_imports(
-            tree,
-            module_name="argparse",
-            import_scan_mode="module_init_static_helpers",
-        )
-    )
-
-    assert lazy.isdisjoint(module_init)
-    assert lazy <= helper_scan
-
-
-def test_unittest_case_static_helper_scan_includes_assert_logs_context() -> None:
-    # unittest.case imports its siblings relatively, so the strict collector
-    # needs runtime custody; the graph projection carries the candidates.
-    tree = ast.parse(
-        (ROOT / "src/molt/stdlib/unittest/case.py").read_text(encoding="utf-8")
-    )
-
-    def graph_imports(import_scan_mode: str) -> set[str]:
-        projection = cli_module_import_scanner._collect_imports_for_graph(
-            tree,
-            module_name="unittest.case",
-            is_package=False,
-            import_scan_mode=import_scan_mode,
-        )
-        return set(projection.imports) | set(
-            projection.dynamic_relative_import_candidates
-        )
-
-    assert "unittest._log" not in graph_imports("module_init")
-    assert "unittest._log" in graph_imports("module_init_static_helpers")
+    selected = set(body.imports) | set(body.dynamic_relative_import_candidates)
+    assert required <= selected
+    assert excluded.isdisjoint(selected)
 
 
 def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
@@ -19236,7 +19221,6 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             stdlib_allowlist,
             full_scan_roots=False,
             stub_parents=cli.STUB_PARENT_MODULES,
-            stdlib_static_import_helper_modules=set(),
         )
         core_graph = discovery_result.graph
         for name, path in core_graph.items():

@@ -2076,6 +2076,7 @@ def analyze_module_import_flow(
     index = analyze_python_bindings(
         module,
         source_digest=ast_digest_admission.digest,
+        ast_digest_admission=ast_digest_admission if module is tree else None,
         policy=PythonBindingPolicy(
             target_python=context.target_python,
             module_name=context.module_name,

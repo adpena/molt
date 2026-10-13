@@ -19,9 +19,13 @@ from molt.cli.cache_fingerprints import (
     _source_tree_fingerprint_transaction,
 )
 from molt.cli import module_source as _module_source
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.cli.models import (
     ImportScanMode,
     _ImportScanRequests,
+    _SourceValueDemand,
+    _SourceImportBinding,
+    _SourceValueSummary,
     _StaticSourceExecutionRequest,
     _StaticSourcePath,
 )
@@ -373,7 +377,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 24
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 26
 
 
 def _import_scan_cache_path(
@@ -383,6 +387,8 @@ def _import_scan_cache_path(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
@@ -393,6 +399,8 @@ def _import_scan_cache_path(
         module_name,
         "pkg" if is_package else "mod",
         import_scan_mode,
+        repr(source_owner),
+        repr(source_arguments),
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
     ]
@@ -442,6 +450,17 @@ def _decode_source_path(payload: Any) -> str | _StaticSourcePath:
     )
 
 
+def _decode_source_key(value: object) -> PythonSourceKey:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 5
+        or not all(type(part) is int for part in value[:4])
+        or not isinstance(value[4], str)
+    ):
+        raise ValueError("invalid source-owner identity")
+    return tuple(value)
+
+
 @_source_tree_fingerprint_transaction()
 def _read_persisted_import_scan_record(
     project_root: Path,
@@ -450,6 +469,8 @@ def _read_persisted_import_scan_record(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -460,6 +481,8 @@ def _read_persisted_import_scan_record(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
@@ -473,6 +496,9 @@ def _read_persisted_import_scan_record(
         or payload.get("is_package") != is_package
         or payload.get("target_python") != target_python.tag
         or payload.get("import_scan_mode") != import_scan_mode
+        or payload.get("source_owner")
+        != (list(source_owner) if source_owner is not None else None)
+        or payload.get("source_arguments") != list(source_arguments)
     ):
         return None
     if snapshot is not None:
@@ -518,6 +544,54 @@ def _read_persisted_import_scan_record(
         except (ValueError, RecursionError):
             return None
         executions.append(_StaticSourceExecutionRequest(name, request_path))
+    try:
+        demands = tuple(
+            _SourceValueDemand(_decode_source_key(item[0]), item[1])
+            for item in payload["source_demands"]
+        )
+        if any(item.phase not in {"read", "call", "escape"} for item in demands):
+            return None
+        bindings = tuple(
+            _SourceImportBinding(_decode_source_key(item[0]), tuple(item[1]), item[2])
+            for item in payload["source_bindings"]
+        )
+        if any(
+            not all(isinstance(name, str) for name in item.modules)
+            or item.attribute is not None
+            and not isinstance(item.attribute, str)
+            for item in bindings
+        ):
+            return None
+        raw_values = payload["source_values"]
+        values = _SourceValueSummary(
+            tuple(
+                (
+                    _decode_source_key(owner),
+                    tuple(
+                        (name, frozenset(_decode_source_key(key) for key in origins))
+                        for name, origins in names
+                    ),
+                    frozenset(_decode_source_key(key) for key in bases),
+                )
+                for owner, names, bases in raw_values["namespaces"]
+            ),
+            tuple(
+                (
+                    _decode_source_key(owner),
+                    name,
+                    frozenset(_decode_source_key(key) for key in origins),
+                )
+                for owner, name, origins in raw_values["attributes"]
+            ),
+        )
+        if any(
+            not isinstance(name, str)
+            for _, names, _ in values.namespaces
+            for name, _ in names
+        ) or any(not isinstance(name, str) for _, name, _ in values.attributes):
+            return None
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
     return _ImportScanRequests(
         tuple(payload["imports"]),
         tuple(executions),
@@ -525,6 +599,9 @@ def _read_persisted_import_scan_record(
         tuple(payload["dynamic_relative_import_candidates"]),
         requires_anchor,
         tuple(payload["dynamic_star_modules"]),
+        demands,
+        bindings,
+        values,
     )
 
 
@@ -536,6 +613,8 @@ def _write_persisted_import_scan(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    source_owner: PythonSourceKey | None = None,
+    source_arguments: tuple[str, ...] = (),
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -552,6 +631,24 @@ def _write_persisted_import_scan(
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
+        "source_owner": source_owner,
+        "source_arguments": source_arguments,
+        "source_demands": scan.source_demands,
+        "source_bindings": scan.source_bindings,
+        "source_values": {
+            "namespaces": [
+                (
+                    owner,
+                    [(name, sorted(origins)) for name, origins in names],
+                    sorted(bases),
+                )
+                for owner, names, bases in scan.source_values.namespaces
+            ],
+            "attributes": [
+                (owner, name, sorted(origins))
+                for owner, name, origins in scan.source_values.attributes
+            ],
+        },
         "target_python": target_python.tag,
         **identity,
         "imports": list(scan.imports),
@@ -572,6 +669,8 @@ def _write_persisted_import_scan(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
         target_python=target_python,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)

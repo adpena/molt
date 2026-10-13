@@ -23,7 +23,10 @@ from molt.compiler_analysis.python_value_identity import (
 )
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_effects_generated import EffectMask
-from molt.compiler_analysis.python_source_keys import python_node_source_key
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+)
 from molt.compiler_analysis.static_truth import (
     DeferredExecution,
     StaticExpressionResult,
@@ -777,6 +780,17 @@ class PythonBindingFacts:
     state_count: int
     telemetry: PythonBindingTelemetry
     slot_names: tuple[str, ...]
+    source_namespaces: tuple[
+        tuple[
+            PythonSourceKey,
+            tuple[tuple[str, frozenset[PythonSourceKey]], ...],
+            frozenset[PythonSourceKey],
+        ],
+        ...,
+    ]
+    source_attributes: tuple[
+        tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
+    ]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
     _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
@@ -798,6 +812,17 @@ class PythonBindingFacts:
         state_count: int,
         telemetry: PythonBindingTelemetry,
         slot_names: tuple[str, ...],
+        source_namespaces: tuple[
+            tuple[
+                PythonSourceKey,
+                tuple[tuple[str, frozenset[PythonSourceKey]], ...],
+                frozenset[PythonSourceKey],
+            ],
+            ...,
+        ] = (),
+        source_attributes: tuple[
+            tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
+        ] = (),
     ) -> PythonBindingFacts:
         return cls(
             source_digest=source_digest,
@@ -812,6 +837,8 @@ class PythonBindingFacts:
             state_count=state_count,
             telemetry=telemetry,
             slot_names=slot_names,
+            source_namespaces=source_namespaces,
+            source_attributes=source_attributes,
             _expression_lookup=MappingProxyType(
                 {fact.node: fact for fact in expressions}
             ),
