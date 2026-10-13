@@ -96,6 +96,90 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
     assert actual.stderr == stderr
 
 
+@pytest.mark.parametrize("exit_code,keep", [(0, False), (7, True)])
+def test_wasm_runtime_cwd_uses_owned_leaf_without_rebasing_inputs(
+    exit_code, keep, tmp_path, monkeypatch
+):
+    import json
+
+    monkeypatch.delenv(diff_output_layout.ROOT_ENV, raising=False)
+    monkeypatch.delenv(diff_output_layout.IDENTITY_ENV, raising=False)
+    environment = dict(os.environ)
+    environment.update(
+        MOLT_EXT_ROOT=str(tmp_path),
+        MOLT_DIFF_ROOT=str(tmp_path / "diff"),
+        MOLT_COMPAT_SCRATCH_ROOT=str(tmp_path / "scratch"),
+        MOLT_DIFF_KEEP="1" if keep else "0",
+        TMPDIR=str(tmp_path / "explicit-temp"),
+        TEMP="explicit-relative-temp",
+        TMP="explicit-other-temp",
+        PYTHONPATH=str(_REPO_ROOT / "src"),
+    )
+    source = tmp_path / "case.py"
+    source.write_text("print('source')\n", encoding="utf-8")
+    data = tmp_path / "fixture.data"
+    data.write_text("explicit data", encoding="utf-8")
+    environment["MOLT_CWD_PROBE_INPUT"] = str(data)
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment=environment,
+    )
+    real_guarded_run = compat_backends._guarded_run
+    leaves = []
+
+    def guarded(command, **kwargs):
+        for name in ("TMPDIR", "TEMP", "TMP", "PYTHONPATH", "MOLT_CWD_PROBE_INPUT"):
+            assert kwargs["env"][name] == environment[name]
+        if kwargs["prefix"] == "MOLT_COMPAT_WASM_BUILD":
+            assert kwargs["cwd"] == str(_REPO_ROOT)
+            assert command[command.index("build") + 1] == str(source)
+            leaf = Path(command[command.index("--out-dir") + 1])
+            leaves.append(leaf)
+            (leaf / "output_linked.wasm").write_bytes(b"build fixture")
+            (leaf / "bundle.data").write_text("bundled data", encoding="utf-8")
+            (leaf / "manifest.json").write_text(
+                json.dumps({"modules": {"bundle": {"path": "bundle.data"}}}),
+                encoding="utf-8",
+            )
+            return compat_backends.BackendResult("", "", 0)
+        assert kwargs["prefix"] == "MOLT_COMPAT_WASM_RUN"
+        assert Path(command[2]) == compat_backends._RUN_WASM_JS
+        assert Path(command[2]).is_absolute()
+        assert Path(command[3]) == leaves[-1] / "manifest.json"
+        assert command[1] == f"--redirect-warnings={leaves[-1] / 'node-warnings.log'}"
+        # Exercise actual guarded child cwd and relative writes, without a
+        # compiler/WASI claim. Build/manifest/bundle inputs remain explicit.
+        probe = """
+import json, os, pathlib, sys
+manifest = pathlib.Path(sys.argv[1])
+assert pathlib.Path.cwd() == manifest.parent
+assert pathlib.Path(sys.argv[2]).is_file()
+assert pathlib.Path(os.environ['MOLT_CWD_PROBE_INPUT']).read_text() == 'explicit data'
+bundle = json.loads(manifest.read_text())['modules']['bundle']['path']
+assert (manifest.parent / bundle).read_text() == 'bundled data'
+pathlib.Path('relative-output').write_text('guest output')
+print('owned cwd and explicit inputs')
+sys.exit(int(sys.argv[3]))
+"""
+        return real_guarded_run(
+            [sys.executable, "-B", "-c", probe, command[3], command[2], str(exit_code)],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = compat_backends.WasmAdapter().build_and_run(str(source), context=context)
+    assert result.returncode == exit_code
+    assert result.infrastructure_failure is None
+    assert result.stdout == "owned cwd and explicit inputs\n"
+    assert leaves[0].exists() is keep
+    if keep:
+        assert (leaves[0] / "relative-output").read_text() == "guest output"
+    assert source.read_text() == "print('source')\n"
+    assert not (tmp_path / "relative-output").exists()
+
+
 @pytest.mark.parametrize(
     "declared, expected",
     [

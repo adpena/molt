@@ -719,7 +719,9 @@ class WasmAdapter:
             prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
             timeout_default=60.0,
-            cwd=str(_REPO_ROOT),
+            # WASI preopens dot. Guest-relative writes and tempfile's valid
+            # cwd fallback belong to this existing per-case output lease.
+            cwd=str(out_dir),
         )
         try:
             host_warnings = warnings_path.read_bytes().decode(
