@@ -46,10 +46,16 @@ def _hash_file(path: Path) -> str:
 
 
 def _directory_manifest_identity(
-    path: Path, *, label: str, strict_owned: bool = False
+    path: Path,
+    *,
+    label: str,
+    strict_owned: bool = False,
+    directory_metadata: bool = False,
 ) -> dict[str, object]:
     if strict_owned:
-        return _owned_directory_manifest_identity(path, label=label)
+        return _owned_directory_manifest_identity(
+            path, label=label, directory_metadata=directory_metadata
+        )
     root = path.resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f"{label} is not a directory: {root}")
@@ -221,7 +227,9 @@ def _validate_node_package_identity(
     return value["package"]
 
 
-def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, object]:
+def _owned_directory_manifest_identity(
+    path: Path, *, label: str, directory_metadata: bool = False
+) -> dict[str, object]:
     """Project existing handle-bound file and no-follow topology custody."""
     from molt.python_file_node_custody import (
         PythonFileCaptureContext,
@@ -235,10 +243,25 @@ def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, o
     expected = _snapshot_fingerprint(before_root, before)
     regular: list[tuple[Path, os.stat_result]] = []
     directories: list[str] = []
+    directory_rows = [
+        {
+            "relative_path": ".",
+            "mode": stat.S_IMODE(before_root[0]),
+            "mtime_ns": before_root[4],
+        }
+    ]
     hardlinks: dict[tuple[int, int], tuple[int, int]] = {}
     for relative, candidate, metadata in before:
         if stat.S_ISDIR(metadata.st_mode):
             directories.append(relative)
+            if directory_metadata:
+                directory_rows.append(
+                    {
+                        "relative_path": relative,
+                        "mode": stat.S_IMODE(metadata.st_mode),
+                        "mtime_ns": metadata.st_mtime_ns,
+                    }
+                )
         elif stat.S_ISREG(metadata.st_mode):
             regular.append((candidate, metadata))
             key = metadata.st_dev, metadata.st_ino
@@ -275,14 +298,14 @@ def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, o
 
     capture.register_verification_fence(verify_membership)
     capture.verify()
+    contents = {"files": files, "directories": directories}
+    if directory_metadata:
+        contents["directory_metadata"] = directory_rows
     return {
         "root": str(root),
         "file_count": len(files),
-        "files": files,
-        "directories": directories,
-        "manifest_sha256": canonical_json_sha256(
-            {"files": files, "directories": directories}
-        ),
+        **contents,
+        "manifest_sha256": canonical_json_sha256(contents),
     }
 
 

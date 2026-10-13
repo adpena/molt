@@ -560,17 +560,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _load_terminal_cargo_generation(
     args: argparse.Namespace,
-) -> tuple[Path, dict[str, object], dict[str, object], Path]:
+) -> tuple[Path, dict[str, object], dict[str, object], Path, dict[str, object]]:
     """Load one exact terminal generation without provisioning queue state."""
     db = state._db_path(args).resolve()
-    _row, _context, provenance, projection, result_root = (
-        cargo_output_lifecycle.load_terminal_generation(db, args.run_id)
+    _row, context, provenance, projection, result_root = (
+        cargo_output_lifecycle.load_terminal_generation(
+            db, args.run_id, archived_reclaim=getattr(args, "archive", None) is not None
+        )
     )
-    return db, provenance, projection, result_root
+    return db, provenance, projection, result_root, context
 
 
 def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -> int:
     """One CLI custody/notes boundary for the two explicit owner policies."""
+    archive = getattr(args, "archive", None)
+    archive_sha256 = getattr(args, "archive_sha256", None)
     action = "retirement" if retire else "reclamation"
     schema = "sealed-retirement" if retire else "reclamation"
     inspect = (
@@ -590,7 +594,10 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
             allow_passed=allow_passed
         )
     try:
-        db, provenance, projection, result_root = _load_terminal_cargo_generation(args)
+        cargo_cache_custody.validate_reclaim_archive_arguments(archive, archive_sha256)
+        db, provenance, projection, result_root, context = (
+            _load_terminal_cargo_generation(args)
+        )
         if (
             retire
             and allow_passed
@@ -609,6 +616,11 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
                 payload=payload,
                 retire=retire,
                 allow_passed=allow_passed,
+                archive=archive,
+                archive_sha256=archive_sha256,
+                archival_process=context.get("process_supervisor")
+                if archive is not None
+                else None,
             )
         else:
             payload.update(
@@ -619,6 +631,10 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
                     **({"allow_passed": allow_passed} if retire else {}),
                 )
             )
+            if archive is not None:
+                payload["archive_verification"] = "pending-apply"
+                payload["archive"] = str(archive)
+                payload["archive_sha256"] = archive_sha256
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         if payload["state"] == f"{action}-in-progress":
             payload["state"] = f"{action}-indeterminate"

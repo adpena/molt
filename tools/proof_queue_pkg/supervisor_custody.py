@@ -974,6 +974,7 @@ def _validated_supervisor_receipt(
     cwd: Path,
     env: Mapping[str, str],
     rootfs: Path | None = None,
+    require_closed: bool = False,
 ) -> dict[str, object]:
     try:
         receipt_identity, receipt = capture_exact(
@@ -1011,11 +1012,13 @@ def _validated_supervisor_receipt(
                 "utf-8", errors="replace"
             )
         )
-    validate_supervisor_receipt_verification(
+    verification = validate_supervisor_receipt_verification(
         verified.stdout.decode("utf-8"),
         receipt_identity=receipt_identity,
         policy_identity=policy_identity,
     )
+    if require_closed and verification.get("custody_closed") is not True:
+        raise ValueError("native proof supervisor has not established physical closure")
     if (
         not isinstance(receipt, dict)
         or receipt.get("schema") != SUPERVISOR_RECEIPT_SCHEMA

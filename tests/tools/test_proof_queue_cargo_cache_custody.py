@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import copy
 from dataclasses import replace
 import hashlib
@@ -2753,3 +2755,466 @@ def test_workspace_compile_environment_and_pinned_session_still_partition(
         assert second.provenance["state"] == "cold"
     finally:
         second.close()
+
+
+def _archival_generation(tmp_path, monkeypatch, *, external=False):
+    import tarfile
+
+    inputs = _inputs(tmp_path)
+    if external:
+        output = tmp_path / "volume"
+        output.mkdir()
+        inputs["cargo_output_root"] = cache.cargo_output_layout.declare_root(
+            str(output)
+        )
+        inputs["outputs"] = (
+            cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                command_admission.envelope_for_command(
+                    inputs["command"], cargo_output_root=str(output)
+                )
+            )
+        )
+    lease = cache.acquire(**inputs)
+    (lease.target / "empty").mkdir()
+    image = lease.target / "unfinished-image"
+    image.write_bytes(b"recoverable exact executable\x00\xff")
+    image.chmod(0o755)
+    publication = lease.publish({"phase": "failed"})
+    lease.close()
+    terminal = _terminal_receipt(lease, publication, process_cleanup_safe=False)
+    projection = cache.record_terminal_receipt(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        terminal_receipt=terminal,
+    )
+    archive = tmp_path / "retained.tar"
+    # Independent archive producer: tar metadata/contents come directly from
+    # the filesystem, never from the product manifest or archive inspector.
+    with tarfile.open(archive, "w", format=tarfile.PAX_FORMAT) as retained:
+        for path in [lease.target, *sorted(lease.target.rglob("*"))]:
+            info = retained.gettarinfo(
+                str(path), arcname=path.relative_to(lease.target).as_posix()
+            )
+            info.pax_headers["mtime"] = str(
+                Decimal(path.stat().st_mtime_ns) / 1_000_000_000
+            )
+            if path.is_file():
+                with path.open("rb") as contents:
+                    retained.addfile(info, contents)
+            else:
+                retained.addfile(info)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    # The native verification boundary has its own receipt-byte/closed controls.
+    monkeypatch.setattr(
+        cache,
+        "_verify_archival_process_closure",
+        lambda *a, **kw: {"custody_closed": True},
+    )
+    return inputs, lease, projection, archive, digest
+
+
+def test_archival_reclaim_preserves_invalid_proof_and_recoverable_bytes(
+    tmp_path, monkeypatch
+):
+    import tarfile
+
+    inputs, lease, projection, archive, digest = _archival_generation(
+        tmp_path, monkeypatch
+    )
+    receipt_path = Path(projection["terminal_receipt"]["path"])
+    receipt_before = receipt_path.read_bytes()
+    expected = (lease.target / "unfinished-image").read_bytes()
+    ordinary = cache.reclaim_terminal_unsealed(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+    )
+    assert ordinary["state"] == "not-reclaimable" and lease.target.exists()
+    kwargs = dict(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        archive=archive,
+        archive_sha256=digest,
+    )
+    result = cache.reclaim_terminal_unsealed(**kwargs)
+    assert result["state"] == "reclaimed" and not lease.target.exists()
+    assert receipt_path.read_bytes() == receipt_before
+    assert projection["state"] == "terminal-indeterminate-retained"
+    original = cache.validate_terminal_receipt(
+        result_root=inputs["result_root"],
+        projection=projection,
+        provenance=lease.provenance,
+        run_id="unit-one",
+        execution_nonce_sha256="a" * 64,
+    )
+    assert original["process_cleanup_safe"] is False
+    retained = custody_cas.read_ref(
+        result["evidence"], expected_root=inputs["result_root"] / "custody-cas"
+    )
+    assert retained["qualification_eligible"] is False
+    assert retained["archive"]["sha256"] == digest
+    with tarfile.open(archive) as stream:
+        assert stream.extractfile("unfinished-image").read() == expected
+        assert stream.getmember("unfinished-image").mode == 0o755
+        assert stream.getmember("empty").isdir()
+    assert cache.reclaim_terminal_unsealed(**kwargs)["idempotent"] is True
+    with pytest.raises(ValueError, match="reference changed"):
+        cache.reclaim_terminal_unsealed(**{**kwargs, "archive_sha256": "0" * 64})
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "digest",
+        "bytes",
+        "omission",
+        "extra",
+        "mode",
+        "mtime",
+        "link",
+        "duplicate",
+        "traversal",
+        "dir-mode",
+        "dir-mtime",
+        "duplicate-root",
+    ],
+)
+def test_archival_reclaim_refuses_invalid_archive_before_removal(
+    tmp_path, monkeypatch, damage
+):
+    import io
+    import tarfile
+
+    inputs, lease, projection, archive, digest = _archival_generation(
+        tmp_path, monkeypatch
+    )
+    if damage == "digest":
+        digest = "0" * 64
+    else:
+        with tarfile.open(archive) as original:
+            rows = [
+                (row, original.extractfile(row).read() if row.isfile() else None)
+                for row in original
+            ]
+        info, data = next(row for row in rows if row[0].name == "unfinished-image")
+        if damage == "dir-mode":
+            next(row[0] for row in rows if row[0].name == "empty").mode = 0o777
+        if damage == "dir-mtime":
+            next(row[0] for row in rows if row[0].name == "empty").pax_headers[
+                "mtime"
+            ] = "0"
+        if damage == "bytes":
+            data = b"X" * len(data)
+        if damage == "mode":
+            info.mode = 0o600
+        if damage == "mtime":
+            info.pax_headers["mtime"] = "0"
+        if damage == "link":
+            info.type, info.linkname = tarfile.SYMTYPE, "outside"
+        if damage == "traversal":
+            info.name = "../unfinished-image"
+        with tarfile.open(archive, "w", format=tarfile.PAX_FORMAT) as output:
+            for entry, payload in rows:
+                if entry is info:
+                    if damage == "omission":
+                        continue
+                    payload = data
+                output.addfile(
+                    entry, io.BytesIO(payload) if payload is not None else None
+                )
+                if entry.name == "." and damage == "duplicate-root":
+                    output.addfile(entry)
+                if entry is info and damage == "duplicate":
+                    output.addfile(entry, io.BytesIO(data))
+            if damage == "extra":
+                extra = tarfile.TarInfo("unexpected")
+                output.addfile(extra, io.BytesIO())
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        cache,
+        "delete_path",
+        lambda path: pytest.fail("invalid archive cannot authorize removal"),
+    )
+    result = cache.reclaim_terminal_unsealed(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        archive=archive,
+        archive_sha256=digest,
+    )
+    assert result["state"] == "reclaim-blocked"
+    assert (
+        lease.target / "unfinished-image"
+    ).read_bytes() == b"recoverable exact executable\x00\xff"
+
+
+@pytest.mark.parametrize(
+    "failure", ["closure", "owner", "busy", "replacement", "delete"]
+)
+def test_archival_reclaim_preserves_target_on_custody_or_publication_failure(
+    tmp_path, monkeypatch, failure
+):
+    import shutil
+
+    inputs, lease, projection, archive, digest = _archival_generation(
+        tmp_path, monkeypatch
+    )
+    kwargs = dict(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        archive=archive,
+        archive_sha256=digest,
+        timeout_s=0,
+    )
+    if failure == "closure":
+
+        def refusal(*a, **kw):
+            raise ValueError("physical closure absent")
+
+        monkeypatch.setattr(cache, "_verify_archival_process_closure", refusal)
+    elif failure == "owner":
+        owner = json.loads(lease.owner_path.read_text())
+        owner["execution_nonce_sha256"] = "b" * 64
+        cache._write_owner(lease.owner_path, owner)
+        with pytest.raises(ValueError, match="binding mismatch"):
+            cache.reclaim_terminal_unsealed(**kwargs)
+        assert lease.target.exists()
+        return
+    elif failure == "busy":
+        lock = cache._acquire_file_lock(
+            lease.owner_path.parent.parent / "target.lock",
+            timeout_s=0,
+            timeout_message="test busy",
+        )
+        try:
+            with pytest.raises(RuntimeError, match="busy"):
+                cache.reclaim_terminal_unsealed(**kwargs)
+        finally:
+            cache._release_file_lock(lock)
+        assert lease.target.exists()
+        return
+    elif failure == "replacement":
+        original = cache._preserve_timings
+
+        def replace(path, **kw):
+            renamed = path.with_name(path.name + "-replaced")
+            path.rename(renamed)
+            shutil.copytree(renamed, path, copy_function=shutil.copy2)
+            return original(path, **kw)
+
+        monkeypatch.setattr(cache, "_preserve_timings", replace)
+    else:
+        monkeypatch.setattr(
+            cache, "delete_path", lambda path: (False, "injected refusal")
+        )
+    result = cache.reclaim_terminal_unsealed(**kwargs)
+    assert result["state"] == "reclaim-blocked" and lease.target.exists()
+    if failure == "delete":
+        owner = json.loads(lease.owner_path.read_text())
+        preserved = custody_cas.read_ref(
+            owner["reclaim"]["evidence"],
+            expected_root=inputs["result_root"] / "custody-cas",
+        )
+        assert preserved["archive"]["sha256"] == digest
+
+
+@pytest.mark.parametrize(
+    "changed", [None, "binary", "policy", "policy-target", "receipt", "nonce", "open"]
+)
+def test_archival_native_closure_is_bound_to_original_image_and_receipt(
+    tmp_path, monkeypatch, changed
+):
+    result_root = tmp_path / "result"
+    result_root.mkdir()
+    image = tmp_path / "supervisor"
+    image.write_bytes(b"independently retained verifier image")
+    artifact = custody_cas.put_file(
+        result_root / "custody-cas", image, logical_name="supervisor", executable=True
+    ).as_dict()
+    native = {"complete": False, "state": "INCOMPLETE", "nonce_sha256": "a" * 64}
+    policy = result_root / "original-policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "derived_roots": [
+                    {"role": "build-output", "path": str(tmp_path / "target")}
+                ]
+            }
+        )
+    )
+    recorded = result_root / "original-receipt.json"
+    recorded.write_text(json.dumps(native))
+    process = dict(
+        binary={k: artifact[k] for k in ("path", "sha256", "size_bytes")},
+        binary_artifact=artifact,
+        policy=command_identity._file_identity(policy),
+        receipt_file=command_identity._file_identity(recorded),
+        receipt=native,
+    )
+    terminal = {
+        "process_supervisor": process,
+        "execution_nonce_sha256": "a" * 64,
+        "target": str(tmp_path / "target"),
+    }
+    calls = []
+
+    def verify(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["require_closed"] is True
+        assert kwargs["binary"] == Path(artifact["path"])
+        if changed == "open":
+            raise ValueError(
+                "native proof supervisor has not established physical closure"
+            )
+        return json.loads(recorded.read_text())
+
+    monkeypatch.setattr(supervisor_custody, "_validated_supervisor_receipt", verify)
+    if changed == "binary":
+        process["binary"] = {**process["binary"], "sha256": "b" * 64}
+    if changed == "policy":
+        policy.write_text('{"changed":"policy"}')
+    if changed == "policy-target":
+        policy.write_text(
+            json.dumps(
+                {
+                    "derived_roots": [
+                        {"role": "build-output", "path": str(tmp_path / "other-target")}
+                    ]
+                }
+            )
+        )
+        process["policy"] = command_identity._file_identity(policy)
+    if changed == "receipt":
+        recorded.write_text('{"complete":true}')
+    if changed == "nonce":
+        terminal["execution_nonce_sha256"] = "b" * 64
+    if changed is None:
+        result = cache._verify_archival_process_closure(
+            terminal, result_root=result_root
+        )
+        assert result["custody_closed"] is True
+        assert native["complete"] is False
+        assert len(calls) == 1
+    else:
+        with pytest.raises(ValueError):
+            cache._verify_archival_process_closure(terminal, result_root=result_root)
+        if changed in {"binary", "policy", "policy-target", "receipt"}:
+            assert calls == []
+
+
+@pytest.mark.parametrize("replacement", ["archive", "target"])
+def test_archival_reclaim_fences_custody_after_owner_publication(
+    tmp_path, monkeypatch, replacement
+):
+    import shutil
+
+    inputs, lease, projection, archive, digest = _archival_generation(
+        tmp_path, monkeypatch
+    )
+    write_owner = cache._write_owner
+
+    def publish(path, owner):
+        write_owner(path, owner)
+        if owner["lifecycle"] == "reclaiming":
+            selected = archive if replacement == "archive" else lease.target
+            renamed = selected.with_name(selected.name + "-original")
+            selected.rename(renamed)
+            if selected == archive:
+                shutil.copy2(renamed, selected)
+            else:
+                shutil.copytree(renamed, selected, copy_function=shutil.copy2)
+
+    monkeypatch.setattr(cache, "_write_owner", publish)
+    monkeypatch.setattr(
+        cache,
+        "delete_path",
+        lambda path: pytest.fail("replaced custody cannot authorize deletion"),
+    )
+    kwargs = dict(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        archive=archive,
+        archive_sha256=digest,
+    )
+    if replacement == "archive":
+        with pytest.raises(ValueError, match="changed"):
+            cache.reclaim_terminal_unsealed(**kwargs)
+    else:
+        assert cache.reclaim_terminal_unsealed(**kwargs)["state"] == "reclaim-blocked"
+    assert lease.target.exists()
+    assert json.loads(lease.owner_path.read_text())["lifecycle"] == "reclaim-blocked"
+
+
+def test_archive_directory_metadata_is_opt_in_to_existing_inventory(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    child = root / "empty"
+    child.mkdir(mode=0o700)
+    plain = command_identity._directory_manifest_identity(
+        root, label="fixture", strict_owned=True
+    )
+    assert set(plain) == {
+        "root",
+        "file_count",
+        "files",
+        "directories",
+        "manifest_sha256",
+    }
+    assert plain["manifest_sha256"] == cache.canonical_json_sha256(
+        {"files": [], "directories": ["empty"]}
+    )
+    detail = command_identity._directory_manifest_identity(
+        root, label="fixture", strict_owned=True, directory_metadata=True
+    )
+    assert (
+        detail["files"] == plain["files"]
+        and detail["directories"] == plain["directories"]
+    )
+    assert detail["directory_metadata"] == [
+        {
+            "relative_path": ".",
+            "mode": root.stat().st_mode & 0o7777,
+            "mtime_ns": root.stat().st_mtime_ns,
+        },
+        {
+            "relative_path": "empty",
+            "mode": child.stat().st_mode & 0o7777,
+            "mtime_ns": child.stat().st_mtime_ns,
+        },
+    ]
+
+
+def test_archival_reclaim_refuses_archive_in_external_sibling_target(
+    tmp_path, monkeypatch
+):
+    inputs, lease, projection, archive, digest = _archival_generation(
+        tmp_path, monkeypatch, external=True
+    )
+    sibling = cache.cargo_output_layout.CargoOutputLayout.create(
+        result_root=tmp_path / "other-proofs", declaration=inputs["cargo_output_root"]
+    ).target(
+        "d" * 64, "b" * 16, version=cache.cargo_output_layout.recorded_target_layout({})
+    )
+    sibling.mkdir(parents=True)
+    admitted_archive = sibling / archive.name
+    archive.rename(admitted_archive)
+    assert not admitted_archive.is_relative_to(lease.target.parent)
+    assert not admitted_archive.is_relative_to(inputs["result_root"])
+    monkeypatch.setattr(
+        cache,
+        "delete_path",
+        lambda path: pytest.fail("managed archive cannot authorize removal"),
+    )
+    result = cache.reclaim_terminal_unsealed(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        archive=admitted_archive,
+        archive_sha256=digest,
+    )
+    assert result["state"] == "reclaim-blocked"
+    assert "outside managed output and proof roots" in result["error"]
+    assert lease.target.exists() and admitted_archive.exists()

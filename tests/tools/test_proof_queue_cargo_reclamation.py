@@ -36,6 +36,7 @@ pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
 def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     parameters = getattr(request, "param", (101, True))
     command_rc, source_eligible = parameters[:2]
+    cleanup_safe = parameters[5] if len(parameters) >= 6 else True
     sealed = len(parameters) >= 3 and parameters[2]
     lifetime = parameters[3] if len(parameters) >= 4 else "retain"
     external = len(parameters) >= 5 and parameters[4]
@@ -153,7 +154,7 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
             run_id=args.run_id,
             execution_nonce=nonce,
             receipt_context=context,
-            process_cleanup_safe=True,
+            process_cleanup_safe=cleanup_safe,
             status="passed" if command_rc == 0 else "failed",
             returncode=command_rc,
             execution_error=None,
@@ -935,3 +936,69 @@ def test_non_opted_in_failure_does_not_fabricate_disposition_notes(
     with closing(state._connect(Path(args.db))) as conn:
         assert state._notes_for_run_ids(conn, [args.run_id]).get(args.run_id, []) == []
     assert lease.target.exists()
+
+
+@pytest.mark.parametrize(
+    "generation", [(137, True, False, "retain", False, False)], indirect=True
+)
+def test_archive_cli_identity_admission_does_not_qualify_failed_proof(
+    generation, monkeypatch, capsys
+):
+    args, lease, context = generation
+    with pytest.raises(ValueError, match="no terminal evidence digest"):
+        cargo_output_lifecycle.load_terminal_generation(Path(args.db), args.run_id)
+    row, _, provenance, projection, result_root = (
+        cargo_output_lifecycle.load_terminal_generation(
+            Path(args.db), args.run_id, archived_reclaim=True
+        )
+    )
+    assert row["status"] == "failed" and row["returncode"] == 137
+    args.archive = Path(args.db).parent / "retained.tar"
+    args.archive_sha256 = "a" * 64
+    assert commands._cmd_reclaim_cargo_generation(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["archive_verification"] == "pending-apply"
+    assert result["reclaim_eligible"] is False
+    original = lease.owner_path.read_bytes()
+    args.archive_sha256 = None
+    assert commands._cmd_reclaim_cargo_generation(args) == 2
+    assert "supplied together" in capsys.readouterr().out
+    assert lease.owner_path.read_bytes() == original
+
+    import tarfile
+    from decimal import Decimal
+
+    with tarfile.open(args.archive, "w", format=tarfile.PAX_FORMAT) as output:
+        for path in [lease.target, *sorted(lease.target.rglob("*"))]:
+            member = output.gettarinfo(
+                str(path), arcname=path.relative_to(lease.target).as_posix()
+            )
+            member.pax_headers["mtime"] = str(
+                Decimal(path.stat().st_mtime_ns) / 1_000_000_000
+            )
+            if path.is_file():
+                with path.open("rb") as content:
+                    output.addfile(member, content)
+            else:
+                output.addfile(member)
+    args.archive_sha256 = hashlib.sha256(args.archive.read_bytes()).hexdigest()
+    calls = []
+
+    def physical_closure(terminal, **kwargs):
+        assert terminal["process_cleanup_safe"] is False
+        assert terminal["process_supervisor"] is None
+        assert kwargs["process"] == context["process_supervisor"]
+        calls.append(terminal)
+        return {"custody_closed": True}
+
+    monkeypatch.setattr(cache, "_verify_archival_process_closure", physical_closure)
+    args.apply = True
+    assert commands._cmd_reclaim_cargo_generation(args) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "reclaimed"
+    assert len(calls) == 1 and not lease.target.exists()
+    with closing(state._connect(Path(args.db))) as conn:
+        after = state._row_by_run_id(conn, args.run_id)
+        assert after["status"] == "failed" and after["returncode"] == 137
+        assert json.loads(after["receipt_context_json"]) == context
+    with pytest.raises(ValueError, match="no terminal evidence digest"):
+        cargo_output_lifecycle.load_terminal_generation(Path(args.db), args.run_id)

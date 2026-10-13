@@ -306,9 +306,34 @@ queue state, hash build outputs, or delete files. Add `--apply` only for an
 authorized cleanup. The command requires a persisted terminal queue result,
 its terminal digest, and a matching immutable generation receipt. Missing
 legacy ownership is retained, never inferred or adopted by this command.
-Unattested failures without a valid terminal queue digest also remain outside
-this command's cleanup authority. `inspection-failed` / `not-authorized` report
+Without the explicit archived-recovery admission below, unattested failures
+without a valid terminal queue digest remain outside cleanup authority. `inspection-failed` / `not-authorized` report
 that authority could not be established, not that artifact presence was proved.
+
+An explicitly retained full archive also permits physical reclamation of an
+unsealed, terminal-indeterminate generation with independently verified native
+process closure: add `--archive /absolute/retained.tar --archive-sha256 SHA256`
+to the same command. Inspection remains read-only and reports archive verification
+pending; `--apply` verifies the original retained supervisor image, policy, receipt
+and native `custody_closed` result under the existing target lease. The original terminal identity and admission remain required; a digest omitted
+by the failed producer is not synthesized. Any supplied digest must still match.
+An incomplete or failed proof stays incomplete or failed. This does not reseal output, authorize
+workspace reuse, rewrite any proof receipt, or relax ordinary reclamation.
+
+The archive must remain outside managed Cargo output and proof roots on retained
+storage. Supply a tar (optionally compressed) rooted at the target's contents,
+with regular file bytes, modes, PAX nanosecond mtimes and all directories
+(including root mode/mtime). Internal hardlinks are regularized as independent
+recoverable bytes; inode/link topology is not a replay claim. For
+GNU tar, `tar --format=pax --hard-dereference -C TARGET -cf - .` can be streamed
+to retained storage; no archive is staged inside the target. The owner verifies
+the supplied archive digest and every member against the canonical strict owned
+target manifest, without extraction, before removal. Missing, added, duplicated,
+linked, replaced or changed members refuse cleanup. Original proof references,
+the archive identity, complete output manifest and physical-closure evidence
+remain in the existing reclamation evidence/tombstone. Retaining the archive is
+an operator obligation; this command never prunes it. Failed preservation or
+interrupted removal retains the existing fail-closed recovery behavior.
 
 A sealed candidate is not part of unsealed reclamation. Inspect one with
 `uv run --python 3.12 python tools/proof_queue.py
