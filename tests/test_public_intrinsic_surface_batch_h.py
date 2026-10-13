@@ -58,7 +58,6 @@ install_registry({{
     "molt_file_open_ex": _file_open_ex,
     "molt_path_exists": lambda path: path == "foo.py",
     "molt_path_isabs": lambda path: False,
-    "molt_path_join": lambda dirname, filename: f"{{dirname}}/{{filename}}",
     "molt_linecache_loader_get_source": lambda loader, name: None,
     "molt_linecache_detect_encoding": lambda first, second: ("utf-8", False),
 }})

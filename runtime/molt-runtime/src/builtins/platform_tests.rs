@@ -78,15 +78,12 @@ fn with_env_projection<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R 
 
 fn platform_test_path(parts: &[&str]) -> String {
     let sep = bootstrap_path_sep();
-    let mut path = if sep == '\\' {
+    let path = if sep == '\\' {
         "C:\\tmp".to_string()
     } else {
         "/tmp".to_string()
     };
-    for part in parts {
-        path = path_join_text(path, part, sep);
-    }
-    path
+    path_join_many_text(path, parts, sep)
 }
 
 #[test]

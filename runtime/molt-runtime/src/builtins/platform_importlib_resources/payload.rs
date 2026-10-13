@@ -253,12 +253,7 @@ pub(super) fn importlib_resources_open_resource_bytes_from_package_impl(
     Err(raise_exception::<_>(_py, "FileNotFoundError", resource))
 }
 pub(super) fn importlib_resources_join_parts_path(parts: &[String]) -> String {
-    let sep = bootstrap_path_sep();
-    let mut out = String::new();
-    for part in parts {
-        out = path_join_text(out, part, sep);
-    }
-    out
+    path_join_many_text(String::new(), parts, bootstrap_path_sep())
 }
 pub(super) fn importlib_resources_name_parts(name: &str) -> Vec<String> {
     let normalized = name.replace('\\', "/");

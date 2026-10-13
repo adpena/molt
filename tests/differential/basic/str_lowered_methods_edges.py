@@ -72,7 +72,9 @@ for value, prefix in (
         out = value.removeprefix(prefix)
         print("removeprefix", visible(value), visible(prefix), visible(out))
     except Exception as exc:
-        print("removeprefix", visible(value), visible(prefix), "ERR", type(exc).__name__)
+        print(
+            "removeprefix", visible(value), visible(prefix), "ERR", type(exc).__name__
+        )
 
 
 for value, suffix in (
@@ -90,10 +92,15 @@ for value, suffix in (
         out = value.removesuffix(suffix)
         print("removesuffix", visible(value), visible(suffix), visible(out))
     except Exception as exc:
-        print("removesuffix", visible(value), visible(suffix), "ERR", type(exc).__name__)
+        print(
+            "removesuffix", visible(value), visible(suffix), "ERR", type(exc).__name__
+        )
 
 
 show_error("zfill_type_error", lambda: "abc".zfill("3"))
 show_error("expandtabs_type_error", lambda: "abc".expandtabs("4"))
 show_error("removeprefix_type_error", lambda: "abc".removeprefix(1))
 show_error("removesuffix_type_error", lambda: "abc".removesuffix(1))
+
+for value in ("AΣ", "AΣ\ud800AΣ", "A\ud800ΣA", "\ud800ÉİΣ\udfff"):
+    print("lower-surrogate", ascii(value.lower()))

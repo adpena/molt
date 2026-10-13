@@ -8,7 +8,7 @@ pub(crate) use molt_runtime_platform::path_text::{
     glob_escape_text, glob_has_magic_text, glob_is_hidden_text, glob_join_text,
     glob_split_path_text, glob_translate_text, path_as_uri_text, path_basename_text,
     path_compare_text, path_dirname_text, path_expandvars_with_lookup, path_glob_matches,
-    path_isabs_text, path_join_many_text, path_join_raw, path_join_text, path_match_simple_pattern,
+    path_isabs_text, path_join_many_text, path_join_text, path_match_simple_pattern,
     path_match_text, path_name_text, path_normpath_raw, path_normpath_text, path_parents_text,
     path_relative_to_text, path_splitext_text, path_stem_text, path_suffix_text,
     path_suffixes_text,
@@ -256,38 +256,6 @@ pub(crate) fn bytes_slice_from_bits(bits: u64) -> Option<Vec<u8>> {
     let len = unsafe { bytes_len(ptr) };
     let data = unsafe { std::slice::from_raw_parts(bytes_data(ptr), len) };
     Some(data.to_vec())
-}
-
-/// Extract a sequence of raw byte vecs from a tuple/list of bytes objects.
-pub(crate) fn bytes_sequence_from_bits(
-    _py: &PyToken<'_>,
-    bits: u64,
-    label: &str,
-) -> Result<Vec<Vec<u8>>, u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        let msg = format!("{label} must be tuple or list, not NoneType");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    };
-    let type_id = unsafe { object_type_id(ptr) };
-    if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-        let type_name = class_name_for_error(type_of_bits(_py, bits));
-        let msg = format!("{label} must be tuple or list, not {type_name}");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    }
-    let out = unsafe {
-        crate::object::seq_access::with_borrowed(ptr, |elems| {
-            let mut out = Vec::with_capacity(elems.len());
-            for &item_bits in elems {
-                let raw = bytes_slice_from_bits(item_bits)?;
-                out.push(raw);
-            }
-            Some(out)
-        })
-    };
-    out.ok_or_else(|| {
-        raise_exception::<_>(_py, "TypeError", "join: expected bytes for path component")
-    })
 }
 
 pub(crate) fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {

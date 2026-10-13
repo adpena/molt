@@ -31,7 +31,6 @@ else:
     Iterator = _TypingAlias()
 
 # --- existing intrinsics ---
-_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join")
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs")
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname")
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath")
@@ -55,7 +54,6 @@ _MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink")
 _MOLT_PATH_RMDIR = _require_intrinsic("molt_path_rmdir")
 _MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs")
 _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex")
-_MOLT_PATH_JOIN_MANY = _require_intrinsic("molt_path_join_many")
 _MOLT_PATH_NAME = _require_intrinsic("molt_path_name")
 _MOLT_PATH_SUFFIX = _require_intrinsic("molt_path_suffix")
 _MOLT_PATH_STEM = _require_intrinsic("molt_path_stem")
@@ -208,19 +206,17 @@ class Path:
 
     def joinpath(self, *others: str) -> Path:
         parts = [self._coerce_part(part) for part in others]
-        path = _MOLT_PATH_JOIN_MANY(self._path, tuple(parts))
-        if not isinstance(path, str):
-            raise RuntimeError("path join_many intrinsic returned invalid value")
+        path = _os.path.join(self._path, *parts)
         return self._wrap(path)
 
     def __truediv__(self, key) -> Path:
         key = self._coerce_part(key)
-        path = _MOLT_PATH_JOIN(self._path, key)
+        path = _os.path.join(self._path, key)
         return self._wrap(path)
 
     def __rtruediv__(self, key) -> Path:
         key = self._coerce_part(key)
-        path = _MOLT_PATH_JOIN(key, self._path)
+        path = _os.path.join(key, self._path)
         return self._wrap(path)
 
     def open(

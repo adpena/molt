@@ -736,10 +736,7 @@ pub(super) fn importlib_module_root_package_context_paths(
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for root in state.module_roots_entries {
-        let mut package_path = root;
-        for part in &parts[..parts.len() - 1] {
-            package_path = path_join_text(package_path, part, sep);
-        }
+        let package_path = path_join_many_text(root, &parts[..parts.len() - 1], sep);
         append_unique_path_hashed(&mut out, &mut seen, &package_path);
     }
     out
@@ -823,14 +820,12 @@ pub(super) fn importlib_namespace_paths(
             }
             continue;
         }
-        let mut path = if base.is_empty() {
+        let path = if base.is_empty() {
             ".".to_string()
         } else {
             base
         };
-        for part in &parts {
-            path = path_join_text(path, part, sep);
-        }
+        let path = path_join_many_text(path, &parts, sep);
         if std::fs::metadata(&path)
             .map(|metadata| metadata.is_dir())
             .unwrap_or(false)

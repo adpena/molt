@@ -1,34 +1,114 @@
 //! Runtime-independent path text helpers shared by platform/importlib/path builtins.
 
-pub fn path_join_text(mut base: String, part: &str, sep: char) -> String {
-    if part.starts_with(sep) {
-        return part.to_string();
-    }
-    if !base.is_empty() && !base.ends_with(sep) {
-        base.push(sep);
-    }
-    base.push_str(part);
-    base
+/// Owned lexical join state. Appending never copies the accumulated tail.
+/// A separate NT drive permits case replacement without moving that tail.
+pub struct PathJoin {
+    drive: Vec<u8>,
+    path: Vec<u8>,
+    sep: u8,
+    text: bool,
 }
 
-pub fn path_join_many_text(mut base: String, parts: &[String], sep: char) -> String {
+impl PathJoin {
+    pub fn new(mut base: Vec<u8>, sep: u8, text: bool) -> Self {
+        assert!(matches!(sep, b'/' | b'\\'));
+        let drive_end = path_root_offsets(&base, sep, text).0;
+        let drive = base[..drive_end].to_vec();
+        base.drain(..drive_end);
+        Self {
+            drive,
+            path: base,
+            sep,
+            text,
+        }
+    }
+
+    pub fn push(&mut self, part: &[u8]) {
+        let (drive_end, root_end) = path_root_offsets(part, self.sep, self.text);
+        let drive = &part[..drive_end];
+        if root_end != drive_end {
+            if !drive.is_empty() || self.drive.is_empty() {
+                self.drive.clear();
+                self.drive.extend_from_slice(drive);
+            }
+            self.path.clear();
+            self.path.extend_from_slice(&part[drive_end..]);
+            return;
+        }
+        if !drive.is_empty() && drive != self.drive {
+            let same_drive = if self.text {
+                // ntpath uses str.lower for text and bytes.lower for bytes.
+                crate::utils::python_lowercase(drive) == crate::utils::python_lowercase(&self.drive)
+            } else {
+                drive.eq_ignore_ascii_case(&self.drive)
+            };
+            if !same_drive {
+                self.path.clear();
+            }
+            self.drive.clear();
+            self.drive.extend_from_slice(drive);
+        }
+        if self
+            .path
+            .last()
+            .is_some_and(|&byte| !path_separator(byte, self.sep))
+        {
+            self.path.push(self.sep);
+        }
+        self.path.extend_from_slice(&part[root_end..]);
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        if self.drive.is_empty() {
+            return self.path;
+        }
+        // UNC drive plus a relative tail needs a separator; a drive letter does not.
+        if self
+            .path
+            .first()
+            .is_some_and(|&byte| !path_separator(byte, self.sep))
+            && self
+                .drive
+                .last()
+                .is_some_and(|&byte| byte != b':' && !path_separator(byte, self.sep))
+        {
+            self.drive.push(self.sep);
+        }
+        self.drive.extend_from_slice(&self.path);
+        self.drive
+    }
+
+    /// Preserve NT's three values when Python subclass operations become observable.
+    pub fn into_components(mut self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let rooted = self
+            .path
+            .first()
+            .is_some_and(|&byte| path_separator(byte, self.sep));
+        let root = if rooted {
+            vec![self.path.remove(0)]
+        } else {
+            Vec::new()
+        };
+        (self.drive, root, self.path)
+    }
+}
+
+pub fn path_join_text(base: String, part: &str, sep: char) -> String {
+    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true);
+    join.push(part.as_bytes());
+    String::from_utf8(join.finish()).expect("ASCII path joining preserves UTF-8")
+}
+
+pub fn path_join_many_text(
+    base: String,
+    parts: impl IntoIterator<Item = impl AsRef<str>>,
+    sep: char,
+) -> String {
+    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true);
     for part in parts {
-        base = path_join_text(base, part, sep);
+        join.push(part.as_ref().as_bytes());
     }
-    base
-}
-
-/// Join two raw byte paths using the given separator byte (posixpath-style).
-pub fn path_join_raw(base: &[u8], part: &[u8], sep: u8) -> Vec<u8> {
-    if part.first() == Some(&sep) {
-        return part.to_vec();
-    }
-    let mut out = base.to_vec();
-    if !out.is_empty() && out.last() != Some(&sep) {
-        out.push(sep);
-    }
-    out.extend_from_slice(part);
-    out
+    String::from_utf8(join.finish()).expect("ASCII path joining preserves UTF-8")
 }
 
 pub fn path_basename_text(path: &str, sep: char) -> String {
@@ -142,6 +222,10 @@ pub fn path_as_uri_text(path: &str, sep: char) -> Result<String, String> {
 /// Lexically normalize either a text encoding or opaque filesystem bytes.
 /// Separators and dot components are ASCII; all other bytes remain unchanged.
 pub fn path_normpath_raw(path: &[u8], sep: u8) -> Vec<u8> {
+    path_normpath(path, sep, false)
+}
+
+fn path_normpath(path: &[u8], sep: u8, text: bool) -> Vec<u8> {
     let windows;
     let path = if sep == b'\\' {
         windows = path
@@ -152,7 +236,7 @@ pub fn path_normpath_raw(path: &[u8], sep: u8) -> Vec<u8> {
     } else {
         path
     };
-    let (drive_end, root_end) = path_root_offsets(path, sep);
+    let (drive_end, root_end) = path_root_offsets(path, sep, text);
     let rooted = root_end != drive_end;
     let mut parts: Vec<&[u8]> = Vec::new();
     for part in path[root_end..].split(|&byte| byte == sep) {
@@ -186,44 +270,74 @@ pub fn path_normpath_raw(path: &[u8], sep: u8) -> Vec<u8> {
 pub fn path_normpath_text(path: &str, sep: char) -> String {
     // The public path helpers accept the target's ASCII filesystem separator.
     assert!(matches!(sep, '/' | '\\'));
-    String::from_utf8(path_normpath_raw(path.as_bytes(), sep as u8))
+    String::from_utf8(path_normpath(path.as_bytes(), sep as u8, true))
         .expect("ASCII path normalization preserves UTF-8")
 }
 
-// One drive/root parser for both lexical normalization and splitroot projection.
+fn path_separator(byte: u8, sep: u8) -> bool {
+    byte == sep || (sep == b'\\' && byte == b'/')
+}
+
+// One drive/root parser for joining, lexical normalization and splitroot projection.
 // Offsets lie on ASCII boundaries in either UTF-8 or opaque filesystem bytes.
-fn path_root_offsets(path: &[u8], sep: u8) -> (usize, usize) {
+fn path_root_offsets(path: &[u8], sep: u8, text: bool) -> (usize, usize) {
     if sep == b'\\' {
-        if path.starts_with(b"\\\\") {
-            let start = if path
-                .get(..8)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"\\\\?\\UNC\\"))
-            {
+        if path
+            .get(..2)
+            .is_some_and(|prefix| prefix.iter().all(|&byte| path_separator(byte, sep)))
+        {
+            let start = if path.get(..8).is_some_and(|prefix| {
+                prefix
+                    .iter()
+                    .zip(b"\\\\?\\UNC\\")
+                    .all(|(&byte, &expected)| {
+                        if expected == sep {
+                            path_separator(byte, sep)
+                        } else {
+                            byte.eq_ignore_ascii_case(&expected)
+                        }
+                    })
+            }) {
                 8
             } else {
                 2
             };
             let Some(server_end) = path[start..]
                 .iter()
-                .position(|&byte| byte == sep)
+                .position(|&byte| path_separator(byte, sep))
                 .map(|index| start + index)
             else {
                 return (path.len(), path.len());
             };
             let Some(share_end) = path[server_end + 1..]
                 .iter()
-                .position(|&byte| byte == sep)
+                .position(|&byte| path_separator(byte, sep))
                 .map(|index| server_end + 1 + index)
             else {
                 return (path.len(), path.len());
             };
             return (share_end, share_end + 1);
         }
-        if path.first() == Some(&sep) {
+        if path.first().is_some_and(|&byte| path_separator(byte, sep)) {
             return (0, 1);
         }
-        if path.get(1) == Some(&b':') {
-            return (2, if path.get(2) == Some(&sep) { 3 } else { 2 });
+        // Text drive letters are Python characters, not UTF-8 bytes.
+        let first_width = if text {
+            path.first()
+                .map_or(1, |byte| byte.leading_ones().max(1) as usize)
+        } else {
+            1
+        };
+        if path.get(first_width) == Some(&b':') {
+            let drive_end = first_width + 1;
+            return (
+                drive_end,
+                drive_end
+                    + usize::from(
+                        path.get(drive_end)
+                            .is_some_and(|&byte| path_separator(byte, sep)),
+                    ),
+            );
         }
     } else if path.first() == Some(&sep) {
         // POSIX reserves exactly two leading separators; three or more collapse.
@@ -332,7 +446,7 @@ pub fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
     } else {
         path
     };
-    let (drive, root) = path_root_offsets(path.as_bytes(), sep as u8);
+    let (drive, root) = path_root_offsets(path.as_bytes(), sep as u8, true);
     (
         path[..drive].to_string(),
         path[drive..root].to_string(),
@@ -1002,13 +1116,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joins_match_cpython_posix_nt_text_and_bytes() {
+        // Expected bytes from CPython 3.12.15 posixpath/ntpath, including
+        // opaque bytes, WTF-8, Unicode drives, UNC and separator spelling.
+        let cases: &[(u8, bool, &[&[u8]], &[u8])] = &[
+            (47, true, &[b"a", b"", b"b"], b"a/b"),
+            (47, true, &[b"a", b"//b", b"c"], b"//b/c"),
+            (47, false, &[b"a", b"\xff", b""], b"a/\xff/"),
+            (92, true, &[b"C:/a", b"b", b""], b"C:/a\x5cb\x5c"),
+            (92, true, &[b"C:/a", b"/root"], b"C:/root"),
+            (92, true, &[b"C:/a", b"c:b"], b"c:/a\x5cb"),
+            (92, true, &[b"C:/a", b"D:b"], b"D:b"),
+            (
+                92,
+                true,
+                &[b"//host/share", b"child"],
+                b"//host/share\x5cchild",
+            ),
+            (
+                92,
+                true,
+                &[b"\x5c\x5cserver\x5c", b"child"],
+                b"\x5c\x5cserver\x5cchild",
+            ),
+            (92, true, &[b"//server/", b"child"], b"//server/child"),
+            (
+                92,
+                true,
+                &[b"//?/UNC/host/share", b"child"],
+                b"//?/UNC/host/share\x5cchild",
+            ),
+            (92, true, &[b"C:", b""], b"C:"),
+            (92, true, &[b"C:/a", b"../b"], b"C:/a\x5c../b"),
+            (
+                92,
+                true,
+                &[b"\xc3\x89:a", b"\xc3\xa9:b"],
+                b"\xc3\xa9:a\x5cb",
+            ),
+            (
+                92,
+                true,
+                &[b"\xc4\xb0:a", b"i\xcc\x87:b"],
+                b"\xc4\xb0:a\x5ci\xcc\x87:b",
+            ),
+            (
+                92,
+                true,
+                &[b"\xed\xa0\x80:a", b"\xed\xa0\x81:b"],
+                b"\xed\xa0\x81:b",
+            ),
+            (
+                92,
+                true,
+                &[b"//H\xc3\x96ST/SHARE", b"//h\xc3\xb6st/share:child"],
+                b"//h\xc3\xb6st/share:child",
+            ),
+            (92, false, &[b"\xc9:a", b"\xe9:b"], b"\xe9:b"),
+            (
+                92,
+                false,
+                &[b"\x5c\x5cserver\x5c", b"child"],
+                b"\x5c\x5cserver\x5cchild",
+            ),
+        ];
+        for &(sep, text, parts, expected) in cases {
+            let mut join = PathJoin::new(parts[0].to_vec(), sep, text);
+            for part in &parts[1..] {
+                join.push(part);
+            }
+            assert_eq!(join.finish(), expected, "{parts:?}");
+        }
+    }
+
+    #[test]
     fn joins_normalizes_and_splits_text_paths() {
         assert_eq!(path_join_text("a".to_string(), "b", '/'), "a/b");
         assert_eq!(
-            path_join_many_text("a".to_string(), &["b".into(), "c".into()], '/'),
+            path_join_many_text("a".to_string(), ["b", "c"], '/'),
             "a/b/c"
         );
-        assert_eq!(path_join_raw(b"a", b"b", b'/'), b"a/b".to_vec());
+        let mut bytes = PathJoin::new(b"a".to_vec(), b'/', false);
+        bytes.push(b"b");
+        assert_eq!(bytes.finish(), b"a/b");
         assert_eq!(path_basename_text("/a/b/", '/'), "b");
         assert_eq!(path_dirname_text("/a/b/", '/'), "/a");
         assert_eq!(

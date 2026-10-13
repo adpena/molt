@@ -43,10 +43,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_rmdir",
             crate::molt_path_rmdir as *const (),
         )),
-        "molt_path_join" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_join",
-            crate::molt_path_join as *const (),
-        )),
         "molt_path_join_many" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_join_many",
             crate::molt_path_join_many as *const (),

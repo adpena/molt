@@ -8,14 +8,13 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 #[cfg(unix)]
 use super::io::{
-    PathFlavor, alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,
-    bytes_slice_from_bits, collect_bytes_like, create_symlink_path, dup_fd,
-    filesystem_encode_errors,
+    PathFlavor, alloc_path_list_bits, alloc_string_list_bits, bytes_slice_from_bits,
+    collect_bytes_like, create_symlink_path, dup_fd, filesystem_encode_errors,
     glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_iter_alloc_object,
     glob_iter_new_state, glob_translate_text, path_abspath_text, path_as_uri_text,
     path_basename_text, path_compare_text, path_dirname_text, path_expandvars_text, path_from_bits,
-    path_glob_matches, path_isabs_text, path_join_many_text, path_join_raw, path_join_text,
-    path_match_text, path_name_text, path_normpath_text, path_parents_text, path_relative_to_text,
+    path_glob_matches, path_isabs_text, path_join_many_text, path_join_text, path_match_text,
+    path_name_text, path_normpath_text, path_parents_text, path_relative_to_text,
     path_relpath_text, path_sep_char, path_sequence_from_bits, path_splitext_text, path_stem_text,
     path_str_arg_from_bits, path_string_from_bits, path_string_with_flavor_from_bits,
     path_suffix_text, path_suffixes_text, raise_io_error_for_glob, raw_from_bytes_text,
@@ -270,92 +269,157 @@ pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_join(base_bits: u64, part_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // Detect bytes inputs — CPython returns bytes when given bytes.
-        if let Some(base_ptr) = obj_from_bits(base_bits).as_ptr()
-            && unsafe { object_type_id(base_ptr) } == TYPE_ID_BYTES
-        {
-            let base_len = unsafe { bytes_len(base_ptr) };
-            let base_raw = unsafe { std::slice::from_raw_parts(bytes_data(base_ptr), base_len) };
-            let part_raw = match bytes_slice_from_bits(part_bits) {
-                Some(s) => s,
-                None => {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "join: expected bytes for path component",
-                    );
-                }
-            };
-            let out = path_join_raw(base_raw, &part_raw, b'/');
-            let ptr = alloc_bytes(_py, &out);
-            return if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            };
-        }
-        let sep = path_sep_char();
-        let base = match path_string_from_bits(_py, base_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let part = match path_string_from_bits(_py, part_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let out = path_join_text(base, &part, sep);
-        let ptr = alloc_string(_py, out.as_bytes());
+fn path_join_components(py: &PyToken<'_>, base_bits: u64, parts: &[u64]) -> u64 {
+    use molt_runtime_core::OwnedRuntimeValue;
+    use molt_runtime_platform::path_text::PathJoin;
+
+    let (base, flavor) = match super::io::fspath_bits_with_flavor(py, base_bits) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let base = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), base) };
+    let classes = builtin_classes(py);
+    let exact =
+        |bits| matches!(type_of_bits(py, bits), ty if ty == classes.str || ty == classes.bytes);
+    let tuple = |items: &[u64]| {
+        let ptr = alloc_tuple(py, items);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
-    })
+    };
+    if !exact(base.bits()) {
+        return tuple(&[
+            MoltObject::from_int(0).bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        ]);
+    }
+    let sep = path_sep_char();
+    if parts.is_empty() && sep == '/' {
+        return base.into_bits();
+    }
+    // Owners survive fspath callbacks; the accumulator never borrows Python storage.
+    let raw = |bits| unsafe {
+        let ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("fspath string/bytes storage");
+        if flavor == PathFlavor::Bytes {
+            std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr))
+        } else {
+            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr))
+        }
+    };
+    let allocate = |value: &[u8]| {
+        let ptr = if flavor == PathFlavor::Bytes {
+            alloc_bytes(py, value)
+        } else {
+            alloc_string(py, value)
+        };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    MoltObject::from_ptr(ptr).bits(),
+                )
+            })
+        }
+    };
+    let mut joined = PathJoin::new(
+        raw(base.bits()).to_vec(),
+        sep as u8,
+        flavor == PathFlavor::Str,
+    );
+    // POSIX retains the actual operand through absolute replacement and empty
+    // concatenation. A later subclass can observe that identity in __radd__.
+    let mut identity = Some(base);
+    for (index, &part) in parts.iter().enumerate() {
+        let (value, part_flavor) = match super::io::fspath_bits_with_flavor(py, part) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let value = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), value) };
+        if !exact(value.bits()) || (sep == '\\' && part_flavor != flavor) {
+            // One-way handoff before any subclass operation. os.path.join resumes
+            // in its own frame using this already-converted operand exactly once.
+            let state = if sep == '/' {
+                match identity {
+                    Some(value) => value,
+                    None => match allocate(&joined.finish()) {
+                        Some(value) => value,
+                        None => return MoltObject::none().bits(),
+                    },
+                }
+            } else {
+                let (drive, root, tail) = joined.into_components();
+                let Some(drive) = allocate(&drive) else {
+                    return MoltObject::none().bits();
+                };
+                let Some(root) = allocate(&root) else {
+                    return MoltObject::none().bits();
+                };
+                let Some(tail) = allocate(&tail) else {
+                    return MoltObject::none().bits();
+                };
+                let bits = tuple(&[drive.bits(), root.bits(), tail.bits()]);
+                if exception_pending(py) {
+                    return bits;
+                }
+                unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) }
+            };
+            return tuple(&[
+                MoltObject::from_int(index as i64).bits(),
+                value.bits(),
+                state.bits(),
+            ]);
+        }
+        if part_flavor != flavor {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "Can't mix strings and bytes in path components",
+            );
+        }
+        let part_raw = raw(value.bits());
+        let empty_base = identity
+            .as_ref()
+            .is_some_and(|value| raw(value.bits()).is_empty());
+        let unchanged = part_raw.is_empty()
+            && identity
+                .as_ref()
+                .is_some_and(|value| raw(value.bits()).ends_with(b"/"));
+        joined.push(part_raw);
+        if sep == '/' && (part_raw.first() == Some(&b'/') || empty_base) {
+            identity = Some(value);
+        } else if sep != '/' || !unchanged {
+            identity = None;
+        }
+    }
+    if sep == '/'
+        && let Some(identity) = identity
+    {
+        return identity.into_bits();
+    }
+    allocate(&joined.finish()).map_or(MoltObject::none().bits(), |value| value.into_bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // Detect bytes inputs — CPython returns bytes when given bytes.
-        if let Some(base_ptr) = obj_from_bits(base_bits).as_ptr()
-            && unsafe { object_type_id(base_ptr) } == TYPE_ID_BYTES
-        {
-            let base_len = unsafe { bytes_len(base_ptr) };
-            let base_raw = unsafe { std::slice::from_raw_parts(bytes_data(base_ptr), base_len) };
-            let raw_parts = match bytes_sequence_from_bits(_py, parts_bits, "parts") {
-                Ok(parts) => parts,
-                Err(bits) => return bits,
-            };
-            let mut out = base_raw.to_vec();
-            for part in &raw_parts {
-                out = path_join_raw(&out, part, b'/');
-            }
-            let ptr = alloc_bytes(_py, &out);
-            return if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            };
-        }
-        let sep = path_sep_char();
-        let base = match path_string_from_bits(_py, base_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(parts_bits).as_ptr() else {
+            return raise_exception::<_>(py, "TypeError", "parts must be tuple");
         };
-        let parts = match path_sequence_from_bits(_py, parts_bits, "parts") {
-            Ok(parts) => parts,
-            Err(bits) => return bits,
-        };
-        let out = path_join_many_text(base, &parts, sep);
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
+        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+            return raise_exception::<_>(py, "TypeError", "parts must be tuple");
         }
+        // The public variadic tuple is immutable. Retain its owner across fspath
+        // callbacks without allocating or retaining a second copy of every item.
+        let parts = unsafe { crate::object::seq_access::pin_tuple(py, ptr) }
+            .expect("type-checked tuple exposes immutable storage");
+        path_join_components(py, base_bits, &parts)
     })
 }
 

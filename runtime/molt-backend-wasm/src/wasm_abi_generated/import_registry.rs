@@ -7485,11 +7485,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PathJoin,
-        name: "path_join",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::PathJoinMany,
         name: "path_join_many",
         type_idx: 3,
@@ -13595,11 +13590,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::OsPathJoin,
-        name: "os_path_join",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::OsPathExists,
         name: "os_path_exists",
         type_idx: 2,
@@ -17510,8 +17500,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_path_readlink" => Some(WasmRuntimeImport::PathReadlink),
         "path_symlink" => Some(WasmRuntimeImport::PathSymlink),
         "molt_path_symlink" => Some(WasmRuntimeImport::PathSymlink),
-        "path_join" => Some(WasmRuntimeImport::PathJoin),
-        "molt_path_join" => Some(WasmRuntimeImport::PathJoin),
         "path_join_many" => Some(WasmRuntimeImport::PathJoinMany),
         "molt_path_join_many" => Some(WasmRuntimeImport::PathJoinMany),
         "path_isabs" => Some(WasmRuntimeImport::PathIsabs),
@@ -20136,8 +20124,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_os_environ" => Some(WasmRuntimeImport::OsEnviron),
         "os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
-        "os_path_join" => Some(WasmRuntimeImport::OsPathJoin),
-        "molt_os_path_join" => Some(WasmRuntimeImport::OsPathJoin),
         "os_path_exists" => Some(WasmRuntimeImport::OsPathExists),
         "molt_os_path_exists" => Some(WasmRuntimeImport::OsPathExists),
         "os_path_isfile" => Some(WasmRuntimeImport::OsPathIsfile),
