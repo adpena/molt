@@ -9,11 +9,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_tempfile_gettempdir as *const (),
         )),
         #[cfg(feature = "stdlib_fs_extra")]
-        "molt_tempfile_gettempdirb" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_tempfile_gettempdirb",
-            crate::molt_tempfile_gettempdirb as *const (),
-        )),
-        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_mkdtemp" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_tempfile_mkdtemp",
             crate::molt_tempfile_mkdtemp as *const (),
@@ -22,16 +17,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tempfile_mkstemp" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_tempfile_mkstemp",
             crate::molt_tempfile_mkstemp as *const (),
-        )),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_tempfile_named" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_tempfile_named",
-            crate::molt_tempfile_named as *const (),
-        )),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_tempfile_tempdir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_tempfile_tempdir",
-            crate::molt_tempfile_tempdir as *const (),
         )),
         #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_cleanup" => Some(crate::builtins::functions::runtime_fn_addr(

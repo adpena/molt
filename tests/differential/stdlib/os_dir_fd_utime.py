@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Purpose: differential coverage for os.utime(dir_fd=...) via times= and ns=."""
 
 from __future__ import annotations

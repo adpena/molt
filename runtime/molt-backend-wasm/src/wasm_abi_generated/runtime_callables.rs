@@ -11516,12 +11516,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_tempfile_gettempdir",
         import: WasmRuntimeImport::TempfileGettempdir,
-        arity: 0,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_tempfile_gettempdirb",
-        import: WasmRuntimeImport::TempfileGettempdirb,
-        arity: 0,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_tempfile_mkdtemp",
@@ -11531,17 +11526,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_tempfile_mkstemp",
         import: WasmRuntimeImport::TempfileMkstemp,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_tempfile_named",
-        import: WasmRuntimeImport::TempfileNamed,
         arity: 4,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_tempfile_tempdir",
-        import: WasmRuntimeImport::TempfileTempdir,
-        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_tempfile_cleanup",
@@ -15343,11 +15328,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_pathlib_group" => Some(WasmRuntimeImport::PathlibGroup),
         "molt_pathlib_samefile" => Some(WasmRuntimeImport::PathlibSamefile),
         "molt_tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
-        "molt_tempfile_gettempdirb" => Some(WasmRuntimeImport::TempfileGettempdirb),
         "molt_tempfile_mkdtemp" => Some(WasmRuntimeImport::TempfileMkdtemp),
         "molt_tempfile_mkstemp" => Some(WasmRuntimeImport::TempfileMkstemp),
-        "molt_tempfile_named" => Some(WasmRuntimeImport::TempfileNamed),
-        "molt_tempfile_tempdir" => Some(WasmRuntimeImport::TempfileTempdir),
         "molt_tempfile_cleanup" => Some(WasmRuntimeImport::TempfileCleanup),
         "molt_sys_getdefaultencoding" => Some(WasmRuntimeImport::SysGetdefaultencoding),
         "molt_sys_getfilesystemencoding" => Some(WasmRuntimeImport::SysGetfilesystemencoding),

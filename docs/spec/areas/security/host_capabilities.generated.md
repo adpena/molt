@@ -110,10 +110,9 @@ This is the generated human projection of the canonical built-in host permission
 | `ssl.read` | `full` |
 | `ssl.write` | `full` |
 | `tempfile.cleanup` | `standard` |
+| `tempfile.gettempdir` | `standard` |
 | `tempfile.mkdtemp` | `standard` |
 | `tempfile.mkstemp` | `standard` |
-| `tempfile.named` | `standard` |
-| `tempfile.tempdir` | `standard` |
 | `thread.shared` | `standard` |
 | `thread.spawn` | `standard` |
 | `time.wall` | `safe` |
@@ -261,8 +260,7 @@ This is the generated human projection of the canonical built-in host permission
 | `tempfile.cleanup` | `fs.write` | all | all | all | all |
 | `tempfile.mkdtemp` | `fs.write` | all | all | all | all |
 | `tempfile.mkstemp` | `fs.write` | all | all | all | all |
-| `tempfile.named` | `fs.write` | all | all | all | all |
-| `tempfile.tempdir` | `fs.write` | all | all | all | all |
+| `tempfile.gettempdir` | `env.read`, `fs.read`, `fs.write` | all | all | all | all |
 | `traceback.source_line` | `fs.read` | all | all | all | all |
 | `os.listdir` | `fs.read` | all | all | all | all |
 | `os.scandir` | `fs.read` | all | all | all | all |

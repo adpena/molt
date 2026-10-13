@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 #
 # glob.iglob streaming-memory regression (task #29 / audit finding L-01/C-11).
 #

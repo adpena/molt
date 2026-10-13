@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Purpose: intrinsic-backed pathlib resolve strict/non-strict parity."""
 
 from pathlib import Path

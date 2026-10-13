@@ -127,8 +127,7 @@ grants = [
   "shutil.move",
   "tempfile.mkdtemp",
   "tempfile.mkstemp",
-  "tempfile.named",
-  "tempfile.tempdir",
+  "tempfile.gettempdir",
   "tempfile.cleanup",
   "signal.signal",
   "signal.raise",
@@ -752,12 +751,8 @@ name = "tempfile.mkstemp"
 capabilities = ["fs.write"]
 
 [[operation]]
-name = "tempfile.named"
-capabilities = ["fs.write"]
-
-[[operation]]
-name = "tempfile.tempdir"
-capabilities = ["fs.write"]
+name = "tempfile.gettempdir"
+capabilities = ["env.read", "fs.read", "fs.write"]
 
 [[operation]]
 name = "traceback.source_line"

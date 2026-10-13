@@ -178,6 +178,92 @@ pub(super) fn alloc_file_handle_with_state(
     ptr
 }
 
+pub(super) fn file_handle_mode(handle: &MoltFileHandle) -> &str {
+    if handle.text {
+        return &handle.mode;
+    }
+    if handle.mode.contains('x') {
+        if handle.readable { "xb+" } else { "xb" }
+    } else if handle.mode.contains('a') {
+        if handle.readable { "ab+" } else { "ab" }
+    } else if handle.writable && handle.readable {
+        "rb+"
+    } else if handle.writable {
+        "wb"
+    } else {
+        "rb"
+    }
+}
+
+/// Return one owned reference to the buffered stream's actual raw owner.
+/// Native opens materialize it only when Python observes it; explicit Buffered*
+/// construction already retains the exact supplied raw object in buffer_bits.
+pub(super) unsafe fn file_handle_raw_bits(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
+    unsafe {
+        let pointer = file_handle_ptr(object);
+        if pointer.is_null() {
+            return None;
+        }
+        let (state, readable, writable, closefd, name, mode, memory) = {
+            let handle = &*pointer;
+            if handle.detached {
+                return Some(MoltObject::none().bits());
+            }
+            if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
+                inc_ref_bits(py, handle.buffer_bits);
+                return Some(handle.buffer_bits);
+            }
+            (
+                Arc::clone(&handle.state),
+                handle.readable,
+                handle.writable,
+                handle.closefd,
+                handle.name_bits,
+                file_handle_mode(handle).to_owned(),
+                handle.mem_bits,
+            )
+        };
+        let raw = alloc_file_handle_with_state(
+            py,
+            state,
+            readable,
+            writable,
+            false,
+            closefd,
+            false,
+            false,
+            false,
+            0,
+            builtin_classes(py).file_io,
+            name,
+            mode,
+            None,
+            None,
+            None,
+            None,
+            0,
+            memory,
+        );
+        if raw.is_null() {
+            return None;
+        }
+        let bits = MoltObject::from_ptr(raw).bits();
+        // Allocation failure above retires only a non-owning projection and must
+        // leave the live buffered owner usable. Publish before enabling close.
+        let handle = &mut *pointer;
+        if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
+            let existing = handle.buffer_bits;
+            inc_ref_bits(py, existing);
+            dec_ref_bits(py, bits);
+            return Some(existing);
+        }
+        handle.buffer_bits = bits;
+        (*file_handle_ptr(raw)).owns_fd = handle.owns_fd;
+        inc_ref_bits(py, bits);
+        Some(bits)
+    }
+}
+
 pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
     if ptr.is_null() {
         return false;

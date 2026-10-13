@@ -100,10 +100,9 @@ class CapabilityId(StrEnum):
     SSL_READ = "ssl.read"
     SSL_WRITE = "ssl.write"
     TEMPFILE_CLEANUP = "tempfile.cleanup"
+    TEMPFILE_GETTEMPDIR = "tempfile.gettempdir"
     TEMPFILE_MKDTEMP = "tempfile.mkdtemp"
     TEMPFILE_MKSTEMP = "tempfile.mkstemp"
-    TEMPFILE_NAMED = "tempfile.named"
-    TEMPFILE_TEMPDIR = "tempfile.tempdir"
     THREAD_SHARED = "thread.shared"
     THREAD_SPAWN = "thread.spawn"
     TIME_WALL = "time.wall"
@@ -289,8 +288,7 @@ class OperationId(StrEnum):
     TEMPFILE_CLEANUP = "tempfile.cleanup"
     TEMPFILE_MKDTEMP = "tempfile.mkdtemp"
     TEMPFILE_MKSTEMP = "tempfile.mkstemp"
-    TEMPFILE_NAMED = "tempfile.named"
-    TEMPFILE_TEMPDIR = "tempfile.tempdir"
+    TEMPFILE_GETTEMPDIR = "tempfile.gettempdir"
     TRACEBACK_SOURCE_LINE = "traceback.source_line"
     OS_LISTDIR = "os.listdir"
     OS_SCANDIR = "os.scandir"
@@ -586,8 +584,11 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.TEMPFILE_CLEANUP: (CapabilityId.FS_WRITE,),
             OperationId.TEMPFILE_MKDTEMP: (CapabilityId.FS_WRITE,),
             OperationId.TEMPFILE_MKSTEMP: (CapabilityId.FS_WRITE,),
-            OperationId.TEMPFILE_NAMED: (CapabilityId.FS_WRITE,),
-            OperationId.TEMPFILE_TEMPDIR: (CapabilityId.FS_WRITE,),
+            OperationId.TEMPFILE_GETTEMPDIR: (
+                CapabilityId.ENV_READ,
+                CapabilityId.FS_READ,
+                CapabilityId.FS_WRITE,
+            ),
             OperationId.TRACEBACK_SOURCE_LINE: (CapabilityId.FS_READ,),
             OperationId.OS_LISTDIR: (CapabilityId.FS_READ,),
             OperationId.OS_SCANDIR: (CapabilityId.FS_READ,),
@@ -875,8 +876,7 @@ CAPABILITY_TIERS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "shutil.move",
             "tempfile.mkdtemp",
             "tempfile.mkstemp",
-            "tempfile.named",
-            "tempfile.tempdir",
+            "tempfile.gettempdir",
             "tempfile.cleanup",
             "signal.signal",
             "signal.raise",
@@ -938,8 +938,7 @@ CAPABILITY_TIERS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "shutil.move",
             "tempfile.mkdtemp",
             "tempfile.mkstemp",
-            "tempfile.named",
-            "tempfile.tempdir",
+            "tempfile.gettempdir",
             "tempfile.cleanup",
             "signal.signal",
             "signal.raise",

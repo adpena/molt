@@ -9,6 +9,13 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                let classes = builtin_classes(_py);
+                let class = type_of_bits(_py, handle_bits);
+                if issubclass_bits(class, classes.buffered_io_base)
+                    || issubclass_bits(class, classes.text_io_base)
+                {
+                    return raise_exception::<_>(_py, "UnsupportedOperation", "detach");
+                }
                 return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
@@ -78,51 +85,22 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                 handle.owns_fd = false;
                 return buffer_bits;
             }
-            let raw_ptr = alloc_file_handle_with_state(
-                _py,
-                Arc::clone(&handle.state),
-                handle.readable,
-                handle.writable,
-                false,
-                handle.closefd,
-                handle.owns_fd,
-                handle.line_buffering,
-                handle.write_through,
-                handle.buffer_size,
-                class_bits,
-                handle.name_bits,
-                handle.mode.clone(),
-                None,
-                None,
-                None,
-                None,
-                0,
-                handle.mem_bits,
-            );
-            if raw_ptr.is_null() {
+            // Buffered read-ahead belongs to this wrapper. CPython detach drops
+            // those unread bytes rather than rewinding/copying them into raw.
+            drop(guard);
+            let _ = handle;
+            let Some(raw) = file_handle_raw_bits(_py, ptr) else {
                 return MoltObject::none().bits();
-            }
-            let raw_handle_ptr = file_handle_ptr(raw_ptr);
-            if !raw_handle_ptr.is_null() {
-                let raw_handle = &mut *raw_handle_ptr;
-                let mut prefix = Vec::new();
-                if let Some(pending) = handle.pending_byte.take() {
-                    prefix.push(pending);
-                }
-                if !handle.text_pending_bytes.is_empty() {
-                    prefix.extend_from_slice(&handle.text_pending_bytes);
-                    handle.text_pending_bytes.clear();
-                }
-                handle.text_pending_text.clear();
-                raw_handle.pending_byte = None;
-                raw_handle.read_buf = std::mem::take(&mut handle.read_buf);
-                raw_handle.read_pos = handle.read_pos;
-                handle.read_pos = 0;
-                prepend_read_buffer(raw_handle, &prefix);
-            }
+            };
+            let handle = &mut *handle_ptr;
+            let stored = std::mem::replace(&mut handle.buffer_bits, MoltObject::none().bits());
             handle.detached = true;
             handle.owns_fd = false;
-            MoltObject::from_ptr(raw_ptr).bits()
+            handle.read_buf.clear();
+            handle.read_pos = 0;
+            handle.pending_byte = None;
+            dec_ref_bits(_py, stored);
+            raw
         }
     })
 }

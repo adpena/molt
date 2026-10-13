@@ -210,6 +210,7 @@ fn file_mode_to_flags(mode: &FileMode) -> i32 {
 #[cfg(unix)]
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::fd::FromRawFd;
+    let fd = libc::c_int::try_from(fd).ok()?;
     if fd < 0 {
         return None;
     }
@@ -225,7 +226,8 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
 #[cfg(windows)]
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::windows::io::FromRawHandle;
-    let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
+    let fd = libc::c_int::try_from(fd).ok()?;
+    let handle = unsafe { libc::get_osfhandle(fd) };
     if handle == -1 {
         return None;
     }
@@ -236,10 +238,8 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
 #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::wasi::io::FromRawFd;
-    if fd < 0 {
-        return None;
-    }
-    Some(unsafe { std::fs::File::from_raw_fd(fd as std::os::wasi::io::RawFd) })
+    let fd = std::os::wasi::io::RawFd::try_from(fd).ok()?;
+    Some(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 #[cfg(all(
@@ -252,19 +252,21 @@ fn file_from_fd(_fd: i64) -> Option<std::fs::File> {
 
 #[cfg(unix)]
 pub(crate) fn dup_fd(fd: i64) -> Option<i64> {
+    let fd = libc::c_int::try_from(fd).ok()?;
     if fd < 0 {
         return None;
     }
-    let duped = unsafe { libc::dup(fd as libc::c_int) };
+    let duped = unsafe { libc::dup(fd) };
     if duped < 0 { None } else { Some(duped as i64) }
 }
 
 #[cfg(windows)]
 pub(crate) fn dup_fd(fd: i64) -> Option<i64> {
+    let fd = libc::c_int::try_from(fd).ok()?;
     if fd < 0 {
         return None;
     }
-    let duped = unsafe { libc::dup(fd as libc::c_int) };
+    let duped = unsafe { libc::dup(fd) };
     if duped < 0 { None } else { Some(duped as i64) }
 }
 
@@ -335,13 +337,14 @@ pub(crate) fn windows_path_from_handle(handle: *mut std::ffi::c_void) -> Option<
 }
 
 #[cfg(windows)]
-fn windows_crt_fd_from_handle(
+pub(crate) fn windows_crt_fd_from_handle(
     handle: *mut std::ffi::c_void,
     readable: bool,
     writable: bool,
+    text: bool,
 ) -> Option<i64> {
     let dup = duplicate_handle(handle)?;
-    let mut flags = libc::O_BINARY;
+    let mut flags = if text { libc::O_TEXT } else { libc::O_BINARY };
     if readable && writable {
         flags |= libc::O_RDWR;
     } else if readable {
@@ -523,7 +526,13 @@ fn open_impl(
     let mut path = None;
     let mut fd: Option<i64> = None;
     let mut debug_fd_value: Option<i64> = None;
-    let path_name_bits = if let Some(i) = to_i64(obj_from_bits(file_bits)) {
+    let path_name_bits = if let Some(i) =
+        crate::builtins::numbers::index_i64_integral_bits(file_bits)
+            .and_then(|value| libc::c_int::try_from(value).ok())
+    {
+        // FileIO retries path admission after failed direct C-int conversion;
+        // opener results instead retain their checked-conversion exception.
+        let i = i64::from(i);
         if i < 0 {
             return raise_exception::<_>(_py, "ValueError", "negative file descriptor");
         }
@@ -624,6 +633,10 @@ fn open_impl(
                 crt_fd = Some(effective_fd);
             }
         } else {
+            #[cfg(windows)]
+            unsafe {
+                libc::close(effective_fd as libc::c_int);
+            }
             return raise_exception::<_>(_py, "OSError", "open failed");
         }
     } else if let Some(path) = path {
@@ -644,10 +657,30 @@ fn open_impl(
             if failed {
                 return MoltObject::none().bits();
             }
-            if let Some(fd_val) = to_i64(obj_from_bits(fd_bits)) {
+            if crate::builtins::numbers::index_integral_payload_bits(fd_bits).is_some() {
+                let Some(fd_val) = crate::builtins::numbers::index_c_int_from_obj(_py, fd_bits)
+                else {
+                    return MoltObject::none().bits();
+                };
+                let fd_val = i64::from(fd_val);
+                if fd_val < 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "opener returned a negative file descriptor",
+                    );
+                }
                 if let Some(handle) = file_from_fd(fd_val) {
                     file = Some(handle);
+                    #[cfg(windows)]
+                    {
+                        crt_fd = Some(fd_val);
+                    }
                 } else {
+                    #[cfg(windows)]
+                    unsafe {
+                        libc::close(fd_val as libc::c_int);
+                    }
                     return raise_exception::<_>(_py, "OSError", "open failed");
                 }
             } else {
@@ -775,7 +808,7 @@ fn open_impl(
                         vfs_readable,
                         vfs_writable,
                         false, // text
-                        false, // closefd
+                        closefd,
                         true,  // owns_fd
                         false, // line_buffering
                         false, // write_through
@@ -880,11 +913,21 @@ fn open_impl(
     {
         use std::os::windows::io::AsRawHandle;
         let handle = file_ref.as_raw_handle();
-        crt_fd = windows_crt_fd_from_handle(handle, mode_info.readable, mode_info.writable);
+        crt_fd = windows_crt_fd_from_handle(handle, mode_info.readable, mode_info.writable, false);
+        if crt_fd.is_none() {
+            return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "open");
+        }
     }
     let Some(file) = file else {
         return raise_exception::<_>(_py, "OSError", "open failed");
     };
+
+    let state = Arc::new(MoltFileState {
+        backend: Mutex::new(Some(MoltFileBackend::File(file))),
+        #[cfg(windows)]
+        crt_fd: Mutex::new(crt_fd),
+        host_descriptor: false,
+    });
 
     // Keep text-I/O encoding normalization explicit so open()/TextIOWrapper
     // remains deterministic across native and wasm builds.
@@ -905,12 +948,6 @@ fn open_impl(
     };
 
     let encoding_original = encoding.clone();
-    let state = Arc::new(MoltFileState {
-        backend: Mutex::new(Some(MoltFileBackend::File(file))),
-        #[cfg(windows)]
-        crt_fd: Mutex::new(crt_fd),
-        host_descriptor: false,
-    });
     let builtins = builtin_classes(_py);
     let buffered_class_bits = if mode_info.readable && mode_info.writable {
         builtins.buffered_random
@@ -948,7 +985,7 @@ fn open_impl(
             mode_info.readable,
             mode_info.writable,
             false,
-            false,
+            closefd,
             true,
             false,
             false,
@@ -1036,6 +1073,10 @@ fn alloc_stdio_handle(
         }
     };
     let Some(file) = file_from_fd(effective_fd) else {
+        #[cfg(windows)]
+        unsafe {
+            libc::close(effective_fd as libc::c_int);
+        }
         return MoltObject::none().bits();
     };
     let mode = if readable && writable {

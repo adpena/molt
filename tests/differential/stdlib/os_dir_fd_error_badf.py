@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Purpose: differential coverage for os.stat(dir_fd=-1) -> EBADF OSError."""
 
 from __future__ import annotations

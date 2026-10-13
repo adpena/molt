@@ -15494,14 +15494,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_tempfile_gettempdir",
         symbol: "molt_tempfile_gettempdir",
-        arity: 0,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_tempfile_gettempdirb",
-        symbol: "molt_tempfile_gettempdirb",
-        arity: 0,
+        arity: 1,
         defaults: &[],
         python_name: None,
     },
@@ -15515,21 +15508,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_tempfile_mkstemp",
         symbol: "molt_tempfile_mkstemp",
-        arity: 3,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_tempfile_named",
-        symbol: "molt_tempfile_named",
         arity: 4,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_tempfile_tempdir",
-        symbol: "molt_tempfile_tempdir",
-        arity: 3,
         defaults: &[],
         python_name: None,
     },

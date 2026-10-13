@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Differential coverage for glob dir_fd semantics (native + wasm host split)."""
 
 from __future__ import annotations

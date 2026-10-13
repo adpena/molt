@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Differential coverage for non-UTF8 glob bytes behavior across hosts."""
 
 from __future__ import annotations

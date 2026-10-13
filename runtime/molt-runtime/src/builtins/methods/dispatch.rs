@@ -112,6 +112,8 @@ fn io_class(py: &PyToken<'_>, class: u64) -> bool {
     [
         b.file,
         b.file_io,
+        b.buffered_io_base,
+        b.text_io_base,
         b.buffered_reader,
         b.buffered_writer,
         b.buffered_random,

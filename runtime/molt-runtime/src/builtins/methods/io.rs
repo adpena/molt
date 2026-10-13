@@ -7,7 +7,9 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
     let owners = [classes.file, classes.file_io, classes.buffered_reader,
         classes.buffered_writer, classes.buffered_random, classes.text_io_wrapper,
         classes.bytes_io, classes.string_io];
-    let owner = if owners.contains(&owner) { owner } else {
+    let owner = if owners.contains(&owner)
+        || (name == "detach" && [classes.buffered_io_base, classes.text_io_base].contains(&owner))
+    { owner } else {
         let Some(pointer) = obj_from_bits(owner).as_ptr() else {
             return Ok(None);
         };
@@ -102,7 +104,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             fn_addr!(molt_file_close),
             1,
         )),
-        "detach" => Some(builtin_func_bits(
+        "detach" if owner != builtin_classes(_py).file && owner != builtin_classes(_py).file_io => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "detach"),
             fn_addr!(molt_file_detach),

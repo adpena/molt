@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Differential coverage for glob.iglob lazy-iterator semantics (task #29).
 
 `glob.iglob` must return a *lazy iterator* (not a pre-materialized list wrapped

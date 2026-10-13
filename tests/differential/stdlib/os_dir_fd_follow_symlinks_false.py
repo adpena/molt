@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
 """Purpose: os.stat(dir_fd=..., follow_symlinks=False) matches lstat on a link."""
 
 from __future__ import annotations

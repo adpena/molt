@@ -139,42 +139,104 @@ pub fn path_as_uri_text(path: &str, sep: char) -> Result<String, String> {
     Ok(format!("file://{posix}"))
 }
 
-pub fn path_normpath_text(path: &str, sep: char) -> String {
-    if path.is_empty() {
-        return ".".to_string();
-    }
-    let absolute = path.starts_with(sep);
-    let mut parts: Vec<&str> = Vec::new();
-    for part in path.split(sep) {
-        if part.is_empty() || part == "." {
+/// Lexically normalize either a text encoding or opaque filesystem bytes.
+/// Separators and dot components are ASCII; all other bytes remain unchanged.
+pub fn path_normpath_raw(path: &[u8], sep: u8) -> Vec<u8> {
+    let windows;
+    let path = if sep == b'\\' {
+        windows = path
+            .iter()
+            .map(|&byte| if byte == b'/' { sep } else { byte })
+            .collect::<Vec<_>>();
+        windows.as_slice()
+    } else {
+        path
+    };
+    let (drive_end, root_end) = path_root_offsets(path, sep);
+    let rooted = root_end != drive_end;
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for part in path[root_end..].split(|&byte| byte == sep) {
+        if part.is_empty() || part == b"." {
             continue;
         }
-        if part == ".." {
-            if parts.last().is_some_and(|last| *last != "..") {
+        if part == b".." {
+            if parts.last().is_some_and(|last| *last != b"..") {
                 parts.pop();
-            } else if !absolute {
+            } else if !rooted {
                 parts.push(part);
             }
-            continue;
-        }
-        parts.push(part);
-    }
-    let sep_s = sep.to_string();
-    if absolute {
-        let normalized = format!("{sep}{}", parts.join(&sep_s));
-        if normalized.is_empty() {
-            sep.to_string()
         } else {
-            normalized
-        }
-    } else {
-        let normalized = parts.join(&sep_s);
-        if normalized.is_empty() {
-            ".".to_string()
-        } else {
-            normalized
+            parts.push(part);
         }
     }
+    let mut out = Vec::with_capacity(path.len().max(1));
+    out.extend_from_slice(&path[..root_end]);
+    for (index, part) in parts.iter().enumerate() {
+        if index != 0 {
+            out.push(sep);
+        }
+        out.extend_from_slice(part);
+    }
+    if out.is_empty() {
+        out.push(b'.');
+    }
+    out
+}
+
+pub fn path_normpath_text(path: &str, sep: char) -> String {
+    // The public path helpers accept the target's ASCII filesystem separator.
+    assert!(matches!(sep, '/' | '\\'));
+    String::from_utf8(path_normpath_raw(path.as_bytes(), sep as u8))
+        .expect("ASCII path normalization preserves UTF-8")
+}
+
+// One drive/root parser for both lexical normalization and splitroot projection.
+// Offsets lie on ASCII boundaries in either UTF-8 or opaque filesystem bytes.
+fn path_root_offsets(path: &[u8], sep: u8) -> (usize, usize) {
+    if sep == b'\\' {
+        if path.starts_with(b"\\\\") {
+            let start = if path
+                .get(..8)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"\\\\?\\UNC\\"))
+            {
+                8
+            } else {
+                2
+            };
+            let Some(server_end) = path[start..]
+                .iter()
+                .position(|&byte| byte == sep)
+                .map(|index| start + index)
+            else {
+                return (path.len(), path.len());
+            };
+            let Some(share_end) = path[server_end + 1..]
+                .iter()
+                .position(|&byte| byte == sep)
+                .map(|index| server_end + 1 + index)
+            else {
+                return (path.len(), path.len());
+            };
+            return (share_end, share_end + 1);
+        }
+        if path.first() == Some(&sep) {
+            return (0, 1);
+        }
+        if path.get(1) == Some(&b':') {
+            return (2, if path.get(2) == Some(&sep) { 3 } else { 2 });
+        }
+    } else if path.first() == Some(&sep) {
+        // POSIX reserves exactly two leading separators; three or more collapse.
+        return (
+            0,
+            if path.get(1) == Some(&sep) && path.get(2) != Some(&sep) {
+                2
+            } else {
+                1
+            },
+        );
+    }
+    (0, 0)
 }
 
 pub fn path_parts_text(path: &str, sep: char) -> Vec<String> {
@@ -262,56 +324,20 @@ pub fn path_isabs_text(path: &str, sep: char) -> bool {
 }
 
 pub fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
-    #[cfg(windows)]
-    {
-        let text = path.replace('/', "\\");
-        if text.is_empty() {
-            return (String::new(), String::new(), String::new());
-        }
-        let mut drive = String::new();
-        let mut root = String::new();
-        let mut rest = text.as_str();
-        if rest.starts_with("\\\\") {
-            let unc = &rest[2..];
-            let mut parts = unc.split('\\');
-            let server = parts.next().unwrap_or_default();
-            let share = parts.next().unwrap_or_default();
-            if !server.is_empty() && !share.is_empty() {
-                drive = format!("\\\\{server}\\{share}");
-                let consumed = 2 + server.len() + 1 + share.len();
-                rest = &rest[consumed..];
-            }
-        } else {
-            let bytes = rest.as_bytes();
-            if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-                drive = rest[..2].to_string();
-                rest = &rest[2..];
-            }
-        }
-        if rest.starts_with('\\') {
-            root = sep.to_string();
-            rest = rest.trim_start_matches('\\');
-        }
-        (drive, root, rest.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        if path.is_empty() {
-            return (String::new(), String::new(), String::new());
-        }
-        if path.starts_with("//") && !path.starts_with("///") {
-            let tail = path.trim_start_matches('/').to_string();
-            return (String::new(), "//".to_string(), tail);
-        }
-        if path.starts_with(sep) {
-            return (
-                String::new(),
-                sep.to_string(),
-                path.trim_start_matches(sep).to_string(),
-            );
-        }
-        (String::new(), String::new(), path.to_string())
-    }
+    assert!(matches!(sep, '/' | '\\'));
+    let normalized;
+    let path = if sep == '\\' {
+        normalized = path.replace('/', "\\");
+        normalized.as_str()
+    } else {
+        path
+    };
+    let (drive, root) = path_root_offsets(path.as_bytes(), sep as u8);
+    (
+        path[..drive].to_string(),
+        path[drive..root].to_string(),
+        path[root..].to_string(),
+    )
 }
 
 pub fn path_relative_to_text(path: &str, base: &str, sep: char) -> Result<String, String> {
@@ -990,6 +1016,47 @@ mod tests {
             ("/a/b".into(), ".py".into())
         );
         assert_eq!(path_normpath_text("/a/./b/../c", '/'), "/a/c");
+    }
+
+    #[test]
+    fn normalization_preserves_byte_names_and_cpython_posix_nt_roots() {
+        // Independent CPython 3.12 posixpath/ntpath normpath results; these
+        // cases exercise the same byte core from both target separator policies.
+        for (input, expected) in [
+            ("", "."),
+            ("//a/../b", "//b"),
+            ("///a/../../b", "/b"),
+            ("a/../../b", "../b"),
+            ("/a/./b/../c", "/a/c"),
+        ] {
+            assert_eq!(path_normpath_text(input, '/'), expected);
+            assert_eq!(
+                path_normpath_raw(input.as_bytes(), b'/'),
+                expected.as_bytes()
+            );
+        }
+        assert_eq!(
+            path_normpath_raw(b"/a/../\xff/./child", b'/'),
+            b"/\xff/child"
+        );
+        for (input, expected) in [
+            (r"C:\a\..\..\b", r"C:\b"),
+            (r"C:a\..\..\b", r"C:..\b"),
+            (r"\\server\share\..\b", r"\\server\share\b"),
+            (r"\\?\UNC\server\share\a\..\b", r"\\?\UNC\server\share\b"),
+            (r"\\?\C:\a\..\b", r"\\?\C:\b"),
+            (r"C:/a//../b", r"C:\b"),
+        ] {
+            assert_eq!(path_normpath_text(input, '\\'), expected);
+            assert_eq!(
+                path_normpath_raw(input.as_bytes(), b'\\'),
+                expected.as_bytes()
+            );
+        }
+        assert_eq!(
+            path_splitroot_text(r"\\server\share\child", '\\'),
+            (r"\\server\share".into(), r"\".into(), "child".into())
+        );
     }
 
     #[test]
