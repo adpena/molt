@@ -118,6 +118,8 @@ class OperationId(StrEnum):
     NET_BIND = "net.bind"
     NET_LISTEN = "net.listen"
     NET_CONNECT = "net.connect"
+    HTTP_REQUEST = "http.request"
+    HTTPS_REQUEST = "https.request"
     NET_POLL = "net.poll"
     NET_ASYNCIO = "net.asyncio"
     NET_WEBSOCKET_CONNECT = "net.websocket_connect"
@@ -368,6 +370,19 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.NET_BIND: (CapabilityId.NET_BIND,),
             OperationId.NET_LISTEN: (CapabilityId.NET_LISTEN,),
             OperationId.NET_CONNECT: (CapabilityId.NET_CONNECT,),
+            OperationId.HTTP_REQUEST: (
+                CapabilityId.NET_SOCKET,
+                CapabilityId.NET_RESOLVE,
+                CapabilityId.NET_CONNECT,
+            ),
+            OperationId.HTTPS_REQUEST: (
+                CapabilityId.NET_SOCKET,
+                CapabilityId.NET_RESOLVE,
+                CapabilityId.NET_CONNECT,
+                CapabilityId.SSL_CONNECT,
+                CapabilityId.SSL_READ,
+                CapabilityId.SSL_WRITE,
+            ),
             OperationId.NET_POLL: (CapabilityId.NET_POLL,),
             OperationId.NET_ASYNCIO: (CapabilityId.NET_ASYNCIO,),
             OperationId.NET_WEBSOCKET_CONNECT: (CapabilityId.WEBSOCKET_CONNECT,),

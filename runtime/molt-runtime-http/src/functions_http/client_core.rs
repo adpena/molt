@@ -1334,21 +1334,14 @@ pub(super) fn http_client_execute_wire(
     use_tls: bool,
 ) -> Result<i64, u64> {
     let (code, reason, resp_headers, resp_body) =
-        match urllib_http_try_inmemory_dispatch(py, host, port, timeout, wire) {
-            Ok(Some(value)) => value,
-            Ok(None) => {
-                match urllib_http_send_request(host, port, timeout, use_tls.then_some(host), wire) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock
-                        {
-                            return Err(raise_exception::<u64>(py, "TimeoutError", "timed out"));
-                        }
-                        return Err(raise_exception::<u64>(py, "OSError", &err.to_string()));
-                    }
+        match urllib_http_send_request(py, host, port, timeout, use_tls.then_some(host), wire)? {
+            Ok(value) => value,
+            Err(err) => {
+                if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock {
+                    return Err(raise_exception::<u64>(py, "TimeoutError", "timed out"));
                 }
+                return Err(raise_exception::<u64>(py, "OSError", &err.to_string()));
             }
-            Err(bits) => return Err(bits),
         };
     let scheme = if use_tls { "https" } else { "http" };
     let default_port = if use_tls { 443 } else { 80 };
@@ -1888,7 +1881,7 @@ pub(super) fn urllib_http_build_request_bytes(
     Ok(request)
 }
 
-pub(super) fn urllib_http_try_inmemory_dispatch(
+fn urllib_http_try_inmemory_dispatch(
     _py: &molt_runtime_core::CoreGilToken,
     host: &str,
     port: u16,
@@ -2020,50 +2013,77 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
 }
 
 pub(super) fn urllib_http_send_request(
+    py: &molt_runtime_core::CoreGilToken,
     host: &str,
     port: u16,
     timeout: Option<f64>,
     tls_server_name: Option<&str>,
     request: &[u8],
-) -> Result<HttpResponseParts, std::io::Error> {
-    let mut raw = Vec::new();
-    {
-        let _release = crate::bridge::GilReleaseGuard::suspend();
-        let mut stream = TcpStream::connect((host, port))?;
-        if let Some(timeout) = timeout {
-            let timeout = Duration::from_secs_f64(timeout);
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))?;
-        }
-        if let Some(server_name) = tls_server_name {
-            #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
-            {
-                urllib_https_send_over_tls(stream, server_name, request, &mut raw)?;
-            }
-            #[cfg(not(all(feature = "tls", not(target_arch = "wasm32"))))]
-            {
-                let _ = (stream, server_name);
-                return Err(std::io::Error::new(
-                    ErrorKind::Unsupported,
-                    "https requires native rustls TLS support; this target has no TLS transport",
-                ));
-            }
+) -> Result<std::io::Result<HttpResponseParts>, u64> {
+    use molt_runtime_core::host_capabilities_generated::OperationId;
+    crate::bridge::require_operation(
+        py,
+        if tls_server_name.is_some() {
+            OperationId::HttpsRequest
         } else {
-            stream.write_all(request)?;
-            if let Err(err) = stream.read_to_end(&mut raw) {
-                if (err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock)
-                    && !raw.is_empty()
-                    && let Ok(parsed) = urllib_http_parse_response_bytes(&raw)
-                {
-                    return Ok(parsed);
-                }
-                return Err(err);
-            }
-        }
+            OperationId::HttpRequest
+        },
+    )?;
+    if let Some(response) = urllib_http_try_inmemory_dispatch(py, host, port, timeout, request)? {
+        return Ok(Ok(response));
     }
-    match urllib_http_parse_response_bytes(&raw) {
-        Ok(parsed) => Ok(parsed),
-        Err(msg) => Err(std::io::Error::new(ErrorKind::InvalidData, msg)),
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "HTTP has no native socket transport on this target",
+        )))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        #[cfg(not(feature = "tls"))]
+        if tls_server_name.is_some() {
+            return Ok(Err(std::io::Error::new(
+                ErrorKind::Unsupported,
+                "https requires native rustls TLS support",
+            )));
+        }
+        Ok((|| -> std::io::Result<HttpResponseParts> {
+            let mut raw = Vec::new();
+            {
+                let _release = crate::bridge::GilReleaseGuard::suspend();
+                let mut stream = TcpStream::connect((host, port))?;
+                if let Some(timeout) = timeout {
+                    let timeout = Duration::from_secs_f64(timeout);
+                    stream.set_read_timeout(Some(timeout))?;
+                    stream.set_write_timeout(Some(timeout))?;
+                }
+                if let Some(_server_name) = tls_server_name {
+                    #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+                    {
+                        urllib_https_send_over_tls(stream, _server_name, request, &mut raw)?;
+                    }
+                    #[cfg(not(feature = "tls"))]
+                    unreachable!("TLS transport was rejected before connecting");
+                } else {
+                    stream.write_all(request)?;
+                    if let Err(err) = stream.read_to_end(&mut raw) {
+                        if (err.kind() == ErrorKind::TimedOut
+                            || err.kind() == ErrorKind::WouldBlock)
+                            && !raw.is_empty()
+                            && let Ok(parsed) = urllib_http_parse_response_bytes(&raw)
+                        {
+                            return Ok(parsed);
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+            match urllib_http_parse_response_bytes(&raw) {
+                Ok(parsed) => Ok(parsed),
+                Err(msg) => Err(std::io::Error::new(ErrorKind::InvalidData, msg)),
+            }
+        })())
     }
 }
 
@@ -2072,7 +2092,7 @@ pub(super) fn urllib_http_send_request(
 /// Uses `webpki-roots` for trust anchors and the supplied `server_name` for SNI
 /// and certificate hostname verification (default-secure rustls config).
 #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
-pub(super) fn urllib_https_send_over_tls(
+fn urllib_https_send_over_tls(
     tcp: TcpStream,
     server_name: &str,
     request: &[u8],

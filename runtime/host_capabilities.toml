@@ -210,6 +210,16 @@ capabilities = ["net.listen"]
 name = "net.connect"
 capabilities = ["net.connect"]
 
+# HTTP requests own socket creation, name resolution and connection as one
+# operation, including the target-independent in-memory server route.
+[[operation]]
+name = "http.request"
+capabilities = ["net.socket", "net.resolve", "net.connect"]
+
+[[operation]]
+name = "https.request"
+capabilities = ["net.socket", "net.resolve", "net.connect", "ssl.connect", "ssl.read", "ssl.write"]
+
 [[operation]]
 name = "net.poll"
 capabilities = ["net.poll"]

@@ -130,6 +130,8 @@ This is the generated human projection of the canonical built-in host permission
 | `net.bind` | `net.bind` | all | all | all | all |
 | `net.listen` | `net.listen` | all | all | all | all |
 | `net.connect` | `net.connect` | all | all | all | all |
+| `http.request` | `net.socket`, `net.resolve`, `net.connect` | all | all | all | all |
+| `https.request` | `net.socket`, `net.resolve`, `net.connect`, `ssl.connect`, `ssl.read`, `ssl.write` | all | all | all | all |
 | `net.poll` | `net.poll` | all | all | all | all |
 | `net.asyncio` | `net.asyncio` | all | all | all | all |
 | `net.websocket_connect` | `websocket.connect` | all | all | all | all |

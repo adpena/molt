@@ -303,6 +303,7 @@ outputs = ["wasm/browser_asset_graph.generated.json"]
 source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json} + tools/generator_io.py"
 upstream_generators = [
   "tools/gen_target_feature_manifest.py",
+  "tools/gen_host_capabilities.py",
   "tools/gen_wasm_abi.py",
   "tools/gen_native_callable_abi.py",
 ]

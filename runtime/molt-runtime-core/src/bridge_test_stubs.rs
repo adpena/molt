@@ -144,6 +144,7 @@ aborting_bridge_stub!(__molt_http_format_obj_str);
 aborting_bridge_stub!(__molt_http_gil_release_drop);
 aborting_bridge_stub!(__molt_http_gil_release_new);
 aborting_bridge_stub!(__molt_http_has_capability);
+aborting_bridge_stub!(__molt_http_require_operation);
 aborting_bridge_stub!(__molt_http_inc_ref_bits);
 aborting_bridge_stub!(__molt_http_index_bigint_from_obj);
 aborting_bridge_stub!(__molt_http_int_bits_from_bigint);
