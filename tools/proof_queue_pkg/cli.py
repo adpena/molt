@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import shlex
 import sys
 
@@ -346,6 +347,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="reclaim only receipt-bound unsealed output, preserving evidence and owner tombstone",
+    )
+    reclaim_p.add_argument(
+        "--archive",
+        type=Path,
+        help="existing full target tar archive, verified before physical removal; does not qualify the proof",
+    )
+    reclaim_p.add_argument(
+        "--archive-sha256", help="exact SHA-256 of the supplied archive"
     )
     reclaim_p.set_defaults(func=commands._cmd_reclaim_cargo_generation)
 

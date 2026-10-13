@@ -209,7 +209,10 @@ def _validate_terminal_envelope(
 
 
 def _validate_terminal_evidence(
-    row: sqlite3.Row | Mapping[str, Any], context: Mapping[str, Any]
+    row: sqlite3.Row | Mapping[str, Any],
+    context: Mapping[str, Any],
+    *,
+    require_attestation: bool = True,
 ) -> None:
     """Verify persisted terminal identity for proof and artifact consumers alike."""
     if row["status"] not in {"passed", "failed", "non-evidence"}:
@@ -228,6 +231,8 @@ def _validate_terminal_evidence(
         raise ValueError("terminal proof run has no execution nonce digest")
     _validate_terminal_envelope(row, context)
     terminal_digest = context.get("terminal_evidence_sha256")
+    if terminal_digest is None and not require_attestation:
+        return  # Physical archival disposition independently verifies native closure.
     if not isinstance(terminal_digest, str) or not re.fullmatch(
         r"[0-9a-f]{64}", terminal_digest
     ):
@@ -243,6 +248,7 @@ def _cargo_generation_terminal(
     context: Mapping[str, Any],
     *,
     required: bool = False,
+    require_cleanup_safe: bool = True,
 ) -> tuple[dict[str, object], dict[str, object]] | None:
     """Bind immutable generation evidence to its parent-validated proof context."""
     derived = context.get("derived_root_custody")
@@ -292,7 +298,7 @@ def _cargo_generation_terminal(
     )
     outcome = supervisor_custody.validate_queue_terminal(context.get("queue_terminal"))
     if (
-        terminal.get("process_cleanup_safe") is not True
+        (require_cleanup_safe and terminal.get("process_cleanup_safe") is not True)
         or outcome["status"] != row["status"]
         or outcome["returncode"] != row["returncode"]
         or terminal.get("queue_terminal") != outcome
@@ -300,7 +306,10 @@ def _cargo_generation_terminal(
         or terminal.get("execution_custody_sha256")
         != context.get("execution_custody_sha256")
         or terminal.get("guard_receipt") != context.get("guard_receipt")
-        or terminal.get("process_supervisor") != context.get("process_supervisor")
+        or (
+            (require_cleanup_safe or terminal.get("process_supervisor") is not None)
+            and terminal.get("process_supervisor") != context.get("process_supervisor")
+        )
     ):
         raise ValueError("Cargo generation terminal receipt differs from proof custody")
     return provenance, lifecycle

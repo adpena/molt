@@ -13,13 +13,18 @@ from tools.exception_diagnostics import (
 )
 
 from dataclasses import dataclass
+from contextlib import ExitStack
 import datetime as dt
+from decimal import Decimal, InvalidOperation
+import hashlib
+import os
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import secrets
 import sys
+import tarfile
 import time
 from typing import Mapping, Sequence
 
@@ -28,6 +33,12 @@ from molt import disk_capacity
 from molt.file_deletion import delete_path
 from molt.file_locks import _acquire_file_lock, _release_file_lock, _FileLockHandle
 from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    stable_regular_file_handle_identity,
+)
 from tools.proof_queue_pkg import (
     cargo_output_environment,
     cargo_output_layout,
@@ -1072,6 +1083,146 @@ def _preserve_timings(target: Path, *, cas_root: Path) -> dict[str, object]:
     )
 
 
+def validate_reclaim_archive_arguments(
+    archive: Path | None, digest: str | None
+) -> None:
+    if (archive is None) != (digest is None):
+        raise ValueError("archive path and SHA-256 must be supplied together")
+    if digest is not None and (
+        not isinstance(digest, str) or _HEX_64.fullmatch(digest) is None
+    ):
+        raise ValueError("archive SHA-256 must be 64 lowercase hexadecimal characters")
+
+
+def _verify_archival_process_closure(
+    receipt: Mapping[str, object],
+    *,
+    result_root: Path,
+    process: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Replay the existing native closure authority without promoting proof validity."""
+    recorded = receipt.get("process_supervisor")
+    if recorded is not None and process is not None and recorded != process:
+        raise ValueError("archival supervisor differs from terminal receipt")
+    process = recorded if process is None else process
+    if not isinstance(process, Mapping):
+        raise ValueError(
+            "archival reclamation requires retained native supervisor custody"
+        )
+    binary = process.get("binary_artifact")
+    if not isinstance(binary, Mapping):
+        raise ValueError("archival reclamation requires the retained supervisor image")
+    custody_cas.verify_file_ref(binary, expected_root=result_root / "custody-cas")
+    if process.get("binary") != {
+        "path": binary["path"],
+        "sha256": binary["sha256"],
+        "size_bytes": binary["size_bytes"],
+    }:
+        raise ValueError("archival supervisor image differs from original capture")
+    coordinates: dict[str, Path] = {}
+    for name in ("policy", "receipt_file"):
+        identity = process.get(name)
+        if not isinstance(identity, Mapping) or not isinstance(
+            identity.get("path"), str
+        ):
+            raise ValueError(
+                "archival reclamation requires original policy and receipt files"
+            )
+        path = file_publication.resolve_owned_path(Path(identity["path"]))
+        if (
+            path.parent != result_root.resolve()
+            or command_identity._file_identity(path) != identity
+        ):
+            raise ValueError(
+                "archival supervisor input differs from its immutable receipt"
+            )
+        coordinates[name] = path
+    policy = loads_exact(coordinates["policy"].read_text(encoding="utf-8"))
+    if not isinstance(policy, Mapping) or {
+        "role": supervisor_custody.BUILD_OUTPUT_ROLE,
+        "path": receipt.get("target"),
+    } not in policy.get("derived_roots", []):
+        raise ValueError("archival supervisor policy does not own this Cargo target")
+    verified = supervisor_custody._validated_supervisor_receipt(
+        binary=Path(str(binary["path"])),
+        policy_path=coordinates["policy"],
+        receipt_path=coordinates["receipt_file"],
+        cwd=result_root,
+        env=os.environ,
+        require_closed=True,
+    )
+    if verified != process.get("receipt") or verified.get(
+        "nonce_sha256"
+    ) != receipt.get("execution_nonce_sha256"):
+        raise ValueError(
+            "archival supervisor replay differs from its immutable receipt"
+        )
+    # Fence native verification against replacement of either recorded input.
+    for name, path in coordinates.items():
+        if command_identity._file_identity(path) != process[name]:
+            raise ValueError("archival supervisor input changed during verification")
+    custody_cas.verify_file_ref(binary, expected_root=result_root / "custody-cas")
+    return {"custody_closed": True, "process_supervisor": dict(process)}
+
+
+def _verify_target_archive(
+    opened: StableRegularFileHandle,
+    identity: StableRegularFileIdentity,
+    *,
+    manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Compare retained tar bytes with the existing strict owned inventory."""
+    files = {row["relative_path"]: row for row in manifest["files"]}
+    directories = {row["relative_path"]: row for row in manifest["directory_metadata"]}
+    seen: set[str] = set()
+    try:
+        with tarfile.open(fileobj=opened.stream, mode="r|*") as contents:
+            for member in contents:
+                relative = PurePosixPath(member.name)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ValueError("Cargo archive member escapes target")
+                name = relative.as_posix()
+                if name in seen:
+                    raise ValueError("Cargo archive repeats a target member")
+                seen.add(name)
+                row = directories.get(name) if member.isdir() else files.get(name)
+                if (
+                    row is None
+                    or member.mode != row["mode"]
+                    or not (
+                        member.isdir() or member.isreg() and member.size == row["size"]
+                    )
+                ):
+                    raise ValueError("Cargo archive member differs from owned target")
+                try:
+                    stamp = Decimal(member.pax_headers.get("mtime", str(member.mtime)))
+                except InvalidOperation as exc:
+                    raise ValueError("Cargo archive timestamp is invalid") from exc
+                if not stamp.is_finite() or stamp * 1_000_000_000 != row["mtime_ns"]:
+                    raise ValueError(
+                        "Cargo archive member timestamp differs from owned target"
+                    )
+                if member.isreg():
+                    payload = contents.extractfile(member)
+                    assert payload is not None
+                    with payload:
+                        digest = hashlib.file_digest(payload, "sha256").hexdigest()
+                    if digest != row["sha256"]:
+                        raise ValueError(
+                            "Cargo archive member bytes differ from owned target"
+                        )
+    except (tarfile.TarError, EOFError) as exc:
+        raise ValueError("retained Cargo archive is unreadable") from exc
+    if seen != set(files) | set(directories):
+        raise ValueError("Cargo archive omits or adds target members")
+    return {
+        "path": str(identity.path),
+        "sha256": identity.sha256,
+        "size_bytes": identity.size,
+        "manifest_sha256": manifest["manifest_sha256"],
+    }
+
+
 def _preserve_terminal_output_evidence(
     *,
     target: Path,
@@ -1082,10 +1233,17 @@ def _preserve_terminal_output_evidence(
     provenance: Mapping[str, object] | None = None,
     retirement_policy: Mapping[str, object] | None = None,
     terminal_status: object = None,
+    archive_handle: StableRegularFileHandle | None = None,
+    archive_identity: StableRegularFileIdentity | None = None,
+    physical_closure: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], int | None, int]:
     """Capture immutable output evidence before either terminal payload transition."""
+    physical_before = target.lstat()
     output_before = command_identity._directory_manifest_identity(
-        target, label="terminal Cargo output", strict_owned=True
+        target,
+        label="terminal Cargo output",
+        strict_owned=True,
+        directory_metadata=archive_handle is not None,
     )
     if provenance is not None:
         seal = _read(publication.get("seal"), cas_root, _SEAL_KIND)
@@ -1096,11 +1254,24 @@ def _preserve_terminal_output_evidence(
             or seal.get("manifest") != output_before
         ):
             raise ValueError("sealed Cargo output differs from its immutable seal")
+    archived = None
+    if archive_handle is not None:
+        assert archive_identity is not None and physical_closure is not None
+        archived = _verify_target_archive(
+            archive_handle, archive_identity, manifest=output_before
+        )
     timings = _preserve_timings(target, cas_root=cas_root)
     output_after = command_identity._directory_manifest_identity(
-        target, label="terminal Cargo output", strict_owned=True
+        target,
+        label="terminal Cargo output",
+        strict_owned=True,
+        directory_metadata=archive_handle is not None,
     )
-    if output_after != output_before:
+    physical_after = target.lstat()
+    if output_after != output_before or (
+        physical_before.st_dev,
+        physical_before.st_ino,
+    ) != (physical_after.st_dev, physical_after.st_ino):
         raise ValueError("terminal Cargo output changed during evidence capture")
     evidence_payload: dict[str, object] = {
         "target": str(target),
@@ -1109,6 +1280,12 @@ def _preserve_terminal_output_evidence(
         "output_manifest": output_before,
         "timings": timings,
     }
+    if archived is not None:
+        evidence_payload.update(
+            archive=archived,
+            physical_closure=dict(physical_closure),
+            qualification_eligible=False,
+        )
     if provenance is not None:
         if retirement_policy is None:
             raise ValueError("sealed Cargo retirement policy is missing")
@@ -1203,8 +1380,14 @@ def _transition_terminal_output(
     disposition: _TerminalOutputDisposition,
     timeout_s: float,
     allow_passed: bool = False,
+    archive: Path | None = None,
+    archive_sha256: str | None = None,
+    archival_process: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """One locked, receipt-preserving target-removal state machine."""
+    validate_reclaim_archive_arguments(archive, archive_sha256)
+    if archive is not None and disposition is not _UNSEALED_RECLAIM:
+        raise ValueError("archival reclamation requires unsealed output")
     identity_root, _generation, target, owner_path = _generation_paths(
         result_root, provenance
     )
@@ -1214,6 +1397,7 @@ def _transition_terminal_output(
         timeout_message=f"Cargo cache target is busy: {identity_root}",
     )
     not_state = "not-retirable" if disposition.action == "retire" else "not-reclaimable"
+    archive_handles = ExitStack()
     try:
         owner, receipt, publication = _validate_terminal_generation_authority(
             result_root=result_root,
@@ -1236,6 +1420,25 @@ def _transition_terminal_output(
                 "retirement_policy": retirement_policy,
                 "terminal_status": terminal_status,
             }
+        if archive is not None and lifecycle in {
+            disposition.completed_lifecycle,
+            disposition.in_progress_lifecycle,
+        }:
+            detail = owner.get(disposition.detail_field)
+            if not isinstance(detail, Mapping):
+                raise ValueError("archival reclamation lacks preserved evidence")
+            archived = _read(
+                detail.get("evidence"),
+                result_root / "custody-cas",
+                disposition.evidence_kind,
+            ).get("archive")
+            if (
+                not isinstance(archived, Mapping)
+                or archived.get("path")
+                != str(file_publication.resolve_owned_path(archive))
+                or archived.get("sha256") != archive_sha256
+            ):
+                raise ValueError("archival reclamation reference changed")
         if lifecycle == disposition.completed_lifecycle:
             _update_pointer_if_current(
                 identity_root / "state.json",
@@ -1297,7 +1500,10 @@ def _transition_terminal_output(
                 "reason": f"prior-{disposition.action}-interrupted",
                 **policy_fields,
             }
-        if lifecycle != disposition.eligible_lifecycle:
+        archive_candidate = (
+            archive is not None and lifecycle == "terminal-indeterminate-retained"
+        )
+        if lifecycle != disposition.eligible_lifecycle and not archive_candidate:
             return {
                 "state": not_state,
                 "lifecycle": lifecycle,
@@ -1306,9 +1512,14 @@ def _transition_terminal_output(
                 **policy_fields,
             }
         eligible = (
-            projection.get("state") == disposition.projection_state
+            projection.get("state")
+            == (
+                "terminal-indeterminate-retained"
+                if archive_candidate
+                else disposition.projection_state
+            )
             and publication.get("state") == disposition.publication_state
-            and receipt.get("process_cleanup_safe") is True
+            and (archive_candidate or receipt.get("process_cleanup_safe") is True)
         )
         if sealed:
             eligible = (
@@ -1331,6 +1542,39 @@ def _transition_terminal_output(
                 **policy_fields,
             }
         try:
+            target_identity = target.lstat()
+            archive_handle = archive_identity = None
+            if archive is not None:
+                archive = file_publication.resolve_owned_path(archive)
+                declared_root = cargo_output_layout.validate_root(
+                    provenance.get("cargo_output_root")
+                )
+                output_root = (
+                    Path(str(declared_root["path"])) if declared_root else result_root
+                )
+                if (
+                    archive.is_relative_to(output_root)
+                    or archive.is_relative_to(result_root)
+                    or archive.is_relative_to(target.parent)
+                ):
+                    raise ValueError(
+                        "Cargo archive must be outside managed output and proof roots"
+                    )
+                archive_handle = archive_handles.enter_context(
+                    open_stable_regular_file(archive, label="retained Cargo archive")
+                )
+                archive_identity = stable_regular_file_handle_identity(
+                    archive_handle, label="retained Cargo archive"
+                )
+                if archive_identity.sha256 != archive_sha256:
+                    raise ValueError("retained Cargo archive SHA-256 mismatch")
+            closure = (
+                _verify_archival_process_closure(
+                    receipt, result_root=result_root, process=archival_process
+                )
+                if archive is not None
+                else None
+            )
             evidence, file_count, size_bytes = _preserve_terminal_output_evidence(
                 target=target,
                 cas_root=result_root / "custody-cas",
@@ -1340,6 +1584,9 @@ def _transition_terminal_output(
                 provenance=provenance if sealed else None,
                 retirement_policy=retirement_policy,
                 terminal_status=terminal_status,
+                archive_handle=archive_handle,
+                archive_identity=archive_identity,
+                physical_closure=closure,
             )
         except (OSError, ValueError) as exc:
             owner.update(
@@ -1379,7 +1626,25 @@ def _transition_terminal_output(
         # Revalidate selected media after evidence preservation, immediately
         # before entering the existing identity-locked deletion primitive.
         cargo_output_layout.validate_root(provenance.get("cargo_output_root"))
-        deleted, error = delete_path(target)
+        try:
+            current_target = target.lstat()
+            if (current_target.st_dev, current_target.st_ino) != (
+                target_identity.st_dev,
+                target_identity.st_ino,
+            ):
+                raise ValueError("Cargo target identity changed before removal")
+            if archive_identity is not None:
+                # The original read handle remains held through deletion; the
+                # existing version fence rejects replacement or intervening writes.
+                with open_stable_regular_file(
+                    archive_identity.path,
+                    label="retained Cargo archive",
+                    observed=archive_identity,
+                ):
+                    pass
+            deleted, error = delete_path(target)
+        except (OSError, ValueError) as exc:
+            deleted, error = False, str(exc)
         if not deleted:
             owner.update(
                 lifecycle=disposition.blocked_lifecycle,
@@ -1430,7 +1695,10 @@ def _transition_terminal_output(
             **policy_fields,
         }
     finally:
-        _release_file_lock(lock)
+        try:
+            archive_handles.close()
+        finally:
+            _release_file_lock(lock)
 
 
 def reclaim_terminal_unsealed(
@@ -1439,6 +1707,9 @@ def reclaim_terminal_unsealed(
     provenance: Mapping[str, object],
     projection: Mapping[str, object],
     timeout_s: float = 30.0,
+    archive: Path | None = None,
+    archive_sha256: str | None = None,
+    archival_process: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Reclaim one terminal unsealed target through shared disposition custody."""
     return _transition_terminal_output(
@@ -1447,6 +1718,9 @@ def reclaim_terminal_unsealed(
         projection=projection,
         disposition=_UNSEALED_RECLAIM,
         timeout_s=timeout_s,
+        archive=archive,
+        archive_sha256=archive_sha256,
+        archival_process=archival_process,
     )
 
 

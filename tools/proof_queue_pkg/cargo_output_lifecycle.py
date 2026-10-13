@@ -24,7 +24,7 @@ from tools.proof_queue_pkg import (
 
 
 def load_terminal_generation(
-    db: Path, run_id: str
+    db: Path, run_id: str, *, archived_reclaim: bool = False
 ) -> tuple[sqlite3.Row, dict[str, object], dict[str, object], dict[str, object], Path]:
     db = db.resolve()
     with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
@@ -34,8 +34,12 @@ def load_terminal_generation(
     context = loads_exact(str(state._row_value(row, "receipt_context_json")))
     if not isinstance(context, dict):
         raise ValueError("proof run has no persisted terminal receipt context")
-    evidence._validate_terminal_evidence(row, context)
-    generation = evidence._cargo_generation_terminal(row, context, required=True)
+    evidence._validate_terminal_evidence(
+        row, context, require_attestation=not archived_reclaim
+    )
+    generation = evidence._cargo_generation_terminal(
+        row, context, required=True, require_cleanup_safe=not archived_reclaim
+    )
     assert generation is not None
     provenance, projection = generation
     return row, context, provenance, projection, Path(str(row["log_path"])).parent
@@ -51,8 +55,13 @@ def apply_disposition(
     payload: dict[str, object],
     retire: bool,
     allow_passed: bool = False,
+    archive: Path | None = None,
+    archive_sha256: str | None = None,
+    archival_process: Mapping[str, object] | None = None,
 ) -> None:
     """One append-only intent/outcome boundary around the locked authority."""
+    if retire and (archive is not None or archive_sha256 is not None):
+        raise ValueError("archive recovery applies only to unsealed reclamation")
     action = "retirement" if retire else "reclamation"
     apply = (
         cargo_cache_custody.retire_terminal_sealed
@@ -86,7 +95,15 @@ def apply_disposition(
                     result_root=result_root,
                     provenance=provenance,
                     projection=projection,
-                    **({"allow_passed": allow_passed} if retire else {}),
+                    **(
+                        {"allow_passed": allow_passed}
+                        if retire
+                        else {
+                            "archive": archive,
+                            "archive_sha256": archive_sha256,
+                            "archival_process": archival_process,
+                        }
+                    ),
                 )
             )
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

@@ -430,12 +430,14 @@ def test_terminal_admission_rejects_malformed_or_mixed_states(
         ),
     ],
 )
+@pytest.mark.parametrize("custody_closed", [True, False, None, "true"])
 def test_verified_terminal_integrity_does_not_imply_complete_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     admission: dict[str, object],
     terminal: str,
     complete: bool,
+    custody_closed: object,
 ) -> None:
     capability = {**_capability({}), "admission": admission}
     receipt = {
@@ -474,6 +476,7 @@ def test_verified_terminal_integrity_does_not_imply_complete_execution(
                     ).hexdigest(),
                     "policy_input_bytes": policy.stat().st_size,
                     "native_custody_valid": True,
+                    "custody_closed": custody_closed,
                     "journal_coverage_valid": True,
                 }
             ).encode("utf-8"),
@@ -490,6 +493,21 @@ def test_verified_terminal_integrity_does_not_imply_complete_execution(
     )
     assert validated == receipt
     assert supervisor_custody.supervisor_receipt_is_complete(validated) is complete
+    closure_args = dict(
+        binary=Path("supervisor.bin"),
+        policy_path=policy,
+        receipt_path=path,
+        cwd=tmp_path,
+        env={},
+        require_closed=True,
+    )
+    if custody_closed is True:
+        assert (
+            supervisor_custody._validated_supervisor_receipt(**closure_args) == receipt
+        )
+    else:
+        with pytest.raises(ValueError, match="physical closure"):
+            supervisor_custody._validated_supervisor_receipt(**closure_args)
     if admission["state"] == "admitted":
         with pytest.raises(ValueError, match="context"):
             supervisor_custody.decode_supervisor_capability(
