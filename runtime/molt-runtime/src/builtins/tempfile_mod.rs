@@ -161,7 +161,7 @@ pub extern "C" fn molt_tempfile_mkdtemp(suffix: u64, prefix: u64, dir: u64) -> u
                     return result;
                 }
                 // Only transfer filesystem ownership after the Python result is allocated.
-                directory.keep();
+                let _ = directory.keep();
                 result
             }
             Err(error) => raise_os_error::<u64>(py, error, "mkdtemp"),
