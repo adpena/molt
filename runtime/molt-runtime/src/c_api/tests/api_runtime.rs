@@ -438,7 +438,7 @@ fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
         let initial = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
         let payload = unsafe { molt_bytes_from(b"Z".as_ptr(), 1) };
         let empty = unsafe { molt_bytes_from(std::ptr::null(), 0) };
-        let stream = molt_bytesio_new(none_bits(), initial);
+        let stream = molt_bytesio_new(crate::builtin_classes(py).bytes_io, initial);
         let view = molt_file_getbuffer(stream);
         assert!(!exception_pending(py));
         for bytes in [payload, empty] {
@@ -530,7 +530,7 @@ fn buffer_export_contract_writable_consumer_uses_typed_shaped_byte_capacity() {
             assert!(!view_ptr.is_null());
             let view = MoltObject::from_ptr(view_ptr).bits();
             let source = unsafe { molt_bytes_from(b"abcdefgh".as_ptr(), 8) };
-            let stream = molt_bytesio_new(none_bits(), source);
+            let stream = molt_bytesio_new(crate::builtin_classes(py).bytes_io, source);
             {
                 let buffer = ScopedWritableBuffer::new(py, view).expect("writable byte span");
                 assert_eq!(buffer.len(), expected_len);
@@ -579,7 +579,7 @@ fn buffer_export_contract_bytesio_readinto_accepts_overlapping_exports() {
             (0, 0, 6, b"abcdef".as_slice()),
         ] {
             let initial = unsafe { molt_bytes_from(b"abcdef".as_ptr(), 6) };
-            let stream = molt_bytesio_new(none_bits(), initial);
+            let stream = molt_bytesio_new(crate::builtin_classes(py).bytes_io, initial);
             let root = molt_file_getbuffer(stream);
             let root_ptr = obj_from_bits(root).as_ptr().unwrap();
             let base = unsafe { crate::memoryview_base_bits(root_ptr) };
@@ -632,7 +632,7 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
             molt_array_append(owner, MoltObject::from_int(0).bits());
         }
         let source = unsafe { molt_bytes_from(b"abcdefgh".as_ptr(), 8) };
-        let stream = molt_bytesio_new(none_bits(), source);
+        let stream = molt_bytesio_new(crate::builtin_classes(py).bytes_io, source);
         {
             let buffer = ScopedWritableBuffer::new(py, owner).expect("typed array byte span");
             assert_eq!(buffer.len(), 8);

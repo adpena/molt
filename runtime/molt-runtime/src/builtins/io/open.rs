@@ -405,6 +405,7 @@ fn open_impl(
     closefd_bits: u64,
     opener_bits: u64,
     name_policy: OpenFileName,
+    file_io_class: Option<u64>,
 ) -> u64 {
     struct BitsGuard<'a> {
         py: &'a PyToken<'a>,
@@ -780,7 +781,7 @@ fn open_impl(
                     builtins.buffered_reader
                 };
                 let binary_class_bits = if buffering == 0 {
-                    builtins.file_io
+                    file_io_class.unwrap_or(builtins.file_io)
                 } else {
                     buffered_class_bits
                 };
@@ -957,7 +958,7 @@ fn open_impl(
         builtins.buffered_reader
     };
     let binary_class_bits = if buffering == 0 {
-        builtins.file_io
+        file_io_class.unwrap_or(builtins.file_io)
     } else {
         buffered_class_bits
     };
@@ -1287,6 +1288,7 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
             MoltObject::from_bool(true).bits(),
             none,
             OpenFileName::Resolved,
+            None,
         )
     })
 }
@@ -1314,19 +1316,30 @@ pub extern "C" fn molt_file_open_ex(
             closefd_bits,
             opener_bits,
             OpenFileName::Resolved,
+            None,
         )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_io_new(
-    _cls_bits: u64,
+    cls_bits: u64,
     name_bits: u64,
     mode_bits: u64,
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtin_classes(_py).file_io,
+            Some(cls_bits),
+            "FileIO",
+        )
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
         let mode_obj = obj_from_bits(mode_bits);
         let mut mode = if mode_obj.is_none() {
             "r".to_string()
@@ -1366,6 +1379,7 @@ pub extern "C" fn molt_file_io_new(
             closefd_bits,
             opener_bits,
             OpenFileName::Original,
+            Some(cls_bits),
         );
         dec_ref_bits(_py, mode_bits);
         out
@@ -1406,6 +1420,7 @@ pub extern "C" fn molt_open_builtin(
             closefd_bits,
             opener_bits,
             OpenFileName::Resolved,
+            None,
         )
     })
 }

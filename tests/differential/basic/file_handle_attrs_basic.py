@@ -68,11 +68,12 @@ with tempfile.TemporaryDirectory() as directory:
         def flush(self):
             raise failure
 
-    for stream in (
-        FailingRaw(path, "r"),
-        FailingBuffered(io.FileIO(path, "r")),
-        FailingText(io.FileIO(path, "r")),
+    for expected_class, stream in (
+        (FailingRaw, FailingRaw(path, "r")),
+        (FailingBuffered, FailingBuffered(io.FileIO(path, "r"))),
+        (FailingText, FailingText(io.FileIO(path, "r"))),
     ):
+        print("concrete-class", expected_class.__name__, type(stream) is expected_class)
         descriptor = stream.fileno()
         try:
             stream.close()
@@ -166,9 +167,22 @@ with tempfile.TemporaryDirectory() as directory:
                 raise AssertionError("memory close must not call flush")
 
         stream = MemoryClose()
+        payload = b"abc" if base is io.BytesIO else "abc"
+        stream.write(payload)
+        print("memory-subclass-value", stream.getvalue() == payload)
+        if base is io.BytesIO:
+            view = stream.getbuffer()
+            view[1] = ord("Z")
+            print("memory-subclass-view", stream.getvalue())
+            view.release()
+        try:
+            stream.detach()
+        except io.UnsupportedOperation:
+            print("memory-subclass-detach", base.__name__, stream.closed)
         print(
             "memory-close",
             base.__name__,
+            type(stream) is MemoryClose,
             stream.close(),
             stream.closed,
             io.IOBase.closed.__get__(stream),

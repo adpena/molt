@@ -119,7 +119,10 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             }
             let builtins = builtin_classes(_py);
             let class_bits = object_class_bits(ptr);
-            if class_bits == builtins.bytes_io || class_bits == builtins.string_io {
+            if [builtins.bytes_io, builtins.string_io]
+                .iter()
+                .any(|&base| crate::object::class_layout::is_real_subtype(_py, class_bits, base))
+            {
                 return raise_exception::<_>(
                     _py,
                     "UnsupportedOperation",

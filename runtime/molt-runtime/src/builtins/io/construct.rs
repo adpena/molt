@@ -148,7 +148,7 @@ pub extern "C" fn molt_buffered_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_text_io_wrapper_new(
-    _cls_bits: u64,
+    cls_bits: u64,
     buffer_bits: u64,
     encoding_bits: u64,
     errors_bits: u64,
@@ -157,6 +157,16 @@ pub extern "C" fn molt_text_io_wrapper_new(
     write_through_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtin_classes(_py).text_io_wrapper,
+            Some(cls_bits),
+            "TextIOWrapper",
+        )
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
         let buffer_handle_ptr = match resolve_file_handle_ptr(_py, buffer_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -229,7 +239,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
                 line_buffering,
                 write_through,
                 buffer_handle.buffer_size,
-                builtin_classes(_py).text_io_wrapper,
+                cls_bits,
                 buffer_handle.name_bits,
                 buffer_handle.mode.clone(),
                 encoding,
@@ -263,8 +273,18 @@ pub extern "C" fn molt_text_io_wrapper_init(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
+pub extern "C" fn molt_bytesio_new(cls_bits: u64, initial_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtin_classes(_py).bytes_io,
+            Some(cls_bits),
+            "BytesIO",
+        )
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
         let payload = match unsafe { collect_bytes_like(_py, initial_bits) } {
             Ok(payload) => payload,
             Err(bits) => return bits,
@@ -291,7 +311,7 @@ pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
             false,
             false,
             0,
-            builtin_classes(_py).bytes_io,
+            cls_bits,
             0,
             "rb+".to_string(),
             None,
@@ -316,8 +336,18 @@ pub extern "C" fn molt_bytesio_init(_self_bits: u64, _initial_bits: u64) -> u64 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_bits: u64) -> u64 {
+pub extern "C" fn molt_stringio_new(cls_bits: u64, initial_bits: u64, newline_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtin_classes(_py).string_io,
+            Some(cls_bits),
+            "StringIO",
+        )
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
         let initial = if obj_from_bits(initial_bits).is_none() {
             String::new()
         } else if let Some(text) = string_obj_to_owned(obj_from_bits(initial_bits)) {
@@ -354,7 +384,7 @@ pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_b
             false,
             false,
             0,
-            builtin_classes(_py).string_io,
+            cls_bits,
             0,
             "r+".to_string(),
             None,
