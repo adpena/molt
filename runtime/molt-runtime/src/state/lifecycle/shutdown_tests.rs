@@ -81,6 +81,74 @@ extern "C" fn module_cycle_callback(_self: u64) -> u64 {
     })
 }
 
+fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
+    // Resolve the published method exactly as object.__setattr__ in a Python
+    // finalizer does. Calling molt_object_setattr directly would bypass the
+    // namespace whose premature retirement this control must detect.
+    let name = crate::attr_name_bits_from_bytes(py, b"__setattr__").unwrap();
+    let setter = crate::molt_get_attr_name(crate::builtin_classes(py).object, name);
+    dec_ref_bits(py, name);
+    assert!(
+        !crate::exception_pending(py),
+        "object.__setattr__ retired before finalizers"
+    );
+    assert!(obj_from_bits(setter).as_ptr().is_some());
+    let field = crate::attr_name_bits_from_bytes(py, b"handle").unwrap();
+    let result =
+        unsafe { crate::call_callable3(py, setter, receiver, field, MoltObject::none().bits()) };
+    dec_ref_bits(py, setter);
+    dec_ref_bits(py, result);
+    assert!(!crate::exception_pending(py));
+    let observed = crate::molt_get_attr_name(receiver, field);
+    dec_ref_bits(py, field);
+    assert!(!crate::exception_pending(py));
+    assert!(obj_from_bits(observed).is_none());
+    dec_ref_bits(py, observed);
+}
+
+extern "C" fn tls_dictionary_callback(receiver: u64) -> u64 {
+    observe_callback("tls-dictionary");
+    crate::with_gil_entry_nopanic!(py, {
+        detach_finalizer_field(py, receiver);
+        MoltObject::none().bits()
+    })
+}
+
+fn publish_tls_dictionary_callback(py: &PyToken<'_>) {
+    use molt_cpython_abi::api::{mapping, refcount, sys};
+    let value = instance_with_method(
+        py,
+        b"ShutdownThreadDictionaryOwner",
+        b"__del__",
+        tls_dictionary_callback as *const (),
+    );
+    unsafe {
+        let view = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value),
+        );
+        assert!(!view.as_ptr().is_null());
+        let dictionary = sys::PyThreadState_GetDict();
+        assert!(!dictionary.is_null());
+        assert_eq!(
+            mapping::PyDict_SetItemString(dictionary, c"late_finalizer".as_ptr(), view.as_ptr()),
+            0,
+        );
+    }
+    dec_ref_bits(py, value);
+    assert!(!crate::exception_pending(py));
+}
+
+extern "C" fn heap_namespace_callback(receiver: u64) -> u64 {
+    observe_callback("heap-namespace");
+    crate::with_gil_entry_nopanic!(py, {
+        detach_finalizer_field(py, receiver);
+        // The heap-namespace phase must repeat the existing two-domain drain,
+        // not retire static methods immediately after clearing that namespace.
+        publish_tls_dictionary_callback(py);
+        MoltObject::none().bits()
+    })
+}
+
 fn runtime_function(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(
         py,
@@ -175,6 +243,20 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
                 .is_none()
         );
         assert!(crate::object::gc::native_gc_is_enrolled(rooted_address));
+        publish_tls_dictionary_callback(py);
+        let heap_value = instance_with_method(
+            py,
+            b"ShutdownHeapNamespaceOwner",
+            b"__del__",
+            heap_namespace_callback as *const (),
+        );
+        let key = crate::attr_name_bits_from_bytes(py, b"late_finalizer").unwrap();
+        // ExceptionGroup is a real mutable canonical heap type in CPython,
+        // unlike an artificial test class injected into the runtime root list.
+        crate::molt_set_attr_name(crate::builtin_classes(py).exception_group, key, heap_value);
+        dec_ref_bits(py, key);
+        dec_ref_bits(py, heap_value);
+        assert!(!crate::exception_pending(py));
         [unrooted_address, rooted_address]
     }
 }
@@ -284,7 +366,16 @@ fn embedding_shutdown_collects_native_type_cycles_across_module_retirement() {
         assert_eq!(molt_runtime_shutdown(), 1);
         assert_eq!(
             *CALLBACKS.lock().unwrap(),
-            ["cycle", "pending", "atexit", "flush", "module-cycle"]
+            [
+                "cycle",
+                "pending",
+                "atexit",
+                "flush",
+                "module-cycle",
+                "tls-dictionary",
+                "heap-namespace",
+                "tls-dictionary",
+            ]
         );
         for address in native_cycles {
             assert!(!crate::object::gc::native_gc_is_enrolled(address));

@@ -817,17 +817,39 @@ impl RuntimeClassRetirement {
         let changed = !added.is_empty();
         if changed {
             super::weakref::weakref_handle_cycle_unreachable(py, &added, |_| false);
+            // Factories and schema/cache enumeration need not share an order.
+            // The sealed MRO orders descendants before bases without another
+            // declaration table, matching CPython's static-type retirement.
+            self.classes.sort_by_key(|class| {
+                let ptr = crate::obj_from_bits(class.bits).as_ptr().unwrap();
+                let depth = crate::obj_from_bits(unsafe { ClassReferenceSlot::Mro.load(ptr) })
+                    .as_ptr()
+                    .map_or(0, |mro| unsafe { super::seq_access::len(mro) });
+                std::cmp::Reverse(depth)
+            });
         }
         changed
     }
 
-    pub(crate) fn clear_contents(&self, py: &PyToken<'_>) -> bool {
+    pub(crate) fn clear_contents(&self, py: &PyToken<'_>, through: ClassOrigin) -> bool {
         let mut changed = false;
-        for class in &self.classes {
-            let ptr = crate::obj_from_bits(class.bits).as_ptr().unwrap();
-            if !unsafe { class_runtime_contents_empty(ptr) } {
-                changed = true;
-                unsafe { clear_class_runtime_contents(py, ptr) };
+        // Heap namespaces may contain ordinary Python callback owners (for
+        // example ExceptionGroup attributes). Drain them while static builtin
+        // method namespaces remain available. Later static passes still revisit
+        // heap namespaces to retire any republished owners.
+        for origin in [ClassOrigin::Heap, ClassOrigin::Static] {
+            if origin == ClassOrigin::Static && through == ClassOrigin::Heap {
+                break;
+            }
+            for class in &self.classes {
+                let ptr = crate::obj_from_bits(class.bits).as_ptr().unwrap();
+                if unsafe { class_is_heap_type(ptr) } != (origin == ClassOrigin::Heap) {
+                    continue;
+                }
+                if !unsafe { class_runtime_contents_empty(ptr) } {
+                    changed = true;
+                    unsafe { clear_class_runtime_contents(py, ptr) };
+                }
             }
         }
         changed
