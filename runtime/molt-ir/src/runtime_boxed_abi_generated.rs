@@ -5289,16 +5289,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_http_client_connection_endheaders",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_http_client_connection_get_buffer",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_http_client_connection_getresponse",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -5314,28 +5304,13 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_http_client_connection_putheader",
-        arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_http_client_connection_putrequest",
-        arity: 5,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_http_client_connection_request",
-        arity: 5,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_http_client_connection_send",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_http_client_execute",
-        arity: 7,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5381,6 +5356,16 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_http_client_urlsplit",
         arity: 3,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_http_client_validate_header_name",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_http_client_validate_header_value",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

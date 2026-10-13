@@ -5900,11 +5900,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpClientExecute,
-        name: "http_client_execute",
-        type_idx: 10,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionNew,
         name: "http_client_connection_new",
         type_idx: 5,
@@ -5917,27 +5912,22 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionPutrequest,
         name: "http_client_connection_putrequest",
-        type_idx: 12,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpClientConnectionPutheader,
-        name: "http_client_connection_putheader",
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpClientConnectionEndheaders,
-        name: "http_client_connection_endheaders",
-        type_idx: 3,
+        import: WasmRuntimeImport::HttpClientValidateHeaderName,
+        name: "http_client_validate_header_name",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::HttpClientValidateHeaderValue,
+        name: "http_client_validate_header_value",
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionSend,
         name: "http_client_connection_send",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpClientConnectionRequest,
-        name: "http_client_connection_request",
-        type_idx: 12,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionGetresponse,
@@ -5952,11 +5942,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::HttpClientConnectionDrop,
         name: "http_client_connection_drop",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpClientConnectionGetBuffer,
-        name: "http_client_connection_get_buffer",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -16764,8 +16749,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_ctypes_default_value" => Some(WasmRuntimeImport::CtypesDefaultValue),
         "ctypes_sizeof" => Some(WasmRuntimeImport::CtypesSizeof),
         "molt_ctypes_sizeof" => Some(WasmRuntimeImport::CtypesSizeof),
-        "http_client_execute" => Some(WasmRuntimeImport::HttpClientExecute),
-        "molt_http_client_execute" => Some(WasmRuntimeImport::HttpClientExecute),
         "http_client_connection_new" => Some(WasmRuntimeImport::HttpClientConnectionNew),
         "molt_http_client_connection_new" => Some(WasmRuntimeImport::HttpClientConnectionNew),
         "http_client_connection_new_https" => Some(WasmRuntimeImport::HttpClientConnectionNewHttps),
@@ -16778,24 +16761,18 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_http_client_connection_putrequest" => {
             Some(WasmRuntimeImport::HttpClientConnectionPutrequest)
         }
-        "http_client_connection_putheader" => {
-            Some(WasmRuntimeImport::HttpClientConnectionPutheader)
+        "http_client_validate_header_name" => Some(WasmRuntimeImport::HttpClientValidateHeaderName),
+        "molt_http_client_validate_header_name" => {
+            Some(WasmRuntimeImport::HttpClientValidateHeaderName)
         }
-        "molt_http_client_connection_putheader" => {
-            Some(WasmRuntimeImport::HttpClientConnectionPutheader)
+        "http_client_validate_header_value" => {
+            Some(WasmRuntimeImport::HttpClientValidateHeaderValue)
         }
-        "http_client_connection_endheaders" => {
-            Some(WasmRuntimeImport::HttpClientConnectionEndheaders)
-        }
-        "molt_http_client_connection_endheaders" => {
-            Some(WasmRuntimeImport::HttpClientConnectionEndheaders)
+        "molt_http_client_validate_header_value" => {
+            Some(WasmRuntimeImport::HttpClientValidateHeaderValue)
         }
         "http_client_connection_send" => Some(WasmRuntimeImport::HttpClientConnectionSend),
         "molt_http_client_connection_send" => Some(WasmRuntimeImport::HttpClientConnectionSend),
-        "http_client_connection_request" => Some(WasmRuntimeImport::HttpClientConnectionRequest),
-        "molt_http_client_connection_request" => {
-            Some(WasmRuntimeImport::HttpClientConnectionRequest)
-        }
         "http_client_connection_getresponse" => {
             Some(WasmRuntimeImport::HttpClientConnectionGetresponse)
         }
@@ -16806,12 +16783,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_http_client_connection_close" => Some(WasmRuntimeImport::HttpClientConnectionClose),
         "http_client_connection_drop" => Some(WasmRuntimeImport::HttpClientConnectionDrop),
         "molt_http_client_connection_drop" => Some(WasmRuntimeImport::HttpClientConnectionDrop),
-        "http_client_connection_get_buffer" => {
-            Some(WasmRuntimeImport::HttpClientConnectionGetBuffer)
-        }
-        "molt_http_client_connection_get_buffer" => {
-            Some(WasmRuntimeImport::HttpClientConnectionGetBuffer)
-        }
         "http_message_new" => Some(WasmRuntimeImport::HttpMessageNew),
         "molt_http_message_new" => Some(WasmRuntimeImport::HttpMessageNew),
         "http_message_parse" => Some(WasmRuntimeImport::HttpMessageParse),

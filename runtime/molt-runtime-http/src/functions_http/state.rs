@@ -32,13 +32,8 @@ pub(super) struct MoltHttpClientConnection {
     pub(super) host: String,
     pub(super) port: u16,
     pub(super) timeout: Option<f64>,
-    pub(super) method: Option<String>,
     pub(super) url: Option<String>,
-    pub(super) headers: Vec<(String, String)>,
-    pub(super) body: Vec<u8>,
-    pub(super) buffer: Vec<Vec<u8>>,
-    pub(super) skip_host: bool,
-    pub(super) skip_accept_encoding: bool,
+    pub(super) wire: Vec<u8>,
     /// Set when the connection was created via `molt_http_client_connection_new_https`
     /// (i.e. backing an `http.client.HTTPSConnection`). Causes request execution
     /// to negotiate TLS via rustls.

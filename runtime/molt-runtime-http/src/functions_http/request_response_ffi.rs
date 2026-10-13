@@ -393,23 +393,37 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                     } else {
                         format!("{host_now}:{port_now}")
                     };
+                    let request =
+                        match urllib_http_build_request_bytes(_py, &req, &req.path, &host_header) {
+                            Ok(request) => request,
+                            Err(bits) => return bits,
+                        };
                     let (code, reason, resp_headers, resp_body) =
-                        match urllib_http_try_inmemory_dispatch(_py, &req, &req.path, &host_header)
-                        {
+                        match urllib_http_try_inmemory_dispatch(
+                            _py,
+                            &req.host,
+                            req.port,
+                            req.timeout,
+                            &request,
+                        ) {
                             Ok(Some(value)) => value,
-                            Ok(None) => {
-                                match urllib_http_send_request(&req, &req.path, &host_header) {
-                                    Ok(value) => value,
-                                    Err(err) => {
-                                        if err.kind() == ErrorKind::TimedOut
-                                            || err.kind() == ErrorKind::WouldBlock
-                                        {
-                                            return urllib_http_timeout_error(_py);
-                                        }
-                                        return urllib_raise_url_error(_py, &err.to_string());
+                            Ok(None) => match urllib_http_send_request(
+                                &req.host,
+                                req.port,
+                                req.timeout,
+                                req.tls_server_name.as_deref(),
+                                &request,
+                            ) {
+                                Ok(value) => value,
+                                Err(err) => {
+                                    if err.kind() == ErrorKind::TimedOut
+                                        || err.kind() == ErrorKind::WouldBlock
+                                    {
+                                        return urllib_http_timeout_error(_py);
                                     }
+                                    return urllib_raise_url_error(_py, &err.to_string());
                                 }
-                            }
+                            },
                             Err(bits) => return bits,
                         };
                     urllib_cookiejar_store_headers_for_url(

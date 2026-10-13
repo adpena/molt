@@ -398,11 +398,6 @@ pub extern "C" fn __molt_http_molt_iter(bits: u64) -> u64 {
     crate::object::ops_iter::molt_iter(bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_iter_next(iter_bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter_next(iter_bits)
-}
-
 // ---------------------------------------------------------------------------
 // Attribute / callable helpers
 // ---------------------------------------------------------------------------
@@ -759,5 +754,118 @@ mod scalar_conversion_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(all(test, feature = "stdlib_http", not(target_arch = "wasm32")))]
+mod request_serialization_tests {
+    use crate::builtins::exceptions::{ExceptionValue, exception_type_bits_from_name};
+    use crate::*;
+    use molt_runtime_http::functions_http::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn header_predicates_and_final_wire_use_the_real_connection_owner() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("HTTP witness accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut wire = Vec::new();
+            while !wire.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                wire.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            wire
+        });
+        crate::with_gil_entry_nopanic!(py, {
+            let string = |value: &str| {
+                let ptr = alloc_string(py, value.as_bytes());
+                assert!(!ptr.is_null());
+                ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+            };
+            let bytes = |value: &[u8]| {
+                let ptr = alloc_bytes(py, value);
+                assert!(!ptr.is_null());
+                ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+            };
+            for invalid in [b"a\nb".as_slice(), b"a\rb", b"a\r\nInjected: yes", b"a\n"] {
+                let value = bytes(invalid);
+                assert_eq!(
+                    molt_http_client_validate_header_value(value.bits()),
+                    MoltObject::none().bits()
+                );
+                let raised =
+                    crate::builtins::exceptions::thread_last_exception_bits_noinc(py).unwrap();
+                assert_eq!(
+                    crate::type_of_bits(py, raised),
+                    exception_type_bits_from_name(py, "ValueError")
+                );
+                clear_exception(py);
+            }
+            let name = bytes(b"\x0bX");
+            molt_http_client_validate_header_name(name.bits());
+            assert!(exception_pending(py));
+            clear_exception(py);
+            let value = bytes(b"\xff\r\n\tvalue");
+            molt_http_client_validate_header_value(value.bits());
+            assert!(!exception_pending(py));
+            let host = string("127.0.0.1");
+            let method = string("GET");
+            let path = string("/");
+            let handle = molt_http_client_connection_new(
+                host.bits(),
+                MoltObject::from_int(i64::from(port)).bits(),
+                MoltObject::from_float(5.0).bits(),
+            );
+            assert!(!exception_pending(py));
+            let line = ExceptionValue::adopt(
+                py,
+                molt_http_client_connection_putrequest(handle, method.bits(), path.bits()),
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(
+                unsafe {
+                    crate::object::memoryview::bytes_like_slice(
+                        MoltObject::from_bits(line.bits()).as_ptr().unwrap(),
+                    )
+                    .unwrap()
+                },
+                b"GET / HTTP/1.1"
+            );
+            let wire = bytes(b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n");
+            molt_http_client_connection_send(handle, wire.bits());
+            assert!(!exception_pending(py));
+            let response = molt_http_client_connection_getresponse(handle);
+            assert!(!exception_pending(py));
+            molt_http_client_response_drop(response);
+            molt_http_client_connection_drop(handle);
+        });
+        assert_eq!(
+            server.join().unwrap(),
+            b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n"
+        );
     }
 }

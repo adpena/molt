@@ -17,20 +17,14 @@ _MOLT_HTTP_CONN_NEW_HTTPS = _require_intrinsic("molt_http_client_connection_new_
 _MOLT_HTTP_CONN_PUTREQUEST = _require_intrinsic(
     "molt_http_client_connection_putrequest"
 )
-_MOLT_HTTP_CONN_PUTHEADER = _require_intrinsic("molt_http_client_connection_putheader")
-_MOLT_HTTP_CONN_ENDHEADERS = _require_intrinsic(
-    "molt_http_client_connection_endheaders"
-)
+_MOLT_HTTP_VALIDATE_HEADER_NAME = _require_intrinsic("molt_http_client_validate_header_name")
+_MOLT_HTTP_VALIDATE_HEADER_VALUE = _require_intrinsic("molt_http_client_validate_header_value")
 _MOLT_HTTP_CONN_SEND = _require_intrinsic("molt_http_client_connection_send")
-_MOLT_HTTP_CONN_REQUEST = _require_intrinsic("molt_http_client_connection_request")
 _MOLT_HTTP_CONN_GETRESPONSE = _require_intrinsic(
     "molt_http_client_connection_getresponse"
 )
 _MOLT_HTTP_CONN_CLOSE = _require_intrinsic("molt_http_client_connection_close")
 _MOLT_HTTP_CONN_DROP = _require_intrinsic("molt_http_client_connection_drop")
-_MOLT_HTTP_CONN_GET_BUFFER = _require_intrinsic(
-    "molt_http_client_connection_get_buffer"
-)
 _MOLT_HTTP_MESSAGE_NEW = _require_intrinsic("molt_http_message_new")
 _MOLT_HTTP_MESSAGE_PARSE = _require_intrinsic("molt_http_message_parse")
 _MOLT_HTTP_MESSAGE_SET_RAW = _require_intrinsic("molt_http_message_set_raw")
@@ -417,14 +411,6 @@ class HTTPResponse(metaclass=_ABCMeta):
         return out
 
 
-def _coerce_connection_buffer(payload: _Any, context: str) -> list[bytes]:
-    if not isinstance(payload, list):
-        raise RuntimeError(
-            f"http.client {context} intrinsic returned invalid buffer payload"
-        )
-    return [bytes(part) for part in payload]
-
-
 class HTTPConnection:
     host: str
     port: int
@@ -444,13 +430,8 @@ class HTTPConnection:
         ctor = _MOLT_HTTP_CONN_NEW_HTTPS if self._MOLT_TLS else _MOLT_HTTP_CONN_NEW
         self._conn_handle = int(ctor(self.host, self.port, self.timeout))
         self._response = None
-
-    @property
-    def _buffer(self) -> list[bytes]:
-        return _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_GET_BUFFER(self._conn_handle),
-            "connection_get_buffer",
-        )
+        self._buffer = []
+        self._request_started = False
 
     def connect(self) -> None:
         # Connection setup is deferred to request execution in the intrinsic.
@@ -463,45 +444,51 @@ class HTTPConnection:
         skip_host: bool = False,
         skip_accept_encoding: bool = False,
     ) -> None:
-        _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_PUTREQUEST(
-                self._conn_handle,
-                str(method),
-                str(url),
-                bool(skip_host),
-                bool(skip_accept_encoding),
-            ),
-            "putrequest",
-        )
+        line = _MOLT_HTTP_CONN_PUTREQUEST(self._conn_handle, method, url or "/")
+        self._buffer = [line]
+        self._request_started = True
+        if not skip_host:
+            default_port = HTTPS_PORT if self._MOLT_TLS else HTTP_PORT
+            host = self.host if self.port == default_port else f"{self.host}:{self.port}"
+            self.putheader("Host", host)
+        if not skip_accept_encoding:
+            self.putheader("Accept-Encoding", "identity")
 
     def putheader(self, header: str, *values: _Any) -> None:
-        header_text = str(header)
-        if not values:
-            value = ""
-        elif len(values) == 1:
-            value = str(values[0])
-        else:
-            value = ", ".join(str(v) for v in values)
-        _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_PUTHEADER(self._conn_handle, header_text, value),
-            "putheader",
-        )
+        if not self._request_started:
+            raise CannotSendHeader()
+        if hasattr(header, "encode"):
+            header = header.encode("ascii")
+        _MOLT_HTTP_VALIDATE_HEADER_NAME(header)
+        values = list(values)
+        for i, one_value in enumerate(values):
+            if hasattr(one_value, "encode"):
+                values[i] = one_value.encode("latin-1")
+            elif isinstance(one_value, int):
+                values[i] = str(one_value).encode("ascii")
+            _MOLT_HTTP_VALIDATE_HEADER_VALUE(values[i])
+        value = b"\r\n\t".join(values)
+        header = header + b": " + value
+        self._output(header)
+
+    def _output(self, line):
+        self._buffer.append(line)
 
     def endheaders(
         self, message_body: bytes | bytearray | memoryview | None = None
     ) -> None:
-        _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_ENDHEADERS(
-                self._conn_handle,
-                None if message_body is None else bytes(message_body),
-            ),
-            "endheaders",
-        )
+        if not self._request_started:
+            raise CannotSendHeader()
+        self._request_started = False
+        self._buffer.extend((b"", b""))
+        message = b"\r\n".join(self._buffer)
+        del self._buffer[:]
+        self.send(message)
+        if message_body is not None:
+            self.send(message_body)
 
     def send(self, data: bytes | bytearray | memoryview) -> None:
-        _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_SEND(self._conn_handle, bytes(data)), "send"
-        )
+        _MOLT_HTTP_CONN_SEND(self._conn_handle, bytes(data))
 
     def request(
         self,
@@ -510,17 +497,14 @@ class HTTPConnection:
         body: bytes | bytearray | memoryview | None = None,
         headers: dict[str, _Any] | None = None,
     ) -> None:
-        header_map = {} if headers is None else dict(headers)
-        _coerce_connection_buffer(
-            _MOLT_HTTP_CONN_REQUEST(
-                self._conn_handle,
-                str(method),
-                str(url),
-                None if body is None else bytes(body),
-                header_map,
-            ),
-            "request",
-        )
+        headers = {} if headers is None else headers
+        names = frozenset(name.lower() for name in headers)
+        self.putrequest(method, url, "host" in names, "accept-encoding" in names)
+        if body is not None and "content-length" not in names:
+            self.putheader("Content-Length", len(body))
+        for name, value in headers.items():
+            self.putheader(name, value)
+        self.endheaders(body)
 
     def getresponse(self) -> HTTPResponse:
         if self._response is not None and not self._response.closed:
@@ -538,6 +522,8 @@ class HTTPConnection:
             except Exception:
                 pass
             self._response = None
+        self._buffer.clear()
+        self._request_started = False
         _MOLT_HTTP_CONN_CLOSE(self._conn_handle)
 
     def __del__(self, _drop=_MOLT_HTTP_CONN_DROP) -> None:

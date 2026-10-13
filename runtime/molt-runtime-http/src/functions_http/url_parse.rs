@@ -173,75 +173,85 @@ pub(super) fn urllib_urlencode_impl(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let mut out_pairs: Vec<String> = Vec::new();
-    loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
-            break;
-        }
-        let item_obj = obj_from_bits(item_bits);
-        let Some(item_ptr) = item_obj.as_ptr() else {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "not a valid non-string sequence or mapping object",
-            ));
-        };
-        let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
-        {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "not a valid non-string sequence or mapping object",
-            ));
-        }
-        let item_fields = unsafe { seq_snapshot(item_ptr) };
-        if item_fields.len() != 2 {
-            if item_fields.len() < 2 {
+    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, iter_bits) };
+    let result = (|| {
+        let mut out_pairs: Vec<String> = Vec::new();
+        loop {
+            let Some(item) =
+                iter_next_owned(_py, &iterator).map_err(|_| MoltObject::none().bits())?
+            else {
+                break;
+            };
+            let item = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, item.into_bits()) };
+            let item_bits = item.bits();
+            let item_obj = obj_from_bits(item_bits);
+            let Some(item_ptr) = item_obj.as_ptr() else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "not a valid non-string sequence or mapping object",
+                ));
+            };
+            let item_type = unsafe { object_type_id(item_ptr) };
+            if item_type != crate::bridge::type_id_list()
+                && item_type != crate::bridge::type_id_tuple()
+            {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "not a valid non-string sequence or mapping object",
+                ));
+            }
+            let item_fields = unsafe { seq_snapshot(item_ptr) };
+            if item_fields.len() != 2 {
+                if item_fields.len() < 2 {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        &format!(
+                            "not enough values to unpack (expected 2, got {})",
+                            item_fields.len()
+                        ),
+                    ));
+                }
                 return Err(raise_exception::<_>(
                     _py,
                     "ValueError",
-                    &format!(
-                        "not enough values to unpack (expected 2, got {})",
-                        item_fields.len()
-                    ),
+                    "too many values to unpack (expected 2)",
                 ));
             }
-            return Err(raise_exception::<_>(
-                _py,
-                "ValueError",
-                "too many values to unpack (expected 2)",
-            ));
-        }
-        let key_text = crate::bridge::format_obj_str(_py, obj_from_bits(item_fields[0]))
-            .ok_or_else(|| MoltObject::none().bits())?;
-        let key_enc = urllib_quote_plus_impl(&key_text, safe);
-        let value_obj = obj_from_bits(item_fields[1]);
-        let mut wrote_pair = false;
-        if doseq && let Some(value_ptr) = value_obj.as_ptr() {
-            let value_type = unsafe { object_type_id(value_ptr) };
-            if value_type == crate::bridge::type_id_list()
-                || value_type == crate::bridge::type_id_tuple()
-            {
-                let seq = unsafe { seq_snapshot(value_ptr) };
-                for value_bits in seq.iter().copied() {
-                    let value_text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits))
-                        .ok_or_else(|| MoltObject::none().bits())?;
-                    let value_enc = urllib_quote_plus_impl(&value_text, safe);
-                    out_pairs.push(format!("{key_enc}={value_enc}"));
+            let key_text = crate::bridge::format_obj_str(_py, obj_from_bits(item_fields[0]))
+                .ok_or_else(|| MoltObject::none().bits())?;
+            let key_enc = urllib_quote_plus_impl(&key_text, safe);
+            let value_obj = obj_from_bits(item_fields[1]);
+            let mut wrote_pair = false;
+            if doseq && let Some(value_ptr) = value_obj.as_ptr() {
+                let value_type = unsafe { object_type_id(value_ptr) };
+                if value_type == crate::bridge::type_id_list()
+                    || value_type == crate::bridge::type_id_tuple()
+                {
+                    let seq = unsafe { seq_snapshot(value_ptr) };
+                    for value_bits in seq.iter().copied() {
+                        let value_text =
+                            crate::bridge::format_obj_str(_py, obj_from_bits(value_bits))
+                                .ok_or_else(|| MoltObject::none().bits())?;
+                        let value_enc = urllib_quote_plus_impl(&value_text, safe);
+                        out_pairs.push(format!("{key_enc}={value_enc}"));
+                    }
+                    wrote_pair = true;
                 }
-                wrote_pair = true;
+            }
+            if !wrote_pair {
+                let value_text = crate::bridge::format_obj_str(_py, value_obj)
+                    .ok_or_else(|| MoltObject::none().bits())?;
+                let value_enc = urllib_quote_plus_impl(&value_text, safe);
+                out_pairs.push(format!("{key_enc}={value_enc}"));
             }
         }
-        if !wrote_pair {
-            let value_text = crate::bridge::format_obj_str(_py, value_obj)
-                .ok_or_else(|| MoltObject::none().bits())?;
-            let value_enc = urllib_quote_plus_impl(&value_text, safe);
-            out_pairs.push(format!("{key_enc}={value_enc}"));
-        }
-    }
-    Ok(out_pairs.join("&"))
+        Ok(out_pairs.join("&"))
+    })();
+    drop(unsafe { ProtectedRuntimeValue::from_owned_bits(_py, iterator.into_bits()) });
+    result
 }
 
 pub(super) fn urllib_error_set_attr(
