@@ -1189,3 +1189,49 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
     assert actual.resource_failure is None
     assert metrics[-1]["status"] == phase + "_timeout"
     assert len(calls) == (1 if phase == "build" else 2)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX operator signal delivery")
+@pytest.mark.parametrize("signal_name", ("SIGINT", "SIGTERM"))
+def test_operator_signal_closes_real_child_before_returning_typed_outcome(
+    tmp_path, monkeypatch, signal_name
+):
+    import signal
+
+    module = _load_diff_module()
+    _configure_guard(
+        module, monkeypatch, tmp_path, process_gb=0.5, tree_gb=1.0, global_gb=2.0
+    )
+    completed = []
+    original_run = module.harness_memory_guard.HarnessExecutionContext.run
+
+    def retain(self, *args, **kwargs):
+        result = original_run(self, *args, **kwargs)
+        completed.append(result)
+        return result
+
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext, "run", retain
+    )
+    previous = signal.getsignal(getattr(signal, signal_name))
+    result = module._run_subprocess(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "import os,signal,sys,time; print(os.getpid(),flush=True); "
+            "os.kill(int(sys.argv[1]),getattr(signal,sys.argv[2])); time.sleep(30)",
+            str(os.getpid()),
+            signal_name,
+        ],
+        env=os.environ.copy(),
+        timeout=5,
+    )
+    assert result.guard_signal == getattr(signal, signal_name)
+    assert result.resource_failure is None and not result.timed_out
+    assert result.infrastructure_failure is None
+    assert len(completed) == 1 and completed[0].descendants_closed
+    assert signal.getsignal(getattr(signal, signal_name)) is previous
+    child_pid = int(result.stdout.strip())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)

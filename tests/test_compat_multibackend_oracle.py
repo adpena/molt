@@ -852,7 +852,10 @@ def test_all_backends_receive_one_stdlib_profile(
     )
     records: list[dict[str, object]] = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "pass"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "pass"
+    )
     context = native_contexts[0]
     assert context.stdlib_profile == "full"
     for target in targets[1:]:
@@ -886,7 +889,7 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
         str(fake_test_file),
         targets=("native", "wasm"),
         target_python=cpython_oracle.short,
-    )
+    )["resolved_status"]
 
     assert status == "pass"
     wasm_contexts = registry["wasm"].contexts
@@ -923,7 +926,7 @@ def test_target_mismatching_the_oracle_fails_before_any_execution(
     with pytest.raises(ValueError, match="does not match the CPython oracle"):
         molt_diff.diff_test(
             str(fake_test_file), targets=("native", "wasm"), target_python="3.14"
-        )
+        )["resolved_status"]
     assert native_contexts == []
     assert registry["wasm"].contexts == []
 
@@ -938,7 +941,9 @@ def test_all_backends_agree_with_cpython_passes(
         },
         cpython=("42\n", "", 0),
     )
-    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+        "resolved_status"
+    ]
     assert status == "pass"
 
 
@@ -963,7 +968,10 @@ def test_diff_report_separates_compared_stderr_from_retained_diagnostics(
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
 
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "fail"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "fail"
+    )
 
     lines = capsys.readouterr().out.splitlines()
     assert lines.count(f"  Molt    return: 0 stderr: {guest_stderr!r}") == len(targets)
@@ -980,7 +988,10 @@ def test_diff_report_separates_compared_stderr_from_retained_diagnostics(
         {target: replace(result, stdout="42\n") for target in targets},
         cpython=("42\n", guest_stderr, 0),
     )
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "pass"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "pass"
+    )
     assert result.stderr == diagnostics
     assert result.child_stderr == guest_stderr
 
@@ -996,7 +1007,9 @@ def test_backend_metadata_filters_each_requested_cell_before_execution(
         cpython=("42\n", "", 0),
     )
 
-    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+        "resolved_status"
+    ]
 
     assert status == "pass"
 
@@ -1014,10 +1027,14 @@ def test_one_backend_wrong_vs_cpython_fails(
         cpython=("42\n", "", 0),
     )
     # Sanity: native alone is green (the invisible-divergence baseline).
-    native_only = molt_diff.diff_test(str(fake_test_file), targets=("native",))
+    native_only = molt_diff.diff_test(str(fake_test_file), targets=("native",))[
+        "resolved_status"
+    ]
     assert native_only == "pass"
     # Multi-backend: RED.
-    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+        "resolved_status"
+    ]
     assert status == "fail"
 
 
@@ -1033,7 +1050,9 @@ def test_backends_disagree_with_each_other_fails(
         },
         cpython=("Z\n", "", 0),
     )
-    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+        "resolved_status"
+    ]
     assert status == "fail"
 
 
@@ -1056,7 +1075,9 @@ def test_fault_injection_seam_produces_divergence(
         },
         cpython=("42\n", "", 0),
     )
-    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+        "resolved_status"
+    ]
     assert status == "fail"
 
 
@@ -1084,7 +1105,9 @@ def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> 
 
     monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", {"luau": _Unavailable()})
     monkeypatch.setattr(molt_diff, "run_cpython", lambda *a, **k: _outcome("42\n"))
-    status = molt_diff.diff_test(str(fake_test_file), targets=("luau",))
+    status = molt_diff.diff_test(str(fake_test_file), targets=("luau",))[
+        "resolved_status"
+    ]
     assert status == "uncalibrated"
 
 
@@ -1236,7 +1259,10 @@ def test_timeout_cannot_be_xfailed_even_with_other_backend_divergence(
     install_fake_registry(outcomes)
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "fail"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "fail"
+    )
     assert records[0]["expect_molt_fail"] is True
     assert records[0]["reason_tag"] == "timeout"
     rows = records[0]["backend_rows"]
@@ -1260,7 +1286,12 @@ def test_oom_keeps_prior_backend_receipt_and_its_own_diagnostic(
     )
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm")) == "oom"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+            "resolved_status"
+        ]
+        == "oom"
+    )
     rows = records[0]["backend_rows"]
     assert [(row["backend"], row["raw_status"]) for row in rows] == [
         ("native", "pass"),
@@ -1289,7 +1320,9 @@ def test_missing_target_is_not_pass_or_expected_semantic_failure(
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
     assert (
-        molt_diff.diff_test(str(fake_test_file), targets=("native", "luau"))
+        molt_diff.diff_test(str(fake_test_file), targets=("native", "luau"))[
+            "resolved_status"
+        ]
         == "uncalibrated"
     )
     assert records[0]["backend_rows"][1]["detail"] == "runner missing"
@@ -1311,7 +1344,7 @@ def test_cpython_timeout_cannot_become_semantic_parity(
     )
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file)) == "fail"
+    assert molt_diff.diff_test(str(fake_test_file))["resolved_status"] == "fail"
     assert records[0]["reason_tag"] == "timeout"
     assert native_contexts == []
 
@@ -1322,7 +1355,10 @@ def test_intentional_exit_124_is_not_a_timeout(fake_test_file, install_fake_regi
         cpython=("", "", 124),
     )
     assert (
-        molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm")) == "pass"
+        molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
+            "resolved_status"
+        ]
+        == "pass"
     )
 
 
@@ -1343,7 +1379,10 @@ def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
     monkeypatch.setenv("MOLT_COMPAT_FAULT_INJECT", backend)
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "uncalibrated"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "uncalibrated"
+    )
     assert records[0]["reason_tag"] == "infrastructure_error"
     assert records[0]["raw_status"] == records[0]["resolved_status"] == "uncalibrated"
     row = next(row for row in records[0]["backend_rows"] if row["backend"] == backend)
@@ -1388,7 +1427,10 @@ def test_guest_cleanup_failure_cannot_be_hidden_by_xfail(
         install_fake_registry(outcomes)
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "uncalibrated"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=targets)["resolved_status"]
+        == "uncalibrated"
+    )
     assert records[0]["reason_tag"] == "infrastructure_error"
     assert records[0]["raw_status"] == records[0]["resolved_status"] == "uncalibrated"
     payload = (
@@ -1410,7 +1452,7 @@ def test_cpython_infrastructure_failure_cannot_be_semantic_parity(
     )
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file)) == "uncalibrated"
+    assert molt_diff.diff_test(str(fake_test_file))["resolved_status"] == "uncalibrated"
     assert contexts == []
     assert records[0]["reason_tag"] == "infrastructure_error"
     assert records[0]["cpython_child_returncode"] == 0
@@ -1424,7 +1466,7 @@ def test_intentional_exit_125_remains_semantic_evidence(
     fake_test_file, install_fake_registry
 ):
     install_fake_registry({"native": _outcome("", rc=125)}, cpython=("", "", 125))
-    assert molt_diff.diff_test(str(fake_test_file)) == "pass"
+    assert molt_diff.diff_test(str(fake_test_file))["resolved_status"] == "pass"
 
 
 @pytest.mark.parametrize("entry", ["initial", "after-dyld", "after-daemon"])
@@ -1582,7 +1624,10 @@ def test_runtime_abort_with_oom_repro_stays_failure(
     )
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=(backend,)) == "fail"
+    assert (
+        molt_diff.diff_test(str(fake_test_file), targets=(backend,))["resolved_status"]
+        == "fail"
+    )
     row = records[0]["backend_rows"][0]
     assert row["raw_status"] == "fail" and row["returncode"] == 0xC0000409
     assert row["resource_failure"] is None and not row["rss_limit_exceeded"]
@@ -1602,9 +1647,9 @@ def test_cpython_resource_verdict_uses_same_evidence(
     install_fake_registry({"native": _outcome("42\n")}, cpython=oracle)
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
-    assert molt_diff.diff_test(str(fake_test_file), targets=("native",)) == (
-        "oom" if measured else "fail"
-    )
+    assert molt_diff.diff_test(str(fake_test_file), targets=("native",))[
+        "resolved_status"
+    ] == ("oom" if measured else "fail")
     assert records[0]["cpython_resource_failure"] == (
         "rss_limit_exceeded" if measured else None
     )
@@ -1753,3 +1798,60 @@ def test_guest_retirement_preserves_existing_trip_infrastructure_phase(tmp_path)
         "retirement failed",
     )
     assert result.resource_failure is None
+
+
+@pytest.mark.parametrize("backend", ("cpython", "native", "wasm", "llvm", "luau"))
+@pytest.mark.parametrize("build_failed", (False, True))
+def test_operator_signal_stops_case_before_semantic_overlay_or_next_backend(
+    backend, build_failed, fake_test_file, install_fake_registry, monkeypatch
+):
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
+    )
+    interrupted = compat_backends.BackendResult(
+        None if build_failed else "partial",
+        "operator interruption",
+        143,
+        guard_signal=15,
+        child_returncode=-9,
+    )
+    targets = ("native", "wasm", "llvm", "luau")
+    outcomes = {name: _outcome("42\n") for name in targets}
+    if backend != "cpython":
+        outcomes[backend] = interrupted
+    registry, native_contexts = install_fake_registry(
+        outcomes, cpython=interrupted if backend == "cpython" else ("42\n", "", 0)
+    )
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    result = molt_diff.diff_test(str(fake_test_file), targets=targets)
+    assert records[0] is result
+    assert result["guard_signal"] == 15
+    assert result["raw_status"] == result["resolved_status"] == "uncalibrated"
+    assert result["reason_tag"] == "guard_interrupted"
+    if backend == "cpython":
+        assert native_contexts == []
+        assert all(not adapter.contexts for adapter in registry.values())
+        assert result["cpython_guard_signal"] == 15
+    else:
+        index = targets.index(backend)
+        assert [row["backend"] for row in result["backend_rows"]] == list(
+            targets[: index + 1]
+        )
+        assert result["backend_rows"][-1]["guard_signal"] == 15
+        assert all(not registry[name].contexts for name in targets[index + 1 :])
+
+
+@pytest.mark.parametrize("exit_code", (130, 143))
+def test_child_exit_matching_signal_status_does_not_cancel(
+    fake_test_file, install_fake_registry, exit_code
+):
+    install_fake_registry(
+        {"native": _outcome("", rc=exit_code), "wasm": _outcome("", rc=exit_code)},
+        cpython=("", "", exit_code),
+    )
+    result = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    assert result["resolved_status"] == "pass"
+    assert result["guard_signal"] is None
+    assert len(result["backend_rows"]) == 2

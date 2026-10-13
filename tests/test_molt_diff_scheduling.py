@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import sys
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ def suite(tmp_path, monkeypatch):
         status="fail",
         guard_trip=False,
         trip_failure=None,
+        guard_signal=None,
         original_trip_outcome=molt_diff._memory_guard_trip_outcome,
     )
     for name in (
@@ -93,6 +95,7 @@ def suite(tmp_path, monkeypatch):
             "status": state.status
             if path == str(files[0]) and state.status != "guard"
             else "pass",
+            "guard_signal": state.guard_signal if path == str(files[0]) else None,
             "duration_s": 0.25,
             "stdout": "worker output",
             "stderr": "",
@@ -211,6 +214,7 @@ def test_suite_guard_covers_oom_retry_and_summary(guarded_suite, tmp_path, monke
         return {
             "path": path,
             "status": "pass",
+            "guard_signal": None,
             "duration_s": 0.1,
             "stdout": "retry output",
             "stderr": "",
@@ -275,6 +279,7 @@ def test_suite_cleanup_failure_restores_environment_and_releases_callback(
     else:
         monkeypatch.setenv(sentinel_key, previous_owner)
     guarded_suite.close_error = RuntimeError("sentinel close failed")
+    previous_handler = signal.getsignal(signal.SIGTERM)
     with pytest.raises(RuntimeError, match="sentinel close failed"):
         molt_diff.run_diff(
             guarded_suite.files,
@@ -285,6 +290,7 @@ def test_suite_cleanup_failure_restores_environment_and_releases_callback(
     assert len(guarded_suite.exits) == 1
     assert guarded_suite.exit_callbacks == []
     assert molt_diff.os.environ.get(sentinel_key) == previous_owner
+    assert signal.getsignal(signal.SIGTERM) is previous_handler
 
 
 def test_failed_failure_receipt_is_not_silently_accepted(guarded_suite, tmp_path):
@@ -345,3 +351,148 @@ def test_parent_trip_infrastructure_stops_admission_without_oom(
     assert guard["admission_stopped"] and not guard["tripped"]
     assert guard["infrastructure_failure"]["phase"] == "rss_trip_evidence"
     assert summary["passed"] == jobs
+
+
+@pytest.mark.parametrize("jobs", (1, 2))
+def test_typed_signal_stops_without_fail_fast_and_drains_running_results(
+    guarded_suite, tmp_path, jobs
+):
+    guarded_suite.status = "uncalibrated"
+    guarded_suite.guard_signal = signal.SIGTERM
+    summary = molt_diff.run_diff(
+        guarded_suite.files,
+        sys.executable,
+        jobs=jobs,
+        retry_oom=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert guarded_suite.calls == [str(path) for path in guarded_suite.files[:jobs]]
+    assert summary["guard_signal"] == signal.SIGTERM
+    assert summary["failed"] == 1 and summary["passed"] == jobs - 1
+    assert summary["item_results"][0]["guard_signal"] == signal.SIGTERM
+    assert len(summary["item_results"]) == jobs
+    assert summary["config"]["memory_guard"]["admission_stopped"]
+    assert len(guarded_suite.exits) == 1
+
+
+@pytest.mark.parametrize("jobs", (1, 2))
+def test_between_commands_signal_defers_exit_until_running_results_drained(
+    guarded_suite, tmp_path, monkeypatch, jobs
+):
+    guarded_suite.status = "pass"
+    previous = signal.getsignal(signal.SIGTERM)
+    receiver = "_diff_run_single" if jobs == 1 else "wait"
+    owner = molt_diff if jobs == 1 else molt_diff.concurrent.futures
+    original = getattr(owner, receiver)
+    delivered = []
+
+    def receive(*args, **kwargs):
+        if not delivered:
+            delivered.append(True)
+            signal.raise_signal(signal.SIGTERM)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, receiver, receive)
+    summary = molt_diff.run_diff(
+        guarded_suite.files,
+        sys.executable,
+        jobs=jobs,
+        retry_oom=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert guarded_suite.calls == [str(path) for path in guarded_suite.files[:jobs]]
+    assert summary["guard_signal"] == signal.SIGTERM
+    assert summary["passed"] == jobs and summary["failed"] == 1
+    assert summary["failed_files"] == ["<operator_signal>"]
+    assert len(summary["item_results"]) == jobs
+    assert len(guarded_suite.exits) == 1
+    assert signal.getsignal(signal.SIGTERM) is previous
+
+
+def test_signal_during_warmup_stops_case_and_further_warmup_admission(
+    guarded_suite, tmp_path, monkeypatch
+):
+    warmups = []
+    monkeypatch.setattr(molt_diff, "_backend_execution_context", lambda *a: object())
+
+    def warmup(path, *args, **kwargs):
+        warmups.append(path)
+        return molt_diff.compat_backends.BackendResult(
+            None,
+            "interrupted warmup",
+            130,
+            guard_signal=signal.SIGINT,
+        )
+
+    monkeypatch.setattr(molt_diff, "run_molt_build_only", warmup)
+    summary = molt_diff.run_diff(
+        guarded_suite.files,
+        sys.executable,
+        jobs=1,
+        warm_cache=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert warmups == [str(guarded_suite.files[0])]
+    assert guarded_suite.calls == []
+    assert summary["guard_signal"] == signal.SIGINT
+    assert summary["item_results"] == [] and summary["passed"] == 0
+    assert summary["failed_files"] == ["<operator_signal>"]
+    assert len(guarded_suite.exits) == 1
+
+
+def test_signal_during_oom_retry_stops_next_retry(guarded_suite, tmp_path, monkeypatch):
+    original_wait = molt_diff.concurrent.futures.wait
+
+    def all_oom(*args, **kwargs):
+        done, pending = original_wait(*args, **kwargs)
+        for future in done:
+            # All initial cases fail ordinarily; only a later retry is cancelled.
+            future.result()["status"] = "oom"
+        return done, pending
+
+    retries = []
+
+    def retry(path, *args, **kwargs):
+        retries.append(path)
+        return {
+            "path": path,
+            "status": "uncalibrated",
+            "guard_signal": 15,
+            "duration_s": 0.1,
+            "stdout": "",
+            "stderr": "interrupted",
+        }
+
+    monkeypatch.setattr(molt_diff.concurrent.futures, "wait", all_oom)
+    monkeypatch.setattr(molt_diff, "_diff_run_single", retry)
+    summary = molt_diff.run_diff(
+        guarded_suite.files,
+        sys.executable,
+        jobs=2,
+        retry_oom=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert retries == [str(guarded_suite.files[0])]
+    assert summary["guard_signal"] == 15
+    assert summary["oom"] == len(guarded_suite.files) - 1
+    assert summary["failed"] == len(guarded_suite.files)
+    assert len(guarded_suite.exits) == 1
+
+
+@pytest.mark.parametrize("jobs", (1, 2))
+@pytest.mark.parametrize("status", ("fail", "oom", "uncalibrated"))
+def test_ordinary_failure_without_operator_signal_keeps_admitting(
+    suite, tmp_path, jobs, status
+):
+    suite.status = status
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=jobs,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert suite.calls == [str(path) for path in suite.files]
+    assert summary["guard_signal"] is None
+    assert summary["passed"] == len(suite.files) - 1
+    assert summary["failed"] == 1
+    assert not summary["config"]["memory_guard"]["admission_stopped"]
