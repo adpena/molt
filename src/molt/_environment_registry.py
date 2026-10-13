@@ -4805,6 +4805,15 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "internal",
       "default": "",
+      "kind": "string",
+      "name": "MOLT_PROOF_CHILD_CUSTODY_WORKER_PARENT",
+      "owner": "tools/proof_queue_pkg/node_child_custody.cjs",
+      "summary": "Authenticated creator connection for a Node Worker custody hook; the existing Worker wrapper overwrites supplied values and binds the child thread to the creator's actual exit observation. Main-thread processes ignore inherited Worker metadata.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
       "kind": "float",
       "name": "MOLT_PROOF_COMMAND_TIMEOUT_SEC",
       "owner": "src/molt/cargo_execution_policy.py",

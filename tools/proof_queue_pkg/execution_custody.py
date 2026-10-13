@@ -68,6 +68,7 @@ class WatchSpec:
 
 
 CHILD_POLICY_SCHEMA = "molt.proof-child-custody.v1"
+CHILD_CUSTODY_RECEIPT_SCHEMA = "molt.proof-child-custody-receipt.v4"
 # v3: every apparatus class is validated; selected empty uv-lock closes carry
 # captured Python/uv owner identities. Older permissive receivers cannot admit it.
 LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v3"
@@ -1249,6 +1250,7 @@ class ChildCustodyEventServer:
         saw_end = False
         last_sequence = 0
         runtime: object = None
+        identity: dict[str, object] = {}
         try:
             with connection, connection.makefile("rb") as stream:
                 for raw_line in stream:
@@ -1269,11 +1271,39 @@ class ChildCustodyEventServer:
                             raise ValueError(
                                 "root child custody runtime handshake mismatch"
                             )
+                        pid = payload.get("pid")
+                        thread_id = payload.get("thread_id")
+                        if type(pid) is not int or pid <= 0:
+                            raise ValueError(
+                                "child custody process identity is invalid"
+                            )
+                        identity = {"runtime": runtime, "pid": pid}
+                        if runtime == "node":
+                            if type(thread_id) is not int or thread_id < 0:
+                                raise ValueError(
+                                    "Node custody thread identity is invalid"
+                                )
+                            identity["thread_id"] = thread_id
+                            if thread_id != 0:
+                                parent_id = payload.get("parent_connection_id")
+                                if type(parent_id) is not int or parent_id < 0:
+                                    raise ValueError(
+                                        "Node Worker creator identity is invalid"
+                                    )
+                                identity["parent_connection_id"] = parent_id
                         saw_start = True
                         connection.sendall(
                             (
                                 json.dumps(
-                                    {"event": "hook-ready", "runtime": runtime},
+                                    {
+                                        "event": "hook-ready",
+                                        "runtime": runtime,
+                                        **(
+                                            {"connection_id": connection_id}
+                                            if runtime == "node"
+                                            else {}
+                                        ),
+                                    },
                                     sort_keys=True,
                                     separators=(",", ":"),
                                 )
@@ -1290,6 +1320,23 @@ class ChildCustodyEventServer:
                         with self._lock:
                             self._events.append(payload)
                         break
+                    elif event in {"node-worker-start", "node-worker-exit"}:
+                        if runtime != "node":
+                            raise ValueError("Worker observation is not from Node")
+                        # The authenticated connection owns parent identity. A
+                        # payload cannot nominate a different observing parent.
+                        payload = {
+                            "event": event,
+                            **identity,
+                            "child_thread_id": payload.get("child_thread_id"),
+                            "connection_id": connection_id,
+                            "admitted": True,
+                            **(
+                                {"exit_code": payload.get("exit_code")}
+                                if event == "node-worker-exit"
+                                else {}
+                            ),
+                        }
                     elif event == "spawn-intent":
                         sequence = payload.get("sequence")
                         if (
@@ -1342,8 +1389,9 @@ class ChildCustodyEventServer:
             self._record_error(f"{type(exc).__name__}: {exc}")
         if not saw_start:
             self._record_error("child custody connection has no authenticated start")
-        elif not saw_end:
-            self._record_error("child custody connection has no terminal handshake")
+        # A terminated Worker can close its socket without executing JS exit
+        # hooks. Only its creator's actual exit observation can close that
+        # lifetime; validate the joined event stream after every handler drains.
 
     def _decide_child(
         self, intent: Mapping[str, object], runtime: object
@@ -1459,9 +1507,10 @@ class ChildCustodyEventServer:
             events = list(self._events)
             errors = list(self._errors)
         starts = [event for event in events if event.get("event") == "hook-start"]
-        ends = [event for event in events if event.get("event") == "hook-end"]
         if self.expected_runtime is not None and not starts:
             errors.append("mandatory child custody hook did not connect")
+        if self.expected_runtime is None and starts:
+            errors.append("child custody hook connected without a runtime owner")
         if self._state != "DRAINED":
             errors.append(f"child custody receipt requested in state {self._state}")
         violations = [
@@ -1470,17 +1519,13 @@ class ChildCustodyEventServer:
             if event.get("event") not in {"hook-start", "hook-end"}
             and event.get("admitted") is not True
         ]
-        runtime_handshake_complete = (
-            not starts and not ends
-            if self.expected_runtime is None
-            else bool(starts) and len(starts) == len(ends)
-        )
-        broker_complete = (
-            self._state == "DRAINED" and not errors and runtime_handshake_complete
-        )
+        lifetime_error = _child_hook_lifetime_error(events)
+        if lifetime_error is not None:
+            errors.append(lifetime_error)
+        broker_complete = self._state == "DRAINED" and not errors
         material = {"events": events, "errors": errors, "state": self._state}
         return {
-            "schema": "molt.proof-child-custody-receipt.v3",
+            "schema": CHILD_CUSTODY_RECEIPT_SCHEMA,
             "transport": "parent-owned-authenticated-loopback",
             "scope": "runtime-hook-broker",
             "state": self._state,
@@ -1497,28 +1542,130 @@ class ChildCustodyEventServer:
         }
 
 
+def _child_hook_lifetime_error(events: list[object]) -> str | None:
+    """Validate hooks and creator-observed Worker exits, never socket EOF.
+
+    Creation binds a child thread to one authenticated creator connection.
+    Every creation needs that creator's exit observation, even when the child
+    also ran its own terminal hook. Native process closure remains a separate
+    mandatory supervisor fact.
+    """
+    starts: dict[int, tuple[str, int, int | None, int | None]] = {}
+    ended: set[int] = set()
+    worker_connections: dict[tuple[int, int], int] = {}
+    created: set[tuple[int, int]] = set()
+    exited: set[tuple[int, int]] = set()
+    for event in events:
+        if not isinstance(event, Mapping):
+            return "child custody event is not an object"
+        kind = event.get("event")
+        connection_id = event.get("connection_id")
+        if type(connection_id) is not int or connection_id < 0:
+            return "child custody event has no connection identity"
+        if kind == "hook-start":
+            runtime, pid = event.get("runtime"), event.get("pid")
+            thread_id = event.get("thread_id") if runtime == "node" else None
+            parent_id = event.get("parent_connection_id")
+            if (
+                runtime not in ("python", "node")
+                or type(pid) is not int
+                or pid <= 0
+                or connection_id in starts
+                or (runtime == "node" and (type(thread_id) is not int or thread_id < 0))
+                or (
+                    runtime == "node"
+                    and thread_id != 0
+                    and (type(parent_id) is not int or parent_id < 0)
+                )
+                or ((runtime != "node" or thread_id == 0) and parent_id is not None)
+            ):
+                return "child custody start identity is invalid or duplicated"
+            starts[connection_id] = (runtime, pid, thread_id, parent_id)
+            if parent_id is not None:
+                key = (parent_id, thread_id)
+                if key in worker_connections:
+                    return "Node Worker has multiple connections"
+                worker_connections[key] = connection_id
+            continue
+        if connection_id not in starts or connection_id in ended:
+            return "child custody event is outside its authenticated lifetime"
+        runtime, pid, thread_id, parent_id = starts[connection_id]
+        if kind == "child-process":
+            continue  # Launch decisions and violations retain their own admission.
+        if (
+            event.get("runtime") != runtime
+            or event.get("pid") != pid
+            or (runtime == "node" and event.get("thread_id") != thread_id)
+            or event.get("parent_connection_id") != parent_id
+        ):
+            return "child custody event identity differs from its connection"
+        if kind == "hook-end":
+            ended.add(connection_id)
+        elif kind in ("node-worker-start", "node-worker-exit"):
+            child_thread_id = event.get("child_thread_id")
+            if (
+                runtime != "node"
+                or type(child_thread_id) is not int
+                or child_thread_id <= 0
+                or child_thread_id == thread_id
+                or event.get("admitted") is not True
+            ):
+                return "Node Worker identity is invalid"
+            key = (connection_id, child_thread_id)
+            if kind == "node-worker-start":
+                if key in created:
+                    return "Node Worker creation is duplicated"
+                created.add(key)
+            else:
+                if key not in created or key in exited:
+                    return "Node Worker exit has no unique matching creator"
+                if type(event.get("exit_code")) is not int:
+                    return "Node Worker exit code is invalid"
+                exited.add(key)
+        else:
+            return "unknown child custody event"
+    if created != exited:
+        return "Node Worker creation has no creator-observed exit"
+    for connection_id, (runtime, pid, thread_id, parent_id) in starts.items():
+        if parent_id is not None:
+            if (parent_id, thread_id) not in created:
+                return "Node Worker hook has no matching creation"
+            parent = starts[parent_id]
+            if parent[0] != "node" or parent[1] != pid:
+                return "Node Worker hook differs from its creator process"
+        elif connection_id not in ended:
+            return "child custody connection has no terminal handshake"
+    # Cross-connection arrival order is irrelevant: a child can authenticate
+    # before its creator's start event reaches the broker. Reject orphan/cyclic
+    # ancestry, joining each connection to a root at most once.
+    rooted: set[int] = set()
+    for connection_id in starts:
+        chain: set[int] = set()
+        current = connection_id
+        while current not in rooted:
+            if current in chain:
+                return "Node Worker ancestry is cyclic"
+            chain.add(current)
+            parent_id = starts[current][3]
+            if parent_id is None:
+                break
+            current = parent_id
+        rooted.update(chain)
+    return None
+
+
 def child_receipt_is_admitted(receipt: Mapping[str, object]) -> bool:
     """A complete transport is not proof that every requested child was allowed."""
     events = receipt.get("events")
     return (
-        receipt.get("broker_complete") is True
+        receipt.get("schema") == CHILD_CUSTODY_RECEIPT_SCHEMA
+        and receipt.get("broker_complete") is True
         and receipt.get("violations") == []
         and receipt.get("errors") == []
         and isinstance(events, list)
+        and _child_hook_lifetime_error(events) is None
         and all(
-            isinstance(event, Mapping)
-            and (
-                (
-                    event.get("event") in ("hook-start", "hook-end")
-                    and event.get("runtime") in ("python", "node")
-                    and type(event.get("connection_id")) is int
-                    and event["connection_id"] >= 0
-                )
-                or (
-                    event.get("event") == "child-process"
-                    and event.get("admitted") is True
-                )
-            )
+            event.get("event") != "child-process" or event.get("admitted") is True
             for event in events
         )
     )

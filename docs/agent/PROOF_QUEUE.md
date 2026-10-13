@@ -557,6 +557,14 @@ events. Both terminal eligibility and queue publication enforce this binding.
 An attempted denied child makes the proof ineligible even if the payload catches
 the denial and exits successfully; hook handshakes are not launch decisions.
 
+A Node Worker may stop before its own JavaScript exit hook runs. Its creator
+records creation and the actual native Worker exit through the existing broker,
+binding the creator connection, process, and child thread identities. A missing
+Worker terminal hook is complete only with that matching exit observation;
+socket EOF, parent death, or a synthetic exit event cannot replace it. Unfinished
+or denied child-process requests remain failures. These Worker observations do
+not replace the native supervisor's mandatory process-tree closure.
+
 The native supervisor is itself a debugger. Its kernel tests must own that
 debugger boundary, not run inside another recursive debugger: nested debuggers
 can hide descendant events from the outer supervisor while job accounting still

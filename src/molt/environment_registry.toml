@@ -3572,6 +3572,14 @@ owner = "tools/proof_queue_pkg/python_child_custody.py"
 summary = "Secret the proof child presents on the custody channel so the event server can authenticate it; the guarded proof runner sets it together with the endpoint, and the child custody bootstrap reads it."
 
 [[variable]]
+name = "MOLT_PROOF_CHILD_CUSTODY_WORKER_PARENT"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "tools/proof_queue_pkg/node_child_custody.cjs"
+summary = "Authenticated creator connection for a Node Worker custody hook; the existing Worker wrapper overwrites supplied values and binds the child thread to the creator's actual exit observation. Main-thread processes ignore inherited Worker metadata."
+
+[[variable]]
 name = "MOLT_PROOF_COMMAND_TIMEOUT_SEC"
 audience = "internal"
 kind = "float"

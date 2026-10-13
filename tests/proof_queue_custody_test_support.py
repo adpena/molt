@@ -524,6 +524,7 @@ def assert_execution_context_rejects_substitutions(
         "child_process_custody": {
             "policy": {"descendants": "forbidden", "derived_roots": []},
             "receipt": {
+                "schema": execution_custody.CHILD_CUSTODY_RECEIPT_SCHEMA,
                 "broker_complete": True,
                 "events": [],
                 "errors": [],

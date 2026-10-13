@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -295,3 +297,290 @@ def test_node_hook_pins_the_current_child_policy_schema() -> None:
     source = hook.read_text(encoding="utf-8")
     assert f"policy.schema !== '{execution_custody.CHILD_POLICY_SCHEMA}'" in source
     assert source.count("molt.proof-child-custody.") == 1
+
+
+@pytest.mark.parametrize(
+    "ending", ["natural", "process-exit", "exception", "terminate", "blocked"]
+)
+def test_node_worker_actual_exit_closes_its_custody(ending: str) -> None:
+    worker = (
+        "const {parentPort}=require('worker_threads');parentPort.postMessage('ready');"
+    )
+    worker += {
+        "natural": "",
+        "process-exit": "process.exit(7);",
+        "exception": "throw new Error('worker-failure');",
+        "terminate": "parentPort.on('message',()=>{});",
+        "blocked": "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);",
+    }[ending]
+    root = (
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(worker)},{{eval:true}});"
+        "let error=null;w.on('error',e=>{error=e.message});"
+        + (
+            "w.once('message',()=>w.terminate());"
+            if ending in {"terminate", "blocked"}
+            else ""
+        )
+        + "w.once('exit',code=>console.log(JSON.stringify({code,error})));"
+    )
+    completed, receipt = _run_node(root, authorities=[])
+
+    assert completed.returncode == 0, completed.stderr
+    outcome = json.loads(completed.stdout)
+    expected_code = 7 if ending == "process-exit" else 0 if ending == "natural" else 1
+    assert outcome == {
+        "code": expected_code,
+        "error": "worker-failure" if ending == "exception" else None,
+    }
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    assert receipt["process_closure_complete"] is False
+    exits = [e for e in receipt["events"] if e["event"] == "node-worker-exit"]
+    assert len(exits) == 1
+    assert exits[0]["exit_code"] == expected_code
+    if ending in {"terminate", "blocked"}:
+        assert not any(
+            e["event"] == "hook-end"
+            and e.get("thread_id") == exits[0]["child_thread_id"]
+            for e in receipt["events"]
+        )
+
+
+def test_node_nested_worker_exits_are_observed_by_their_actual_creators() -> None:
+    inner = (
+        "const {parentPort}=require('worker_threads');parentPort.postMessage('ready');"
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);"
+    )
+    middle = (
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(inner)},{{eval:true,env:{{"
+        "MOLT_PROOF_CHILD_CUSTODY_WORKER_PARENT:'999999',"
+        "molt_proof_child_custody_worker_parent:'888888'}});"
+        "w.once('message',()=>w.terminate());"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"new Worker({json.dumps(middle)},{{eval:true}});",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    exits = [e for e in receipt["events"] if e["event"] == "node-worker-exit"]
+    assert len(exits) == 2
+    assert len({e["connection_id"] for e in exits}) == 2
+    assert any(e["thread_id"] != 0 for e in exits)
+
+
+def test_node_immediate_worker_termination_needs_no_child_hook(record_property) -> None:
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        "const w=new Worker('',{eval:true});"
+        "w.terminate().then(code=>console.log(code));",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    exits = [e for e in receipt["events"] if e["event"] == "node-worker-exit"]
+    assert len(exits) == 1
+    assert exits[0]["exit_code"] == int(completed.stdout)
+    child_hooks = [
+        e
+        for e in receipt["events"]
+        if e["event"] == "hook-start" and e["thread_id"] != 0
+    ]
+    # Startup races the caller. Retain which branch actually ran, and directly
+    # prove that only creator evidence is needed when startup never reached the
+    # child hook; no sleep or scheduling assumption makes this control pass.
+    record_property("child_hook_starts", len(child_hooks))
+    before_start = copy.deepcopy(receipt)
+    child_connections = {e["connection_id"] for e in child_hooks}
+    before_start["events"] = [
+        e for e in before_start["events"] if e["connection_id"] not in child_connections
+    ]
+    assert execution_custody.child_receipt_is_admitted(before_start)
+
+
+def test_node_parent_exit_does_not_complete_unobserved_workers() -> None:
+    worker = (
+        "const {parentPort}=require('worker_threads');parentPort.postMessage('ready');"
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(worker)},{{eval:true}});"
+        "w.once('message',()=>process.exit(0));",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert receipt["broker_complete"] is False
+    assert not execution_custody.child_receipt_is_admitted(receipt)
+    assert any("creator-observed exit" in e for e in receipt["errors"])
+
+
+def test_node_terminating_creator_does_not_complete_its_unobserved_child() -> None:
+    inner = (
+        "const {parentPort}=require('worker_threads');parentPort.postMessage('ready');"
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);"
+    )
+    middle = (
+        "const {Worker,parentPort}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(inner)},{{eval:true}});"
+        "w.once('message',()=>parentPort.postMessage('ready'));"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(middle)},{{eval:true}});"
+        "w.once('message',()=>w.terminate());",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert receipt["broker_complete"] is False
+    assert any("creator-observed exit" in e for e in receipt["errors"])
+
+
+def test_node_concurrent_worker_spawn_requests_preserve_each_decision() -> None:
+    worker = (
+        "const cp=require('child_process');"
+        "for(let i=0;i<2;i++){"
+        "const r=cp.spawnSync(process.execPath,['--version'],{encoding:'utf8'});"
+        "if(r.status!==0||!r.stdout.startsWith('v'))throw new Error('child failed');}"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"for(let i=0;i<3;i++)new Worker({json.dumps(worker)},{{eval:true}});",
+        authorities=[_authority(_node())],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    decisions = [e for e in receipt["events"] if e["event"] == "child-process"]
+    assert len(decisions) == 6
+    assert len({e["connection_id"] for e in decisions}) == 3
+
+
+def test_node_terminated_worker_preserves_denied_child_request(tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-exist"
+    child = f"require('fs').writeFileSync({json.dumps(str(marker))},'escaped')"
+    worker = (
+        "const {parentPort}=require('worker_threads');"
+        f"try{{require('child_process').spawnSync(process.execPath,['-e',{json.dumps(child)}]);}}"
+        "catch(error){parentPort.postMessage('denied');}"
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(worker)},{{eval:true}});"
+        "w.once('message',()=>w.terminate());",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not marker.exists()
+    assert receipt["broker_complete"] is True
+    assert len(receipt["violations"]) == 1
+    assert not execution_custody.child_receipt_is_admitted(receipt)
+
+
+def test_node_worker_exit_does_not_discard_an_unfinished_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pending_marker = tmp_path / "decision-pending"
+    released = threading.Event()
+    original = execution_custody.ChildCustodyEventServer._decide_child
+
+    def decide(server, intent, runtime):
+        if intent["requested"] == "molt-proof-release-pending-decision":
+            released.set()
+            return original(server, intent, runtime)
+        pending_marker.write_text("pending", encoding="utf-8")
+        if not released.wait(timeout=10):
+            raise RuntimeError("test parent did not observe Worker exit")
+        raise RuntimeError("retained unfinished child decision")
+
+    monkeypatch.setattr(
+        execution_custody.ChildCustodyEventServer, "_decide_child", decide
+    )
+    worker = "require('child_process').spawnSync(process.execPath,['--version']);"
+    root = (
+        "const {Worker}=require('worker_threads');const fs=require('fs');let retiring=false;"
+        f"const watch=fs.watch({json.dumps(str(tmp_path))},async (_,name)=>{{"
+        "if(name!=='decision-pending'||retiring)return;retiring=true;"
+        "await w.terminate();"
+        "try{require('child_process').spawnSync('molt-proof-release-pending-decision')}catch(_){}"
+        "watch.close();});"
+        f"const w=new Worker({json.dumps(worker)},{{eval:true}});w.on('error',()=>{{}});"
+    )
+    completed, receipt = _run_node(root, authorities=[])
+
+    assert completed.returncode == 0, completed.stderr
+    assert released.is_set()
+    assert any(e["event"] == "node-worker-exit" for e in receipt["events"])
+    assert any("retained unfinished child decision" in e for e in receipt["errors"])
+    assert receipt["broker_complete"] is False
+    assert not execution_custody.child_receipt_is_admitted(receipt)
+
+
+def test_node_synthetic_exit_cannot_replace_actual_worker_exit() -> None:
+    worker = (
+        "const {parentPort}=require('worker_threads');parentPort.postMessage('ready');"
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);"
+    )
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');"
+        f"const w=new Worker({json.dumps(worker)},{{eval:true}});"
+        "w.once('message',()=>{w.emit('exit',0);w.terminate()});",
+        authorities=[],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert receipt["broker_complete"] is True
+    assert any(
+        e.get("reason") == "unobserved-or-duplicate-worker-exit"
+        for e in receipt["violations"]
+    )
+    assert not execution_custody.child_receipt_is_admitted(receipt)
+
+
+def test_node_worker_receipt_rejects_forged_or_mismatched_lifetime() -> None:
+    completed, receipt = _run_node(
+        "const {Worker}=require('worker_threads');new Worker('',{eval:true});",
+        authorities=[],
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    events = receipt["events"]
+    exit_index = next(
+        i for i, e in enumerate(events) if e["event"] == "node-worker-exit"
+    )
+    start_index = next(
+        i for i, e in enumerate(events) if e["event"] == "node-worker-start"
+    )
+    child_index = next(
+        i
+        for i, e in enumerate(events)
+        if e["event"] == "hook-start" and e["thread_id"] != 0
+    )
+    for index, field, value in (
+        (exit_index, "connection_id", events[child_index]["connection_id"]),
+        (exit_index, "pid", events[exit_index]["pid"] + 1),
+        (exit_index, "thread_id", events[child_index]["thread_id"]),
+        (exit_index, "child_thread_id", events[exit_index]["child_thread_id"] + 1),
+        (exit_index, "exit_code", None),
+        (child_index, "pid", events[child_index]["pid"] + 1),
+        (child_index, "thread_id", events[child_index]["thread_id"] + 1),
+        (child_index, "parent_connection_id", events[child_index]["connection_id"]),
+    ):
+        forged = copy.deepcopy(receipt)
+        forged["events"][index][field] = value
+        assert not execution_custody.child_receipt_is_admitted(forged), (index, field)
+    for index in (exit_index, start_index):
+        missing = copy.deepcopy(receipt)
+        del missing["events"][index]
+        assert not execution_custody.child_receipt_is_admitted(missing)
+        duplicate = copy.deepcopy(receipt)
+        duplicate["events"].insert(index, copy.deepcopy(events[index]))
+        assert not execution_custody.child_receipt_is_admitted(duplicate)
