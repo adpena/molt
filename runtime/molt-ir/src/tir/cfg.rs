@@ -57,7 +57,8 @@ pub struct CFG {
     /// own the actual transfer, so region membership must not invent blanket
     /// block-to-handler edges. A transfer back to its own block is an ordinary
     /// member of this relation: liveness, SSA placement, and edge arguments
-    /// must all observe the same re-entry.
+    /// must all observe the same re-entry. Sorted by source block; each source
+    /// has at most one target because every authored transfer ends its block.
     pub exception_edges: Vec<(usize, usize)>,
     /// Resume edges projected from the canonical operation-level dispatch
     /// relation. Entries are `(dispatch_block, resume_block, saved_state_id)`.
@@ -730,6 +731,16 @@ impl CFG {
         }
     }
 
+    /// Resolve the authored transfer of a source block from the same relation
+    /// used by liveness and SSA placement. Invocation-entry insertion preserves
+    /// the sorted source IDs and shifts both endpoints together.
+    pub(super) fn exception_target(&self, source_block: usize) -> Option<usize> {
+        self.exception_edges
+            .binary_search_by_key(&source_block, |&(source, _)| source)
+            .ok()
+            .map(|index| self.exception_edges[index].1)
+    }
+
     /// Exact executable operation dominance, projected from the canonical
     /// before/after program-point graph. Handler registrations do not execute
     /// their targets, and resume edges leave at dispatch rather than block tail.
@@ -850,11 +861,58 @@ mod tests {
                 cfg.exception_edges,
                 vec![(first, handler), (second, handler)]
             );
+            assert_eq!(cfg.exception_target(first), Some(handler));
+            assert_eq!(cfg.exception_target(second), Some(handler));
+            assert_eq!(cfg.exception_target(success), None);
+            for block in &cfg.blocks {
+                let transfers = ops[block.start_op..block.end_op]
+                    .iter()
+                    .filter(|op| {
+                        matches!(
+                            op.kind.as_str(),
+                            "check_exception" | "async_work_poll" | "try_start"
+                        )
+                    })
+                    .count();
+                assert!(transfers <= 1, "{kind}: one authored transfer per block");
+            }
             assert_eq!(
                 cfg.execution_op_dominators(&ops)[6],
                 (kind != "try_start").then_some(1),
                 "{kind}: only observations execute a handler; no later definition can dominate it"
             );
+        }
+    }
+
+    #[test]
+    fn exception_lookup_uses_cfg_targets_while_admission_rejects_duplicate_labels() {
+        for last_label_kind in ["label", "state_label"] {
+            let ops = vec![
+                op_val("check_exception", 7),
+                op("ret_void"),
+                op_val("label", 7),
+                op("ret_void"),
+                op_val(last_label_kind, 7),
+                op("ret_void"),
+            ];
+            // Low-level CFG construction already resolves the last definition;
+            // its consumers must not independently select the first one.
+            let cfg = CFG::build(&ops);
+            assert_eq!(cfg.exception_edges, vec![(0, 3)]);
+            assert_eq!(cfg.exception_target(0), Some(3));
+            assert_eq!(cfg.blocks[3].start_op, 4);
+            assert_eq!(cfg.exception_target(1), None);
+            let ir = crate::SimpleIR {
+                functions: vec![crate::FunctionIR {
+                    name: "duplicate_labels".into(),
+                    return_abi: crate::FunctionReturnAbi::Void,
+                    ops,
+                    ..crate::FunctionIR::default()
+                }],
+                profile: None,
+            };
+            let error = crate::simple_verify::validate_simple_ir_control_flow(&ir).unwrap_err();
+            assert!(error.contains("duplicate-label-definition"), "{error}");
         }
     }
 
@@ -896,6 +954,10 @@ mod tests {
             let block = block_containing(&cfg.blocks, 2).expect("transfer block");
             assert_eq!(cfg.blocks[block].start_op, 0, "{kind}");
             assert_eq!(cfg.exception_edges, vec![(block, block)], "{kind}");
+            assert_eq!(cfg.blocks[0].start_op, cfg.blocks[0].end_op);
+            assert_eq!(block, 1, "{kind}: source shifted past invocation");
+            assert_eq!(cfg.exception_target(0), None);
+            assert_eq!(cfg.exception_target(block), Some(block));
         }
     }
 

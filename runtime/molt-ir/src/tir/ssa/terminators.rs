@@ -1,15 +1,6 @@
 use super::*;
 use std::collections::HashMap;
 impl<'a> SsaContext<'a> {
-    pub(super) fn block_for_label(&self, label_id: i64) -> Option<usize> {
-        self.cfg.blocks.iter().enumerate().find_map(|(bid, block)| {
-            let has_label = (block.start_op..block.end_op).any(|op_idx| {
-                let op = &self.ops[op_idx];
-                matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(label_id)
-            });
-            has_label.then_some(bid)
-        })
-    }
     pub(super) fn build_terminator(
         &mut self,
         bid: usize,
