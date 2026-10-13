@@ -66,8 +66,8 @@ class PruneCompleted(TypedDict):
     legacy_native_state: list[str]
 
 
-class PruneBusy(TypedDict):
-    status: Literal["busy"]
+class PruneSkipped(TypedDict):
+    status: Literal["busy", "recent"]
     cache_root: str
 
 
@@ -166,10 +166,12 @@ class _LegacyStandaloneNames:
         )
 
 
-def _collect_entries(cache_root: Path) -> list[CacheEntry]:
+def _collect_entries(
+    cache_root: Path, *, environ: Mapping[str, str] | None = None
+) -> list[CacheEntry]:
     cache_root = cache_root.resolve(strict=False)
     entries: list[CacheEntry] = []
-    protected = protected_cache_roots(cache_root)
+    protected = protected_cache_roots(cache_root, environ=environ)
     if cache_root in protected:
         return entries
 
@@ -317,9 +319,10 @@ def _prune_locked(
     max_bytes: int | None,
     max_age_days: int | None,
     dry_run: bool,
+    environ: Mapping[str, str] | None = None,
 ) -> PruneCompleted:
     started = time.monotonic()
-    entries = _collect_entries(cache_root)
+    entries = _collect_entries(cache_root, environ=environ)
     inventory_elapsed = time.monotonic() - started
     before_bytes = sum(item.size_bytes for item in entries)
     remaining = {entry.path: entry for entry in entries}
@@ -368,7 +371,9 @@ def _prune_locked(
         "bytes_remaining": sum(item.size_bytes for item in remaining.values()),
         "bytes_removed": removed_bytes,
         "bytes_removed_human": _format_bytes(removed_bytes),
-        "protected_state": [str(path) for path in protected_cache_roots(cache_root)],
+        "protected_state": [
+            str(path) for path in protected_cache_roots(cache_root, environ=environ)
+        ],
         "legacy_native_state": [
             str(path) for path in _children(cache_root) if _legacy_native_entry(path)
         ]
@@ -421,12 +426,17 @@ def _prune(
     max_bytes: int | None,
     max_age_days: int | None,
     dry_run: bool,
-) -> PruneCompleted | PruneBusy:
+    automatic: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> PruneCompleted | PruneSkipped:
     """Serialize inventory/eviction across every entry point without waiting.
 
-    The persistent control lock also records the last completed inventory. No
-    extra registry is needed. Dry runs neither create nor update control state.
+    The persistent control lock records automatic attempts and completed sweeps.
+    Automatic callers coalesce here before inventory, including failed attempts.
+    Explicit sweeps are unthrottled; dry runs do not change control state.
     """
+    if automatic and dry_run:
+        raise ValueError("automatic cache retention cannot be a dry run")
     lock_path = cache_control_root(cache_root) / "prune.lock"
     try:
         handle = _try_acquire_file_lock(lock_path, create=not dry_run)
@@ -434,17 +444,39 @@ def _prune(
         if not dry_run:
             raise
         return _prune_locked(
-            cache_root, max_bytes=max_bytes, max_age_days=max_age_days, dry_run=True
+            cache_root,
+            max_bytes=max_bytes,
+            max_age_days=max_age_days,
+            dry_run=True,
+            environ=environ,
         )
     if handle is None:
         return {"status": "busy", "cache_root": str(cache_root)}
     try:
         with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
+            if automatic:
+                now = time.time()
+                handle.file.seek(0)
+                stamp = handle.file.read(64)
+                if stamp:
+                    try:
+                        elapsed = now - float(stamp)
+                    except ValueError:
+                        elapsed = AUTOMATIC_PRUNE_INTERVAL_SECONDS
+                    if 0 <= elapsed < AUTOMATIC_PRUNE_INTERVAL_SECONDS:
+                        return {"status": "recent", "cache_root": str(cache_root)}
+                # Persist admission before inventory so a failed or interrupted
+                # sweep is not immediately repeated by another completed proof.
+                handle.file.seek(0)
+                handle.file.write(str(now).encode("ascii"))
+                handle.file.truncate()
+                handle.file.flush()
             result = _prune_locked(
                 cache_root,
                 max_bytes=max_bytes,
                 max_age_days=max_age_days,
                 dry_run=dry_run,
+                environ=environ,
             )
             if not dry_run:
                 handle.file.seek(0)

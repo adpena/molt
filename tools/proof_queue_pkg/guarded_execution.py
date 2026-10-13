@@ -31,12 +31,13 @@ if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
         _loaded_molt.__path__.insert(0, _local_molt_root)
 
 from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E402
-from molt import file_locks  # noqa: E402
+from molt import cache_eviction, default_paths, file_locks, file_publication  # noqa: E402
 from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
+    cache_retention,
     command_admission as admission,
     command_identity,
     cargo_cache_custody,
@@ -602,6 +603,10 @@ def execute_guarded_request(request_path: Path) -> int:
             Path(command_identity.__file__).resolve(strict=True),
             Path(environment.__file__).resolve(strict=True),
             Path(file_locks.__file__).resolve(strict=True),
+            Path(cache_retention.__file__).resolve(strict=True),
+            Path(cache_eviction.__file__).resolve(strict=True),
+            Path(default_paths.__file__).resolve(strict=True),
+            Path(file_publication.__file__).resolve(strict=True),
             Path(supervisor.__file__).resolve(strict=True),
             supervisor_binary,
         ]
@@ -1171,6 +1176,20 @@ def execute_guarded_request(request_path: Path) -> int:
         command_identity.validate_structured_test_counts(
             envelope, transcript, returncode=int(completed.returncode)
         )
+        # The payload has closed, but this controller remains inside the same
+        # memory guard and live input custody. Retention starts no new process
+        # or supervisor. Actual timeout/OOM/custody failures still fail the run.
+        if (
+            supervisor.supervisor_receipt_is_complete(supervisor_receipt)
+            and time.monotonic() < execution_deadline - shutdown_reserve
+        ):
+            retention = cache_retention.prune_after_payload(execution_env)
+            if retention is not None:
+                result["cache_retention"] = retention
+                print(
+                    "cache retention: " + json.dumps(retention, sort_keys=True),
+                    flush=True,
+                )
         custody_session.mark_verifying()
         post_source = environment._git_snapshot(effective_cwd, execution_env)
         if verify_source_content is not None:

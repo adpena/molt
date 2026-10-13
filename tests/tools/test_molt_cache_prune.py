@@ -648,214 +648,135 @@ def test_frontend_retention_evicts_old_immutable_leaves_to_budget(tmp_path, fami
 
 
 @pytest.fixture
-def retention_queue(tmp_path, monkeypatch):
-    from argparse import Namespace
-    from tools.proof_queue_pkg import cache_retention, scheduling, state
+def retention_cache(tmp_path):
+    from tools.proof_queue_pkg import cache_retention
 
-    repo = tmp_path / "source"
-    (repo / "tools").mkdir(parents=True)
-    (repo / "tools/proof_queue.py").write_text("# source queue boundary\n")
     cache = tmp_path / "cache"
-    cache.mkdir()
-    logs = tmp_path / "runs"
-    logs.mkdir()
-    args = Namespace(
-        repo_root=str(repo),
-        db=str(tmp_path / "queue.sqlite3"),
-        logs_root=str(logs),
-        queue_size=2,
-    )
-    conn = state._connect(Path(args.db))
-    scheduling._insert_run(
-        conn,
-        run_id="completed-proof",
-        logical_id="runtime.control",
-        reason="independent parent evidence",
-        command=[sys.executable, "-c", "pass"],
-        cwd=repo,
-        resource_family="python",
-        contention_key="python:control",
-        scopes=[],
-        git_snapshot={"head": "previous-proof-admission"},
-        log_path=logs / "parent.log",
-        summary_json=logs / "parent.json",
-    )
-    state._update_run(
-        conn,
-        "completed-proof",
-        status="passed",
-        returncode=0,
-        finished_at=state._utc_now(),
-    )
-    launches = []
-    monkeypatch.setattr(
-        cache_retention.runner,
-        "_dispatch_detached_runner",
-        lambda *args, **kwargs: launches.append(kwargs["run_id"]),
-    )
-    # Admission must reuse recorded queue facts; no repository or cache walk.
-    monkeypatch.setattr(
-        state, "_git_snapshot", lambda *_args: pytest.fail("admission scanned source")
-    )
-    monkeypatch.setattr(
-        _load_molt_cache_prune(),
-        "_collect_entries",
-        lambda *_args: pytest.fail("admission scanned cache"),
-    )
+    (cache / "module_lowering").mkdir(parents=True)
+    entry = cache / "module_lowering/entry.json"
+    entry.write_bytes(b"old immutable cache payload")
+    os.utime(entry, (1, 1))
     env = {
         "MOLT_CACHE": str(cache),
         "MOLT_CACHE_PRUNE": "1",
-        "MOLT_CACHE_MAX_GB": "30",
+        "MOLT_CACHE_MAX_GB": "0",
         "MOLT_CACHE_MAX_AGE_DAYS": "30",
     }
-    try:
-        yield cache_retention, args, conn, env, launches
-    finally:
-        conn.close()
+    return cache_retention, cache, entry, env
 
 
-def test_queue_retention_coalesces_pending_work_and_preserves_parent(retention_queue):
-    module, args, conn, env, launches = retention_queue
-    parent = tuple(
-        conn.execute(
-            "SELECT * FROM proof_runs WHERE run_id='completed-proof'"
-        ).fetchone()
-    )
-    first = module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
-    second = module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
-    assert first and second == first
-    rows = conn.execute(
-        "SELECT * FROM proof_runs WHERE logical_id=?", (module.LOGICAL_ID,)
-    ).fetchall()
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["status"] == "queued"
-    assert json.loads(row["command_json"])[1:3] == ["-m", "molt.cache_eviction"]
-    assert json.loads(row["env_json"])["MOLT_CACHE"] == env["MOLT_CACHE"]
-    assert launches == [first, first]  # queued capacity refusal is retried, no new row
-    assert (
-        tuple(
-            conn.execute(
-                "SELECT * FROM proof_runs WHERE run_id='completed-proof'"
-            ).fetchone()
+def test_retention_coalesces_under_canonical_lock_and_explicit_prune_is_unthrottled(
+    retention_cache, monkeypatch
+):
+    module, cache, entry, env = retention_cache
+    first = module.prune_after_payload(env)
+    assert first["status"] == "completed" and first["entries_removed"] == 1
+    assert not entry.exists()
+    entry.write_bytes(b"published after the sweep")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            _load_molt_cache_prune(),
+            "_collect_entries",
+            lambda *_args, **_kwargs: pytest.fail(
+                "recent automatic sweep must not inventory"
+            ),
         )
-        == parent
+        assert module.prune_after_payload(dict(env))["status"] == "recent"
+    assert entry.exists()
+    result = _load_molt_cache_prune()._prune(
+        cache, max_bytes=0, max_age_days=None, dry_run=False
     )
-    assert (
-        module.schedule_after_proof(args, conn, completed_run_id=first, environ=env)
-        is None
-    )
+    assert result["entries_removed"] == 1 and not entry.exists()
 
 
-def test_queue_retention_busy_custody_never_waits_or_inventories(retention_queue):
+def test_retention_protects_home_and_bin_from_its_supplied_environment(
+    retention_cache, monkeypatch
+):
+    from molt.default_paths import backend_cache_artifact_filename
+
+    module, cache, home_entry, env = retention_cache
+    bin_root = cache / "module_analysis"
+    bin_root.mkdir()
+    bin_entry = bin_root / "installed.json"
+    bin_entry.write_bytes(b"selected executable state")
+    evictable = cache / backend_cache_artifact_filename(
+        "a" * 64 + "|artifact:" + "b" * 64, ".a"
+    )
+    evictable.write_bytes(b"optional archive")
+    monkeypatch.setenv("MOLT_HOME", str(cache / "ambient-home"))
+    monkeypatch.setenv("MOLT_BIN", str(cache / "ambient-bin"))
+    ambient = dict(os.environ)
+    selected = {
+        **env,
+        "MOLT_HOME": str(home_entry.parent),
+        "MOLT_BIN": str(bin_root),
+    }
+    result = module.prune_after_payload(selected)
+    assert result["entries_removed"] == 1
+    assert not evictable.exists()
+    assert home_entry.read_bytes() == b"old immutable cache payload"
+    assert bin_entry.read_bytes() == b"selected executable state"
+    assert dict(os.environ) == ambient
+
+
+def test_retention_busy_custody_never_waits_or_inventories(
+    retention_cache, monkeypatch
+):
     from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 
-    module, args, conn, env, launches = retention_queue
-    lock = _try_acquire_file_lock(Path(env["MOLT_CACHE"]) / "locks/prune.lock")
+    module, cache, entry, env = retention_cache
+    lock = _try_acquire_file_lock(cache / "locks/prune.lock")
     assert lock is not None
     try:
-        assert (
-            module.schedule_after_proof(
-                args, conn, completed_run_id="completed-proof", environ=env
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                _load_molt_cache_prune(),
+                "_collect_entries",
+                lambda *_args, **_kwargs: pytest.fail("busy sweep must not inventory"),
             )
-            is None
-        )
-        assert not launches
+            assert module.prune_after_payload(env)["status"] == "busy"
+        assert entry.exists()
     finally:
         _release_file_lock(lock)
-    assert module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
+    assert module.prune_after_payload(env)["entries_removed"] == 1
 
 
-def test_queue_retention_database_contention_is_nonblocking_and_recoverable(
-    retention_queue, capsys
+def test_retention_throttles_failed_attempt_and_obeys_optout(
+    retention_cache, monkeypatch
 ):
-    import sqlite3
-
-    module, args, conn, env, launches = retention_queue
-    original_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-    with sqlite3.connect(args.db) as owner:
-        owner.execute("BEGIN IMMEDIATE")
-        assert (
-            module.schedule_after_proof(
-                args, conn, completed_run_id="completed-proof", environ=env
-            )
-            is None
-        )
-        assert "proof result unchanged" in capsys.readouterr().err
-        assert not launches
-        owner.rollback()
-    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == original_timeout
-    assert module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
-
-
-def test_queue_retention_throttles_failed_attempt_and_obeys_optout(
-    retention_queue, monkeypatch
-):
-    module, args, conn, env, launches = retention_queue
+    module, cache, entry, env = retention_cache
+    pruner = _load_molt_cache_prune()
     now = time.time()
-    monkeypatch.setattr(module.time, "time", lambda: now)
-    first = module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
-    assert first
-    conn.execute(
-        "UPDATE proof_runs SET status='failed', returncode=2 WHERE run_id=?", (first,)
-    )
-    conn.commit()
-    assert (
-        module.schedule_after_proof(
-            args, conn, completed_run_id="completed-proof", environ=env
-        )
-        is None
-    )
+    monkeypatch.setattr(pruner.time, "time", lambda: now)
+    with monkeypatch.context() as patch:
+
+        def fail(_root, **_kwargs):
+            raise OSError("inventory unavailable")
+
+        patch.setattr(pruner, "_collect_entries", fail)
+        first = module.prune_after_payload(env)
+    assert first == {"status": "failed", "error": "OSError: inventory unavailable"}
+    assert module.prune_after_payload(env)["status"] == "recent"
     monkeypatch.setattr(
-        module.time, "time", lambda: now + module.AUTOMATIC_PRUNE_INTERVAL_SECONDS
+        pruner.time, "time", lambda: now + pruner.AUTOMATIC_PRUNE_INTERVAL_SECONDS
     )
-    assert (
-        module.schedule_after_proof(
-            args,
-            conn,
-            completed_run_id="completed-proof",
-            environ={**env, "MOLT_CACHE_PRUNE": "0"},
-        )
-        is None
-    )
-    second = module.schedule_after_proof(
-        args, conn, completed_run_id="completed-proof", environ=env
-    )
-    assert second and second != first
+    assert module.prune_after_payload({**env, "MOLT_CACHE_PRUNE": "0"}) is None
+    assert entry.exists()
+    assert module.prune_after_payload(env)["entries_removed"] == 1
 
 
-def test_queue_retention_pending_lookup_uses_index_not_history_scan(retention_queue):
-    module, args, conn, env, _launches = retention_queue
-    statements = []
-    conn.set_trace_callback(statements.append)
-    try:
-        assert module.schedule_after_proof(
-            args, conn, completed_run_id="completed-proof", environ=env
-        )
-    finally:
-        conn.set_trace_callback(None)
-    # Explain the query actually executed by admission against the canonical
-    # schema, not a separately maintained spelling or a mocked SQL consumer.
-    query = next(
-        sql
-        for sql in statements
-        if sql.startswith("SELECT run_id, status FROM proof_runs WHERE contention_key")
-    )
-    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
-    assert any("SEARCH proof_runs USING INDEX" in step for step in plan), plan
-    assert not any(
-        "SCAN proof_runs" in step or "TEMP B-TREE" in step for step in plan
-    ), plan
+@pytest.mark.parametrize("failure", [MemoryError, KeyboardInterrupt])
+def test_retention_does_not_swallow_resource_or_cancellation_failure(
+    retention_cache, monkeypatch, failure
+):
+    module, _cache, _entry, env = retention_cache
+
+    def fail(_root, **_kwargs):
+        raise failure("guarded operation interrupted")
+
+    monkeypatch.setattr(_load_molt_cache_prune(), "_collect_entries", fail)
+    with pytest.raises(failure, match="guarded operation interrupted"):
+        module.prune_after_payload(env)
 
 
 def test_pruner_selects_completed_backend_files_and_preserves_mutable_namespaces(
