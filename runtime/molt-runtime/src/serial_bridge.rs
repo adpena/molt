@@ -827,7 +827,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     runtime_state_get_or_init: bridge_runtime_state_get_or_init,
     raise_exception: bridge_raise_exception,
     exception_pending: bridge_exception_pending,
-    exception_new_from_class: crate::molt_exception_new_from_class,
+    exception_new_from_class: crate::builtins::exceptions::molt_exception_new_from_class,
     alloc_tuple: bridge_alloc_tuple,
     alloc_list: bridge_alloc_list,
     alloc_string: bridge_alloc_string,
