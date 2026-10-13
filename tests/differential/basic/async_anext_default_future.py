@@ -1,6 +1,7 @@
 """Purpose: differential coverage for async anext default future."""
 
 import asyncio
+import sys
 
 
 class AsyncIter:
@@ -90,3 +91,69 @@ async def termination_identity():
 
 
 asyncio.run(termination_identity())
+
+
+class ImmediateIterator:
+    def __aiter__(self):
+        return self
+
+    def __init__(self, error):
+        self.error = error
+
+    def __anext__(self):
+        raise self.error
+
+
+async def anext_with_handled_owner():
+    outer = RuntimeError("handled")
+    try:
+        raise outer
+    except RuntimeError:
+        # Both successful await and consumed termination preserve the handler.
+        it = AsyncIter()
+        print("handled-anext-value", await anext(it, 99), sys.exception() is outer)
+        print(
+            "handled-anext-default",
+            await anext(FailingIterator(DerivedStop("done")), 99),
+            sys.exception() is outer,
+        )
+        immediate = ValueError("immediate")
+        try:
+            await anext(ImmediateIterator(immediate), 88)
+        except ValueError as caught:
+            print(
+                "handled-anext-immediate",
+                caught is immediate,
+                caught.__context__ is outer,
+            )
+        print("handled-anext-immediate-restored", sys.exception() is outer)
+        immediate_stop = DerivedStop("immediate stop")
+        try:
+            await anext(ImmediateIterator(immediate_stop), 88)
+        except DerivedStop as caught:
+            print(
+                "handled-anext-immediate-stop",
+                caught is immediate_stop,
+                caught.__context__ is outer,
+            )
+        else:
+            print("handled-anext-immediate-stop", False)
+        print("handled-anext-immediate-stop-restored", sys.exception() is outer)
+        async for value in ImmediateIterator(DerivedStop("loop stop")):
+            print("immediate-loop-unreachable", value)
+        else:
+            print("immediate-loop-consumed", sys.exception() is outer)
+        values = [
+            value
+            async for value in ImmediateIterator(DerivedStop("comprehension stop"))
+        ]
+        print("immediate-comprehension-consumed", values, sys.exception() is outer)
+        inner = ValueError("pending")
+        try:
+            await anext(FailingIterator(inner), 77)
+        except ValueError as caught:
+            print("handled-anext-error", caught is inner, caught.__context__ is outer)
+        print("handled-anext-restored", sys.exception() is outer)
+
+
+asyncio.run(anext_with_handled_owner())

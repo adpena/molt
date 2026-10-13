@@ -2530,7 +2530,7 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
 /// (StopIteration/IndexError) but propagate every other exception unchanged.
 ///
 /// `exc_bits` is borrowed by this helper; callers that obtained it from
-/// `molt_exception_last()` still own that reference and must release it.
+/// `molt_exception_last_pending()` still own that reference and must release it.
 pub(crate) fn exception_stack_pop_restore_last(_py: &PyToken<'_>, exc_bits: u64) {
     exception_stack_pop(_py);
     if !obj_from_bits(exc_bits).is_none() && exc_bits != 0 {
@@ -6300,25 +6300,64 @@ mod tests {
     fn exception_last_pending_ignores_active_handler_context() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let outer_ptr = alloc_exception(_py, "ValueError", "outer");
-            let outer_bits = MoltObject::from_ptr(outer_ptr).bits();
-            let inner_ptr = alloc_exception(_py, "TypeError", "inner");
-            let inner_bits = MoltObject::from_ptr(inner_ptr).bits();
-
-            exception_stack_push();
-            exception_context_set(_py, outer_bits);
-            record_exception(_py, inner_ptr);
-
-            let pending_bits = exception_last_pending_bits(_py);
-            assert_eq!(pending_bits, inner_bits);
-            assert!(exception_pending(_py));
-            dec_ref_bits(_py, pending_bits);
-
-            exception_context_set(_py, MoltObject::none().bits());
-            clear_exception(_py);
-            exception_stack_pop(_py);
-            dec_ref_bits(_py, inner_bits);
-            dec_ref_bits(_py, outer_bits);
+            let task = Box::into_raw(Box::new(0_u8));
+            assert!(super::task_raised_slot_admit(_py, task));
+            for current in [std::ptr::null_mut(), task] {
+                let previous = crate::replace_current_task(_py, current);
+                let outer_ptr = alloc_exception(_py, "ValueError", "outer");
+                let outer_bits = MoltObject::from_ptr(outer_ptr).bits();
+                exception_stack_push();
+                exception_context_set(_py, outer_bits);
+                for raise in [true, false] {
+                    let inner_ptr = alloc_exception(_py, "TypeError", "inner");
+                    let inner_bits = MoltObject::from_ptr(inner_ptr).bits();
+                    // Repeat to cover set_last both without and with traceback.
+                    for _ in 0..2 {
+                        if raise {
+                            super::molt_raise(inner_bits);
+                        } else {
+                            super::molt_exception_set_last(inner_bits);
+                        }
+                        let pending_bits = exception_last_pending_bits(_py);
+                        assert_eq!(pending_bits, inner_bits);
+                        assert!(exception_pending(_py));
+                        assert_eq!(super::exception_context_active_bits(), Some(outer_bits));
+                        assert_eq!(
+                            super::exception_field(
+                                _py,
+                                inner_bits,
+                                super::ExceptionFieldSlot::Context
+                            )
+                            .unwrap()
+                            .bits(),
+                            outer_bits,
+                        );
+                        dec_ref_bits(_py, pending_bits);
+                        clear_exception(_py);
+                        assert!(!exception_pending(_py));
+                        assert_eq!(super::exception_context_active_bits(), Some(outer_bits));
+                    }
+                    // Only explicit handler entry changes the handled owner.
+                    super::molt_raise(inner_bits);
+                    exception_stack_push();
+                    let handled =
+                        super::exception_state_abi::molt_exception_enter_handler(inner_bits);
+                    assert_eq!(handled, inner_bits);
+                    assert!(!exception_pending(_py));
+                    assert_eq!(super::exception_context_active_bits(), Some(inner_bits));
+                    exception_stack_pop(_py);
+                    assert_eq!(super::exception_context_active_bits(), Some(outer_bits));
+                    dec_ref_bits(_py, handled);
+                    dec_ref_bits(_py, inner_bits);
+                }
+                exception_stack_pop(_py);
+                dec_ref_bits(_py, outer_bits);
+                crate::replace_current_task(_py, previous);
+            }
+            super::task_raised_slot_forget(_py, task);
+            unsafe {
+                drop(Box::from_raw(task));
+            }
         });
     }
 

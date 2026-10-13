@@ -1023,7 +1023,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     self._emit_exception_handler_exit_cleanup(exc_entry)
                 self.active_exceptions.pop()
                 raised_exc = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=raised_exc))
+                self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=raised_exc))
                 raised_is_none = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
