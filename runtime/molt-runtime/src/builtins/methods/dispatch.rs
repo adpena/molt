@@ -110,6 +110,8 @@ native_method_families! {
 fn io_class(py: &PyToken<'_>, class: u64) -> bool {
     let b = builtin_classes(py);
     [
+        b.io_base,
+        b.raw_io_base,
         b.file,
         b.file_io,
         b.buffered_io_base,

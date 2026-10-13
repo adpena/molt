@@ -611,8 +611,8 @@ pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::inspect::*;
+pub(crate) use crate::builtins::io::path_from_bits;
 pub use crate::builtins::io::*;
-pub(crate) use crate::builtins::io::{file_handle_enter, file_handle_exit, path_from_bits};
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;

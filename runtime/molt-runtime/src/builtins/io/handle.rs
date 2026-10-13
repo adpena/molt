@@ -310,34 +310,6 @@ pub(crate) unsafe fn file_handle_close_detached(
     }
 }
 
-pub(crate) unsafe fn file_handle_enter(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
-    unsafe {
-        let bits = MoltObject::from_ptr(ptr).bits();
-        let handle_ptr = file_handle_ptr(ptr);
-        if !handle_ptr.is_null() {
-            let handle = &mut *handle_ptr;
-            if let Err(bits) = file_handle_require_attached(_py, handle) {
-                return bits;
-            }
-            if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-            }
-            handle.closed = false;
-        }
-        inc_ref_bits(_py, bits);
-        bits
-    }
-}
-
-pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits: u64) -> u64 {
-    let result = molt_file_close(MoltObject::from_ptr(ptr).bits());
-    if exception_pending(_py) {
-        result
-    } else {
-        MoltObject::from_bool(false).bits()
-    }
-}
-
 pub(crate) fn file_handle_detached_message(handle: &MoltFileHandle) -> &'static str {
     if handle.text {
         "underlying buffer has been detached"
@@ -361,9 +333,26 @@ pub(crate) fn file_handle_require_attached(
     }
 }
 
-pub(crate) fn file_handle_is_closed(handle: &MoltFileHandle) -> bool {
-    if handle.closed {
-        return true;
+pub(crate) fn file_handle_is_closed(mut handle: &MoltFileHandle) -> bool {
+    // Fresh wrapper and lazy-raw publication form an acyclic native owner
+    // chain; detach only removes an edge. A host-owned leaf can close logically
+    // while its shared backend stays alive. Read that existing owner directly
+    // rather than cache a second closed fact in every enclosing wrapper.
+    loop {
+        if handle.closed {
+            return true;
+        }
+        let child = obj_from_bits(handle.buffer_bits).as_ptr();
+        let Some(child) =
+            child.filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_FILE_HANDLE })
+        else {
+            break;
+        };
+        let child = unsafe { file_handle_ptr(child) };
+        if child.is_null() {
+            break;
+        }
+        handle = unsafe { &*child };
     }
     Arc::clone(&handle.state).backend.lock().unwrap().is_none()
 }

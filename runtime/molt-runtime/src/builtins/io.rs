@@ -42,7 +42,7 @@ use handle::{
 };
 pub(crate) use handle::{
     file_handle_close_detached, file_handle_close_ptr, file_handle_detached_message,
-    file_handle_enter, file_handle_exit, file_handle_is_closed, file_handle_require_attached,
+    file_handle_is_closed, file_handle_require_attached,
 };
 #[path = "io/text.rs"]
 mod text;
@@ -74,9 +74,11 @@ pub use read::{
 };
 #[path = "io/write.rs"]
 mod write;
+pub(crate) use write::{io_base_close, io_base_flush};
 pub use write::{molt_file_close, molt_file_flush, molt_file_write, molt_file_writelines};
 #[path = "io/control.rs"]
 mod control;
+pub(crate) use control::{io_base_check_closed, io_base_exit, io_base_finalize};
 pub use control::{
     molt_file_detach, molt_file_enter, molt_file_exit, molt_file_exit_method, molt_file_fileno,
     molt_file_isatty, molt_file_iter, molt_file_next, molt_file_readable, molt_file_reconfigure,
@@ -87,6 +89,62 @@ pub use control::{
 mod attributes;
 pub(crate) use attributes::io_publish_members;
 pub use attributes::molt_io_member_get;
+
+// IOBase's marker is an ordinary attribute: its presence, even with a false
+// value, closes the base protocol independently of a concrete stream's backend.
+fn io_base_is_closed(py: &PyToken<'_>, object: u64) -> Result<bool, u64> {
+    let Some(name) = attr_name_bits_from_bytes(py, b"__IOBase_closed") else {
+        return Err(MoltObject::none().bits());
+    };
+    let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+    let value = crate::builtins::platform::getattr_optional_bits(py, object, name)?;
+    if let Some(value) = value {
+        dec_ref_bits(py, value);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+// Ordinary attribute lookup deliberately honors instance and subclass overrides.
+// The callable is owned, and no file backing borrow or lock crosses the call.
+fn io_call_noargs(py: &PyToken<'_>, object: u64, name: &[u8]) -> u64 {
+    let Some(name) = attr_name_bits_from_bytes(py, name) else {
+        return MoltObject::none().bits();
+    };
+    let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+    let callable = molt_getattr_builtin(object, name, missing_bits(py));
+    let _callable = obj_from_bits(callable).as_ptr().map(PtrDropGuard::new);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    unsafe { call_callable0(py, callable) }
+}
+
+// Close has two fallible phases. The second failure owns the raised indicator
+// and chains the first; otherwise restore the first error after retirement.
+fn io_chain_close_error(py: &PyToken<'_>, previous: crate::builtins::exceptions::RaisedSnapshot) {
+    use crate::builtins::exceptions::{
+        ExceptionFieldSlot, RaisedSnapshot, exception_replace_field_bits, resolve_raised,
+        take_raised,
+    };
+    let prior = match previous {
+        RaisedSnapshot::None => return,
+        RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => bits,
+    };
+    let current = take_raised(py);
+    match current {
+        RaisedSnapshot::None => resolve_raised(py, &mut Some(previous)),
+        RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits) => {
+            // CPython's close chain retains even an explicitly repeated error
+            // as its own context; both values are canonical raised owners.
+            exception_replace_field_bits(py, bits, ExceptionFieldSlot::Context, prior)
+                .expect("raised IO errors must admit exception context");
+            resolve_raised(py, &mut Some(current));
+            dec_ref_bits(py, prior);
+        }
+    }
+}
 
 const DEFAULT_BUFFER_SIZE: i64 = 8192;
 
@@ -167,6 +225,105 @@ mod tests {
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
+        use std::sync::atomic::AtomicUsize;
+        static CLOSES: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn close() -> u64 {
+            CLOSES.fetch_add(1, Ordering::SeqCst);
+            crate::MoltObject::none().bits()
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            CLOSES.store(0, Ordering::SeqCst);
+            // Do not fetch __del__: retirement must discover the declaration
+            // even when no caller has requested that method or class dict.
+            let class = crate::builtin_classes(py).io_base;
+            let stream = unsafe { crate::call_callable0(py, class) };
+            assert!(!crate::exception_pending(py));
+            let method = crate::builtins::methods::alloc_builtin_function(py, fn_addr!(close), 0);
+            let name = io_string(py, "close");
+            crate::molt_setattr_builtin(stream, name, method);
+            assert!(!crate::exception_pending(py));
+            dec_ref_bits(py, method);
+            dec_ref_bits(py, name);
+            let pending = crate::alloc_exception(py, "ValueError", "incoming IO finalization");
+            assert!(!pending.is_null());
+            crate::record_exception(py, pending);
+            dec_ref_bits(py, stream);
+            assert_eq!(CLOSES.load(Ordering::SeqCst), 1);
+            let observed = crate::molt_exception_last_pending();
+            assert_eq!(observed, crate::MoltObject::from_ptr(pending).bits());
+            dec_ref_bits(py, observed);
+            clear_exception(py);
+            dec_ref_bits(py, crate::MoltObject::from_ptr(pending).bits());
+        });
+    }
+
+    #[test]
+    fn buffered_close_observes_borrowed_backend_child_without_retiring_host_owner() {
+        use crate::{MoltObject, object::MoltFileState};
+        use std::sync::{Arc, Mutex};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let classes = crate::builtin_classes(py);
+            for close_child in [false, true] {
+                let path = temp_path("borrowed_close");
+                let state = Arc::new(MoltFileState {
+                    backend: Mutex::new(Some(crate::object::MoltFileBackend::File(
+                        File::create(&path).unwrap(),
+                    ))),
+                    #[cfg(windows)]
+                    crt_fd: Mutex::new(None),
+                    host_descriptor: false,
+                });
+                // The enclosing test owns the backend, just as the WASI host
+                // owns stdio. Neither Python handle may retire that resource.
+                let raw = super::alloc_file_handle_with_state(
+                    py,
+                    Arc::clone(&state),
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    0,
+                    classes.file_io,
+                    MoltObject::none().bits(),
+                    "rb".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    0,
+                    0,
+                );
+                assert!(!raw.is_null());
+                let raw = MoltObject::from_ptr(raw).bits();
+                let buffered = super::molt_buffered_new(
+                    classes.buffered_reader,
+                    raw,
+                    MoltObject::from_int(8).bits(),
+                );
+                assert!(!crate::exception_pending(py));
+                super::molt_file_close(if close_child { raw } else { buffered });
+                assert!(!crate::exception_pending(py));
+                assert!(state.backend.lock().unwrap().is_some());
+                super::molt_file_read(buffered, MoltObject::from_int(1).bits());
+                assert_eq!(io_error(py).0, "ValueError");
+                super::molt_file_close(buffered);
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, buffered);
+                dec_ref_bits(py, raw);
+                assert!(state.backend.lock().unwrap().is_some());
+                drop(state);
+                remove_file(path).unwrap();
+            }
+        });
+    }
 
     fn safe_temp_component(value: &str) -> String {
         value
