@@ -36,8 +36,8 @@ use crate::state::{
 use crate::{
     TYPE_ID_BYTES, alloc_bytes, alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits,
     exception_pending, format_exception_with_traceback, inc_ref_bits, is_truthy,
-    molt_exception_clear, molt_exception_last, molt_module_get_attr, obj_from_bits, object_type_id,
-    ptr_from_bits, runtime_state, string_obj_to_owned, to_i64,
+    molt_exception_clear, molt_exception_last_pending, molt_module_get_attr, obj_from_bits,
+    object_type_id, ptr_from_bits, runtime_state, string_obj_to_owned, to_i64,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -390,7 +390,7 @@ fn log_thread_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    let exc_bits = molt_exception_last();
+    let exc_bits = molt_exception_last_pending();
     if !obj_from_bits(exc_bits).is_none() {
         let exc_ptr = ptr_from_bits(exc_bits);
         if !exc_ptr.is_null() {

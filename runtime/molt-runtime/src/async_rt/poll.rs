@@ -574,7 +574,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             MoltObject::from_ptr(task_ptr).bits(),
         ) && crate::exception_pending(_py)
         {
-            let exception = crate::molt_exception_last();
+            let exception = crate::molt_exception_last_pending();
             crate::clear_exception(_py);
             if result != crate::pending_bits_i64() {
                 crate::dec_ref_bits(_py, result as u64);

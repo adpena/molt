@@ -12,6 +12,9 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import sys
+from email import feedparser as reference_feedparser
+from email.message import Message
+from email._policybase import compat32
 from tests.stdlib_intrinsic_registry import install_registry
 
 
@@ -41,8 +44,50 @@ mime_text_mod = _load_module("molt_test_email_mime_text", {str(STDLIB_ROOT / "em
 
 factory = headerregistry_mod.HeaderRegistry()
 hdr = factory("Subject", "hello")
-parser = feedparser_mod.BytesFeedParser()
-parser.feed(b"abc")
+def _feedparser_results(module):
+    records = []
+    fixtures = (
+        b"Subject: chunked\\r\\n\\r\\nbody\\xff",
+        b"Content-Type: multipart/mixed; boundary=x\\r\\n\\r\\n"
+        b"preamble\\r\\n--x\\r\\nSubject: part\\r\\n\\r\\nbody\\r\\n--x--\\r\\nepilogue",
+    )
+    for source in fixtures:
+        for width in (1, 7, len(source)):
+            parser = module.BytesFeedParser()
+            for offset in range(0, len(source), width):
+                parser.feed(source[offset:offset + width])
+            message = parser.close()
+            records.append((
+                isinstance(message, Message), message.policy is compat32,
+                [(part.items(), part.get_payload(decode=True),
+                  [type(defect).__name__ for defect in part.defects])
+                 for part in message.walk()],
+                message.preamble, message.epilogue,
+            ))
+
+    class CustomMessage(Message):
+        pass
+
+    def legacy_factory():
+        return CustomMessage()
+
+    for factory in (CustomMessage, legacy_factory):
+        parser = module.FeedParser(factory)
+        parser.feed("Subject: factory\\n\\nbody")
+        message = parser.close()
+        records.append((isinstance(message, CustomMessage), message["Subject"], message.get_payload()))
+
+    strict = compat32.clone(raise_on_defect=True)
+    for source in (": bad\\n\\nbody", "Subject: ok\\nFrom misplaced\\nTo: you\\n\\nbody"):
+        parser = module.FeedParser(policy=strict)
+        try:
+            parser.feed(source)
+            message = parser.close()
+        except Exception as exc:
+            records.append(type(exc).__name__)
+        else:
+            records.append([type(defect).__name__ for defect in message.defects])
+    return records
 
 checks = {{
     "headerregistry": (
@@ -53,7 +98,9 @@ checks = {{
     "base64mime": "molt_capabilities_has" not in base64mime_mod.__dict__,
     "parseaddr": "molt_capabilities_has" not in parseaddr_mod.__dict__,
     "feedparser": (
-        parser.close() == "abc"
+        _feedparser_results(feedparser_mod) == _feedparser_results(reference_feedparser)
+        and feedparser_mod.NLCRE_eol.pattern == reference_feedparser.NLCRE_eol.pattern
+        and hasattr(feedparser_mod, "boundaryendRE") == hasattr(reference_feedparser, "boundaryendRE")
         and "molt_email_message_from_bytes" not in feedparser_mod.__dict__
         and "molt_capabilities_has" not in feedparser_mod.__dict__
     ),

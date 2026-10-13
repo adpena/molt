@@ -4,13 +4,6 @@ use super::super::*;
 fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
     let cases = [
         (
-            "get_attr_generic_ptr",
-            OpCode::LoadAttr,
-            1,
-            true,
-            vec!["handle_resolve", "get_attr_ptr"],
-        ),
-        (
             "get_attr_special_obj",
             OpCode::LoadAttr,
             1,

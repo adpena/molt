@@ -224,7 +224,7 @@ fn thread_worker(
                 }
                 let cancelled = task.cancelled.load(AtomicOrdering::Acquire);
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits = molt_exception_last_pending();
                     molt_exception_clear();
                     if cancelled {
                         dec_ref_bits(_py, exc_bits);

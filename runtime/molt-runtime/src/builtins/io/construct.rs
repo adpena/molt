@@ -33,6 +33,37 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let builtins = builtin_classes(_py);
+        let Some((_, class_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
+            _py,
+            builtins.buffered_io_base,
+            Some(cls_bits),
+            "_BufferedIOBase",
+        ) else {
+            return MoltObject::none().bits();
+        };
+        // The first concrete buffered owner in the real MRO determines the
+        // capability contract; subclasses retain their requested result class.
+        let capabilities = unsafe { crate::class_mro_view(_py, class_ptr) }
+            .iter()
+            .find_map(|&base| {
+                if base == builtins.buffered_reader {
+                    Some((true, false))
+                } else if base == builtins.buffered_writer {
+                    Some((false, true))
+                } else if base == builtins.buffered_random {
+                    Some((true, true))
+                } else {
+                    None
+                }
+            });
+        let Some((want_read, want_write)) = capabilities else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "expected a concrete buffered stream type",
+            );
+        };
         let raw_handle_ptr = match resolve_file_handle_ptr(_py, raw_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -68,14 +99,6 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
             if buffer_size == 0 {
                 return raise_exception::<_>(_py, "ValueError", "buffer size must be > 0");
             }
-            let builtins = builtin_classes(_py);
-            let (want_read, want_write) = if cls_bits == builtins.buffered_reader {
-                (true, false)
-            } else if cls_bits == builtins.buffered_writer {
-                (false, true)
-            } else {
-                (true, true)
-            };
             if want_read && !raw_handle.readable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
             }

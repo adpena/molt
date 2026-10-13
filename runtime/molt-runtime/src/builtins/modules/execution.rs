@@ -537,7 +537,7 @@ fn save_pending_exception(_py: &PyToken<'_>) -> Option<u64> {
     if !exception_pending(_py) {
         return None;
     }
-    let bits = molt_exception_last();
+    let bits = molt_exception_last_pending();
     clear_exception(_py);
     Some(bits)
 }

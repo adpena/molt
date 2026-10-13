@@ -19,9 +19,9 @@ use crate::{
     exception_handler_active, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
     generator_raise_active, header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr,
-    maybe_ptr_from_bits, molt_exception_last, obj_from_bits, object_class_bits, object_type_id,
-    pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits, raise_exception,
-    record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
+    maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits, object_class_bits,
+    object_type_id, pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits,
+    raise_exception, record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
     task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
     task_exception_depth_take, task_exception_handler_stack_store,
     task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
@@ -595,7 +595,7 @@ impl MoltScheduler {
                         && exception_pending(_py)
                         && super::cancellation::task_loop_handle(_py, task_ptr).is_some()
                     {
-                        Some(molt_exception_last())
+                        Some(molt_exception_last_pending())
                     } else {
                         None
                     };
@@ -1414,7 +1414,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()
             } else if exception_pending(_py) {
-                molt_exception_last()
+                molt_exception_last_pending()
             } else {
                 MoltObject::none().bits()
             };
@@ -1485,7 +1485,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 && !generator_raise
                 && !task_raise
             {
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
                     context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
                 }

@@ -236,7 +236,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                 let task_scope = crate::CurrentTaskScope::enter(_py, ptr);
                 let prev_task = task_scope.previous();
                 let exc_bits = if exception_pending(_py) {
-                    molt_exception_last()
+                    molt_exception_last_pending()
                 } else {
                     MoltObject::none().bits()
                 };
@@ -916,7 +916,7 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
                 return result;
             }
             if exception_pending(_py) {
-                let exception = molt_exception_last();
+                let exception = molt_exception_last_pending();
                 if crate::builtins::exceptions::exception_matches_builtin_name(
                     _py,
                     exception,

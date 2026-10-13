@@ -456,7 +456,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         let _caller = crate::CurrentTaskScope::enter(py, std::ptr::null_mut());
         let result = crate::molt_future_poll(coro);
         let failure = if exception_pending(py) {
-            let exception = crate::molt_exception_last();
+            let exception = crate::molt_exception_last_pending();
             crate::clear_exception(py);
             Some(exception)
         } else {
@@ -529,7 +529,7 @@ pub extern "C" fn molt_coroutine_close_method(receiver: u64) -> u64 {
             dec_ref_bits(py, result);
             return raise_exception::<_>(py, "RuntimeError", "coroutine ignored GeneratorExit");
         }
-        let exception = crate::molt_exception_last();
+        let exception = crate::molt_exception_last_pending();
         let stopped = crate::builtins::exceptions::exception_matches_builtin_name(
             py,
             exception,
@@ -645,7 +645,7 @@ pub(crate) fn cancellation_resume_scope<'a, 'py>(
     let target = resume_target(task);
     crate::task_take_cancel_pending(task);
     crate::raise_cancelled_with_message::<u64>(py, task);
-    let exception = crate::molt_exception_last();
+    let exception = crate::molt_exception_last_pending();
     crate::clear_exception(py);
     let scope = PythonResumeScope::enter(py, target, ResumeRequest::Throw(exception), false);
     dec_ref_bits(py, exception);
@@ -785,7 +785,7 @@ fn iterator_resume(
         return Ok(SpecialIterationStep::Item(result));
     }
     dec_ref_bits(py, result);
-    let exception = crate::molt_exception_last();
+    let exception = crate::molt_exception_last_pending();
     // SEND consumes delegate exhaustion, including a failing close method.
     let exhausted =
         crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "StopIteration");
@@ -913,7 +913,7 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
                 let closed = molt_coroutine_close_method(child);
                 dec_ref_bits(py, closed);
                 if exception_pending(py) {
-                    let exception = crate::molt_exception_last();
+                    let exception = crate::molt_exception_last_pending();
                     crate::clear_exception(py);
                     if let Some(previous) = request.replace(ResumeRequest::Throw(exception)) {
                         dec_ref_bits(py, previous.bits());
@@ -931,7 +931,7 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
                 replace_owned(py, ptr, CHILD, MoltObject::none().bits());
             }
             if exception_pending(py) {
-                let exception = crate::molt_exception_last();
+                let exception = crate::molt_exception_last_pending();
                 crate::clear_exception(py);
                 request = Some(ResumeRequest::Throw(exception));
             } else {
@@ -977,7 +977,7 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
                 }
                 let child = scheduled_yield(py, value);
                 if exception_pending(py) {
-                    let exception = crate::molt_exception_last();
+                    let exception = crate::molt_exception_last_pending();
                     crate::clear_exception(py);
                     dec_ref_bits(py, child);
                     unsafe {
@@ -993,7 +993,7 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
                 // child poll now establishes the normal waiter/wake dependency.
                 let result = crate::molt_future_poll(child);
                 if exception_pending(py) {
-                    let exception = crate::molt_exception_last();
+                    let exception = crate::molt_exception_last_pending();
                     crate::clear_exception(py);
                     unsafe {
                         replace_owned(py, ptr, THROWN, exception);

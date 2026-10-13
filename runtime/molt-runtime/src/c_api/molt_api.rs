@@ -609,7 +609,7 @@ pub extern "C" fn molt_err_peek() -> MoltHandle {
         if !exception_pending(_py) {
             return none_bits();
         }
-        molt_exception_last()
+        molt_exception_last_pending()
     })
 }
 
@@ -619,7 +619,7 @@ pub extern "C" fn molt_err_fetch() -> MoltHandle {
         if !exception_pending(_py) {
             return none_bits();
         }
-        let exc_bits = molt_exception_last();
+        let exc_bits = molt_exception_last_pending();
         let _ = molt_exception_clear();
         exc_bits
     })

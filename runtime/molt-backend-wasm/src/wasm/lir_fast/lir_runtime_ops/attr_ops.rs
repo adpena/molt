@@ -22,30 +22,15 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
         (OpCode::DelAttr, Some("del_attr_name")) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName)
         }
-        (OpCode::LoadAttr, Some("get_attr_generic_ptr")) => {
-            let obj = required_operand(op, 0, "get_attr_generic_ptr");
-            let name = required_name_bytes(op, "get_attr_generic_ptr");
+        (OpCode::LoadAttr, Some(kind @ ("get_attr_generic_ptr" | "get_attr_generic_obj"))) => {
+            let obj = required_operand(op, 0, kind);
+            let name = required_name_bytes(op, kind);
             let name_len = name.len() as i64;
-            emit_lir_runtime_call_with_args_and_result(
-                ctx,
-                op,
-                LirRuntimeCall::GetAttrPtr,
-                &[
-                    LirRuntimeArg::ResolvedPtr32(obj),
-                    LirRuntimeArg::DataPtrI32(name),
-                    LirRuntimeArg::I64Const(name_len),
-                ],
-            );
-        }
-        (OpCode::LoadAttr, Some("get_attr_generic_obj")) => {
-            let obj = required_operand(op, 0, "get_attr_generic_obj");
-            let name = required_name_bytes(op, "get_attr_generic_obj");
-            let name_len = name.len() as i64;
-            let source_op_idx = required_source_op_index(op, "get_attr_generic_obj");
+            let source_op_idx = required_source_op_index(op, kind);
             let site_bits = box_int_bits(stable_ic_site_id(
                 ctx.func.name.as_str(),
                 source_op_idx,
-                "get_attr_generic_obj",
+                kind,
             ));
             emit_lir_runtime_call_with_args_and_result(
                 ctx,

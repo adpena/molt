@@ -3,8 +3,18 @@ use super::super::*;
 #[test]
 #[should_panic(expected = "get_attr_generic_obj requires source op index")]
 fn generic_obj_literal_name_attr_without_source_op_index_fails_closed() {
+    lower_without_source_index("get_attr_generic_obj");
+}
+
+#[test]
+#[should_panic(expected = "get_attr_generic_ptr requires source op index")]
+fn generic_ptr_literal_name_attr_without_source_op_index_fails_closed() {
+    lower_without_source_index("get_attr_generic_ptr");
+}
+
+fn lower_without_source_index(kind: &str) {
     let mut func = TirFunction::new(
-        "get_attr_generic_obj_without_source".into(),
+        format!("{kind}_without_source"),
         vec![TirType::DynBox],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
@@ -19,10 +29,7 @@ fn generic_obj_literal_name_attr_without_source_op_index_fails_closed() {
         results: vec![result_id],
         attrs: {
             let mut m = AttrDict::new();
-            m.insert(
-                "_original_kind".into(),
-                AttrValue::Str("get_attr_generic_obj".into()),
-            );
+            m.insert("_original_kind".into(), AttrValue::Str(kind.into()));
             m.insert("name".into(), AttrValue::Str("field".into()));
             m
         },

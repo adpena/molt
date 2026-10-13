@@ -65,7 +65,7 @@ pub(crate) fn output_as_list(
     }
     let first = OwnedIterator::new(py, output);
     if first.is_none() {
-        let exception = molt_exception_last();
+        let exception = molt_exception_last_pending();
         if crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "TypeError") {
             // Replace the pending TypeError, retaining only the independently
             // handled exception as implicit context, just like PyErr_Format.

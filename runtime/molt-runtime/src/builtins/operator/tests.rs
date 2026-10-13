@@ -30,13 +30,25 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
         // Return borrowed identities backed by the owned class namespace, not
         // extra descriptor owners that could hide a lost class/result edge.
         let descriptors = |class| {
-            [b"__call__".as_slice(), b"__init__"].map(|name| {
+            [b"__call__".as_slice(), b"__new__"].map(|name| {
                 let descriptor = attribute(class, name);
+                let constructor = name == b"__new__";
                 assert_eq!(
                     crate::type_of_bits(py, descriptor),
-                    crate::builtin_classes(py).wrapper_descriptor
+                    if constructor {
+                        crate::builtin_classes(py).builtin_function_or_method
+                    } else {
+                        crate::builtin_classes(py).wrapper_descriptor
+                    }
                 );
-                let owner = attribute(descriptor, b"__objclass__");
+                let owner = attribute(
+                    descriptor,
+                    if constructor {
+                        b"__self__"
+                    } else {
+                        b"__objclass__"
+                    },
+                );
                 assert_eq!(owner, class);
                 dec_ref_bits(py, owner);
                 dec_ref_bits(py, descriptor);
@@ -81,15 +93,34 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
         let exercise = |class, declared: [u64; 2], argument, expected| {
             let ptr = obj_from_bits(class).as_ptr().expect("owned operator type");
             assert_eq!(unsafe { crate::object_type_id(ptr) }, crate::TYPE_ID_TYPE);
-            let instance = unsafe { crate::alloc_instance_for_class(py, ptr) };
+            // Exercise type.__call__, not a direct allocator/init shortcut.
+            let instance = unsafe { crate::call::dispatch::call_callable1(py, class, argument) };
             assert!(!exception_pending(py));
             assert_eq!(crate::type_of_bits(py, instance), class);
-            let initialized = unsafe {
-                crate::call::dispatch::call_callable2(py, declared[1], instance, argument)
-            };
+            // Explicit __new__ must return an already usable instance too.
+            let explicit =
+                unsafe { crate::call::dispatch::call_callable2(py, declared[1], class, argument) };
             assert!(!exception_pending(py));
-            assert!(obj_from_bits(initialized).is_none());
-            dec_ref_bits(py, initialized);
+            let value = unsafe { crate::call::dispatch::call_callable1(py, explicit, target) };
+            assert!(!exception_pending(py));
+            assert_eq!(value, expected);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, explicit);
+            for receiver in [
+                crate::builtin_classes(py).list,
+                MoltObject::from_int(0).bits(),
+            ] {
+                let invalid = unsafe {
+                    crate::call::dispatch::call_callable2(py, declared[1], receiver, argument)
+                };
+                assert!(exception_pending(py));
+                dec_ref_bits(py, invalid);
+                crate::molt_exception_clear();
+            }
+            let invalid = crate::molt_object_new_bound(class);
+            assert!(exception_pending(py));
+            dec_ref_bits(py, invalid);
+            crate::molt_exception_clear();
             let value =
                 unsafe { crate::call::dispatch::call_callable2(py, declared[0], instance, target) };
             assert!(!exception_pending(py));

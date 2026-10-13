@@ -1716,7 +1716,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     dec_ref_bits(_py, call_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, val_bits);
-                        let exception = molt_exception_last();
+                        let exception = molt_exception_last_pending();
                         let stop = crate::builtins::exceptions::exception_matches_builtin_name(
                             _py,
                             exception,

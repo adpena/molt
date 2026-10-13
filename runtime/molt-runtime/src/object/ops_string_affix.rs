@@ -690,7 +690,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                 } else {
                     let mapped_bits = molt_getitem_method(table_bits, key_bits);
                     if exception_pending(_py) {
-                        let exc_bits = molt_exception_last();
+                        let exc_bits = molt_exception_last_pending();
                         let is_lookup = exception_is_lookup_error(_py, exc_bits);
                         dec_ref_bits(_py, exc_bits);
                         if is_lookup {

@@ -47,7 +47,7 @@ pub(crate) fn special_iteration_step(
         if let Some(value) = value {
             dec_ref_bits(py, value);
         }
-        let exception = molt_exception_last();
+        let exception = molt_exception_last_pending();
         let stop = crate::builtins::exceptions::exception_matches_builtin_name(
             py,
             exception,
