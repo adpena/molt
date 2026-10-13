@@ -776,9 +776,11 @@ mod socket_runtime_state_tests {
             let mut left = 0;
             let mut right = 0;
             assert_eq!(unsafe { crate::molt_ws_pair(0, &mut left, &mut right) }, 0);
+            let socket_bits =
+                crate::MoltObject::from_int(super::socket_debug_fd(sockets[0]).unwrap()).bits();
             let futures = std::array::from_fn::<_, 2, _>(|_| {
                 crate::molt_io_wait_new(
-                    crate::opaque_handle_bits(sockets[0]),
+                    socket_bits,
                     crate::MoltObject::from_int(crate::IO_EVENT_READ as i64).bits(),
                     crate::MoltObject::none().bits(),
                 )
