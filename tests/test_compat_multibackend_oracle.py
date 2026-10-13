@@ -637,7 +637,7 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_test_file.write_text(
-        "# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound\nprint(42)\n",
+        "# MOLT_ENV: MOLT_CAPABILITIES=net\nprint(42)\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
@@ -664,7 +664,7 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
         cpython_oracle.short
     )
     assert native_contexts[0].environment["MOLT_CAPABILITY_TIER"] == "none"
-    assert native_contexts[0].capabilities == "net.listen,net.outbound"
+    assert native_contexts[0].capabilities == "net"
     assert "poison.inherited" not in native_contexts[0].capabilities
 
 

@@ -689,7 +689,12 @@ fn encode_field(
 }
 
 /// Write one complete CSV record to a String.
-fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Result<String, u64> {
+fn write_row_to_string(
+    _py: &PyToken,
+    row_bits: u64,
+    dialect: &Dialect,
+    error_type_bits: u64,
+) -> Result<String, u64> {
     let obj = obj_from_bits(row_bits);
     let Some(row_ptr) = obj.as_ptr() else {
         return Err(raise_exception::<u64>(
@@ -717,19 +722,7 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
         let text = render_field_text(_py, item_bits).ok_or_else(|| MoltObject::none().bits())?;
         let encoded = match encode_field(&text, dialect, is_none, is_number) {
             Ok(s) => s,
-            Err(CsvError::NeedEscapechar) => {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "need to escape, but no escapechar set",
-                ));
-            }
-            Err(CsvError::BadInput(msg)) => {
-                return Err(raise_exception::<u64>(_py, "ValueError", &msg));
-            }
-            Err(_) => {
-                return Err(raise_exception::<u64>(_py, "ValueError", "csv write error"));
-            }
+            Err(error) => return Err(raise_csv_parse_error(_py, error_type_bits, error)),
         };
         parts.push(encoded);
     }
@@ -963,19 +956,42 @@ fn parse_sample_rows(
     Ok(rows)
 }
 
-fn raise_csv_parse_error(_py: &PyToken, err: CsvError) -> u64 {
-    match err {
-        CsvError::FieldTooLarge => {
-            raise_exception::<u64>(_py, "ValueError", "field larger than field limit")
-        }
-        CsvError::UnexpectedEnd => {
-            raise_exception::<u64>(_py, "ValueError", "unexpected end of data")
-        }
-        CsvError::BadInput(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
-        CsvError::NeedEscapechar => {
-            raise_exception::<u64>(_py, "ValueError", "need escapechar when quoting=QUOTE_NONE")
-        }
+fn raise_csv_error(py: &PyToken, error_type_bits: u64, message: &str) -> u64 {
+    if exception_pending(py) {
+        return MoltObject::none().bits();
     }
+    let message_ptr = alloc_string(py, message.as_bytes());
+    if message_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let message =
+        unsafe { OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(message_ptr).bits()) };
+    let args_ptr = alloc_tuple(py, &[message.bits()]);
+    if args_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let args =
+        unsafe { OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(args_ptr).bits()) };
+    let error = unsafe {
+        OwnedRuntimeValue::from_owned_bits(
+            py,
+            exception_new_from_class(py, error_type_bits, args.bits()),
+        )
+    };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    rt_raise(error.bits())
+}
+
+fn raise_csv_parse_error(py: &PyToken, error_type_bits: u64, err: CsvError) -> u64 {
+    let message = match err {
+        CsvError::FieldTooLarge => "field larger than field limit",
+        CsvError::UnexpectedEnd => "unexpected end of data",
+        CsvError::BadInput(ref msg) => msg,
+        CsvError::NeedEscapechar => "need to escape, but no escapechar set",
+    };
+    raise_csv_error(py, error_type_bits, message)
 }
 
 fn alloc_char_bits(_py: &PyToken, ch: char) -> Result<u64, u64> {
@@ -1116,14 +1132,14 @@ pub extern "C" fn molt_csv_register_dialect(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
         };
         let removed = DIALECT_REGISTRY.with(|registry| registry.borrow_mut().remove(&name));
         if removed.is_none() {
-            return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
+            return raise_csv_error(_py, error_type_bits, "unknown dialect");
         }
         MoltObject::none().bits()
     })
@@ -1152,14 +1168,14 @@ pub extern "C" fn molt_csv_list_dialects() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_get_dialect(name_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_get_dialect(name_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
         };
         let dialect = DIALECT_REGISTRY.with(|registry| registry.borrow().get(&name).cloned());
         let Some(dialect) = dialect else {
-            return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
+            return raise_csv_error(_py, error_type_bits, "unknown dialect");
         };
 
         let delimiter_bits = match alloc_char_bits(_py, dialect.delimiter) {
@@ -1302,6 +1318,7 @@ pub extern "C" fn molt_csv_reader_parse_line(
     handle_bits: u64,
     line_bits: u64,
     at_eof_bits: u64,
+    error_type_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
@@ -1312,9 +1329,8 @@ pub extern "C" fn molt_csv_reader_parse_line(
         };
         // `at_eof` tells the parser whether more physical lines can still follow.
         // The `_Reader.__next__` continuation passes its `self._eof` flag so an
-        // unterminated quoted field signals `unexpected end of data` (needs more
-        // data) until EOF, where a non-strict dialect instead commits the
-        // truncated field — exactly CPython's `_csv` reader contract.
+        // unterminated quoted field returns None (needs more data) until EOF,
+        // where a non-strict dialect instead commits the truncated field — exactly CPython's `_csv` reader contract.
         let at_eof = is_truthy(_py, obj_from_bits(at_eof_bits));
         let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
 
@@ -1326,22 +1342,8 @@ pub extern "C" fn molt_csv_reader_parse_line(
 
         let fields = match csv_parse_line(&line, &dialect, field_limit, at_eof) {
             Ok(f) => f,
-            Err(CsvError::FieldTooLarge) => {
-                return raise_exception::<u64>(_py, "ValueError", "field larger than field limit");
-            }
-            Err(CsvError::UnexpectedEnd) => {
-                return raise_exception::<u64>(_py, "ValueError", "unexpected end of data");
-            }
-            Err(CsvError::BadInput(msg)) => {
-                return raise_exception::<u64>(_py, "ValueError", &msg);
-            }
-            Err(CsvError::NeedEscapechar) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "need escapechar when quoting=QUOTE_NONE",
-                );
-            }
+            Err(CsvError::UnexpectedEnd) if !at_eof => return MoltObject::none().bits(),
+            Err(error) => return raise_csv_parse_error(_py, error_type_bits, error),
         };
 
         match fields_to_list(_py, &fields, &dialect) {
@@ -1351,11 +1353,15 @@ pub extern "C" fn molt_csv_reader_parse_line(
     })
 }
 
-// ── Reader: parse_lines (arity 2) ─────────────────────────────────────────────
+// ── Reader: parse_lines (arity 3) ─────────────────────────────────────────────
 
 /// Parse multi-line CSV text into a list<list<str>>.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_reader_parse_lines(
+    handle_bits: u64,
+    text_bits: u64,
+    error_type_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv reader handle");
@@ -1403,37 +1409,9 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
                     // accumulating into `pending`.
                     continue;
                 }
-                Err(CsvError::FieldTooLarge) => {
-                    for b in &row_bits_vec {
-                        dec_ref_bits(_py, *b);
-                    }
-                    return raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        "field larger than field limit",
-                    );
-                }
-                Err(CsvError::UnexpectedEnd) => {
-                    for b in &row_bits_vec {
-                        dec_ref_bits(_py, *b);
-                    }
-                    return raise_exception::<u64>(_py, "ValueError", "unexpected end of data");
-                }
-                Err(CsvError::BadInput(msg)) => {
-                    for b in &row_bits_vec {
-                        dec_ref_bits(_py, *b);
-                    }
-                    return raise_exception::<u64>(_py, "ValueError", &msg);
-                }
-                Err(CsvError::NeedEscapechar) => {
-                    for b in &row_bits_vec {
-                        dec_ref_bits(_py, *b);
-                    }
-                    return raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        "need escapechar when quoting=QUOTE_NONE",
-                    );
+                Err(error) => {
+                    release_bits(_py, &row_bits_vec);
+                    return raise_csv_parse_error(_py, error_type_bits, error);
                 }
             };
             pending.clear();
@@ -1555,11 +1533,15 @@ pub extern "C" fn molt_csv_writer_new(
     })
 }
 
-// ── Writer: writerow (arity 2) ────────────────────────────────────────────────
+// ── Writer: writerow (arity 3) ────────────────────────────────────────────────
 
 /// Write a single row (list/tuple of objects) and return the CSV record string.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_writer_writerow(handle_bits: u64, row_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_writer_writerow(
+    handle_bits: u64,
+    row_bits: u64,
+    error_type_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
@@ -1570,7 +1552,7 @@ pub extern "C" fn molt_csv_writer_writerow(handle_bits: u64, row_bits: u64) -> u
             return raise_exception::<u64>(_py, "ValueError", "csv writer handle not found");
         };
 
-        let record = match write_row_to_string(_py, row_bits, &dialect) {
+        let record = match write_row_to_string(_py, row_bits, &dialect, error_type_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -1583,12 +1565,16 @@ pub extern "C" fn molt_csv_writer_writerow(handle_bits: u64, row_bits: u64) -> u
     })
 }
 
-// ── Writer: writerows (arity 2) ───────────────────────────────────────────────
+// ── Writer: writerows (arity 3) ───────────────────────────────────────────────
 
 /// Write multiple rows (list/tuple of list/tuple of objects) and return the
 /// concatenated CSV records as a single string.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_writer_writerows(
+    handle_bits: u64,
+    rows_bits: u64,
+    error_type_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
@@ -1619,7 +1605,7 @@ pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) ->
 
         let mut out = String::new();
         for row_bits in row_bits_vec.iter().copied() {
-            let record = match write_row_to_string(_py, row_bits, &dialect) {
+            let record = match write_row_to_string(_py, row_bits, &dialect, error_type_bits) {
                 Ok(s) => s,
                 Err(bits) => return bits,
             };
@@ -1786,7 +1772,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
 
 /// Apply CPython-compatible `Sniffer.has_header` voting against intrinsic csv parsing.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_has_header(sample_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(sample) = string_obj_to_owned(obj_from_bits(sample_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "sample must be str");
@@ -1796,7 +1782,7 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
         let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
         let rows = match parse_sample_rows(&sample, &dialect, field_limit) {
             Ok(rows) => rows,
-            Err(err) => return raise_csv_parse_error(_py, err),
+            Err(err) => return raise_csv_parse_error(_py, error_type_bits, err),
         };
 
         let Some(header) = rows.first() else {
@@ -2121,8 +2107,9 @@ pub extern "C" fn molt_csv_normalize_row(row_bits: u64) -> u64 {
             unsafe {
                 let tid = object_type_id(ptr);
                 if tid == TYPE_ID_LIST || tid == TYPE_ID_TUPLE {
-                    // Already a list or tuple; return directly.
-                    return row_bits;
+                    // The boxed return ABI transfers an independent owner,
+                    // even when normalization preserves the input identity.
+                    return OwnedRuntimeValue::retain(_py, row_bits).into_bits();
                 }
             }
         }
@@ -2137,7 +2124,7 @@ pub extern "C" fn molt_csv_normalize_row(row_bits: u64) -> u64 {
 /// Raises Error("unknown dialect") for non-string hashable values.
 /// Raises TypeError for unhashable values.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(name_bits);
         if let Some(s) = string_obj_to_owned(obj) {
@@ -2156,6 +2143,6 @@ pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64) -> u64 {
         if !ensure_hashable(_py, name_bits, HashContextCode::DictKey) {
             return MoltObject::none().bits();
         }
-        raise_exception::<u64>(_py, "csv.Error", "unknown dialect")
+        raise_csv_error(_py, error_type_bits, "unknown dialect")
     })
 }

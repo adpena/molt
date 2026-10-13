@@ -53,7 +53,7 @@ Writes compact lines in the format:
 
 ```
 [audit] ALLOWED fs.read cap=fs.read mod=myapp.io
-[audit] DENIED net.connect cap=net.outbound mod=myapp.http
+[audit] DENIED net.connect cap=net.connect mod=myapp.http
 ```
 
 ### JsonLinesSink
@@ -83,7 +83,7 @@ Each JSON Lines event has the following structure:
 | --- | --- | --- |
 | `timestamp_ns` | `u64` | Nanoseconds since Unix epoch |
 | `operation` | `string` | Dot-separated operation (e.g., `fs.read`, `net.connect`, `env.get`) |
-| `capability` | `string` | Capability that was checked (e.g., `fs.read`, `net.outbound`) |
+| `capability` | `string` | Capability that was checked (e.g., `fs.read`, `net.connect`) |
 | `args` | `object` | Operation-specific arguments (see below) |
 | `decision` | `object` | Outcome of the check (see below) |
 | `module` | `string` | Python module that triggered the check |
@@ -122,7 +122,7 @@ audit_cap_check!("fs.read", "fs.read",
     AuditDecision::Allowed);
 
 // With explicit Python module name:
-audit_cap_check!("net.connect", "net.outbound",
+audit_cap_check!("net.connect", "net.connect",
     AuditArgs::Network { host: host.clone(), port },
     AuditDecision::Denied { reason: "sandbox policy".into() },
     "myapp.http");

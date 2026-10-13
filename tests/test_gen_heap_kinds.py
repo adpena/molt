@@ -815,10 +815,13 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "crate::object::alloc_scoped_boxed_object(_py, size_bits" in arena_alloc
     assert "initialize_flags_gc_unpublished" not in arena_alloc
     scoped_allocator = _rust_function(allocator, "alloc_scoped_boxed_object")
-    assert (
-        "boxed_object_total_size(py, payload_bits).and_then(object_allocation_plan)"
-        in scoped_allocator
-    )
+    size_check = scoped_allocator.index("boxed_object_total_size(py, payload_bits)")
+    plan_check = scoped_allocator.index("object_allocation_plan(total_size)")
+    allocation = scoped_allocator.index("allocate(plan.alloc_size)")
+    assert size_check < plan_check < allocation
+    plan_refusal = scoped_allocator[plan_check:allocation]
+    assert "record_memory_error_without_allocation(py)" in plan_refusal
+    assert "return MoltObject::none().bits()" in plan_refusal
     assert "HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC" in scoped_allocator
     assert scoped_allocator.index(
         "initialize_flags_gc_unpublished"

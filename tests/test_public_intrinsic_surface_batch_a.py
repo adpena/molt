@@ -163,11 +163,8 @@ def _functools_reduce(function, iterable, initializer):
     return acc
 
 
-def _functools_lru_cache(_maxsize, _typed):
-    def _decorator(fn):
-        return fn
-
-    return _decorator
+def _functools_lru_cache(user_function, maxsize, typed, cache_info_type):
+    return _host_functools._lru_cache_wrapper(user_function, maxsize, typed, cache_info_type)
 
 
 def _sd_new(func):

@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: surviving sock_recv waiters preserve FIFO order after cancellation."""
 
 import asyncio

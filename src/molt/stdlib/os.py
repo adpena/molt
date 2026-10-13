@@ -64,7 +64,6 @@ _MOLT_OS_DUP2 = _require_intrinsic("molt_os_dup2")
 _MOLT_OS_GET_INHERITABLE = _require_intrinsic("molt_os_get_inheritable")
 _MOLT_OS_SET_INHERITABLE = _require_intrinsic("molt_os_set_inheritable")
 _MOLT_OS_URANDOM = _require_intrinsic("molt_os_urandom")
-_MOLT_OS_FSENCODE = _require_intrinsic("molt_os_fsencode")
 _MOLT_OS_ACCESS = _require_intrinsic("molt_os_access")
 _MOLT_OS_CHDIR = _require_intrinsic("molt_os_chdir")
 _MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count")
@@ -256,6 +255,7 @@ __all__ = [
     "PathLike",
     "fspath",
     "fsencode",
+    "fsdecode",
     "fdopen",
     "supports_dir_fd",
     "supports_follow_symlinks",
@@ -833,13 +833,29 @@ def fspath(path: Any) -> str | bytes:
     return _MOLT_OS_FSPATH(path)
 
 
-def fsencode(filename: Any) -> bytes:
-    intrinsic = _require_callable_intrinsic(_MOLT_OS_FSENCODE, "molt_os_fsencode")
-    value = intrinsic(filename)
-    if not isinstance(value, bytes):
-        raise RuntimeError("os fsencode intrinsic returned invalid value")
-    return value
+def _fscodec():
+    # CPython captures the target filesystem policy when os is initialized.
+    # Later sys monkeypatches or path callbacks must not change that policy.
+    encoding = _sys.getfilesystemencoding()
+    errors = _sys.getfilesystemencodeerrors()
 
+    def fsencode(filename):
+        filename = fspath(filename)
+        if isinstance(filename, str):
+            return filename.encode(encoding, errors)
+        return filename
+
+    def fsdecode(filename):
+        filename = fspath(filename)
+        if isinstance(filename, bytes):
+            return filename.decode(encoding, errors)
+        return filename
+
+    return fsencode, fsdecode
+
+
+fsencode, fsdecode = _fscodec()
+del _fscodec
 
 class _Path:
     sep = sep

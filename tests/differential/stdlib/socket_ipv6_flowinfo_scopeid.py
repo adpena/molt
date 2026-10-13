@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for IPv6 flowinfo/scope_id."""
 
 import socket

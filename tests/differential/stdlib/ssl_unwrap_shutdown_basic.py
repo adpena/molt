@@ -1,5 +1,5 @@
 # MOLT_META: stderr=exact
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,net.listen,net.outbound,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,fs.read,thread.spawn,thread.shared
 """Purpose: differential coverage for SSL unwrap/shutdown."""
 
 import os

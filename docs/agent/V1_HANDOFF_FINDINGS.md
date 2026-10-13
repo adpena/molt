@@ -61,153 +61,96 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-Integration ownership (2026-10-12 UTC): the parent integrator is taking over all
-preserved WIP for reconciliation and landing against current main. Existing
-coordination records retain active worker scope and exact donor custody; the
-ledger remains the single release-status index. Complete semantic families must
-be qualified and landed together, with replaced internal lanes deleted.
+The parent integrator owns one candidate against current main and the preserved
+WIP reconciliation. The current candidate and the public-consumer repairs below
+are **not landed**. Coordination records own active write scopes and private
+receipts; this ledger owns release status. The current inventory has 98 open
+finding records and no ledger identity defects. Rows are obligations, not a
+completion percentage.
 
-The comprehensive review of the integration candidate projects 98 open finding
-records through `tools/finding_status.py`, with no ledger identity defects.
-This is a dated inventory, not 98 independent bugs or a completion percentage:
-the rows include implementation defects, incomplete migrations and missing
-acceptance evidence. The preserved runtime/ABI migration spans 941 paths.
-Finish its actual public native/WASM consumer obligations, resolve exposed
-migration failures, and land the coherent
-runtime/ABI family before expanding it with another broad implementation.
-Runtime unit/ABI passes and two WASM boundary programs do not qualify those
-remaining consumers or the release. Independent source review covers the runtime-policy/cache boundary and the
-subprocess admission family; it does not qualify the complete candidate or
-replace the still-unavailable broad Astra/Opus release assessment.
+Land complete semantic families once their actual consumers pass. An unrelated
+open finding does not hold an independently complete repair; an incomplete
+consumer migration does. Reuse unchanged qualified evidence, fix the exposed
+shared cause, and replay affected cases before broadening verification.
+Every repair must retire its replaced implementation and move all consumers
+together. A source review, unit pass or generator check does not establish
+target execution.
 
-The release work below is organized by complete product outcomes. Security and
-correctness repairs, the installed positive acceptance path, and measured
-performance are all critical work; tooling is justified by the specific product
-or evidence boundary it unlocks. Keep unchanged valid evidence, stop redundant
-proof fanout, and close complete repair units on main without waiting for every
-other release finding. The dependency table below owns
-the execution order; it does not defer any open finding beyond v1.0.
+### Qualified boundaries
 
-Current qualified boundaries: the optimized native runtime semantic gate
-passes 1,886 cases at `5931446fa`, including typed decoder payloads, temporary
-exception ownership, graph-handle retirement and the existing builtin metadata
-allocation-failure regression; seven performance probes remain unrun. The reduced-profile runtime,
-IR/pass and WASM host authority group passes 2,327 cases across five executables,
-with two intentional ignores, at the same source. These are native host tests,
-not WASM target execution. The ABI family passes 783 cases across 56 executables,
-with one intentional ignore. The latest supervisor correction passes its
-101-case Linux/aarch64 family at `cb95e5e49`, with one intentional ignore;
-actual native compiler/linker consumers pass 72
-checks with six platform skips. Candidate `39172765a` passes all five WASI
-micro-runtime lifecycle cases through the production host. Each result retains
-its own source, image, target, profile and exclusion scope below; unchanged
-evidence is reused, not promoted into a full release result.
+| Boundary | Current retained evidence and limits |
+| --- | --- |
+| Optimized native runtime | 1,886 semantic cases pass at `5931446fa`; seven performance probes remain unrun. |
+| Reduced runtime, IR/passes and WASM host authorities | 2,360 cases pass with two intentional ignores at `d72ee398c`. These are native host tests, not WASM target execution. |
+| Native/compiler consumers | 1,417 cases pass at `65ffcb283`, including seven actual native-artifact parser integration checks. |
+| LLVM consumers | 170 cases pass at `d72ee398c`; the LLVM-specific Clippy command also passes. |
+| Workspace lint | The registered all-target workspace Clippy command passes with warnings denied at `d72ee398c`. |
+| C-ABI | The retained family passes 783 cases across 56 executables, with one intentional ignore. Later source changes require their affected consumer checks. |
+| WASI micro-runtime lifecycle | Five actual programs pass at `39172765a`; this does not qualify the remaining full-runtime WASM consumers. |
+| Native cache policy and module reuse | Both actual controls pass at `d72ee398c`. One compiled-code key survives allow/deny/allow rebuilds and every binary applies its current embedded policy with no Python on execution PATH. Cross-program reuse retains 37 unchanged objects while adding one module. V1-07 owns measurements and remaining performance acceptance. |
 
-The CSV/defaultdict representation repair at `a79624918` removes invalid
-method binding and the dual-role dialect class through the generated ABI closure.
-Public Python native/WASM execution remains required. CSV registry retrieval still
-reconstructs managed dialect values; stable object identity must be repaired in
-the owning native registry, without adding a parallel Python cache.
+Source identity, target, profile, image custody and exclusions remain attached
+to each retained result. None is promoted into installed standalone acceptance
+or an unexecuted matrix cell.
 
-Daemon discovery landed on main as `a95e62c8a` and now consumes the canonical
-backend executable-name authority,
-including feature-qualified and Windows names. The existing birth, exact-path
-and socket checks still govern process custody. All 55 focused argv/custody
-checks pass on Darwin, and actual stale native-backend cleanup succeeds through
-the verified process boundary. This is development-side cleanup work; it adds
-no emitted-program work or cross-platform execution claim.
+### Public consumer failures and repair ownership
 
-The remaining landing work is the affected compiled public native/WASM
-consumer group. Changed mutation-result consumers pass in both default and
-reduced runtime profiles. Actual native warm-cache policy execution now passes
-at `cb95e5e49`: the same source and output path retain one compiled-code key
-across allow, deny and allow policies; both rebuilds hit the cache and all three
-binaries enforce the current embedded policy against opposite ambient grants.
-PATH is empty for execution; this remains a checkout-built consumer control,
-not installed standalone-without-Python qualification.
+The completed 67-case native consumer cohort at `d72ee398c` reports **44
+passed and 23 failed**, with no skips or OOMs and complete process custody.
+One failure is a compiler convergence panic; the other 22 are execution
+mismatches, including two ownership aborts. Logs and the failed compiler batch
+are preserved. Executed image hashes remain recorded; those image bytes were
+already removed by the harness's normal cleanup. Subsequent failures requiring
+binary replay must use the existing explicit retention option.
 
-The preceding runs exposed two development-side defects: helpers selected
-nested guard scratch outside the admitted output root, then the supervisor
-rejected a rebuilt image at the same pathname. Pytest and compiler-test helpers
-now share one scratch selector, including conformance. The supervisor retains
-complete observed image identities within existing budgets and deterministically
-replays multiple generations, while fixed inputs remain immutable. Ten focused
-placement controls and the actual repeated-path supervisor regression pass;
-unchanged runtime evidence remains valid. Neither repair adds emitted-program
-work.
-The next public-native attempt observed one passing case, then refused an
-undeclared shell image. Its incomplete process-custody receipt remains rejected.
-The complete selected-cohort dependency audit identified the POSIX shell,
-echo, true and uname, plus the CPython platform oracle's file utility on macOS.
-Those requirements now travel with the four consuming tests through existing
-test metadata. Default, explicitly selected and prepared named-lane admission
-combine only the host-applicable requirements with the existing tool policies;
-unrelated selections do not acquire POSIX requirements on Windows.
-The metadata owner passes 114 checks. The affected admission, receipt,
-source-binding and actual tkinter helper-placement consumers pass 101 checks.
-Empty-output probe controls pass; actual utility execution belongs to the
-remaining compiled consumer run. An AST census confirms all nine helper call
-sites use the canonical scratch selector after retiring the explicit-root lane.
-Native and WASM consumer cohorts now accumulate semantic failures while
-retaining immediate resource/custody refusal and disabling OOM retries.
-This prevents repeated first-failure runs without weakening acceptance.
-The earlier public native run stopped after six passes
-at the subprocess path-conversion fixture: its missing `process.exec` grant
-prevented the callback oracle from running. The five affected asyncio spawn
-fixtures now declare that capability through the existing test-header authority;
-their bodies and the pre-spawn invalid-stdio case are unchanged. The canonical
-header and override controls pass; compiled re-execution remains required.
+The following families organize those failures; they are not new independent
+backlog IDs. Working repairs remain unqualified until their compiled consumers
+pass.
 
-That run also produced three byte-identical 85,931,996-byte stdlib archives
-under different runtime-policy cache keys, with roughly 400 seconds per build.
-Runtime policy no longer partitions source scans, module analysis or compiled
-objects; every producer, record and consumer of that retired key input is
-migrated. Native final entrypoints/link identities, WASM deployments and complete
-wrapper binaries retain their current resolved policy. The focused cache and
-consumer controls pass 140 checks, with four additional WASM final-output
-controls passing. The actual native cache execution above records a 120.87-second
-first build and 5.06/5.09-second warm rebuilds. These timings are observations,
-not a controlled performance comparison or release acceptance. Installed and
-matrix-wide performance qualification remains open. This removes compiler-side
-work and adds no emitted-program checks.
+| Shared boundary | Current action and remaining obligation |
+| --- | --- |
+| JSON and text codecs | Shared byte decoding and UTF-16/32 handler progress are repaired and independently source-reviewed. Execute the affected codec/JSON consumers (V1-18). |
+| Owned serial returns and error provenance | CSV row and ConfigParser fallback ownership are repaired and source-reviewed. CSV domain errors must preserve the original public class without translating callback exceptions; statistics exception provenance remains open (V1-05/V1-18). |
+| Python callable and copy protocols | Class-level shallow-copy dispatch and frame-binding diagnostics are repaired and source-reviewed. Public intrinsic names and distinct alias identities are migrating through one declaration authority. Broader copy/reduction obligations remain open (V1-05). |
+| Cache result representation | Replace the incomplete custom CacheInfo object with the existing named-tuple protocol; retire the duplicate native decorator factory and metadata-default builders. Qualify tuple behavior, constructor custody and unchanged callback failures (V1-05). |
+| Filesystem and capability consumers | The filesystem codec pair now shares CPython's captured encoding policy; the duplicate native fsencode lane is removed. Source-level filesystem comparison and capability-context transport pass. Retired network grants are migrated through test metadata; actual affected programs, including three formerly misclassified expected failures, remain required (V1-11/V1-12). |
+| Deferred imports | Counter.most_common requires heapq absent from the current graph. Finish demand propagation through the existing binding/import owners and retire the manual helper allowlist; do not replace it with eager whole-library expansion (HF-126). |
+| Pretty-print recursion | Native pformat must inspect a container before enrolling it in the recursion set; PrettyPrinter.format must use its existing context-aware owner without catching and retrying user errors. Review also requires inherited builtin repr semantics (V1-05/V1-18). |
+| Type refinement | The 20-round sweep cap panics while compiling argparse. Replace it with the existing facts' dependency worklist, qualify finite convergence and replay the retained real backend job (HF-104). |
+| Remaining public surfaces | RotatingFileHandler, HTTPMessage assignment, FileIO opener keywords, binary-protocol large-int pickle, epoll defaults, SSLContext.get_ciphers and SSL certificate-loading arity remain concrete failing consumers under the existing runtime/ABI and stdlib obligations. |
 
-Canonical Clippy submission exposed a missing output-placement classification.
-Clippy output placement landed on main as `d416b8ad0`; 26 focused controls
-pass on that checkout, including direct/delegated admission and unchanged query,
-bypass and retention refusals. The candidate retains the same repaired source.
-The registered all-target workspace Clippy command now passes with warnings
-denied on Linux/aarch64 at `7172eb10f`. Its complete diagnostic batch exposed
-ignored mutation results in production and fixtures. Those consumers now inspect
-the operation result, unpublished builtin metadata uses the existing rollback
-owner, and the reduced-profile logging bridge shares the public error marker.
-An independent allocation-denial regression checks metadata ownership and
-preservation of a prior error. That regression now executes successfully in both
-default and reduced profiles. The Clippy pass remains compile and lint evidence;
-the separate runtime results above qualify those executed semantic boundaries.
-The full native/WASM release matrix, standalone-without-Python installed
-qualification, security/resource repairs and positive performance admission
-remain open in their owning buckets. Do not grow this migration with unrelated
-features while those concrete integration gaps remain.
+Source comparison against main `599a81c571` confirms that the missing
+rotation, HTTP assignment, FileIO keyword, binary pickle, epoll and SSL surfaces,
+the Counter deferred-import gap and statistics facade translation predate this
+candidate. They remain v1 release blockers. Keep their existing obligations
+separate from qualification of the changed authorities; do not classify a
+newly reached existing gap as a new migration regression without source evidence.
+The focused declaration/frontend/heap and facade checks pass 678 cases after
+repairing one stale structural allocation assertion; generator freshness and
+the generator-authority audit pass. These are development-side results.
 
-Determinism authority cleanup landed on main as `599a81c57`: the unused
-container-spelling heuristic is deleted, and the owning build contract requires
-stable actual emission order while preserving efficient lookup representations.
-The existing IR seed, artifact-byte and runtime-observation authorities retain
-their separate proof scopes. No runtime code or release qualification changed.
+The native cohort's passing lifecycle/process programs qualify their exact
+changed cells. The selected WASM consumer cohort remains unexecuted. Finish
+these affected migrations and replay their failures before another broad
+runtime/ABI expansion. Do not hide missing behavior behind narrowed admission,
+fake implementations, expected-failure markers or permissive fixtures.
 
-The compiler comparison reinforces those existing authorities. Microsoft's
-[TypeScript port](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/)
-reuses its reference implementation and test corpus. Vercel scriptc's
-[pinned static-only regression](https://github.com/vercel-labs/scriptc/blob/054eb04220095c3fcff5201e0816918c6e0367bb/tests/harness/static-only.test.ts)
-checks a real compiled program and rejects the retired engine mode; its
-[workload protocol](https://github.com/vercel-labs/scriptc/blob/054eb04220095c3fcff5201e0816918c6e0367bb/benchmarks/runtime/README.md)
-requires reference-output agreement before timing and interleaves contenders.
-For Molt, retain pinned CPython observations, perturb irrelevant compiler inputs
-in the existing determinism lanes, and finish the existing positive performance
-producer/receiver path. These are development-side obligations, not a new
-registry or emitted-program instrumentation requirement. Empirical conformance
-does not claim formal compiler verification or justify narrowing admitted Python
-semantics to currently passing examples.
+### Development cost and release discipline
+
+Source-local bounded compiler batches and symbolic module/code ownership remove
+cross-program recompilation without adding a guest registry or per-call lookup.
+The measured two-program second build fell from 59.868s to 13.658s (one
+development-profile comparison); V1-07 retains the full scope and remaining
+acceptance. Development checks, cache retention and proof custody stay on the
+development side.
+
+The existing reference, determinism and performance authorities remain the
+release path: pinned CPython source and observations; perturbation of irrelevant
+compiler inputs; reference-output agreement before timing; and the positive
+performance admission producer/receiver. Compiler comparisons inform those
+owners without creating another framework. Native/WASM matrix qualification,
+installed execution without Python, security/resource repairs and positive
+performance admission remain open in the dependency buckets below.
 
 ## Release dependency and landing order
 

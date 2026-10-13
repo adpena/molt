@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for socket inet aton ntoa."""
 
 import socket

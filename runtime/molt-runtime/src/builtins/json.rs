@@ -260,67 +260,67 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
     out
 }
 
-fn json_string_line_col(text: &str, pos: usize) -> (usize, usize) {
-    let mut lineno = 1usize;
-    let mut last_newline: Option<usize> = None;
-    for (idx, ch) in text.chars().enumerate() {
+fn json_string_line_col(text: &[u8], pos: usize) -> (usize, usize) {
+    let mut lineno = 1;
+    let mut last_newline = None;
+    for (idx, code) in crate::object::ops_string::wtf8_from_bytes(text)
+        .code_points()
+        .enumerate()
+    {
         if idx >= pos {
             break;
         }
-        if ch == '\n' {
+        if code.to_u32() == 10 {
             lineno += 1;
             last_newline = Some(idx);
         }
     }
-    let colno = match last_newline {
-        Some(idx) => pos.saturating_sub(idx),
-        None => pos.saturating_add(1),
-    };
-    (lineno, colno)
+    (
+        lineno,
+        last_newline.map_or_else(|| pos.saturating_add(1), |idx| pos.saturating_sub(idx)),
+    )
 }
 
 enum JsonDecodedString<'a> {
-    Borrowed(&'a str),
-    Owned(String),
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
 }
 
 impl<'a> JsonDecodedString<'a> {
     fn as_bytes(&self) -> &[u8] {
         match self {
-            Self::Borrowed(text) => text.as_bytes(),
-            Self::Owned(text) => text.as_bytes(),
+            Self::Borrowed(text) => text,
+            Self::Owned(text) => text,
         }
     }
 
-    fn into_owned(self) -> String {
+    fn into_owned(self) -> Vec<u8> {
         match self {
-            Self::Borrowed(text) => text.to_string(),
+            Self::Borrowed(text) => text.to_vec(),
             Self::Owned(text) => text,
         }
     }
 }
 
-fn char_index_to_byte_index(text: &str, char_idx: usize) -> Option<usize> {
-    let mut count = 0usize;
-    for (byte_idx, _) in text.char_indices() {
-        if count == char_idx {
-            return Some(byte_idx);
-        }
-        count += 1;
+fn char_index_to_byte_index(text: &[u8], char_idx: usize) -> Option<usize> {
+    let mut idx = 0;
+    for _ in 0..char_idx {
+        idx = crate::object::ops_string::wtf8_step(text, idx, false)?.0;
     }
-    if count == char_idx {
-        Some(text.len())
-    } else {
-        None
-    }
+    Some(idx)
 }
 
-fn byte_index_to_char_index(text: &str, byte_idx: usize) -> usize {
-    let mut boundary = byte_idx.min(text.len());
-    while boundary > 0 && !text.is_char_boundary(boundary) {
-        boundary -= 1;
+fn byte_index_to_char_index(text: &[u8], byte_idx: usize) -> usize {
+    let mut idx = 0;
+    let mut count = 0;
+    while let Some((next, _)) = crate::object::ops_string::wtf8_step(text, idx, false) {
+        if next > byte_idx {
+            break;
+        }
+        count += 1;
+        idx = next;
     }
-    text[..boundary].chars().count()
+    count
 }
 
 fn json_hex_value(byte: u8) -> Option<u32> {
@@ -344,24 +344,24 @@ fn json_parse_hex4(bytes: &[u8], start: usize) -> Option<u32> {
 }
 
 fn json_scanstring_decode_bytes<'a>(
-    text: &'a str,
+    text: &'a [u8],
     start_byte: usize,
     strict: bool,
 ) -> Result<(JsonDecodedString<'a>, usize), (String, usize)> {
-    let bytes = text.as_bytes();
+    let bytes = text;
     if start_byte > bytes.len() {
         return Err(("end is out of bounds".to_string(), start_byte));
     }
 
     let mut idx = start_byte;
     let mut segment_start = start_byte;
-    let mut out: Option<String> = None;
+    let mut out: Option<Vec<u8>> = None;
 
     while idx < bytes.len() {
         match bytes[idx] {
             b'"' => {
                 if let Some(mut decoded) = out {
-                    decoded.push_str(&text[segment_start..idx]);
+                    decoded.extend_from_slice(&text[segment_start..idx]);
                     return Ok((JsonDecodedString::Owned(decoded), idx + 1));
                 }
                 return Ok((
@@ -371,9 +371,9 @@ fn json_scanstring_decode_bytes<'a>(
             }
             b'\\' => {
                 let decoded = out.get_or_insert_with(|| {
-                    String::with_capacity(bytes.len().saturating_sub(start_byte))
+                    Vec::with_capacity(bytes.len().saturating_sub(start_byte))
                 });
-                decoded.push_str(&text[segment_start..idx]);
+                decoded.extend_from_slice(&text[segment_start..idx]);
                 idx += 1;
                 if idx >= bytes.len() {
                     return Err((
@@ -382,14 +382,14 @@ fn json_scanstring_decode_bytes<'a>(
                     ));
                 }
                 match bytes[idx] {
-                    b'"' => decoded.push('"'),
-                    b'\\' => decoded.push('\\'),
-                    b'/' => decoded.push('/'),
-                    b'b' => decoded.push('\u{08}'),
-                    b'f' => decoded.push('\u{0C}'),
-                    b'n' => decoded.push('\n'),
-                    b'r' => decoded.push('\r'),
-                    b't' => decoded.push('\t'),
+                    b'"' => decoded.push(b'"'),
+                    b'\\' => decoded.push(b'\\'),
+                    b'/' => decoded.push(b'/'),
+                    b'b' => decoded.push(8),
+                    b'f' => decoded.push(12),
+                    b'n' => decoded.push(b'\n'),
+                    b'r' => decoded.push(b'\r'),
+                    b't' => decoded.push(b'\t'),
                     b'u' => {
                         let escape_pos = idx;
                         let hex_start = idx + 1;
@@ -406,20 +406,15 @@ fn json_scanstring_decode_bytes<'a>(
                             && (0xDC00..=0xDFFF).contains(&low)
                         {
                             let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                            if let Some(real) = char::from_u32(combined) {
-                                decoded.push(real);
-                                idx += 6;
-                                segment_start = idx;
-                                continue;
-                            }
-                        }
-
-                        if let Some(real) = char::from_u32(code) {
-                            decoded.push(real);
+                            molt_stdlib_text::wtf8::push_wtf8_codepoint(decoded, combined);
+                            idx += 6;
                             segment_start = idx;
                             continue;
                         }
-                        return Err(("Invalid \\uXXXX escape".to_string(), escape_pos));
+
+                        molt_stdlib_text::wtf8::push_wtf8_codepoint(decoded, code);
+                        segment_start = idx;
+                        continue;
                     }
                     _ => return Err(("Invalid \\escape".to_string(), idx.saturating_sub(1))),
                 }
@@ -440,10 +435,10 @@ fn json_scanstring_decode_bytes<'a>(
 }
 
 fn json_scanstring_decode(
-    text: &str,
+    text: &[u8],
     end: usize,
     strict: bool,
-) -> Result<(String, usize), (String, usize)> {
+) -> Result<(Vec<u8>, usize), (String, usize)> {
     let Some(start_byte) = char_index_to_byte_index(text, end) else {
         return Err(("end is out of bounds".to_string(), end));
     };
@@ -493,7 +488,8 @@ pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+        let Some(text) = crate::object::ops_format::string_obj_bytes(obj_from_bits(text_bits))
+        else {
             let type_name = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("first argument must be a string, not {type_name}");
             return raise_exception::<_>(_py, "TypeError", &msg);
@@ -508,9 +504,9 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
         }
         let strict = is_truthy(_py, obj_from_bits(strict_bits));
         let end = end_i64 as usize;
-        match json_scanstring_decode(text.as_str(), end, strict) {
+        match json_scanstring_decode(&text, end, strict) {
             Ok((decoded, idx)) => {
-                let decoded_ptr = alloc_string(_py, decoded.as_bytes());
+                let decoded_ptr = alloc_string(_py, &decoded);
                 if decoded_ptr.is_null() {
                     return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
@@ -521,6 +517,7 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
                         MoltObject::from_int(idx as i64).bits(),
                     ],
                 );
+                dec_ref_bits(_py, MoltObject::from_ptr(decoded_ptr).bits());
                 if tuple_ptr.is_null() {
                     return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
                 }
@@ -530,7 +527,7 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
                 if msg == "end is out of bounds" {
                     return raise_exception::<_>(_py, "ValueError", msg.as_str());
                 }
-                let (lineno, colno) = json_string_line_col(text.as_str(), pos);
+                let (lineno, colno) = json_string_line_col(&text, pos);
                 let detail = format!("{msg}: line {lineno} column {colno} (char {pos})");
                 raise_exception::<_>(_py, "ValueError", detail.as_str())
             }
@@ -1137,7 +1134,8 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
 // JSON detect_encoding / loads / dumps
 // ---------------------------------------------------------------------------
 
-fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
+fn detect_json_encoding(data: &[u8]) -> &'static str {
+    let len = data.len();
     // Check BOM first
     if len >= 4 {
         match (data[0], data[1], data[2], data[3]) {
@@ -1157,16 +1155,25 @@ fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
         return "utf-8-sig";
     }
 
-    // No BOM — use the null-byte pattern of the first 2–4 bytes (RFC 4627 §3)
+    // CPython Lib/json/__init__.py::detect_encoding is a prefix heuristic,
+    // including for malformed input. Do not strengthen it into code-unit
+    // validation: the selected decoder owns the resulting error and position.
     if len >= 4 {
-        match (data[0], data[1], data[2], data[3]) {
-            (0x00, 0x00, 0x00, _) => return "utf-32-be",
-            (_, 0x00, 0x00, 0x00) => return "utf-32-le",
-            (0x00, _, 0x00, _) => return "utf-16-be",
-            (_, 0x00, _, 0x00) => return "utf-16-le",
-            _ => {}
+        if data[0] == 0 {
+            return if data[1] == 0 {
+                "utf-32-be"
+            } else {
+                "utf-16-be"
+            };
         }
-    } else if len >= 2 {
+        if data[1] == 0 {
+            return if data[2] == 0 && data[3] == 0 {
+                "utf-32-le"
+            } else {
+                "utf-16-le"
+            };
+        }
+    } else if len == 2 {
         match (data[0], data[1]) {
             (0x00, _) => return "utf-16-be",
             (_, 0x00) => return "utf-16-le",
@@ -1176,19 +1183,10 @@ fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
     "utf-8"
 }
 
-fn decode_json_text(_py: &PyToken<'_>, data: &[u8]) -> Result<String, u64> {
-    let encoding = detect_json_encoding(data, data.len());
-    let decoded = match crate::object::ops::decode_bytes_text(encoding, "strict", data) {
-        Ok((text_bytes, _)) => text_bytes,
-        Err(error) => return Err(error.raise(_py, data)),
-    };
-    match String::from_utf8(decoded) {
-        Ok(text) => Ok(text),
-        Err(_) => Err(raise_exception::<u64>(
-            _py,
-            "UnicodeDecodeError",
-            "decoded JSON payload was not valid UTF-8",
-        )),
+fn decode_json_text(_py: &PyToken<'_>, data: &[u8]) -> Result<Vec<u8>, u64> {
+    match crate::object::ops::decode_bytes_text(detect_json_encoding(data), "surrogatepass", data) {
+        Ok((text, _)) => Ok(text),
+        Err(error) => Err(error.raise(_py, data)),
     }
 }
 
@@ -1521,7 +1519,6 @@ fn object_to_json_with_options(
 
 struct JsonParser<'a, 'py> {
     _py: &'py PyToken<'py>,
-    text: &'a str,
     bytes: &'a [u8],
     length: usize,
     index: usize,
@@ -1529,11 +1526,10 @@ struct JsonParser<'a, 'py> {
 }
 
 impl<'a, 'py> JsonParser<'a, 'py> {
-    fn new(_py: &'py PyToken<'py>, text: &'a str, options: JsonLoadsOptions) -> Self {
+    fn new(_py: &'py PyToken<'py>, text: &'a [u8], options: JsonLoadsOptions) -> Self {
         Self {
             _py,
-            text,
-            bytes: text.as_bytes(),
+            bytes: text,
             length: text.len(),
             index: 0,
             options,
@@ -1721,7 +1717,8 @@ impl<'a, 'py> JsonParser<'a, 'py> {
             }
         }
 
-        let raw = &self.text[start..self.index];
+        let raw = std::str::from_utf8(&self.bytes[start..self.index])
+            .expect("JSON number scanner admits ASCII only");
         let is_float = raw.as_bytes().contains(&b'.')
             || raw.as_bytes().contains(&b'e')
             || raw.as_bytes().contains(&b'E');
@@ -1762,7 +1759,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                 pos: self.index,
             });
         }
-        match json_scanstring_decode_bytes(self.text, self.index, self.options.strict) {
+        match json_scanstring_decode_bytes(self.bytes, self.index, self.options.strict) {
             Ok((decoded, next_idx)) => {
                 self.index = next_idx;
                 self.alloc_string_bytes(decoded.as_bytes())
@@ -1985,7 +1982,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
     }
 }
 
-fn json_parse_error_message(text: &str, msg: &str, pos: usize) -> String {
+fn json_parse_error_message(text: &[u8], msg: &str, pos: usize) -> String {
     let char_pos = byte_index_to_char_index(text, pos);
     let (lineno, colno) = json_string_line_col(text, char_pos);
     format!("{msg}: line {lineno} column {colno} (char {char_pos})")
@@ -1993,10 +1990,10 @@ fn json_parse_error_message(text: &str, msg: &str, pos: usize) -> String {
 
 fn run_json_parse(
     _py: &PyToken<'_>,
-    text: &str,
+    text: &[u8],
     options: JsonLoadsOptions,
 ) -> Result<u64, JsonParseError> {
-    if text.starts_with('\u{FEFF}') {
+    if text.starts_with(b"\xef\xbb\xbf") {
         return Err(JsonParseError::Message {
             msg: "Unexpected UTF-8 BOM (decode using utf-8-sig)".to_string(),
             pos: 0,
@@ -2008,7 +2005,7 @@ fn run_json_parse(
 
 fn run_json_raw_decode(
     _py: &PyToken<'_>,
-    text: &str,
+    text: &[u8],
     idx: usize,
     options: JsonLoadsOptions,
 ) -> Result<(u64, usize), JsonParseError> {
@@ -2023,7 +2020,7 @@ fn run_json_raw_decode(
     Ok((value_bits, byte_index_to_char_index(text, end_byte)))
 }
 
-fn raise_json_parse_error(_py: &PyToken<'_>, text: &str, err: JsonParseError) -> u64 {
+fn raise_json_parse_error(_py: &PyToken<'_>, text: &[u8], err: JsonParseError) -> u64 {
     match err {
         JsonParseError::Raised(bits) => bits,
         JsonParseError::Message { msg, pos } => {
@@ -2170,7 +2167,7 @@ pub extern "C" fn molt_json_loads_ex(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let payload_obj = obj_from_bits(text_bits);
-        let text = if let Some(text) = string_obj_to_owned(payload_obj) {
+        let text = if let Some(text) = crate::object::ops_format::string_obj_bytes(payload_obj) {
             text
         } else if let Some(ptr) = payload_obj.as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
@@ -2221,7 +2218,8 @@ pub extern "C" fn molt_json_raw_decode_ex(
     strict_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+        let Some(text) = crate::object::ops_format::string_obj_bytes(obj_from_bits(text_bits))
+        else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("first argument must be a string, not {tn}");
             return raise_exception::<u64>(_py, "TypeError", &msg);
@@ -2269,30 +2267,19 @@ pub extern "C" fn molt_json_raw_decode_ex(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(doc) = string_obj_to_owned(obj_from_bits(doc_bits)) else {
+        let Some(doc) = crate::object::ops_format::string_obj_bytes(obj_from_bits(doc_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "doc must be str");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "pos must be int");
         };
         let pos = pos.max(0) as usize;
-        let prefix = if pos <= doc.len() {
-            &doc[..pos]
-        } else {
-            &doc[..]
-        };
-        let lineno = prefix.matches('\n').count() as i64 + 1;
-        let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
-        let colno = if line_start < 0 {
-            pos as i64 + 1
-        } else {
-            pos as i64 - line_start
-        };
+        let (lineno, colno) = json_string_line_col(&doc, pos);
         let tuple_ptr = alloc_tuple(
             _py,
             &[
-                MoltObject::from_int(lineno).bits(),
-                MoltObject::from_int(colno).bits(),
+                MoltObject::from_int(lineno as i64).bits(),
+                MoltObject::from_int(colno as i64).bits(),
             ],
         );
         if tuple_ptr.is_null() {
@@ -2310,62 +2297,31 @@ pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64
 pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(payload_bits);
-        // Try string first
-        if let Some(s) = string_obj_to_owned(obj) {
-            let ptr = alloc_string(_py, s.as_bytes());
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(ptr).bits();
-        }
-        // Try bytes/bytearray
         if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                let tid = object_type_id(ptr);
-                if tid == crate::TYPE_ID_BYTES || tid == crate::TYPE_ID_BYTEARRAY {
-                    let len = crate::bytes_len(ptr);
-                    if len == 0 {
-                        let s_ptr = alloc_string(_py, b"");
-                        if s_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(s_ptr).bits();
-                    }
-                    let data_ptr = crate::bytes_data(ptr);
-                    let data = std::slice::from_raw_parts(data_ptr, len);
-                    let encoding = detect_json_encoding(data, len);
-                    let decoded = if encoding == "utf-8-sig" {
-                        String::from_utf8_lossy(&data[3..]).into_owned()
-                    } else if encoding == "utf-8" {
-                        String::from_utf8_lossy(data).into_owned()
-                    } else if encoding == "utf-16" {
-                        json_decode_utf16_with_bom(data)
-                    } else if encoding == "utf-16-be" {
-                        json_decode_utf16_be(data)
-                    } else if encoding == "utf-16-le" {
-                        json_decode_utf16_le(data)
-                    } else if encoding == "utf-32" {
-                        json_decode_utf32_with_bom(data)
-                    } else if encoding == "utf-32-be" {
-                        json_decode_utf32_be(data)
-                    } else if encoding == "utf-32-le" {
-                        json_decode_utf32_le(data)
-                    } else {
-                        String::from_utf8_lossy(data).into_owned()
-                    };
-                    let s_ptr = alloc_string(_py, decoded.as_bytes());
-                    if s_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(s_ptr).bits();
-                }
+            let kind = unsafe { object_type_id(ptr) };
+            if kind == TYPE_ID_STRING {
+                inc_ref_bits(_py, payload_bits);
+                return payload_bits;
+            }
+            if kind == TYPE_ID_BYTES || kind == TYPE_ID_BYTEARRAY {
+                let data = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
+                let decoded = match decode_json_text(_py, data) {
+                    Ok(decoded) => decoded,
+                    Err(bits) => return bits,
+                };
+                let string = alloc_string(_py, &decoded);
+                return if string.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(string).bits()
+                };
             }
         }
-        let tname = type_name(_py, obj);
+        let name = type_name(_py, obj);
         raise_exception::<u64>(
             _py,
             "TypeError",
-            &format!("the JSON object must be str, bytes or bytearray, not {tname}"),
+            &format!("the JSON object must be str, bytes or bytearray, not {name}"),
         )
     })
 }
@@ -2405,25 +2361,14 @@ pub extern "C" fn molt_json_format_decode_error(
         let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "msg must be str");
         };
-        let Some(doc) = string_obj_to_owned(obj_from_bits(doc_bits)) else {
+        let Some(doc) = crate::object::ops_format::string_obj_bytes(obj_from_bits(doc_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "doc must be str");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "pos must be int");
         };
         let pos = pos.max(0) as usize;
-        let prefix = if pos <= doc.len() {
-            &doc[..pos]
-        } else {
-            &doc[..]
-        };
-        let lineno = prefix.matches('\n').count() + 1;
-        let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
-        let colno = if line_start < 0 {
-            pos as i64 + 1
-        } else {
-            pos as i64 - line_start
-        };
+        let (lineno, colno) = json_string_line_col(&doc, pos);
         let formatted = format!("{msg}: line {lineno} column {colno} (char {pos})");
         let ptr = alloc_string(_py, formatted.as_bytes());
         if ptr.is_null() {
@@ -2471,87 +2416,129 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
     })
 }
 
-fn json_decode_utf16_be(data: &[u8]) -> String {
-    let units: Vec<u16> = data
-        .chunks(2)
-        .filter_map(|c| {
-            if c.len() == 2 {
-                Some(u16::from_be_bytes([c[0], c[1]]))
-            } else {
-                None
-            }
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
-fn json_decode_utf16_with_bom(data: &[u8]) -> String {
-    if data.len() >= 2 {
-        if data[0] == 0xFE && data[1] == 0xFF {
-            return json_decode_utf16_be(&data[2..]);
-        }
-        if data[0] == 0xFF && data[1] == 0xFE {
-            return json_decode_utf16_le(&data[2..]);
-        }
-    }
-    json_decode_utf16_be(data)
-}
-
-fn json_decode_utf16_le(data: &[u8]) -> String {
-    let units: Vec<u16> = data
-        .chunks(2)
-        .filter_map(|c| {
-            if c.len() == 2 {
-                Some(u16::from_le_bytes([c[0], c[1]]))
-            } else {
-                None
-            }
-        })
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
-fn json_decode_utf32_be(data: &[u8]) -> String {
-    data.chunks(4)
-        .filter_map(|c| {
-            if c.len() == 4 {
-                let code = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
-                char::from_u32(code)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn json_decode_utf32_with_bom(data: &[u8]) -> String {
-    if data.len() >= 4 {
-        if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0xFE && data[3] == 0xFF {
-            return json_decode_utf32_be(&data[4..]);
-        }
-        if data[0] == 0xFF && data[1] == 0xFE && data[2] == 0x00 && data[3] == 0x00 {
-            return json_decode_utf32_le(&data[4..]);
-        }
-    }
-    json_decode_utf32_be(data)
-}
-
-fn json_decode_utf32_le(data: &[u8]) -> String {
-    data.chunks(4)
-        .filter_map(|c| {
-            if c.len() == 4 {
-                let code = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                char::from_u32(code)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod float_text_tests {
-    use super::{JsonEncodeError, json_float_token};
+    use super::*;
+
+    #[test]
+    fn json_decoding_preserves_python_codepoints_and_character_positions() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::concurrency::gil::with_gil(|py| {
+            let py = &py;
+            let options = JsonLoadsOptions {
+                parse_float: None,
+                parse_int: None,
+                parse_constant: None,
+                object_hook: None,
+                object_pairs_hook: None,
+                strict: true,
+            };
+            // CPython v3.12.13 Lib/json/__init__.py and Modules/_json.c:
+            // byte inputs use surrogatepass; only escaped pairs combine.
+            let cases: &[(&[u8], &[u8])] = &[
+                (b"\"\\ud800\"", b"\xed\xa0\x80"),
+                (b"\"\\udfff\"", b"\xed\xbf\xbf"),
+                (b"\"\\ud800\\udfff\"", b"\xf0\x90\x8f\xbf"),
+                (b"\"\xed\xa0\x80\xed\xbf\xbf\"", b"\xed\xa0\x80\xed\xbf\xbf"),
+                (b"\"\\udbff\\udfff\"", b"\xf4\x8f\xbf\xbf"),
+                (b"\"\xf0\x90\x80\x80\"", b"\xf0\x90\x80\x80"),
+                (b"\xef\xbb\xbf\"\xed\xa0\x80\"", b"\xed\xa0\x80"),
+                (b"\xff\xfe\"\x00\x00\xd8\"\x00", b"\xed\xa0\x80"),
+                (b"\xfe\xff\x00\"\xdc\x00\x00\"", b"\xed\xb0\x80"),
+                (
+                    b"\xff\xfe\x00\x00\"\x00\x00\x00\x00\xd8\x00\x00\"\x00\x00\x00",
+                    b"\xed\xa0\x80",
+                ),
+                (
+                    b"\x00\x00\xfe\xff\x00\x00\x00\"\x00\x00\xdc\x00\x00\x00\x00\"",
+                    b"\xed\xb0\x80",
+                ),
+            ];
+            for &(wire, expected) in cases {
+                let text = decode_json_text(py, wire).unwrap();
+                let parsed = run_json_parse(py, &text, options)
+                    .unwrap_or_else(|_| panic!("JSON parse failed: {wire:?}"));
+                assert_eq!(
+                    crate::object::ops_format::string_obj_bytes(obj_from_bits(parsed)).as_deref(),
+                    Some(expected),
+                    "{wire:?}"
+                );
+                dec_ref_bits(py, parsed);
+                let (scanned, end) = json_scanstring_decode(&text, 1, true).unwrap();
+                assert_eq!(scanned, expected, "{wire:?}");
+                assert_eq!(end, byte_index_to_char_index(&text, text.len()));
+            }
+            let text = b"x\"\xf0\x90\x80\x80\xed\xa0\x80\" tail";
+            let (parsed, end) = run_json_raw_decode(py, text, 1, options)
+                .unwrap_or_else(|_| panic!("raw decode failed"));
+            assert_eq!(end, 5);
+            assert_eq!(
+                crate::object::ops_format::string_obj_bytes(obj_from_bits(parsed)).as_deref(),
+                Some(b"\xf0\x90\x80\x80\xed\xa0\x80".as_slice())
+            );
+            dec_ref_bits(py, parsed);
+            let invalid = b"[\n \"\xc3\xa9\xed\xa0\x80\",?]";
+            let Err(JsonParseError::Message { msg, pos }) = run_json_parse(py, invalid, options)
+            else {
+                panic!("invalid JSON unexpectedly parsed")
+            };
+            assert_eq!(
+                json_parse_error_message(invalid, &msg, pos),
+                "Expecting value: line 2 column 7 (char 8)"
+            );
+            assert_eq!(json_string_line_col(invalid, 8), (2, 7));
+            let input = alloc_string(py, b"\"decoded heap string \\ud800\"");
+            assert!(!input.is_null());
+            let input_bits = MoltObject::from_ptr(input).bits();
+            let baseline = unsafe { (*header_from_obj_ptr(input)).ref_count_snapshot() };
+            assert_eq!(molt_json_coerce_text(input_bits), input_bits);
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(input)).ref_count_snapshot() },
+                baseline + 1
+            );
+            dec_ref_bits(py, input_bits);
+            let scanned = molt_json_scanstring_obj(
+                input_bits,
+                MoltObject::from_int(1).bits(),
+                MoltObject::from_bool(true).bits(),
+            );
+            let tuple = obj_from_bits(scanned)
+                .as_ptr()
+                .expect("scanner result tuple");
+            let child = unsafe { crate::object::seq_access::item(tuple, 0) }.unwrap();
+            let child = obj_from_bits(child).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() },
+                1,
+                "only the result tuple owns the decoded heap string"
+            );
+            dec_ref_bits(py, scanned);
+            dec_ref_bits(py, input_bits);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn json_encoding_detection_retains_cpython_malformed_prefix_policy() {
+        // The encoding decision precedes validation, so even malformed
+        // prefixes select the decoder (and therefore the error label).
+        for (input, expected) in [
+            (b"".as_slice(), "utf-8"),
+            (b"\x00", "utf-8"),
+            (b"\x00\x01", "utf-16-be"),
+            (b"\x01\x00", "utf-16-le"),
+            (b"\x00\x01\x00", "utf-8"),
+            (b"\x01\x00\x00", "utf-8"),
+            (b"\x00\x00\x01\x22", "utf-32-be"),
+            (b"\x00\x01\x22\x00", "utf-16-be"),
+            (b"\x22\x00\x00\x01", "utf-16-le"),
+            (b"\x22\x00\x00\x00", "utf-32-le"),
+            (b"\xff\xfe\x00\x00", "utf-32"),
+            (b"\x00\x00\xfe\xff", "utf-32"),
+        ] {
+            assert_eq!(detect_json_encoding(input), expected, "{input:?}");
+        }
+    }
 
     #[test]
     fn json_finite_float_tokens_use_canonical_cpython_repr() {

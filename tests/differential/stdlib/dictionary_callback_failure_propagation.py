@@ -84,6 +84,7 @@ for maxsize in (None, 2):
     before = cached.cache_info()
     observe("lru hash " + str(maxsize), lambda: cached(bad_hash))
     observe("lru equality " + str(maxsize), lambda: cached(cache_collision))
+    print("lru fields unchanged", maxsize, tuple(cached.cache_info()) == tuple(before))
     print("lru unchanged", maxsize, cache_calls, cached.cache_info() == before)
     cache_resident.fail_equal = False
     print("lru retained", cached(cache_resident), cached.cache_info().hits)

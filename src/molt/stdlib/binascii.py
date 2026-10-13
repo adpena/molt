@@ -32,8 +32,8 @@ def crc32(data, value=0, /):
     return _crc32(data, value)
 
 
-hexlify = b2a_hex
-unhexlify = a2b_hex
+hexlify = _require_intrinsic("molt_binascii_hexlify")
+unhexlify = _require_intrinsic("molt_binascii_unhexlify")
 
 __all__ = [
     "Error",

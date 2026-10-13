@@ -109,26 +109,46 @@ fn is_atomic_type_id(type_id: u32) -> bool {
 
 fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
-
-    // None and non-ptr immediates (int, float, bool) return self
-    if obj.is_none() {
-        return bits;
-    }
-    if obj.as_float().is_some() {
-        return bits;
-    }
-    if to_i64(obj).is_some() {
-        return bits;
-    }
-
+    // None and non-ptr immediates (int, float, bool) return self.
     let Some(ptr) = obj.as_ptr() else {
         return bits;
     };
-
     let type_id = unsafe { object_type_id(ptr) };
 
-    // Atomic types return self
-    if is_atomic_type_id(type_id) {
+    // Classes are atomic even when their metaclass supplies __copy__.
+    if type_id == TYPE_ID_TYPE {
+        inc_ref_bits(_py, bits);
+        return bits;
+    }
+
+    // Exact builtins retain their native copy rules. Subclasses must consult
+    // their actual class before physical scalar/container storage can bypass
+    // __copy__. Ordinary class lookup observes descriptors and metaclasses;
+    // an instance attribute named __copy__ is not part of this protocol.
+    if !unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } {
+        let class_bits = type_of_bits(_py, bits);
+        inc_ref_bits(_py, class_bits);
+        let _class_owner = obj_from_bits(class_bits).as_ptr().map(PtrDropGuard::new);
+        let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__copy__") else {
+            return MoltObject::none().bits();
+        };
+        let copier = molt_getattr_builtin(class_bits, name_bits, MoltObject::none().bits());
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, copier);
+            return MoltObject::none().bits();
+        }
+        if !obj_from_bits(copier).is_none() {
+            // No container borrow or lock spans either Python callback.
+            let result = unsafe { call_callable1(_py, copier, bits) };
+            dec_ref_bits(_py, copier);
+            return result;
+        }
+    }
+
+    // Heap scalar results, like every other pointer result here, are owned.
+    if obj.as_float().is_some() || to_i64(obj).is_some() || is_atomic_type_id(type_id) {
+        inc_ref_bits(_py, bits);
         return bits;
     }
 
@@ -200,8 +220,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
             }
         }
         _ => {
-            // For other types, check for __copy__ method, otherwise return self.
-            // The Python shim handles the full dispatch protocol.
+            // Default reduction is still unimplemented for these types.
             inc_ref_bits(_py, bits);
             bits
         }
@@ -434,8 +453,8 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             }
         }
         _ => {
-            // For other object types, fall back to returning self.
-            // The Python shim handles __deepcopy__, __reduce_ex__, etc.
+            // Custom deep-copy and reduction protocols remain unimplemented
+            // for these types; the Python entrypoint delegates here directly.
             inc_ref_bits(_py, bits);
             bits
         }
@@ -445,8 +464,8 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
 /// Shallow copy of a Python object.
-/// For container types (list, dict, set), creates a new container with the
-/// same element references. For immutable/atomic types, returns the same object.
+/// Exact builtins use their native storage rules; other instances first consult
+/// their class-defined `__copy__` hook. Default reduction remains separate debt.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_copy(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { shallow_copy_bits(_py, obj_bits) })

@@ -11,6 +11,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 from typing import Any, Callable, Iterable, TYPE_CHECKING
+from collections import namedtuple as _namedtuple
 
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ _MOLT_SD_REGISTRY = _require_intrinsic("molt_functools_singledispatch_registry")
 _MOLT_SD_DROP = _require_intrinsic("molt_functools_singledispatch_drop")
 
 _MISSING = _MOLT_KWD_MARK()
+_CacheInfo = _namedtuple("CacheInfo", "hits misses maxsize currsize", module="functools")
 
 # --- Direct intrinsic bindings (no Python wrapper overhead) ---
 
@@ -95,7 +97,22 @@ def reduce(
 
 
 def lru_cache(maxsize: Any = 128, typed: bool = False):
-    return _MOLT_LRU_CACHE(maxsize, typed)
+    if isinstance(maxsize, int):
+        if maxsize < 0:
+            maxsize = 0
+    elif callable(maxsize) and isinstance(typed, bool):
+        wrapper = _MOLT_LRU_CACHE(maxsize, 128, typed, _CacheInfo)
+        wrapper.cache_parameters = lambda: {"maxsize": 128, "typed": typed}
+        return update_wrapper(wrapper, maxsize)
+    elif maxsize is not None:
+        raise TypeError("Expected first argument to be an integer, a callable, or None")
+
+    def decorate(user_function):
+        wrapper = _MOLT_LRU_CACHE(user_function, maxsize, typed, _CacheInfo)
+        wrapper.cache_parameters = lambda: {"maxsize": maxsize, "typed": typed}
+        return update_wrapper(wrapper, user_function)
+
+    return decorate
 
 
 def cache(user_function: Callable[..., Any], /) -> Callable[..., Any]:

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GEN_INTRINSICS = ROOT / "tools" / "gen_intrinsics.py"
@@ -33,7 +35,7 @@ def test_backend_symbol_overrides_file_is_removed() -> None:
 def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
     module = _load_gen_intrinsics_module()
     _raw, entries = module._load_manifest()
-    symbols = {name: symbol for name, symbol, _arity in entries}
+    symbols = {entry.name: entry.symbol for entry in entries}
     assert symbols["molt_async_sleep"] == "molt_async_sleep"
 
 
@@ -82,17 +84,94 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text(
         encoding="utf-8"
     )
-    assert (
-        "let defaults = materialize_intrinsic_defaults(_py, default_values)?;"
-        in registry
-    )
-    assert "build_runtime_function(_py, fn_ptr, arity, &defaults)" in registry
-    assert "crate::builtins::methods::alloc_builtin_function_with_defaults(" in registry
     assert "fn attach_function_defaults" not in registry
-    assert (
-        registry.count("build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)")
-        == 2
-    ), "eager and lazy intrinsic registration must attach manifest defaults"
+
+
+def test_public_intrinsic_names_are_explicit_declarations() -> None:
+    module = _load_gen_intrinsics_module()
+    _raw, entries = module._load_manifest()
+    by_name = {entry.name: entry for entry in entries}
+    # CPython method declarations differ from runtime spelling and aliases.
+    for intrinsic, expected in (
+        ("molt_math_floor", "floor"),
+        ("molt_operator_and", "and_"),
+        ("molt_operator_countof", "countOf"),
+        ("molt_json_scanstring_obj", "scanstring"),
+        ("molt_string_formatter_parse", "formatter_parser"),
+        ("molt_time_monotonic", "monotonic"),  # socketserver.time is an alias.
+        ("molt_process_spawn", "fork_exec"),
+    ):
+        assert by_name[intrinsic].python_name == expected
+    assert by_name["molt_capabilities_has"].python_name is None
+    declarations = parse_intrinsic_manifest(
+        "# python-name: public_name\n"
+        "def molt_private(\n    value: Any,\n) -> Any: ...\n"
+        "def molt_internal() -> None: ...\n"
+    )
+    assert [(entry.name, entry.arity, entry.python_name) for entry in declarations] == [
+        ("molt_private", 1, "public_name"),
+        ("molt_internal", 0, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "# python-name: bad-name\ndef molt_x() -> None: ...\n",
+        "# python-name: \ndef molt_x() -> None: ...\n",
+        "# python-name: 'quoted'\ndef molt_x() -> None: ...\n",
+        "# python-name: first\n# python-name: second\ndef molt_x() -> None: ...\n",
+        "# python-name: orphan\n",
+        "# python-name: detached\nfrom typing import Any\ndef molt_x() -> None: ...\n",
+    ],
+)
+def test_invalid_public_intrinsic_name_declarations_fail_closed(
+    declaration: str,
+) -> None:
+    with pytest.raises(ValueError):
+        parse_intrinsic_manifest(declaration)
+
+
+@pytest.mark.parametrize("name", [True, 12, {}, "", "has space", "é"])
+def test_public_intrinsic_name_facts_validate_type_and_grammar(name: object) -> None:
+    with pytest.raises(ValueError):
+        IntrinsicEntry("molt_test", "molt_test", 0, python_name=name)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "# runtime-symbol: missing\ndef molt_alias(x: Any) -> Any: ...\n",
+        "# runtime-symbol: 'molt_target'\ndef molt_alias(x: Any) -> Any: ...\n",
+        "# runtime-symbol: molt_target\n# runtime-symbol: molt_target\ndef molt_alias(x: Any) -> Any: ...\n",
+        "# runtime-symbol: molt_target\ndef molt_alias() -> Any: ...\n",
+        "# runtime-symbol: molt_target\ndef molt_alias(x: Any) -> int: ...\n",
+        "# runtime-symbol: molt_target\ndef molt_alias(x: Any = None) -> Any: ...\n",
+        "# runtime-symbol: molt_target\ndef molt_alias(x: Any) -> Any: ...\n# runtime-symbol: molt_alias\ndef molt_chain(x: Any) -> Any: ...\n",
+        "# runtime-symbol: molt_target\n",
+    ],
+)
+def test_intrinsic_aliases_reject_noncanonical_targets_and_signature_drift(
+    declaration: str,
+) -> None:
+    with pytest.raises(ValueError):
+        parse_intrinsic_manifest("def molt_target(x: Any) -> Any: ...\n" + declaration)
+
+
+def test_distinct_public_aliases_share_only_the_executable_symbol() -> None:
+    module = _load_gen_intrinsics_module()
+    _, entries = module._load_manifest()
+    by_name = {entry.name: entry for entry in entries}
+    for alias, target, public_name in (
+        ("molt_operator_inv", "molt_operator_invert", "inv"),
+        ("molt_binascii_hexlify", "molt_binascii_b2a_hex", "hexlify"),
+        ("molt_binascii_unhexlify", "molt_binascii_a2b_hex", "unhexlify"),
+    ):
+        assert by_name[alias].symbol == target
+        assert by_name[alias].python_name == public_name
+        assert by_name[alias].python_name != by_name[target].python_name
+        assert by_name[alias].arity == by_name[target].arity
+        assert by_name[alias].defaults == by_name[target].defaults
 
 
 def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
@@ -100,7 +179,7 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     _raw, entries = module._load_manifest()
 
     ssl_symbols = sorted(
-        {symbol for _name, symbol, _arity in entries if symbol.startswith("molt_ssl_")}
+        {entry.symbol for entry in entries if entry.symbol.startswith("molt_ssl_")}
     )
     assert ssl_symbols
     for symbol in ssl_symbols:

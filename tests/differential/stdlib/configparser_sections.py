@@ -74,3 +74,26 @@ print(cp.get("main", "missing", fallback="default_val"))
 print(cp.getint("main", "missing", fallback=42))
 print(cp.getfloat("main", "missing", fallback=2.5))
 print(cp.getboolean("main", "missing", fallback=False))
+
+
+# Fallback is returned as the original object, without conversion. Retiring
+# each result must leave the caller's owner alive until explicitly released.
+retired = []
+
+
+class Fallback:
+    def __init__(self, label):
+        self.label = label
+
+    def __del__(self):
+        retired.append(self.label)
+
+
+for name in ("get", "getint", "getfloat", "getboolean"):
+    fallback = Fallback(name)
+    result = getattr(cp, name)("main", "missing", fallback=fallback)
+    print("fallback-identity", name, result is fallback)
+    del result
+    print("fallback-live", fallback.label, retired)
+    del fallback
+    print("fallback-retired", retired)

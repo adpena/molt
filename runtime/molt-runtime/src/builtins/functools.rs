@@ -21,18 +21,16 @@ use crate::{
     object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
-/// The runtime-owned functools objects: the keyword marker and the five
+/// The runtime-owned functools objects: the keyword marker and the three
 /// native classes. Their methods are published by the class specs, so no
 /// per-method slot exists here.
-const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 6;
+const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 4;
 
 pub(crate) struct FunctoolsRuntimeState {
     kwd_mark_bits: AtomicU64,
     partial_class: AtomicU64,
     cmpkey_class: AtomicU64,
     lru_wrapper_class: AtomicU64,
-    lru_factory_class: AtomicU64,
-    cacheinfo_class: AtomicU64,
     next_singledispatch_handle: AtomicI64,
     singledispatch_registry: Mutex<HashMap<i64, SingleDispatchState>>,
 }
@@ -44,8 +42,6 @@ impl FunctoolsRuntimeState {
             partial_class: AtomicU64::new(0),
             cmpkey_class: AtomicU64::new(0),
             lru_wrapper_class: AtomicU64::new(0),
-            lru_factory_class: AtomicU64::new(0),
-            cacheinfo_class: AtomicU64::new(0),
             next_singledispatch_handle: AtomicI64::new(1),
             singledispatch_registry: Mutex::new(HashMap::new()),
         }
@@ -57,8 +53,6 @@ impl FunctoolsRuntimeState {
             &self.partial_class,
             &self.cmpkey_class,
             &self.lru_wrapper_class,
-            &self.lru_factory_class,
-            &self.cacheinfo_class,
         ]
     }
 }
@@ -291,12 +285,6 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
             crate::molt_functools_lru_cache_clear as *const () as usize as u64,
             1,
         ),
-        RuntimeClassMethodSpec::fixed(
-            "cache_parameters",
-            NativeCallableKind::MethodDescriptor,
-            crate::molt_functools_lru_cache_params as *const () as usize as u64,
-            1,
-        ),
     ];
     init_cached_runtime_class(
         _py,
@@ -310,68 +298,6 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
                 allows_dict: true,
                 allows_weakref: true,
                 variable_sized: false,
-            }),
-        },
-        &methods,
-    )
-}
-
-fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
-    let functools = &crate::runtime_state(_py).functools;
-    let methods = [RuntimeClassMethodSpec::fixed(
-        "__call__",
-        NativeCallableKind::WrapperDescriptor,
-        crate::molt_functools_lru_factory_call as *const () as usize as u64,
-        2,
-    )];
-    init_cached_runtime_class(
-        _py,
-        &functools.lru_factory_class,
-        "_LruCacheFactory",
-        crate::builtins::types::RuntimeClassLayout {
-            semantics: ClassSemanticPolicy::heap(false, true),
-            layout_size: 24,
-            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsLruFactory),
-            native_slots: None,
-        },
-        &methods,
-    )
-}
-
-fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
-    let functools = &crate::runtime_state(_py).functools;
-    let methods = [
-        RuntimeClassMethodSpec::fixed(
-            "__iter__",
-            NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
-            1,
-        ),
-        RuntimeClassMethodSpec::fixed(
-            "__repr__",
-            NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
-            1,
-        ),
-        RuntimeClassMethodSpec::fixed(
-            "__getattr__",
-            NativeCallableKind::MethodDescriptor,
-            crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
-            2,
-        ),
-    ];
-    init_cached_runtime_class(
-        _py,
-        &functools.cacheinfo_class,
-        "CacheInfo",
-        crate::builtins::types::RuntimeClassLayout {
-            semantics: ClassSemanticPolicy::heap(false, true),
-            layout_size: 40,
-            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsCacheInfo),
-            native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
-                allows_dict: false,
-                allows_weakref: false,
-                variable_sized: true,
             }),
         },
         &methods,
@@ -441,6 +367,14 @@ unsafe fn lru_hits(ptr: *mut u8) -> i64 {
 unsafe fn lru_misses(ptr: *mut u8) -> i64 {
     unsafe { *(ptr.add(6 * std::mem::size_of::<u64>()) as *const i64) }
 }
+unsafe fn lru_cache_info_type_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
+}
+unsafe fn lru_set_cache_info_type_bits(ptr: *mut u8, bits: u64) {
+    unsafe {
+        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    }
+}
 unsafe fn lru_set_func_bits(ptr: *mut u8, bits: u64) {
     unsafe {
         *(ptr as *mut u64) = bits;
@@ -474,56 +408,6 @@ unsafe fn lru_set_hits(ptr: *mut u8, val: i64) {
 unsafe fn lru_set_misses(ptr: *mut u8, val: i64) {
     unsafe {
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut i64) = val;
-    }
-}
-
-unsafe fn lru_factory_maxsize_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr as *const u64) }
-}
-unsafe fn lru_factory_typed_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
-}
-unsafe fn lru_factory_set_maxsize_bits(ptr: *mut u8, bits: u64) {
-    unsafe {
-        *(ptr as *mut u64) = bits;
-    }
-}
-unsafe fn lru_factory_set_typed_bits(ptr: *mut u8, bits: u64) {
-    unsafe {
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = bits;
-    }
-}
-
-unsafe fn cacheinfo_hits(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr as *const i64) }
-}
-unsafe fn cacheinfo_misses(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const i64) }
-}
-unsafe fn cacheinfo_maxsize_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
-}
-unsafe fn cacheinfo_currsize(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const i64) }
-}
-unsafe fn cacheinfo_set_hits(ptr: *mut u8, val: i64) {
-    unsafe {
-        *(ptr as *mut i64) = val;
-    }
-}
-unsafe fn cacheinfo_set_misses(ptr: *mut u8, val: i64) {
-    unsafe {
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut i64) = val;
-    }
-}
-unsafe fn cacheinfo_set_maxsize_bits(ptr: *mut u8, bits: u64) {
-    unsafe {
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
-    }
-}
-unsafe fn cacheinfo_set_currsize(ptr: *mut u8, val: i64) {
-    unsafe {
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
     }
 }
 
@@ -1319,61 +1203,46 @@ pub extern "C" fn molt_functools_total_ordering_op(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_lru_cache(maxsize_bits: u64, typed_bits: u64) -> u64 {
+pub extern "C" fn molt_functools_lru_cache(
+    func_bits: u64,
+    maxsize_bits: u64,
+    typed_bits: u64,
+    cache_info_type_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let typed = is_truthy(_py, obj_from_bits(typed_bits));
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let callable = is_truthy(_py, obj_from_bits(molt_is_callable(maxsize_bits)));
-        if callable {
-            let wrapper_bits = build_lru_wrapper(
-                _py,
-                maxsize_bits,
-                MoltObject::from_int(128).bits(),
-                MoltObject::from_bool(typed).bits(),
-            );
-            if obj_from_bits(wrapper_bits).is_none() {
-                return MoltObject::none().bits();
-            }
-            return molt_functools_update_wrapper(
-                wrapper_bits,
-                maxsize_bits,
-                default_wrapper_assignments(_py),
-                default_wrapper_updates(_py),
-            );
+        if !is_truthy(_py, obj_from_bits(molt_is_callable(func_bits))) {
+            return raise_exception::<u64>(_py, "TypeError", "the first argument must be callable");
         }
         let maxsize_bits = if obj_from_bits(maxsize_bits).is_none() {
             maxsize_bits
         } else {
-            let mut maxsize = index_i64_from_obj(_py, maxsize_bits, "maxsize must be an integer");
+            let size = index_i64_from_obj(_py, maxsize_bits, "maxsize must be an integer");
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if maxsize < 0 {
-                maxsize = 0;
-            }
-            MoltObject::from_int(maxsize).bits()
+            MoltObject::from_int(size.max(0)).bits()
         };
-        let class_bits = lru_factory_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            lru_factory_set_maxsize_bits(inst_ptr, maxsize_bits);
-            lru_factory_set_typed_bits(inst_ptr, MoltObject::from_bool(typed).bits());
-        }
-        inc_ref_bits(_py, maxsize_bits);
-        inst_bits
+        build_lru_wrapper(
+            _py,
+            func_bits,
+            maxsize_bits,
+            MoltObject::from_bool(typed).bits(),
+            cache_info_type_bits,
+        )
     })
 }
 
-fn build_lru_wrapper(_py: &PyToken<'_>, func_bits: u64, maxsize_bits: u64, typed_bits: u64) -> u64 {
+fn build_lru_wrapper(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    maxsize_bits: u64,
+    typed_bits: u64,
+    cache_info_type_bits: u64,
+) -> u64 {
     let class_bits = lru_wrapper_class(_py);
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
         return MoltObject::none().bits();
@@ -1399,54 +1268,13 @@ fn build_lru_wrapper(_py: &PyToken<'_>, func_bits: u64, maxsize_bits: u64, typed
         lru_set_order_ptr(inst_ptr, order_ptr);
         lru_set_hits(inst_ptr, 0);
         lru_set_misses(inst_ptr, 0);
+        lru_set_cache_info_type_bits(inst_ptr, cache_info_type_bits);
     }
     inc_ref_bits(_py, func_bits);
     inc_ref_bits(_py, maxsize_bits);
     inc_ref_bits(_py, typed_bits);
+    inc_ref_bits(_py, cache_info_type_bits);
     inst_bits
-}
-
-fn default_wrapper_assignments(_py: &PyToken<'_>) -> u64 {
-    // tuple of __module__, __name__, __qualname__, __doc__, __annotations__
-    let names = [
-        "__module__",
-        "__name__",
-        "__qualname__",
-        "__doc__",
-        "__annotations__",
-    ];
-    let mut elems: Vec<u64> = Vec::with_capacity(names.len());
-    for name in names.iter() {
-        let ptr = alloc_string(_py, name.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        elems.push(MoltObject::from_ptr(ptr).bits());
-    }
-    let tuple_ptr = alloc_tuple(_py, elems.as_slice());
-    for bits in elems.iter() {
-        dec_ref_bits(_py, *bits);
-    }
-    if tuple_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(tuple_ptr).bits()
-    }
-}
-
-fn default_wrapper_updates(_py: &PyToken<'_>) -> u64 {
-    let ptr = alloc_string(_py, b"__dict__");
-    if ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let bits = MoltObject::from_ptr(ptr).bits();
-    let tuple_ptr = alloc_tuple(_py, &[bits]);
-    dec_ref_bits(_py, bits);
-    if tuple_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(tuple_ptr).bits()
-    }
 }
 
 fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool) -> u64 {
@@ -1675,88 +1503,21 @@ pub extern "C" fn molt_functools_lru_cache_info(self_bits: u64) -> u64 {
         } else {
             0
         };
-        let class_bits = cacheinfo_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
+        let constructor = unsafe { lru_cache_info_type_bits(self_ptr) };
+        let args = [
+            MoltObject::from_int(hits).bits(),
+            MoltObject::from_int(misses).bits(),
+            maxsize_bits,
+            MoltObject::from_int(currsize as i64).bits(),
+        ];
         unsafe {
-            cacheinfo_set_hits(inst_ptr, hits);
-            cacheinfo_set_misses(inst_ptr, misses);
-            cacheinfo_set_maxsize_bits(inst_ptr, maxsize_bits);
-            cacheinfo_set_currsize(inst_ptr, currsize as i64);
-        }
-        inc_ref_bits(_py, maxsize_bits);
-        inst_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_cacheinfo_iter(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let hits = MoltObject::from_int(unsafe { cacheinfo_hits(self_ptr) }).bits();
-        let misses = MoltObject::from_int(unsafe { cacheinfo_misses(self_ptr) }).bits();
-        let maxsize_bits = unsafe { cacheinfo_maxsize_bits(self_ptr) };
-        let currsize = MoltObject::from_int(unsafe { cacheinfo_currsize(self_ptr) }).bits();
-        let tuple_ptr = alloc_tuple(_py, &[hits, misses, maxsize_bits, currsize]);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let iter_bits = crate::molt_iter(tuple_bits);
-        dec_ref_bits(_py, tuple_bits);
-        iter_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_cacheinfo_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let hits = unsafe { cacheinfo_hits(self_ptr) };
-        let misses = unsafe { cacheinfo_misses(self_ptr) };
-        let maxsize_bits = unsafe { cacheinfo_maxsize_bits(self_ptr) };
-        let maxsize_repr_bits = molt_repr_from_obj(maxsize_bits);
-        let maxsize_repr =
-            string_obj_to_owned(obj_from_bits(maxsize_repr_bits)).unwrap_or_default();
-        dec_ref_bits(_py, maxsize_repr_bits);
-        let currsize = unsafe { cacheinfo_currsize(self_ptr) };
-        let out = format!(
-            "CacheInfo(hits={hits}, misses={misses}, maxsize={maxsize_repr}, currsize={currsize})"
-        );
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_cacheinfo_getattr(self_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "attribute name must be string");
-        };
-        match name.as_str() {
-            "hits" => MoltObject::from_int(unsafe { cacheinfo_hits(self_ptr) }).bits(),
-            "misses" => MoltObject::from_int(unsafe { cacheinfo_misses(self_ptr) }).bits(),
-            "maxsize" => {
-                let value_bits = unsafe { cacheinfo_maxsize_bits(self_ptr) };
-                inc_ref_bits(_py, value_bits);
-                value_bits
-            }
-            "currsize" => MoltObject::from_int(unsafe { cacheinfo_currsize(self_ptr) }).bits(),
-            _ => {
-                let msg = format!("'CacheInfo' object has no attribute '{name}'");
-                raise_exception::<u64>(_py, "AttributeError", &msg)
-            }
+            crate::call::bind::call_bind_capi(
+                _py,
+                constructor,
+                None,
+                &args,
+                MoltObject::none().bits(),
+            )
         }
     })
 }
@@ -1788,49 +1549,6 @@ pub extern "C" fn molt_functools_lru_cache_clear(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_lru_cache_params(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let maxsize_bits = unsafe { lru_maxsize_bits(self_ptr) };
-        let typed_bits = unsafe { lru_typed_bits(self_ptr) };
-        let key1_ptr = alloc_string(_py, b"maxsize");
-        let key2_ptr = alloc_string(_py, b"typed");
-        if key1_ptr.is_null() || key2_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let key1_bits = MoltObject::from_ptr(key1_ptr).bits();
-        let key2_bits = MoltObject::from_ptr(key2_ptr).bits();
-        let dict_ptr =
-            crate::alloc_dict_with_pairs(_py, &[key1_bits, maxsize_bits, key2_bits, typed_bits]);
-        dec_ref_bits(_py, key1_bits);
-        dec_ref_bits(_py, key2_bits);
-        if dict_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(dict_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_lru_factory_call(self_bits: u64, func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let maxsize_bits = unsafe { lru_factory_maxsize_bits(self_ptr) };
-        let typed_bits = unsafe { lru_factory_typed_bits(self_ptr) };
-        let wrapper_bits = build_lru_wrapper(_py, func_bits, maxsize_bits, typed_bits);
-        if obj_from_bits(wrapper_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        molt_functools_update_wrapper(
-            wrapper_bits,
-            func_bits,
-            default_wrapper_assignments(_py),
-            default_wrapper_updates(_py),
-        )
-    })
-}
-
 pub(crate) unsafe fn functools_visit_owned_edges(
     shape: crate::object::ObjectShapeId,
     ptr: *mut u8,
@@ -1853,12 +1571,8 @@ pub(crate) unsafe fn functools_visit_owned_edges(
                 visit(lru_maxsize_bits(ptr));
                 visit(lru_typed_bits(ptr));
                 visit(lru_cache_bits(ptr));
+                visit(lru_cache_info_type_bits(ptr));
             }
-            ObjectShapeId::FunctoolsLruFactory => {
-                visit(lru_factory_maxsize_bits(ptr));
-                visit(lru_factory_typed_bits(ptr));
-            }
-            ObjectShapeId::FunctoolsCacheInfo => visit(cacheinfo_maxsize_bits(ptr)),
             _ => unreachable!("non-functools object shape"),
         }
     }
@@ -1893,33 +1607,23 @@ pub(crate) unsafe fn functools_detach_owned_edges(
                 cmpkey_set_cmp_bits(ptr, none);
             }
             ObjectShapeId::FunctoolsLruWrapper => {
-                detached[..4].copy_from_slice(&[
+                detached[..5].copy_from_slice(&[
                     lru_func_bits(ptr),
                     lru_maxsize_bits(ptr),
                     lru_typed_bits(ptr),
                     lru_cache_bits(ptr),
+                    lru_cache_info_type_bits(ptr),
                 ]);
-                detached_len = 4;
+                detached_len = 5;
                 lru_set_func_bits(ptr, none);
                 lru_set_maxsize_bits(ptr, none);
                 lru_set_typed_bits(ptr, none);
                 lru_set_cache_bits(ptr, none);
+                lru_set_cache_info_type_bits(ptr, none);
                 let order = lru_order_ptr(ptr);
                 if !order.is_null() {
                     (*order).clear();
                 }
-            }
-            ObjectShapeId::FunctoolsLruFactory => {
-                detached[..2]
-                    .copy_from_slice(&[lru_factory_maxsize_bits(ptr), lru_factory_typed_bits(ptr)]);
-                detached_len = 2;
-                lru_factory_set_maxsize_bits(ptr, none);
-                lru_factory_set_typed_bits(ptr, none);
-            }
-            ObjectShapeId::FunctoolsCacheInfo => {
-                detached[0] = cacheinfo_maxsize_bits(ptr);
-                detached_len = 1;
-                cacheinfo_set_maxsize_bits(ptr, none);
             }
             _ => unreachable!("non-functools object shape"),
         }
@@ -2222,12 +1926,49 @@ pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        cacheinfo_class, cmpkey_class, functools_clear_runtime_state, kwd_mark_bits,
-        lru_factory_class, lru_wrapper_class, molt_functools_kwd_mark,
-        molt_functools_singledispatch_drop, molt_functools_singledispatch_new, partial_class,
+        cmpkey_class, functools_clear_runtime_state, kwd_mark_bits, lru_wrapper_class,
+        molt_functools_kwd_mark, molt_functools_singledispatch_drop,
+        molt_functools_singledispatch_new, partial_class,
     };
     use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn lru_cache_info_constructor_is_a_traced_owned_edge() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let provider_ptr = crate::alloc_list(py, &[]);
+            assert!(!provider_ptr.is_null());
+            let provider = MoltObject::from_ptr(provider_ptr).bits();
+            let refs =
+                || unsafe { (*crate::header_from_obj_ptr(provider_ptr)).ref_count_snapshot() };
+            let baseline = refs();
+            let wrapper = super::build_lru_wrapper(
+                py,
+                none,
+                none,
+                MoltObject::from_bool(false).bits(),
+                provider,
+            );
+            assert!(!crate::exception_pending(py));
+            let wrapper_ptr = obj_from_bits(wrapper).as_ptr().unwrap();
+            assert_eq!(refs(), baseline + 1);
+            let shape = crate::object::ObjectShapeId::FunctoolsLruWrapper;
+            let mut edges = Vec::new();
+            unsafe {
+                super::functools_visit_owned_edges(shape, wrapper_ptr, |v| edges.push(v));
+            }
+            assert_eq!(edges.iter().filter(|&&v| v == provider).count(), 1);
+            unsafe {
+                super::functools_detach_owned_edges(shape, wrapper_ptr, |v| dec_ref_bits(py, v));
+            }
+            assert_eq!(refs(), baseline);
+            dec_ref_bits(py, wrapper);
+            assert_eq!(refs(), baseline);
+            dec_ref_bits(py, provider);
+        });
+    }
 
     #[test]
     fn cached_native_class_families_survive_callback_drain_and_cold_restart() {
@@ -2261,14 +2002,12 @@ mod tests {
                         molt_operator_attrgetter_type(),
                         molt_operator_methodcaller_type(),
                     ];
-                    let mutable = [lru_factory_class(py), cacheinfo_class(py)];
                     assert!(!crate::exception_pending(py));
                     assert!(
                         native_types
                             .iter()
                             .chain(native_functools.iter())
                             .chain(native_operator.iter())
-                            .chain(mutable.iter())
                             .all(|&class| class != 0 && obj_from_bits(class).as_ptr().is_some())
                     );
 
@@ -2303,11 +2042,6 @@ mod tests {
                     for class in native_operator {
                         assert!(operator_roots.contains(&class));
                     }
-                    for class in mutable {
-                        assert!(!functools_roots.contains(&class));
-                    }
-                    assert_eq!(state.functools.cacheinfo_class.load(Ordering::Acquire), 0);
-                    assert_eq!(state.functools.lru_factory_class.load(Ordering::Acquire), 0);
                     assert_eq!(partial_class(py), native_functools[0]);
                     assert_eq!(cmpkey_class(py), native_functools[1]);
                     assert_eq!(lru_wrapper_class(py), native_functools[2]);
@@ -2341,16 +2075,7 @@ mod tests {
             let partial = partial_class(_py);
             let cmpkey = cmpkey_class(_py);
             let lru_wrapper = lru_wrapper_class(_py);
-            let lru_factory = lru_factory_class(_py);
-            let cacheinfo = cacheinfo_class(_py);
-            for bits in [
-                kwd_mark,
-                partial,
-                cmpkey,
-                lru_wrapper,
-                lru_factory,
-                cacheinfo,
-            ] {
+            for bits in [kwd_mark, partial, cmpkey, lru_wrapper] {
                 assert!(!obj_from_bits(bits).is_none());
             }
             for slot in state.functools.object_slots() {

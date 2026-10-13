@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +18,8 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
+
+from intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
 
 from wasm_abi_gen.paths import (
     CPYTHON_ABI_SOURCE_ROOT,
@@ -621,22 +622,19 @@ def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
 
 
 @lru_cache(maxsize=1)
+def _intrinsic_declarations() -> tuple[IntrinsicEntry, ...]:
+    return tuple(
+        parse_intrinsic_manifest(INTRINSICS_MANIFEST.read_text(encoding="utf-8"))
+    )
+
+
 def _intrinsic_signature_rows() -> tuple[tuple[str, int, str], ...]:
-    tree = ast.parse(INTRINSICS_MANIFEST.read_text(encoding="utf-8"))
-    rows: list[tuple[str, int, str]] = []
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("molt_"):
-            continue
-        args = node.args
-        arity = (
-            len(args.posonlyargs)
-            + len(args.args)
-            + len(args.kwonlyargs)
-            + (1 if args.vararg is not None else 0)
-            + (1 if args.kwarg is not None else 0)
+    # Alias declarations own separate Python objects, never duplicate imports.
+    return tuple(
+        dict.fromkeys(
+            (entry.symbol, entry.arity, "i64") for entry in _intrinsic_declarations()
         )
-        rows.append((node.name, arity, "i64"))
-    return tuple(rows)
+    )
 
 
 def _static_type_index_by_signature(
@@ -661,7 +659,7 @@ def _format_runtime_callable_signature(
 
 
 def _intrinsic_manifest_names() -> set[str]:
-    return {name for name, _, _ in _intrinsic_signature_rows()}
+    return {entry.name for entry in _intrinsic_declarations()}
 
 
 @lru_cache(maxsize=1)
@@ -2885,6 +2883,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
             _source_extension_include_dirs_for_abi_tier.__code__.co_filename
         ).resolve(),
         INTRINSICS_MANIFEST,
+        Path(parse_intrinsic_manifest.__code__.co_filename).resolve(),
         INTRINSIC_CATEGORIES,
         FRONTEND_TYPES,
         CPYTHON_ABI_VARIADIC_SHIM,

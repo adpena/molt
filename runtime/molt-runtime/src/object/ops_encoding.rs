@@ -608,8 +608,15 @@ fn decode_utf8_bytes_with_errors(
             0xE0..=0xEF => 2,
             0xF0..=0xF4 => 3,
             _ => {
-                decode_utf8_failure(errors, &mut out, bytes, idx, idx + 1, "invalid start byte")?;
-                idx += 1;
+                idx = handle_decode_failure(
+                    &mut out,
+                    bytes,
+                    errors,
+                    idx,
+                    idx + 1,
+                    "invalid start byte",
+                    None,
+                )?;
                 continue;
             }
         };
@@ -663,8 +670,7 @@ fn decode_utf8_bytes_with_errors(
             code = (code << 6) | (byte & 0x3F) as u32;
         }
         if let Some((end, reason)) = failure {
-            decode_utf8_failure(errors, &mut out, bytes, idx, end, reason)?;
-            idx = end;
+            idx = handle_decode_failure(&mut out, bytes, errors, idx, end, reason, None)?;
             continue;
         }
         push_wtf8_codepoint(&mut out, code);
@@ -673,31 +679,20 @@ fn decode_utf8_bytes_with_errors(
     Ok((out, idx))
 }
 
-fn decode_utf8_failure(
-    errors: &str,
+// Resume at the handler's consumed boundary, not necessarily the scanner's
+// error end. CPython surrogatepass consumes one whole surrogate; surrogateescape
+// consumes only a non-ASCII byte prefix (up to four bytes).
+fn handle_decode_failure(
     out: &mut Vec<u8>,
     bytes: &[u8],
+    errors: &str,
     start: usize,
     end: usize,
     message: &'static str,
-) -> Result<(), DecodeFailure> {
-    match errors {
-        "ignore" => Ok(()),
-        "replace" => {
-            push_wtf8_codepoint(out, 0xFFFD);
-            Ok(())
-        }
-        "backslashreplace" => {
-            push_backslash_bytes_vec(out, &bytes[start..end]);
-            Ok(())
-        }
-        "surrogateescape" => {
-            for &byte in &bytes[start..end] {
-                push_wtf8_codepoint(out, 0xDC00 + byte as u32);
-            }
-            Ok(())
-        }
-        "strict" | "surrogatepass" => Err(if end == start + 1 {
+    surrogate: Option<(u32, usize)>,
+) -> Result<usize, DecodeFailure> {
+    let failure = || {
+        if end == start + 1 {
             DecodeFailure::Byte {
                 pos: start,
                 byte: bytes[start],
@@ -709,7 +704,39 @@ fn decode_utf8_failure(
                 end: end - 1,
                 message,
             }
-        }),
+        }
+    };
+    match errors {
+        "ignore" => Ok(end),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xfffd);
+            Ok(end)
+        }
+        "backslashreplace" => {
+            push_backslash_bytes_vec(out, &bytes[start..end]);
+            Ok(end)
+        }
+        "surrogatepass" => {
+            if let Some((code, width)) = surrogate {
+                push_wtf8_codepoint(out, code);
+                Ok(start + width)
+            } else {
+                Err(failure())
+            }
+        }
+        "surrogateescape" => {
+            let mut next = start;
+            while next < end && next - start < 4 && bytes[next] >= 0x80 {
+                push_wtf8_codepoint(out, 0xdc00 + u32::from(bytes[next]));
+                next += 1;
+            }
+            if next == start {
+                Err(failure())
+            } else {
+                Ok(next)
+            }
+        }
+        "strict" => Err(failure()),
         other => Err(DecodeFailure::UnknownErrorHandler(other.to_string())),
     }
 }
@@ -1011,118 +1038,67 @@ fn decode_utf16_with_errors(
     endian: Endian,
     offset: usize,
 ) -> Result<Vec<u8>, DecodeFailure> {
-    let data = if offset > 0 { &bytes[offset..] } else { bytes };
+    let mut idx = offset;
     let mut out = Vec::new();
-    let mut idx = 0usize;
-    while idx + 1 < data.len() {
-        let unit = read_u16(data, idx, endian);
-        if (0xD800..=0xDBFF).contains(&unit) {
-            if idx + 3 >= data.len() {
-                match errors {
-                    "surrogatepass" | "surrogateescape" => {
-                        push_wtf8_codepoint(&mut out, unit as u32);
-                    }
-                    "ignore" => {}
-                    "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-                    "backslashreplace" => {
-                        push_backslash_bytes_vec(&mut out, &data[idx..]);
-                    }
-                    "strict" => {
-                        return Err(DecodeFailure::Range {
-                            start: offset + idx,
-                            end: offset + data.len() - 1,
-                            message: "unexpected end of data",
-                        });
-                    }
-                    other => {
-                        return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-                    }
-                }
-                // Avoid double-applying trailing bytes in the post-loop remainder handler.
-                idx = data.len();
-                break;
-            }
-            let next = read_u16(data, idx + 2, endian);
-            if (0xDC00..=0xDFFF).contains(&next) {
-                let high = (unit as u32) - 0xD800;
-                let low = (next as u32) - 0xDC00;
-                let code = 0x10000 + ((high << 10) | low);
-                push_wtf8_codepoint(&mut out, code);
-                idx += 4;
-                continue;
-            }
-            match errors {
-                "surrogatepass" | "surrogateescape" => {
-                    push_wtf8_codepoint(&mut out, unit as u32);
-                }
-                "ignore" => {}
-                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-                "backslashreplace" => {
-                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
-                }
-                "strict" => {
-                    return Err(DecodeFailure::Range {
-                        start: offset + idx,
-                        end: offset + idx + 1,
-                        message: "illegal UTF-16 surrogate",
-                    });
-                }
-                other => {
-                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-                }
-            }
-            idx += 2;
+    while idx < bytes.len() {
+        let remaining = bytes.len() - idx;
+        if remaining < 2 {
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                idx,
+                bytes.len(),
+                "truncated data",
+                None,
+            )?;
             continue;
         }
-        if (0xDC00..=0xDFFF).contains(&unit) {
-            match errors {
-                "surrogatepass" | "surrogateescape" => {
-                    push_wtf8_codepoint(&mut out, unit as u32);
-                }
-                "ignore" => {}
-                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-                "backslashreplace" => {
-                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
-                }
-                "strict" => {
-                    return Err(DecodeFailure::Range {
-                        start: offset + idx,
-                        end: offset + idx + 1,
-                        message: "illegal encoding",
-                    });
-                }
-                other => {
-                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+        let unit = read_u16(bytes, idx, endian);
+        if (0xd800..=0xdbff).contains(&unit) {
+            if remaining < 4 {
+                idx = handle_decode_failure(
+                    &mut out,
+                    bytes,
+                    errors,
+                    idx,
+                    bytes.len(),
+                    "unexpected end of data",
+                    Some((u32::from(unit), 2)),
+                )?;
+            } else {
+                let next = read_u16(bytes, idx + 2, endian);
+                if (0xdc00..=0xdfff).contains(&next) {
+                    push_wtf8_codepoint(
+                        &mut out,
+                        0x10000 + ((u32::from(unit) - 0xd800) << 10) + u32::from(next) - 0xdc00,
+                    );
+                    idx += 4;
+                } else {
+                    idx = handle_decode_failure(
+                        &mut out,
+                        bytes,
+                        errors,
+                        idx,
+                        idx + 2,
+                        "illegal UTF-16 surrogate",
+                        Some((u32::from(unit), 2)),
+                    )?;
                 }
             }
+        } else if (0xdc00..=0xdfff).contains(&unit) {
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                idx,
+                idx + 2,
+                "illegal encoding",
+                Some((u32::from(unit), 2)),
+            )?;
+        } else {
+            push_wtf8_codepoint(&mut out, u32::from(unit));
             idx += 2;
-            continue;
-        }
-        push_wtf8_codepoint(&mut out, unit as u32);
-        idx += 2;
-    }
-    if idx < data.len() {
-        match errors {
-            "surrogatepass" | "surrogateescape" => {
-                push_wtf8_codepoint(&mut out, data[idx] as u32);
-            }
-            "ignore" => {}
-            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-            "backslashreplace" => {
-                push_backslash_bytes_vec(&mut out, &data[idx..]);
-            }
-            "strict" => {
-                let pos = offset + data.len() - 1;
-                let byte = data[data.len() - 1];
-                return Err(DecodeFailure::Byte {
-                    pos,
-                    byte,
-                    message: "truncated data",
-                });
-            }
-            other => {
-                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-            }
         }
     }
     Ok(out)
@@ -1158,81 +1134,45 @@ fn decode_utf32_with_errors(
     endian: Endian,
     offset: usize,
 ) -> Result<Vec<u8>, DecodeFailure> {
-    let data = if offset > 0 { &bytes[offset..] } else { bytes };
+    let mut idx = offset;
     let mut out = Vec::new();
-    let mut idx = 0usize;
-    while idx + 3 < data.len() {
-        let code = read_u32(data, idx, endian);
+    while idx < bytes.len() {
+        if bytes.len() - idx < 4 {
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                idx,
+                bytes.len(),
+                "truncated data",
+                None,
+            )?;
+            continue;
+        }
+        let code = read_u32(bytes, idx, endian);
         if is_surrogate(code) {
-            match errors {
-                "surrogatepass" | "surrogateescape" => {
-                    push_wtf8_codepoint(&mut out, code);
-                }
-                "ignore" => {}
-                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-                "backslashreplace" => {
-                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
-                }
-                "strict" => {
-                    return Err(DecodeFailure::Range {
-                        start: offset + idx,
-                        end: offset + idx + 3,
-                        message: "code point in surrogate code point range(0xd800, 0xe000)",
-                    });
-                }
-                other => {
-                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-                }
-            }
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                idx,
+                idx + 4,
+                "code point in surrogate code point range(0xd800, 0xe000)",
+                Some((code, 4)),
+            )?;
+        } else if code > 0x10ffff {
+            idx = handle_decode_failure(
+                &mut out,
+                bytes,
+                errors,
+                idx,
+                idx + 4,
+                "code point not in range(0x110000)",
+                None,
+            )?;
+        } else {
+            push_wtf8_codepoint(&mut out, code);
             idx += 4;
-            continue;
-        }
-        if code > 0x10FFFF {
-            match errors {
-                "ignore" => {}
-                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-                "backslashreplace" => {
-                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
-                }
-                "strict" | "surrogatepass" | "surrogateescape" => {
-                    return Err(DecodeFailure::Range {
-                        start: offset + idx,
-                        end: offset + idx + 3,
-                        message: "code point not in range(0x110000)",
-                    });
-                }
-                other => {
-                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-                }
-            }
-            idx += 4;
-            continue;
-        }
-        push_wtf8_codepoint(&mut out, code);
-        idx += 4;
-    }
-    if idx < data.len() {
-        match errors {
-            "surrogatepass" | "surrogateescape" => {
-                for &byte in &data[idx..] {
-                    push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32);
-                }
-            }
-            "ignore" => {}
-            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
-            "backslashreplace" => {
-                push_backslash_bytes_vec(&mut out, &data[idx..]);
-            }
-            "strict" => {
-                return Err(DecodeFailure::Range {
-                    start: offset + idx,
-                    end: offset + data.len() - 1,
-                    message: "truncated data",
-                });
-            }
-            other => {
-                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
-            }
         }
     }
     Ok(out)
@@ -1399,6 +1339,150 @@ pub(crate) fn decode_bytes_text(
 #[cfg(test)]
 mod encode_tests {
     use super::*;
+
+    #[test]
+    fn utf16_utf32_handlers_resume_at_the_consumed_byte() {
+        // CPython v3.12.13 Python/codecs.c: surrogatepass consumes one
+        // complete surrogate unit; surrogateescape consumes only non-ASCII
+        // bytes from the start of the reported error. Neither swallows a tail.
+        type Success<'a> = (&'a str, &'a str, &'a [u8], &'a [u8]);
+        let successes: &[Success<'_>] = &[
+            ("utf-16-le", "surrogatepass", b"\x00\xd8", b"\xed\xa0\x80"),
+            ("utf-16-be", "surrogatepass", b"\xdc\x00", b"\xed\xb0\x80"),
+            (
+                "utf-32-le",
+                "surrogatepass",
+                b"\x00\xd8\x00\x00",
+                b"\xed\xa0\x80",
+            ),
+            (
+                "utf-32-be",
+                "surrogatepass",
+                b"\x00\x00\xdc\x00",
+                b"\xed\xb0\x80",
+            ),
+            (
+                "utf-16-be",
+                "surrogateescape",
+                b"\xdc\x00A",
+                b"\xed\xb3\x9cA",
+            ),
+            (
+                "utf-16-be",
+                "surrogateescape",
+                b"\xdc\x80",
+                b"\xed\xb3\x9c\xed\xb2\x80",
+            ),
+            (
+                "utf-32-le",
+                "surrogateescape",
+                b"\xff\xff\xff\xff",
+                b"\xed\xb3\xbf\xed\xb3\xbf\xed\xb3\xbf\xed\xb3\xbf",
+            ),
+            ("utf-16-le", "replace", b"\x00\xd8\xff", b"\xef\xbf\xbd"),
+            ("utf-16-le", "ignore", b"\x00\xd8\xff", b""),
+            (
+                "utf-16-le",
+                "backslashreplace",
+                b"\x00\xd8\xff",
+                b"\\x00\\xd8\\xff",
+            ),
+        ];
+        for &(encoding, errors, input, expected) in successes {
+            assert_eq!(
+                decode_bytes_text(encoding, errors, input).unwrap().0,
+                expected,
+                "{encoding}/{errors}: {input:?}"
+            );
+        }
+        type Failure<'a> = (&'a str, &'a str, &'a [u8], &'a str, usize, usize, &'a str);
+        let failures: &[Failure<'_>] = &[
+            (
+                "utf-16",
+                "surrogatepass",
+                b"\xff\xfe\x00\xd8\xff",
+                "utf-16-le",
+                4,
+                5,
+                "truncated data",
+            ),
+            (
+                "utf-16",
+                "surrogatepass",
+                b"\xfe\xff\xdc\x00\xff",
+                "utf-16-be",
+                4,
+                5,
+                "truncated data",
+            ),
+            (
+                "utf-32",
+                "surrogatepass",
+                b"\xff\xfe\x00\x00\x00\xd8\x00\x00\xff",
+                "utf-32-le",
+                8,
+                9,
+                "truncated data",
+            ),
+            (
+                "utf-32",
+                "surrogatepass",
+                b"\x00\x00\xfe\xff\x00\x00\xdc\x00\xff",
+                "utf-32-be",
+                8,
+                9,
+                "truncated data",
+            ),
+            (
+                "utf-16-le",
+                "surrogateescape",
+                b"\x00\xdc",
+                "utf-16-le",
+                0,
+                2,
+                "illegal encoding",
+            ),
+            (
+                "utf-16-le",
+                "surrogateescape",
+                b"\x80\xd8A",
+                "utf-16-le",
+                2,
+                3,
+                "truncated data",
+            ),
+            (
+                "utf-32-le",
+                "surrogateescape",
+                b"\x80\x00\x11\x00",
+                "utf-32-le",
+                1,
+                4,
+                "truncated data",
+            ),
+        ];
+        for &(encoding, errors, input, label, start, end, reason) in failures {
+            let DecodeTextError::Failure(failure, actual_label, input_start) =
+                decode_bytes_text(encoding, errors, input).unwrap_err()
+            else {
+                panic!("expected a decode failure")
+            };
+            let actual = match failure {
+                DecodeFailure::Byte { pos, message, .. } => (pos, pos + 1, message),
+                DecodeFailure::Range {
+                    start,
+                    end,
+                    message,
+                } => (start, end + 1, message),
+                other => panic!("unexpected failure: {other:?}"),
+            };
+            assert_eq!(
+                (actual_label.as_str(), input_start, actual),
+                (label, 0, (start, end, reason)),
+                "{encoding}/{errors}: {input:?}"
+            );
+        }
+    }
 
     #[test]
     fn utf8_failure_facts_and_consumption_match_cpython() {

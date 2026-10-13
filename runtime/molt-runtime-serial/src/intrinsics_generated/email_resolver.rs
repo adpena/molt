@@ -54,10 +54,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::email::molt_email_utils_parsedate_to_datetime",
             crate::email::molt_email_utils_parsedate_to_datetime as *const (),
         )),
-        "molt_email_policy_new" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_policy_new",
-            crate::email::molt_email_policy_new as *const (),
-        )),
         "molt_email_headerregistry_value" => Some(runtime_fn_addr(
             "molt_runtime_serial::email::molt_email_headerregistry_value",
             crate::email::molt_email_headerregistry_value as *const (),

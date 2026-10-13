@@ -168,7 +168,7 @@ def test_wasm_smtplib_thread_dependent_paths_fail_fast(
         root,
         output_wasm,
         env_overrides={
-            "MOLT_CAPABILITIES": "net.bind,net.listen,net.outbound,env.read",
+            "MOLT_CAPABILITIES": "net,env.read",
         },
     )
     assert run.returncode == 0, run.stderr

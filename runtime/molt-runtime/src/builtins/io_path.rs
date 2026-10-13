@@ -10,7 +10,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use super::io::{
     PathFlavor, alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,
     bytes_slice_from_bits, collect_bytes_like, create_symlink_path, dup_fd,
-    filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
+    filesystem_encode_errors,
     glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_iter_alloc_object,
     glob_iter_new_state, glob_translate_text, path_abspath_text, path_as_uri_text,
     path_basename_text, path_compare_text, path_dirname_text, path_expandvars_text, path_from_bits,
@@ -2148,54 +2148,6 @@ pub extern "C" fn molt_os_link_at(
 pub extern "C" fn molt_os_link_at(_s: u64, _sd: u64, _d: u64, _dd: u64, _f: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "link")
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_fsencode(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let (fspath_bits, flavor) = match fspath_bits_with_flavor(_py, path_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        if flavor == PathFlavor::Bytes {
-            return fspath_bits;
-        }
-
-        let obj = obj_from_bits(fspath_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            dec_ref_bits(_py, fspath_bits);
-            return raise_exception::<_>(_py, "RuntimeError", "os fsencode received invalid path");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_STRING {
-                dec_ref_bits(_py, fspath_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "os fsencode received invalid path",
-                );
-            }
-            let raw = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-            let encoded = match crate::object::ops::encode_string_with_errors(
-                raw,
-                filesystem_encoding(),
-                Some(filesystem_encode_errors()),
-            ) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    let result = error.raise(_py, fspath_bits);
-                    dec_ref_bits(_py, fspath_bits);
-                    return result;
-                }
-            };
-            dec_ref_bits(_py, fspath_bits);
-            let bytes_ptr = alloc_bytes(_py, encoded.as_slice());
-            if bytes_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-            }
-            MoltObject::from_ptr(bytes_ptr).bits()
-        }
     })
 }
 

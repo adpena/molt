@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::blocks::BlockId;
 use super::dominators;
@@ -32,10 +32,6 @@ pub use self::proven::extract_proven_map;
 use self::result_inference::{
     attr_result_type_override, infer_result_facts_with_attrs, infer_result_types_with_attrs,
 };
-
-/// Maximum number of fixpoint iterations before a fail-closed nonconvergence
-/// diagnostic.
-const MAX_ROUNDS: usize = 20;
 
 /// Extract a map from every [`ValueId`] to its refined [`TirType`] in a
 /// **post-refinement** TIR function.  Block argument types come from the
@@ -127,7 +123,7 @@ fn extract_type_map_with_exact(
 }
 
 /// Refine types in a TIR function.
-/// Iterates to fixpoint (max 20 rounds, fail-closed on timeout).
+/// Propagates changed facts to their users until the worklist is empty.
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
     let exact = extract_exact_scalar_map(func);
@@ -200,13 +196,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // below (after `eh_handler_args` is computed so the seed honors the
     // EH-handler exclusion).
     let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::new();
-    for (source_bid, block) in &func.blocks {
+    for &source_bid in &block_order {
+        let block = &func.blocks[&source_bid];
         let edges = collect_branch_edges(block);
         for (target_id, arg_values) in edges {
             incoming_edges
                 .entry(target_id)
                 .or_default()
-                .push((*source_bid, arg_values));
+                .push((source_bid, arg_values));
         }
     }
     let pred_map = dominators::build_pred_map(func);
@@ -316,14 +313,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     //
     // The fixpoint below is monotonic upward (`meet` is lattice join in
     // this codebase's terminology — `meet(I64, DynBox) = DynBox`).
-    // Without this pre-pass, a block-arg whose entry-edge brings I64
-    // and whose back-edge brings `Add(self_arg, ConstInt)` is stuck at
-    // DynBox: the body sees `i: DynBox` initially, infers
-    // `Add(DynBox, I64)` → no type, stays DynBox, the back-edge brings
-    // DynBox, and `meet(I64-from-entry, DynBox-from-back) = DynBox`
-    // widens the entry-side I64 in the very first round.
-    //
-    // Fix: pre-seed each block-arg's env entry to the meet of its
+    // Pre-seed each block-arg's env entry to the meet of its
     // **non-back-edge** incoming values' types. Back-edges (incoming
     // edges from blocks the target dominates) are excluded from the
     // initial seed so the body's inference can run with the optimistic
@@ -341,10 +331,9 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     //   (a) **Warmup**: a single forward pass over op result types so
     //       that const ops (`ConstInt`, `ConstStr`, etc.) and any other
     //       op whose operand types are already known produce refined
-    //       values in `env`. Without warmup, every op result starts as
-    //       DynBox (from the bulk init at the top of `refine_types`)
-    //       and the seed reads DynBox for the entry-edge value (e.g.,
-    //       `i_init = ConstInt(0)` is still DynBox), defeating the seed.
+    //       values in `facts`. Without warmup, op results still have
+    //       bottom facts, so their non-back-edge values cannot seed a
+    //       block argument yet.
     //   (b) **Seed**: meet of non-back-edge incoming types per block-arg.
     {
         // (a) Warmup — single forward pass over op result types.
@@ -381,7 +370,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
 
         // (b) Seed block-args from non-back-edge incoming meets.
-        for (&block_id, edge_list) in &incoming_edges {
+        for &block_id in &block_order {
+            let Some(edge_list) = incoming_edges.get(&block_id) else {
+                continue;
+            };
             if !reachable_blocks.contains(&block_id) {
                 continue;
             }
@@ -436,115 +428,142 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
-    // Fixpoint iteration over a finite-height fact lattice.
-    //
-    // Each round splits into TWO phases:
-    //   Phase 1 — propagate op result types from operand types in every
-    //     block.
-    //   Phase 2 — recompute block-arg types from incoming-edge meets in
-    //     every block.
-    //
-    // The split matters because op results in a loop body depend on the
-    // current type of the loop's induction-variable block-arg. With the
-    // per-block "ops-then-args" order, recomputing the header's arg
-    // (Phase 2) before the body's ops (Phase 1) collapsed any IV
-    // pre-seed back to DynBox via the still-DynBox back-edge. Splitting
-    // ensures the body's ops always see the latest header-arg type from
-    // the previous round (or the seed in round 0), producing a refined
-    // back-edge value that the next round's Phase 2 confirms.
-    let mut converged = false;
-    for _round in 0..MAX_ROUNDS {
-        let mut changed = false;
-
-        // Phase 1: op result types in every block.
-        for &block_id in &block_order {
-            let ops_snapshot = &ops_by_block[&block_id];
-
-            for (opcode, operands, results, return_type_hint) in ops_snapshot {
-                if results.is_empty() {
-                    continue;
-                }
-
-                // Do not refine results of CheckException — the value
-                // coming out of an exception check is dynamically typed.
-                if has_eh && matches!(opcode, OpCode::CheckException) {
-                    for &result_id in results {
-                        changed |= join_assign_type_fact(&mut facts, result_id, TirType::DynBox);
-                    }
-                    continue;
-                }
-
-                let operand_facts: Vec<TirType> = operands
-                    .iter()
-                    .map(|id| fact_or_bottom(&facts, *id))
-                    .collect();
-
-                // Frontend-provided return-type hint takes precedence for
-                // opaque call-like opcodes; falls back to operand-based
-                // inference for everything else.
-                let inferred_facts = if results.len() == 1 {
-                    vec![return_type_hint.clone().unwrap_or_else(|| {
-                        infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
-                            .into_iter()
-                            .next()
-                            .unwrap_or(TirType::Never)
-                    })]
-                } else {
-                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
-                };
-
-                for (&result_id, inferred) in results.iter().zip(inferred_facts) {
-                    changed |= join_assign_type_fact(&mut facts, result_id, inferred);
-                }
+    // A changed value can affect an operation's block or the block receiving
+    // it as an edge argument. Record both kinds of users; CFG successors alone
+    // miss dominating values used several blocks away. Sorted, deduplicated
+    // users keep scheduling deterministic without repeatedly queuing a block.
+    let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::new();
+    for &block_id in &block_order {
+        for (_, operands, _, _) in &ops_by_block[&block_id] {
+            for &operand in operands {
+                users.entry(operand).or_default().push(block_id);
             }
         }
-
-        // Phase 2: block-arg types in every block.
-        for &block_id in &block_order {
-            if !reachable_blocks.contains(&block_id) {
-                continue;
-            }
-            // Recompute block argument types from all incoming edges.
-            // Start from Never (bottom) and meet all incoming values.
-            if let Some(edge_list) = incoming_edges.get(&block_id) {
-                let arg_count = func.blocks[&block_id].args.len();
-                for i in 0..arg_count {
-                    let arg_id = func.blocks[&block_id].args[i].id;
-
-                    // Exception handler block args must stay DynBox —
-                    // the exception could come from any type context.
-                    if eh_handler_args.contains(&arg_id) {
-                        changed |= join_assign_type_fact(&mut facts, arg_id, TirType::DynBox);
-                        continue;
+        if reachable_blocks.contains(&block_id)
+            && let Some(edges) = incoming_edges.get(&block_id)
+        {
+            for (source, arguments) in edges {
+                if reachable_blocks.contains(source) {
+                    for &argument in arguments {
+                        users.entry(argument).or_default().push(block_id);
                     }
-
-                    let mut accumulated = TirType::Never;
-                    for (source_bid, edge_args) in edge_list {
-                        if !reachable_blocks.contains(source_bid) {
-                            continue;
-                        }
-                        if i < edge_args.len() {
-                            let incoming_fact =
-                                facts.get(&edge_args[i]).cloned().unwrap_or(TirType::Never);
-                            accumulated = accumulated.meet(&incoming_fact);
-                        }
-                    }
-                    changed |= join_assign_type_fact(&mut facts, arg_id, accumulated);
                 }
             }
-        }
-
-        if !changed {
-            converged = true;
-            break;
         }
     }
+    for blocks in users.values_mut() {
+        blocks.sort_unstable_by_key(|block| block.0);
+        blocks.dedup();
+    }
 
-    assert!(
-        converged,
-        "type refinement failed to converge after {MAX_ROUNDS} rounds in {}",
-        func.name
-    );
+    // Run to quiescence, not a fixed number of whole-function sweeps. A valid
+    // chain of copies through block arguments can require arbitrarily many
+    // sweeps, while each fact still makes finite progress under the shared join.
+    //
+    // The unrestricted recursive TirType domain is not finite height:
+    // List(Never), List(List(Never)), ... would keep growing. The existing
+    // result inference prevents this: a constructor containing any unresolved
+    // nested Never yields root Never instead. Finite authored seed types are
+    // the only source of nested bottom; joins combine their existing structural
+    // positions, and constructors cannot wrap those holes in new layers.
+    // Once a position acquires a bottom-free fact, same-shape joins only widen
+    // its finite children; a shape mismatch forms a bounded union and then top.
+    // Consequently every value changes finitely often, including recursive
+    // tuple, box and iterator cycles. Requeueing only on a changed join reaches
+    // the fixed point without a depth cutoff or a different type lattice.
+    let mut pending: VecDeque<BlockId> = block_order.iter().copied().collect();
+    let mut queued: HashSet<BlockId> = block_order.iter().copied().collect();
+    while let Some(block_id) = pending.pop_front() {
+        queued.remove(&block_id);
+        let mut enqueue_users = |value: ValueId| {
+            if let Some(blocks) = users.get(&value) {
+                for &user in blocks {
+                    if queued.insert(user) {
+                        pending.push_back(user);
+                    }
+                }
+            }
+        };
+        let ops_snapshot = &ops_by_block[&block_id];
+
+        for (opcode, operands, results, return_type_hint) in ops_snapshot {
+            if results.is_empty() {
+                continue;
+            }
+
+            // Do not refine results of CheckException — the value
+            // coming out of an exception check is dynamically typed.
+            if has_eh && matches!(opcode, OpCode::CheckException) {
+                for &result_id in results {
+                    if join_assign_type_fact(&mut facts, result_id, TirType::DynBox) {
+                        enqueue_users(result_id);
+                    }
+                }
+                continue;
+            }
+
+            let operand_facts: Vec<TirType> = operands
+                .iter()
+                .map(|id| fact_or_bottom(&facts, *id))
+                .collect();
+
+            // Frontend-provided return-type hint takes precedence for
+            // opaque call-like opcodes; falls back to operand-based
+            // inference for everything else.
+            let inferred_facts = if results.len() == 1 {
+                vec![return_type_hint.clone().unwrap_or_else(|| {
+                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                        .into_iter()
+                        .next()
+                        .unwrap_or(TirType::Never)
+                })]
+            } else {
+                infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
+            };
+
+            for (&result_id, inferred) in results.iter().zip(inferred_facts) {
+                if join_assign_type_fact(&mut facts, result_id, inferred) {
+                    enqueue_users(result_id);
+                }
+            }
+        }
+
+        if !reachable_blocks.contains(&block_id) {
+            continue;
+        }
+        // Recompute block argument types from all incoming edges.
+        // Start from Never (bottom) and meet all incoming values.
+        if let Some(edge_list) = incoming_edges.get(&block_id) {
+            let arg_count = func.blocks[&block_id].args.len();
+            for i in 0..arg_count {
+                let arg_id = func.blocks[&block_id].args[i].id;
+
+                // Exception handler block args must stay DynBox —
+                // the exception could come from any type context.
+                if eh_handler_args.contains(&arg_id) {
+                    if join_assign_type_fact(&mut facts, arg_id, TirType::DynBox) {
+                        enqueue_users(arg_id);
+                    }
+                    continue;
+                }
+
+                let mut accumulated = TirType::Never;
+                for (source_bid, edge_args) in edge_list {
+                    if !reachable_blocks.contains(source_bid) {
+                        continue;
+                    }
+                    if i < edge_args.len() {
+                        let incoming_fact =
+                            facts.get(&edge_args[i]).cloned().unwrap_or(TirType::Never);
+                        accumulated = accumulated.meet(&incoming_fact);
+                    }
+                }
+                if join_assign_type_fact(&mut facts, arg_id, accumulated) {
+                    enqueue_users(arg_id);
+                }
+            }
+        }
+    }
 
     let mut env: HashMap<ValueId, TirType> = HashMap::new();
     for &id in &all_value_ids {

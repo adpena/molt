@@ -57,6 +57,7 @@ def _load_gen_wasm_abi():
 def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     input_files = {path.resolve() for path in manifest.generator_input_files()}
     assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
+    assert (ROOT / "tools/intrinsic_manifest.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
     assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
     assert OUT_RUNTIME_CALLABLE_ABI_RS.resolve() not in input_files
@@ -113,6 +114,20 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
         "_PyLong_UnsignedLongLong_Converter",
         "PyLong_GetInfo",
     } <= set(cpython_abi_imports)
+
+
+def test_intrinsic_aliases_share_one_wasm_executable_import() -> None:
+    data = _load_gen_wasm_abi().load_manifest()
+    runtime_names = [entry.get("runtime_name") for entry in data["import"]]
+    declarations = manifest._intrinsic_manifest_names()
+    for alias, symbol in (
+        ("molt_operator_inv", "molt_operator_invert"),
+        ("molt_binascii_hexlify", "molt_binascii_b2a_hex"),
+        ("molt_binascii_unhexlify", "molt_binascii_a2b_hex"),
+    ):
+        assert alias in declarations
+        assert runtime_names.count(symbol) == 1
+        assert alias not in runtime_names
 
 
 def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> None:

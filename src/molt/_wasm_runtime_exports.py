@@ -369,10 +369,12 @@ def wasm_runtime_dynamic_export_names(
 ) -> tuple[str, ...]:
     return tuple(
         sorted(
-            canonical_intrinsic_runtime_name(name)
-            for name in _resolved_dynamic_runtime_owned_intrinsic_exports(
-                resolved_modules
-            )
+            {
+                canonical_intrinsic_runtime_name(name)
+                for name in _resolved_dynamic_runtime_owned_intrinsic_exports(
+                    resolved_modules
+                )
+            }
         )
     )
 

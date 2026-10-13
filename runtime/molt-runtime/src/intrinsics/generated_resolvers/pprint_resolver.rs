@@ -19,10 +19,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_pprint_pformat",
             crate::molt_pprint_pformat as *const (),
         )),
-        "molt_pprint_format_object" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pprint_format_object",
-            crate::molt_pprint_format_object as *const (),
-        )),
         _ => None,
     }
 }

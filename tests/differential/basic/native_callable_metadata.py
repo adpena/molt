@@ -10,6 +10,10 @@ import inspect
 import types
 import io
 import _io
+import math
+import _operator
+import _json
+import binascii
 
 
 def outcome(label, operation):
@@ -30,6 +34,36 @@ def module_roundtrip(label, value):
         print("module-delete", label, value.__module__ is None)
     finally:
         value.__module__ = original
+
+
+# Direct native exports carry their CPython declaration name even when the
+# runtime symbol, spelling/case or user alias differs. Defaults and executable
+# dispatch must survive the same construction, rather than adding wrappers.
+for label, value in (
+    ("math-floor", math.floor),
+    ("math-ceil", math.ceil),
+    ("math-trunc", math.trunc),
+    ("math-sqrt", math.sqrt),
+    ("operator-and", _operator.and_),
+    ("operator-count", _operator.countOf),
+    ("json-scan", _json.scanstring),
+):
+    alias = value
+    print("direct-native-name", label, alias is value, alias.__name__, alias.__qualname__)
+    outcome(label + "-name-write", lambda: setattr(value, "__name__", "replacement"))
+print("direct-native-call", math.floor(1.75), math.ceil(1.25), math.trunc(-1.75),
+      _operator.and_(7, 3), _operator.countOf([1, 2, 1], 1),
+      _operator.length_hint([1, 2, 3]))
+
+
+for alias, original, value in (
+    (_operator.inv, _operator.invert, 7),
+    (binascii.hexlify, binascii.b2a_hex, b"abc"),
+    (binascii.unhexlify, binascii.a2b_hex, b"616263"),
+):
+    print("native-distinct-alias", alias.__name__, alias.__qualname__,
+          original.__name__, original.__qualname__, alias is original,
+          alias(value), original(value))
 
 
 values = []

@@ -1,5 +1,5 @@
 # MOLT_META: stderr=exact
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for select poll basic."""
 
 import select

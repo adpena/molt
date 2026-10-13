@@ -1,6 +1,6 @@
 """Purpose: differential coverage for HTTP upgrade headers end-to-end."""
 
-# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound,thread.spawn,thread.shared
+# MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 import http.client
 import http.server
 import socketserver

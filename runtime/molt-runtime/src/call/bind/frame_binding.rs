@@ -364,7 +364,18 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
             );
             return true;
         };
-        shape.positional_defaults != 0 && supplied != arity
+        if supplied == arity {
+            return false;
+        }
+        // Wrong Python arity belongs to frame binding even without defaults.
+        // Native callables without a Python signature keep their own admission.
+        shape.positional_defaults != 0
+            || !obj_from_bits(function_binding_meta(
+                _py,
+                func_ptr,
+                FunctionBindingField::ArgumentNames,
+            ))
+            .is_none()
     }
 }
 
@@ -510,6 +521,41 @@ unsafe fn python_argument_names<'a, 'py>(
         };
         Ok(Some(names))
     }
+}
+
+#[cold]
+unsafe fn raise_missing_arguments(
+    py: &PyToken<'_>,
+    function: *mut u8,
+    kind: &str,
+    names: impl Iterator<Item = u64>,
+) -> u64 {
+    let function = unsafe { function_name_bits(py, function) };
+    let function =
+        string_obj_to_owned(obj_from_bits(function)).unwrap_or_else(|| "function".to_string());
+    let mut missing = Vec::new();
+    for name in names {
+        missing.push(crate::format_obj(py, obj_from_bits(name)));
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+    }
+    let count = missing.len();
+    let names = match missing.as_slice() {
+        [name] => name.clone(),
+        [first, second] => format!("{first} and {second}"),
+        _ => format!(
+            "{}, and {}",
+            missing[..count - 1].join(", "),
+            missing[count - 1],
+        ),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    raise_exception::<u64>(
+        py,
+        "TypeError",
+        &format!("{function}() missing {count} required {kind} argument{plural}: {names}"),
+    )
 }
 
 /// Bind using the same metadata, defaults, keyword matching and owner ordering
@@ -707,12 +753,17 @@ unsafe fn bind_python_frame<'a, 'py>(
             }
             if let Some(slot) = matched {
                 if binding.slots[slot].is_some() {
-                    let name =
-                        string_obj_to_owned(obj_from_bits(name)).expect("validated keyword string");
+                    let function = function_name_bits(_py, func_ptr);
+                    let function = string_obj_to_owned(obj_from_bits(function))
+                        .unwrap_or_else(|| "function".to_string());
+                    let name = crate::format_obj_str(_py, obj_from_bits(name));
+                    if exception_pending(_py) {
+                        return Err(MoltObject::none().bits());
+                    }
                     return Err(raise_exception::<_>(
                         _py,
                         "TypeError",
-                        &format!("got multiple values for argument '{name}'"),
+                        &format!("{function}() got multiple values for argument '{name}'"),
                     ));
                 }
                 let owned = match admission {
@@ -769,48 +820,23 @@ unsafe fn bind_python_frame<'a, 'py>(
                         ),
                     ));
                 }
-                let name =
-                    string_obj_to_owned(obj_from_bits(name)).expect("validated keyword string");
+                let function = function_name_bits(_py, func_ptr);
+                let function = string_obj_to_owned(obj_from_bits(function))
+                    .unwrap_or_else(|| "function".to_string());
+                let name = crate::format_obj_str(_py, obj_from_bits(name));
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
                 return Err(raise_exception::<_>(
                     _py,
                     "TypeError",
-                    &format!("got an unexpected keyword '{name}'"),
+                    &format!("{function}() got an unexpected keyword argument '{name}'"),
                 ));
             }
         }
 
         // Keyword callbacks and their errors precede positional arity and
         // default resolution, as in CPython initialize_locals.
-        if supplied > total_pos && !has_vararg {
-            let func_name_bits = function_attr_bits(
-                _py,
-                func_ptr,
-                intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__"),
-            )
-            .map_err(|()| MoltObject::none().bits())?;
-            let fname = func_name_bits
-                .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
-                .unwrap_or_else(|| "?".to_string());
-            let arg_names_strs: Vec<String> = arg_names
-                .iter()
-                .map(|&b| {
-                    string_obj_to_owned(obj_from_bits(b))
-                        .unwrap_or_else(|| format!("<raw:{:x}>", b))
-                })
-                .collect();
-            let msg = format!(
-                "too many positional arguments for {}(): got {} positional, expected {} (arg_names={:?}, kwonly={}, vararg={}, varkw={})",
-                fname,
-                supplied,
-                total_pos,
-                arg_names_strs,
-                kwonly_names.len(),
-                has_vararg,
-                has_varkw,
-            );
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
-        }
-
         let defaults_bits = function_attr_bits(
             _py,
             func_ptr,
@@ -847,6 +873,49 @@ unsafe fn bind_python_frame<'a, 'py>(
         let defaults: &[u64] = defaults_pin.as_deref().unwrap_or(&[]);
 
         let defaults_len = defaults.len();
+        if supplied > total_pos && !has_vararg {
+            // CPython reports the live default range and only keyword-only
+            // arguments already supplied, before filling any defaults.
+            let keyword_only_given = (0..kwonly_names.len())
+                .filter(|&index| binding.slots[layout.keyword_only_slot(index)].is_some())
+                .count();
+            drop(defaults_pin);
+            let function = function_name_bits(_py, func_ptr);
+            let function = string_obj_to_owned(obj_from_bits(function))
+                .unwrap_or_else(|| "function".to_string());
+            let (expected, plural) = if defaults_len != 0 {
+                (
+                    format!(
+                        "from {} to {total_pos}",
+                        total_pos as i128 - defaults_len as i128
+                    ),
+                    "s",
+                )
+            } else {
+                (total_pos.to_string(), if total_pos == 1 { "" } else { "s" })
+            };
+            let keyword_only = if keyword_only_given != 0 {
+                format!(
+                    " positional argument{} (and {keyword_only_given} keyword-only argument{})",
+                    if supplied == 1 { "" } else { "s" },
+                    if keyword_only_given == 1 { "" } else { "s" },
+                )
+            } else {
+                String::new()
+            };
+            let verb = if supplied == 1 && keyword_only_given == 0 {
+                "was"
+            } else {
+                "were"
+            };
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "{function}() takes {expected} positional argument{plural} but {supplied}{keyword_only} {verb} given",
+                ),
+            ));
+        }
         let default_start = total_pos.saturating_sub(defaults_len);
         let defaults_offset = defaults_len.saturating_sub(total_pos);
         for idx in 0..total_pos {
@@ -881,8 +950,14 @@ unsafe fn bind_python_frame<'a, 'py>(
                     idx + 1
                 );
             }
-            let msg = format!("missing required argument '{name}'");
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            return Err(raise_missing_arguments(
+                _py,
+                func_ptr,
+                "positional",
+                (0..default_start)
+                    .filter(|&index| binding.slots[index].is_none())
+                    .map(|index| arg_names[index]),
+            ));
         }
 
         // Each bound slot now owns its default. Do not retain unrelated
@@ -904,11 +979,18 @@ unsafe fn bind_python_frame<'a, 'py>(
         }
         // Resolve every remaining keyword default before reporting missing
         // parameters: later rich lookups can raise or mutate metadata.
-        if let Some(name_bits) = first_missing_kwonly {
-            let name =
-                string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "?".to_string());
-            let msg = format!("missing required keyword-only argument '{name}'");
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        if first_missing_kwonly.is_some() {
+            return Err(raise_missing_arguments(
+                _py,
+                func_ptr,
+                "keyword-only",
+                kwonly_names
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(index, _)| binding.slots[layout.keyword_only_slot(*index)].is_none())
+                    .map(|(_, name)| name),
+            ));
         }
 
         let mut final_args: Vec<u64> = Vec::with_capacity(binding.slots.len());
