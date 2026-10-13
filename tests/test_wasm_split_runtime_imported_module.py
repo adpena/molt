@@ -28,6 +28,7 @@ def _split_runtime_imported_module_target_dirs(
         target_dir = cargo_target_dir_for_artifact_root(
             artifact_root(ROOT, env),
             env.get("MOLT_SESSION_ID") or session_id,
+            source_root=ROOT,
         )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     diff_target_dir = (
@@ -78,8 +79,7 @@ def test_split_runtime_imported_module_target_dir_defaults_to_dx_session_target(
     target_dir, diff_target_dir = _split_runtime_imported_module_target_dirs({})
 
     assert target_dir == cargo_target_dir_for_artifact_root(
-        ROOT,
-        "split-runtime-imported-module",
+        artifact_root(ROOT, {}), "split-runtime-imported-module", source_root=ROOT
     )
     assert diff_target_dir == target_dir
 

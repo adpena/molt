@@ -103,7 +103,9 @@ def test_molt_build_env_sets_canonical_defaults(monkeypatch, tmp_path: Path):
 
     artifact_root = Path(env["MOLT_EXT_ROOT"])
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "monty-conformance")
+        molt_dx.cargo_target_dir_for_artifact_root(
+            artifact_root, "monty-conformance", source_root=repo_root
+        )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
@@ -129,7 +131,9 @@ def test_molt_build_env_overrides_ambient_roots(monkeypatch, tmp_path: Path):
 
     artifact_root = Path(env["MOLT_EXT_ROOT"])
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "ambient-session")
+        molt_dx.cargo_target_dir_for_artifact_root(
+            artifact_root, "ambient-session", source_root=repo_root
+        )
     )
     assert env["TMPDIR"] == str(custody_layout.scratch_root(artifact_root, repo_root))
     assert env["PYTHONPATH"] == str(repo_root.resolve() / "src")

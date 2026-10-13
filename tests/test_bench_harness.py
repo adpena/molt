@@ -67,7 +67,9 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     artifact_root = molt_dx.checkout_custody(bench_harness.REPO_ROOT).custody_root
     assert call["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
     assert call["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(artifact_root, call["env"])
+        molt_dx.cargo_target_dir_for_environment(
+            artifact_root, call["env"], source_root=bench_harness.REPO_ROOT
+        )
     )
     assert call["env"]["TMPDIR"] == str(
         custody_layout.scratch_root(artifact_root, bench_harness.REPO_ROOT)

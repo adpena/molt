@@ -135,9 +135,9 @@ def _runtime_wasm_incremental_target_root(project_root: Path, family_key: str) -
     per proof-queue run means cargo incremental never engages: the M09 "stable
     target dir" lever).  Concurrency across sessions building the same family is
     made safe by cargo's own per-target build lock plus the ``_build_slot()``
-    cross-process gate; two *divergent* source builds in one family serialise and
-    may thrash each other's incremental state (slower, never incorrect), so this
-    stays opt-in for the single-lane iteration loop.
+    cross-process gate. The canonical target selector separates source checkouts:
+    serializing divergent sources in one Cargo target does not establish correct
+    freshness. Explicit shared target overrides remain caller-owned.
     """
     base = project_cargo_target_dir(project_root, os.environ, session_scoped=False)
     return base / "runtime-wasm-incr" / family_key

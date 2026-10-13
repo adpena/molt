@@ -137,7 +137,9 @@ def _cargo_target_root() -> Path:
     env_root = os.environ.get("CARGO_TARGET_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    return cargo_target_dir_for_environment(artifact_root(_repo_root()), os.environ)
+    return cargo_target_dir_for_environment(
+        artifact_root(_repo_root()), os.environ, source_root=_repo_root()
+    )
 
 
 def _runtime_source_mtime() -> float:
@@ -435,7 +437,9 @@ def build_runtime_wasm(
     env = os.environ.copy()
     target_root = _cargo_target_root()
     if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
-        target_root = cargo_target_dir_for_environment(_repo_root(), env)
+        target_root = cargo_target_dir_for_environment(
+            _repo_root(), env, source_root=_repo_root()
+        )
     env["CARGO_TARGET_DIR"] = str(target_root)
     kind = "reloc" if reloc else "shared"
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)

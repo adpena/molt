@@ -132,7 +132,9 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     artifact_root = molt_dx.checkout_custody(module.REPO_ROOT).custody_root
     assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
     assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(artifact_root, contexts[0]["env"])
+        molt_dx.cargo_target_dir_for_environment(
+            artifact_root, contexts[0]["env"], source_root=module.REPO_ROOT
+        )
     )
     assert contexts[0]["env"]["TMPDIR"] == str(
         custody_layout.scratch_root(artifact_root, module.REPO_ROOT)
@@ -214,8 +216,7 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
-            tmp_path.resolve(),
-            env,
+            tmp_path.resolve(), env, source_root=config.repo_root
         )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]

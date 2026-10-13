@@ -148,7 +148,13 @@ def test_every_consumer_reads_one_project_cargo_target(
     Only a pinned session scopes it.
     """
     from molt.backend_daemon_custody import backend_daemon_root_from_env
-    from molt.cli import backend_execution, lockfiles, mlir_backend, runtime_paths
+    from molt.cli import (
+        backend_execution,
+        cargo_execution,
+        lockfiles,
+        mlir_backend,
+        runtime_paths,
+    )
     from molt.cli.cargo_execution import _cargo_build_env
     from molt.cli.wasm_host import (
         molt_wasm_host_exe_name,
@@ -159,6 +165,7 @@ def test_every_consumer_reads_one_project_cargo_target(
     project = tmp_path / "project"
     project.mkdir()
     external = tmp_path / "external"
+    monkeypatch.setattr(cargo_execution, "compiler_source_root", lambda: project)
     base = project
     if request_env != "none":
         monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
@@ -170,6 +177,10 @@ def test_every_consumer_reads_one_project_cargo_target(
     if session == "generated":
         monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
     expected = base / "target"
+    if base != project:
+        from molt.dx import checkout_component
+
+        expected = expected / "checkouts" / checkout_component(project)
     if session == "pinned":
         expected = expected / "sessions" / "lane-a"
     # The Cargo build environment creates the run context's roots; keep the
@@ -213,3 +224,44 @@ def test_every_consumer_reads_one_project_cargo_target(
     assert compile_governor._guard_root(os.environ) == (
         project_build_state_root(compiler_root, os.environ) / "compile_guard"
     )
+
+
+def test_daemon_session_sweep_stays_in_its_source_checkout(tmp_path, monkeypatch):
+    from molt.cli import backend_execution
+    from molt.dx import CANONICAL_RUN_ENV_KEYS
+
+    for key in CANONICAL_RUN_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    artifact = tmp_path / "artifacts"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for root in (first, second):
+        root.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    monkeypatch.setenv("MOLT_SESSION_ID", "current")
+    caller = dict(os.environ)
+
+    def dead_identity(source, target):
+        target.mkdir(parents=True)
+        state = (
+            build_state_root(
+                project_root=source, cargo_target=target, environment=caller
+            )
+            / "backend_daemon"
+        )
+        state.mkdir(parents=True)
+        record = state / "dead.identity.json"
+        # Invalid content is independently stale; no process needs to be probed.
+        record.write_text("{}", encoding="utf-8")
+        return record
+
+    current = dead_identity(first, project_cargo_target_dir(first, caller))
+    sibling = dead_identity(
+        first, project_cargo_target_dir(first, {**caller, "MOLT_SESSION_ID": "other"})
+    )
+    foreign = dead_identity(second, project_cargo_target_dir(second, caller))
+    obsolete = dead_identity(first, artifact / "target" / "sessions" / "old")
+    assert backend_execution._sweep_orphaned_backend_daemon_locks(first) == 2
+    assert not current.exists() and not sibling.exists()
+    assert foreign.exists() and obsolete.exists()

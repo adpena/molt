@@ -777,3 +777,58 @@ def test_out_of_tree_markers_protect_a_checkout_that_is_its_own_root(
 
     assert not (clone / "tmp").exists()
     assert dg._has_active_guard(clone) is True
+
+
+def test_checkout_session_reclamation_requires_registration(tmp_path, monkeypatch):
+    root = tmp_path / "artifacts"
+    persistent = root / "target" / "checkouts" / "source-identity"
+    session = persistent / "sessions" / "completed"
+    session.mkdir(parents=True)
+    globs = dg.GuardConfig.from_env({}).lane_globs
+    assert dg._is_reclaimable(session, root, globs) is None
+    dg.register_lane_target(session, root=root, env={})
+    assert dg._is_reclaimable(session, root, globs, registered=True) == "sessions"
+    assert dg._is_reclaimable(persistent, root, globs) is None
+    reads = []
+    read_registry = dg.read_registry
+
+    def counted_registry(owner):
+        reads.append(owner)
+        return read_registry(owner)
+
+    monkeypatch.setattr(dg, "read_registry", counted_registry)
+    candidates = dg.discover_candidates(
+        root, dg.GuardConfig.from_env({}), roots=(root,), measure_sizes=False
+    )
+    assert [candidate.path for candidate in candidates] == [session]
+    assert reads == [root.resolve()]
+    result = dg.reclaim_completed_lane(session, root=root, env={}, apply=False)
+    assert session.exists()
+    assert result.mode == "dry-run"
+
+
+@pytest.mark.parametrize("operation", ["pressure", "gc", "completed"])
+def test_pinned_checkout_session_is_protected_without_target_alias(tmp_path, operation):
+    now = 3_000_000.0
+    target = (
+        tmp_path / "target" / "checkouts" / "source-identity" / "sessions" / "active"
+    )
+    _make_dir(target, size_bytes=1, age_s=100_000, now=now)
+    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 100_000)
+    env = {"MOLT_SESSION_ID": "active"}
+    if operation == "pressure":
+        result = dg.ensure_free(
+            root=tmp_path,
+            config=_cfg(),
+            env=env,
+            now_fn=lambda: now,
+            free_bytes_fn=lambda: 1,
+        )
+    elif operation == "gc":
+        result = dg.gc(root=tmp_path, config=_cfg(), env=env, now_fn=lambda: now)
+    else:
+        result = dg.reclaim_completed_lane(target, root=tmp_path, env=env)
+    assert target.exists()
+    assert result.reclaimed == []
+    if operation != "gc":
+        assert any(row["reason"] == "protected" for row in result.skipped)

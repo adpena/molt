@@ -699,7 +699,7 @@ def test_canonical_harness_env_installs_checkout_defaults_with_out_of_tree_scrat
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(tmp_path, None)
+        molt_dx.cargo_target_dir_for_artifact_root(tmp_path, None, source_root=tmp_path)
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
@@ -734,7 +734,9 @@ def test_canonical_harness_env_honors_dx_external_artifact_policy(
 
     assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(external_root.resolve(), None)
+        molt_dx.cargo_target_dir_for_artifact_root(
+            external_root.resolve(), None, source_root=repo_root
+        )
     )
 
 
@@ -777,7 +779,9 @@ def test_canonical_harness_env_preserves_caller_session(tmp_path: Path) -> None:
 
     assert env["MOLT_SESSION_ID"] == "caller-session"
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(tmp_path, "caller-session")
+        molt_dx.cargo_target_dir_for_artifact_root(
+            tmp_path, "caller-session", source_root=tmp_path
+        )
     )
 
 
