@@ -52,6 +52,26 @@ _count_elements(mapping, [key, key])
 print("count-overrides", key.hash_calls, list(mapping.values()), count_events)
 
 
+class GetOnlyDict(dict):
+    def get(self, key, default):
+        count_events.append("get-only")
+        return dict.get(self, key, default)
+
+
+class SetOnlyDict(dict):
+    def __setitem__(self, key, value):
+        count_events.append("set-only")
+        dict.__setitem__(self, key, value)
+
+
+for mapping_type in (GetOnlyDict, SetOnlyDict):
+    count_events.clear()
+    key = CountKey()
+    mapping = mapping_type()
+    _count_elements(mapping, [key, key])
+    print("count-one-override", key.hash_calls, list(mapping.values()), count_events)
+
+
 class ArbitraryCount:
     def __init__(self, mapping):
         self.mapping = mapping
@@ -61,13 +81,39 @@ class ArbitraryCount:
         return ("sum", one)
 
 
-mapping = {}
-mapping["key"] = ArbitraryCount(mapping)
-_count_elements(mapping, ["key"])
-print("count-reentry", mapping)
+for mapping_type in (dict, InheritedDict, AliasedDict):
+    mapping = mapping_type()
+    mapping["key"] = ArbitraryCount(mapping)
+    _count_elements(mapping, ["key"])
+    print("count-reentry", mapping_type.__name__, mapping)
 mapping = {"wide": 2 ** 100}
 _count_elements(mapping, ["wide"])
 print("count-wide", mapping["wide"] == 2 ** 100 + 1)
+
+
+class BrokenHash:
+    def __hash__(self):
+        raise LookupError("hash refused")
+
+
+class BrokenAdd:
+    def __add__(self, one):
+        raise ValueError("add refused")
+
+
+for mapping_type in (dict, InheritedDict, AliasedDict):
+    mapping = mapping_type()
+    try:
+        _count_elements(mapping, ["first", BrokenHash(), "last"])
+    except LookupError as error:
+        print("count-hash-failure", mapping_type.__name__, str(error), mapping)
+    old = BrokenAdd()
+    mapping["first"] = old
+    try:
+        _count_elements(mapping, ["first", "last"])
+    except ValueError as error:
+        print("count-add-failure", mapping_type.__name__, str(error),
+              mapping["first"] is old, "last" not in mapping)
 
 
 class CountMapping:
