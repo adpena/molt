@@ -152,6 +152,8 @@ tests, measurements, and explicit user direction over stale prose.
   broad expensive suites when a narrow check completely proves the owned invariant.
 - After relevant checks pass, repeat or broaden them only for changed inputs, a new failure, or an
   unresolved claim; otherwise proceed to integration.
+- Run the owning proof families locally before pushing; CI arbitrates release candidates. Make
+  repeated manual triage, profiling or log pipelines a tested tool and point to it below.
 - Treat a frozen or silent process as unknown until logs, artifacts, guard state, or live process
   evidence establishes its result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
@@ -191,6 +193,7 @@ tests, measurements, and explicit user direction over stale prose.
 - TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
+- CI failure triage (NEW versus main, ledger owners): `python3 tools/ci_triage.py RUN_ID`
 
 These are pointers, not mandatory reading lists. Load only what the current task
 needs, and update the owning authority when its facts change.
