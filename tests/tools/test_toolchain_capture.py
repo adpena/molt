@@ -13,7 +13,11 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from tests.executable_test_support import custody_spelling
+from tests.executable_test_support import (
+    custody_spelling,
+    native_executable_name,
+    write_mock_executable,
+)
 import pytest
 
 from tests.process_guard_common import run_isolated_python_probe
@@ -3581,9 +3585,9 @@ def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
             '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n',
             encoding="utf-8",
         )
-    linker = tmp_path / "selected-linker"
-    linker.write_bytes(b"linker")
-    linker.chmod(0o755)
+    linker = write_mock_executable(
+        tmp_path / native_executable_name("selected-linker"), b"linker"
+    )
     calls = []
 
     def run(argv, **kwargs):
@@ -3733,12 +3737,11 @@ def test_documenter_has_independent_linker_witness_and_target_filters_avoid_it(
     import copy
 
     drivers = {
-        name: tmp_path / (name + "-linker")
+        name: tmp_path / native_executable_name(name + "-linker")
         for name in ("compiler", "documenter", "host")
     }
     for path in drivers.values():
-        path.write_bytes(path.name.encode())
-        path.chmod(0o755)
+        write_mock_executable(path, path.name.encode())
     command = ["cargo", *arguments]
     target = "x86_64-pc-windows-msvc"
     position = command.index("--") if "--" in command else len(command)
@@ -3785,9 +3788,9 @@ def test_documenter_has_independent_linker_witness_and_target_filters_avoid_it(
     assert [row["unit"] for row in selection["units"]] == expected
     assert (drivers["documenter"].name in calls) is documenter
     if documenter:
-        assert selection["units"][2]["process_resolution"][0]["path"] == str(
-            drivers["documenter"]
-        )
+        assert selection["units"][2]["process_resolution"][0][
+            "path"
+        ] == custody_spelling(drivers["documenter"])
     identity = {"process_images": images, "link_selection": selection}
     toolchain_capture.validate_rust_link_selection(identity, command_argv=command)
     _, ref, _ = toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": identity})
@@ -4085,8 +4088,8 @@ def test_clippy_alias_requires_one_cross_platform_sibling_driver(
     env["PATH"] = os.pathsep.join((str(aliases), env["PATH"]))
     if matching:
         paths = toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
-        assert paths["cargo-clippy"] == str(plugin)
-        assert paths["clippy-driver"] == str(driver)
+        assert paths["cargo-clippy"] == custody_spelling(plugin)
+        assert paths["clippy-driver"] == custody_spelling(driver)
     else:
         with pytest.raises(ValueError, match="different sibling drivers"):
             toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
@@ -4194,11 +4197,12 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
         selection, cwd=tmp_path, env={}
     )
     assert len(calls) == 2
-    assert str(default_linker) in {row["path"] for row in images}
+    captured = {row["path"] for row in images}
+    assert custody_spelling(default_linker) in captured
     if aliases:
-        assert str(physical_lld) in {row["path"] for row in images}
-        assert str(linker_alias) in {row["path"] for row in images}
-    launcher = next(row for row in images if row["path"] == str(config))
+        assert custody_spelling(physical_lld) in captured
+        assert custody_spelling(linker_alias) in captured
+    launcher = next(row for row in images if row["path"] == custody_spelling(config))
     plan = proof_plan.ProofPlan.load()
     policy = next(p for p in plan.toolchain_policies if p.name == "llvm-sdk")
     identity = dict(
