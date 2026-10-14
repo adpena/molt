@@ -1430,8 +1430,10 @@ mod tests {
             // retirement policy is not the terminal DEALLOCATING state.
             let name_key = crate::attr_name_bits_from_bytes(py, b"__name__").unwrap();
             let name = crate::molt_get_attr_name(target, name_key);
-            if crate::string_obj_to_owned(crate::obj_from_bits(name)).as_deref() == Some("int")
-                && unsafe { crate::object_class_bits(ptr) } == crate::builtin_classes(py).type_obj
+            if crate::object::ops_format::string_obj_matches_bytes(
+                crate::obj_from_bits(name),
+                b"int",
+            ) && unsafe { crate::object_class_bits(ptr) } == crate::builtin_classes(py).type_obj
                 && !crate::obj_from_bits(unsafe { crate::class_mro_bits(ptr) }).is_none()
                 && unsafe { (*header).load_synchronized_flags() }
                     & crate::object::HEADER_FLAG_DEALLOCATING

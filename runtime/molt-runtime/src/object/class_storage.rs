@@ -30,6 +30,10 @@ pub(crate) enum ClassDeclaration {
     /// Subsequent C dictionary edits own missing/replaced values; lookup may
     /// no longer recreate a member from the declaration table.
     NativeNamespacePublished = 1 << 8,
+    /// One of the runtime's builtin class anchors (`BuiltinClasses::anchors`),
+    /// declared once when the family is published. Exact class: a heap
+    /// subclass of a builtin is not itself builtin.
+    BuiltinClass = 1 << 9,
     /// Semantic CPython static origin, independent of physical Molt allocation.
     /// This exact-class declaration is never inherited by a heap subclass.
     StaticType = 1 << 10,

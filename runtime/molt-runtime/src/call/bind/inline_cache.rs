@@ -533,21 +533,6 @@ fn super_ic_lookup<'a, 'py>(
 }
 
 #[inline]
-pub(super) unsafe fn cached_attr_matches_bytes(attr_bits: u64, expected: &[u8]) -> bool {
-    unsafe {
-        let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
-            return false;
-        };
-        if object_type_id(attr_ptr) != TYPE_ID_STRING
-            || crate::string_len(attr_ptr) != expected.len()
-        {
-            return false;
-        }
-        std::slice::from_raw_parts(crate::string_bytes(attr_ptr), expected.len()) == expected
-    }
-}
-
-#[inline]
 fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, selected: &PinnedSuperIcEntry<'_, '_>) {
     let entry = selected.entry;
     entry.retain(_py);
@@ -1509,7 +1494,10 @@ unsafe fn call_method_ic_dispatch(
                 {
                     let entry = selected.entry;
                     if entry.matches_receiver(recv_ptr)
-                        && cached_attr_matches_bytes(entry.attr_bits, name)
+                        && crate::object::ops_format::string_obj_matches_bytes(
+                            obj_from_bits(entry.attr_bits),
+                            name,
+                        )
                         && let Some(class_ptr) = obj_from_bits(entry.class_bits).as_ptr()
                     {
                         if entry.can_shadow {
@@ -2001,7 +1989,10 @@ unsafe fn call_super_method_ic_dispatch(
                 && type_epoch_matches(entry.type_version)
                 && cached_function_version_matches(entry.func_bits, entry.function_version)
                 && self_class_bits == entry.self_class_bits
-                && cached_attr_matches_bytes(entry.attr_bits, name)
+                && crate::object::ops_format::string_obj_matches_bytes(
+                    obj_from_bits(entry.attr_bits),
+                    name,
+                )
                 && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
                 && class_layout_version_bits(self_class_ptr) == entry.self_class_version
             {

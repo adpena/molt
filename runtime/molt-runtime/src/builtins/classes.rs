@@ -1388,6 +1388,19 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     // the family; inherited physical fields (notably int/float) must never see
     // an unfinished private-map word during instance traversal.
     let published = unsafe { &*ptr };
+    // Declare the whole family before sealing: sealing one anchor may ask
+    // whether another is builtin, and that answer is this one class bit.
+    for bits in published.anchors() {
+        let class_ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("published builtin class anchor is not a pointer");
+        unsafe {
+            crate::object::class_storage::class_declare(
+                class_ptr,
+                crate::object::class_storage::ClassDeclaration::BuiltinClass,
+            );
+        }
+    }
     for bits in published.anchors() {
         let class_ptr = obj_from_bits(bits)
             .as_ptr()
@@ -1429,6 +1442,13 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     assert!(
         crate::builtins::methods::publish_builtin_class_methods(&py, published.io_base),
         "builtin IOBase namespace publication failed"
+    );
+    // Every class's MRO ends at `object`. While its namespace is unpublished, a
+    // name absent from user classes stays "unknown" there, so no attribute
+    // lookup through a plain class could ever be cached.
+    assert!(
+        crate::builtins::methods::publish_builtin_class_methods(&py, published.object),
+        "builtin object namespace publication failed"
     );
     unsafe {
         crate::object::class_refresh_declared_finalizer_flag(
@@ -1498,8 +1518,15 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
     }
 }
 
+/// Whether `bits` is one of the builtin class anchors: one class-declaration
+/// read, never a scan of the anchor family.
 pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
-    builtin_classes(_py).anchors().contains(&bits)
+    obj_from_bits(bits).as_ptr().is_some_and(|ptr| unsafe {
+        crate::object::class_storage::class_declares(
+            ptr,
+            crate::object::class_storage::ClassDeclaration::BuiltinClass,
+        )
+    })
 }
 
 pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {

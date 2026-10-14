@@ -9,9 +9,15 @@ fn cached_method_name_must_match_even_at_the_same_site() {
         let alpha_ptr = crate::call::bind::alloc_string(_py, b"alpha");
         assert!(!alpha_ptr.is_null());
         let alpha_bits = MoltObject::from_ptr(alpha_ptr).bits();
-        assert!(unsafe { cached_attr_matches_bytes(alpha_bits, b"alpha") });
+        assert!(crate::object::ops_format::string_obj_matches_bytes(
+            obj_from_bits(alpha_bits),
+            b"alpha"
+        ));
         assert!(
-            !unsafe { cached_attr_matches_bytes(alpha_bits, b"beta") },
+            !crate::object::ops_format::string_obj_matches_bytes(
+                obj_from_bits(alpha_bits),
+                b"beta"
+            ),
             "a same-site lookup for another name must miss instead of reusing the target"
         );
         dec_ref_bits(_py, alpha_bits);

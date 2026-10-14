@@ -1,6 +1,100 @@
 use super::*;
-use crate::builtins::attr::{descriptor_call1, descriptor_has_get};
+use crate::builtins::attr::{
+    class_namespace_lookup_mro_pure, descriptor_call1, descriptor_has_get,
+};
 use crate::builtins::exceptions::ExceptionValue;
+use std::cell::Cell;
+
+/// The builtin `__getattribute__` a receiver kind uses when its class defines
+/// none of its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DefaultGetattribute {
+    Object,
+    Module,
+    Type,
+}
+
+impl DefaultGetattribute {
+    fn bits(self, py: &PyToken<'_>) -> Result<Option<u64>, ()> {
+        match self {
+            Self::Object => object_method_bits(py, "__getattribute__"),
+            Self::Module => {
+                builtin_class_method_bits(py, builtin_classes(py).module, "__getattribute__")
+            }
+            Self::Type => type_method_bits(py, "__getattribute__"),
+        }
+    }
+}
+
+/// A class's attribute protocol is plain when its MRO has no `__getattr__`
+/// and its `__getattribute__` is the receiver kind's default. The fact is
+/// keyed like the descriptor cache: class identity, the class layout version
+/// and the global type version, which advances on every class mutation and
+/// on every type release, so a reused class address never matches.
+#[derive(Clone, Copy)]
+struct PlainProtocolEntry {
+    class_bits: u64,
+    layout_version: u64,
+    type_version: u64,
+    default: DefaultGetattribute,
+    plain: bool,
+}
+
+const PLAIN_PROTOCOL_SLOTS: usize = 64;
+
+thread_local! {
+    static PLAIN_PROTOCOL: [Cell<Option<PlainProtocolEntry>>; PLAIN_PROTOCOL_SLOTS] =
+        const { [const { Cell::new(None) }; PLAIN_PROTOCOL_SLOTS] };
+}
+
+/// Whether `owner` needs neither hook resolution: true lets a lookup skip the
+/// two MRO walks. Only callback-free, published namespace facts are cached;
+/// an undecided namespace answers false without caching, so the full
+/// transaction decides.
+unsafe fn plain_attribute_protocol(
+    py: &PyToken<'_>,
+    owner: *mut u8,
+    default: DefaultGetattribute,
+) -> Result<bool, ()> {
+    unsafe {
+        let class_bits = MoltObject::from_ptr(owner).bits();
+        let layout_version = crate::class_layout_version_bits(owner);
+        let type_version = crate::object::global_type_version();
+        let slot = ((class_bits >> 4) ^ (class_bits >> 12)) as usize % PLAIN_PROTOCOL_SLOTS;
+        let cached = PLAIN_PROTOCOL.with(|slots| slots[slot].get());
+        if let Some(entry) = cached
+            && entry.class_bits == class_bits
+            && entry.layout_version == layout_version
+            && entry.type_version == type_version
+            && entry.default == default
+        {
+            return Ok(entry.plain);
+        }
+        let (Some(getattr), Some(Some(getattribute))) = (
+            class_namespace_lookup_mro_pure(py, owner, b"__getattr__", None),
+            class_namespace_lookup_mro_pure(py, owner, b"__getattribute__", None),
+        ) else {
+            return Ok(false);
+        };
+        let plain = getattr.is_none() && Some(getattribute) == default.bits(py)?;
+        // Resolving the default may publish a namespace; store only a fact
+        // that still describes the current class graph.
+        if crate::class_layout_version_bits(owner) == layout_version
+            && crate::object::global_type_version() == type_version
+        {
+            PLAIN_PROTOCOL.with(|slots| {
+                slots[slot].set(Some(PlainProtocolEntry {
+                    class_bits,
+                    layout_version,
+                    type_version,
+                    default,
+                    plain,
+                }));
+            });
+        }
+        Ok(plain)
+    }
+}
 
 /// One normal attribute transaction for custom and default lookup, on ordinary
 /// objects, dataclasses, dictless instances and metaclass receivers alike.
@@ -11,7 +105,7 @@ pub(super) unsafe fn attribute_lookup_transaction<F>(
     object: *mut u8,
     owner: *mut u8,
     name: u64,
-    default: Option<u64>,
+    default: DefaultGetattribute,
     default_lookup: F,
 ) -> Result<Option<u64>, ()>
 where
@@ -20,6 +114,21 @@ where
     unsafe {
         let receiver = MoltObject::from_ptr(object).bits();
         let owner_bits = MoltObject::from_ptr(owner).bits();
+        if plain_attribute_protocol(py, owner, default)? {
+            // The same pins and exception framing as the full transaction,
+            // without resolving hooks the class does not have.
+            inc_ref_bits(py, receiver);
+            inc_ref_bits(py, owner_bits);
+            inc_ref_bits(py, name);
+            exception_stack_push();
+            let result = default_lookup();
+            exception_stack_pop(py);
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, owner_bits);
+            dec_ref_bits(py, receiver);
+            return result;
+        }
+        let default = default.bits(py)?;
         inc_ref_bits(py, receiver);
         inc_ref_bits(py, owner_bits);
         inc_ref_bits(py, name);
@@ -135,7 +244,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                 obj_ptr,
                 meta_ptr,
                 attr_bits,
-                type_method_bits(_py, "__getattribute__")?,
+                DefaultGetattribute::Type,
                 || type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
             );
         }

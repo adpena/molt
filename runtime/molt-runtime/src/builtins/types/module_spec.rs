@@ -463,7 +463,10 @@ mod tests {
 
     extern "C" fn observed_setattr(self_bits: u64, name_bits: u64, value_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            if string_obj_to_owned(obj_from_bits(name_bits)).as_deref() == Some("name") {
+            if crate::object::ops_format::string_obj_matches_bytes(
+                obj_from_bits(name_bits),
+                b"name",
+            ) {
                 let observed = str_bits(py, b"observed.leaf");
                 let result = crate::molt_object_setattr(self_bits, name_bits, observed);
                 dec_ref_bits(py, observed);

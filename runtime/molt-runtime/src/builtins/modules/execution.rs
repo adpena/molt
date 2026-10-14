@@ -751,7 +751,10 @@ pub(super) unsafe fn after_module_metadata_set(
             ImportContainer,
         }
         let runtime_id = runtime_state(_py) as *const _ as usize;
-        let is_spec = string_obj_to_owned(obj_from_bits(attr_bits)).as_deref() == Some("__spec__");
+        let is_spec = crate::object::ops_format::string_obj_matches_bytes(
+            obj_from_bits(attr_bits),
+            b"__spec__",
+        );
         if !is_spec {
             return Ok(());
         }
