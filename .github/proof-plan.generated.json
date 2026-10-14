@@ -356,7 +356,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3a5aded0cacf8fb86fa2a1c447c7dd7feda4c593e80a9bba8b5cf0368f46d524",
+  "authority_sha256": "4ec1756a600a1b2873a9eee7a9661a46987ddd085871c267f35f27425951a328",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9527,13 +9527,13 @@
       "executable": "uv",
       "name": "uv",
       "setup_evidence": [
-        ".github/actions/setup-project/action.yml::version: \"0.12.23\""
+        ".github/actions/setup-project/action.yml::version: \"0.13.1\""
       ],
-      "setup_value": "0.12.23",
+      "setup_value": "0.13.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^uv 0\\.12\\.23\\b"
+      "version_pattern": "^uv 0\\.13\\.1\\b"
     },
     {
       "executable": "node",
