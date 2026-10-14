@@ -62,6 +62,10 @@ def _event_key(candidate: Path) -> str:
     names: list[str] = []
     current = candidate
     while current.parent != current:
+        if "~" in current.name:
+            # The Windows watcher may report an 8.3 short name, which no key
+            # can match once the entry is gone; keep such an event owned.
+            raise ValueError(f"vanished watch event may be a short name: {candidate}")
         names.append(current.name)
         current = current.parent
         try:
