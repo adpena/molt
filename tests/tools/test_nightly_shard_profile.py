@@ -187,6 +187,7 @@ def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
                 "authority_sha256": plan["authority_sha256"],
                 "expected_selected": plan["programs"][program]["selected"],
                 "selected": plan["programs"][program]["selected"],
+                "integrity_errors": [],
                 "status_by_path": {
                     path: "passed" for path in aggregate["item_durations_s"]
                 },

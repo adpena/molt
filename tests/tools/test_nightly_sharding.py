@@ -610,3 +610,129 @@ def test_run_shard_drives_the_real_guarded_executor(tmp_path: Path) -> None:
     assert raw["summary_error"] is None
     assert (raw["selected"], raw["passed"]) == (len(entries), len(entries))
     assert 0 < len(raw["stdout_tail"]) <= 16_000
+
+
+def test_shard_deadline_is_the_proof_plan_budget_less_its_overhead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    authority = tomllib.loads(
+        (nightly_sharding.ROOT / "tools" / "proof_plan.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    declared = {
+        family["sharded_program"]: family
+        for family in authority["scheduled_family"]
+        if "sharded_program" in family
+    }
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    for program, family in declared.items():
+        deadline = (
+            family["shard_timeout_minutes"] * 60 - family["shard_overhead_seconds"]
+        )
+        assert 0 < deadline < family["shard_timeout_minutes"] * 60
+        assert plan["programs"][program]["shard_deadline_s"] == deadline
+        assert nightly_sharding.SHARD_COUNTS[program] == family["shard_count"]
+
+    seen: list[object] = []
+
+    class _DeadlineExecutor(_FakeExecutor):
+        def run(self, argv: list[str], **kwargs: object):
+            seen.append(kwargs.get("timeout"))
+            return super().run(argv)
+
+    monkeypatch.setattr(nightly_sharding, "EXECUTOR", _DeadlineExecutor())
+    evidence = tmp_path / "evidence"
+    nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="differential",
+        shard_id=0,
+        raw_out=evidence / "shard-00.raw.json",
+        checkpoint_out=evidence / "shard-00.checkpoint.json",
+        command=["fake", "--selection", "{selection}", "--summary", "{summary}"],
+    )
+    assert seen == [float(plan["programs"]["differential"]["shard_deadline_s"])]
+
+    tampered = copy.deepcopy(plan)
+    tampered["programs"]["differential"]["shard_deadline_s"] += 1
+    # A plan sealed under a different budget, not a corrupted one.
+    tampered["plan_sha256"] = nightly_sharding._expected_plan_digest(tampered)
+    with pytest.raises(ValueError, match="deadline does not match the proof plan"):
+        nightly_sharding.validate_plan_envelope(tampered, root)
+
+
+def test_missing_shard_evidence_is_a_named_failure_not_a_contract_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    evidence = tmp_path / "evidence"
+    _run_program(root, plan, evidence, "conformance", monkeypatch)
+    for suffix in ("raw.json", "checkpoint.json"):
+        (evidence / f"shard-02.{suffix}").replace(tmp_path / f"moved-{suffix}")
+
+    aggregate = nightly_sharding.aggregate(
+        plan, root=root, program="conformance", evidence_root=evidence
+    )
+    assert aggregate["ok"] is False
+    assert nightly_sharding.aggregate_contract_problems(plan, aggregate) == []
+    report = "\n".join(nightly_sharding.aggregate_report(aggregate))
+    assert "ok=False" in report
+    assert "integrity: aggregate item telemetry closure mismatch" in report
+    with pytest.raises(RuntimeError, match="nightly conformance failed"):
+        nightly_sharding.validate_aggregate(plan, aggregate)
+    with pytest.raises(ValueError, match="item telemetry is incomplete"):
+        nightly_sharding.validate_aggregate(plan, aggregate, require_complete=True)
+
+    hidden = copy.deepcopy(aggregate)
+    hidden["ok"] = True
+    hidden["integrity_errors"] = []
+    with pytest.raises(ValueError, match="partial item telemetry is not recorded"):
+        nightly_sharding.validate_aggregate(plan, hidden)
+
+
+def test_aggregate_contract_names_each_broken_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    plan = _plan(root)
+    evidence = tmp_path / "evidence"
+    _run_program(root, plan, evidence, "conformance", monkeypatch)
+    aggregate = nightly_sharding.aggregate(
+        plan, root=root, program="conformance", evidence_root=evidence
+    )
+    broken = copy.deepcopy(aggregate)
+    broken["schema"] = "other"
+    broken["plan_sha256"] = "0" * 64
+    with pytest.raises(ValueError) as error:
+        nightly_sharding.validate_aggregate(plan, broken)
+    assert "schema does not match the plan" in str(error.value)
+    assert "plan_sha256 does not match the plan" in str(error.value)
+
+
+def test_failed_shard_report_carries_the_child_output() -> None:
+    lines = nightly_sharding.shard_report(
+        {
+            "program": "differential",
+            "shard": 3,
+            "returncode": 124,
+            "selected": 2,
+            "errors": 2,
+            "duration_s": 5.0,
+            "summary_error": "child summary is missing",
+            "stderr_tail": "first\nTraceback: boom\n",
+            "stdout_tail": "",
+        }
+    )
+    assert lines[0].startswith("nightly-shard: program=differential shard=3")
+    assert "returncode=124" in lines[0]
+    assert "  summary_error: child summary is missing" in lines
+    assert "  stderr_tail: Traceback: boom" in lines
+    passing = nightly_sharding.shard_report(
+        {"returncode": 0, "duration_s": 1.0, "stderr_tail": "noise"}
+    )
+    assert passing == [passing[0]]

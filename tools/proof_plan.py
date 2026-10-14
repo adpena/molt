@@ -1140,11 +1140,29 @@ class ProofPlan:
                 )
             sharded_program = family.data.get("sharded_program")
             shard_count = family.data.get("shard_count")
+            shard_timeout = family.data.get("shard_timeout_minutes")
+            shard_overhead = family.data.get("shard_overhead_seconds")
             if sharded_program is None:
                 if shard_count is not None:
                     errors.append(
                         f"{family.name}: shard_count requires sharded_program"
                     )
+                if shard_timeout is not None or shard_overhead is not None:
+                    errors.append(
+                        f"{family.name}: shard budgets require sharded_program"
+                    )
+            elif (
+                not isinstance(shard_timeout, int)
+                or isinstance(shard_timeout, bool)
+                or shard_timeout <= 0
+                or not isinstance(shard_overhead, int)
+                or isinstance(shard_overhead, bool)
+                or not 0 < shard_overhead < shard_timeout * 60
+            ):
+                errors.append(
+                    f"{family.name}: shard_timeout_minutes and shard_overhead_seconds "
+                    "must leave a positive shard deadline"
+                )
             elif (
                 sharded_program not in {"conformance", "differential", "regrtest"}
                 or not isinstance(shard_count, int)
@@ -1207,6 +1225,7 @@ class ProofPlan:
                 else:
                     for token in (
                         "needs: nightly-prepare",
+                        f"timeout-minutes: {shard_timeout}",
                         f"max-parallel: {shard_count}",
                         f"outputs.{sharded_program}_matrix",
                         "tools/nightly_runtime_bundle.py verify-extract",

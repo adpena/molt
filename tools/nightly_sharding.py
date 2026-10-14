@@ -51,7 +51,37 @@ EXECUTOR = CommandExecutor.for_file(__file__)
 PLAN_SCHEMA = "molt.nightly-shard-plan.v2"
 EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v1"
 AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v2"
-SHARD_COUNTS = {"conformance": 8, "differential": 16, "regrtest": 4}
+
+
+def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int]]:
+    """Each sharded program's (shard count, shard deadline in seconds).
+
+    The proof plan's scheduled families own both numbers; the deadline is the
+    shard job's timeout less its declared setup and publication overhead.
+    """
+    authority = tomllib.loads(
+        (root / "tools" / "proof_plan.toml").read_text(encoding="utf-8")
+    )
+    budgets: dict[str, tuple[int, int]] = {}
+    for family in authority.get("scheduled_family", []):
+        program = family.get("sharded_program")
+        if program is None:
+            continue
+        budgets[str(program)] = (
+            int(family["shard_count"]),
+            int(family["shard_timeout_minutes"]) * 60
+            - int(family["shard_overhead_seconds"]),
+        )
+    if set(budgets) != {"conformance", "differential", "regrtest"}:
+        raise ValueError("proof plan must budget every sharded Nightly program")
+    return budgets
+
+
+SHARD_BUDGETS = _shard_budgets()
+SHARD_COUNTS = {program: count for program, (count, _) in SHARD_BUDGETS.items()}
+SHARD_DEADLINES_S = {
+    program: deadline for program, (_, deadline) in SHARD_BUDGETS.items()
+}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 WEIGHT_POLICY = {
@@ -384,6 +414,7 @@ def build_plan(
             "total_weight": sum(int(entry["weight"]) for entry in entries),
             "entries": entries,
             "shards": lpt_shards(entries, SHARD_COUNTS[name]),
+            "shard_deadline_s": SHARD_DEADLINES_S[name],
         }
     payload: dict[str, Any] = {
         "schema": PLAN_SCHEMA,
@@ -451,6 +482,8 @@ def validate_plan_envelope(plan: Mapping[str, Any], root: Path = ROOT) -> None:
         shards = program.get("shards")
         if not isinstance(entries, list) or not isinstance(shards, list):
             raise ValueError(f"{name} program entries or shards are invalid")
+        if program.get("shard_deadline_s") != SHARD_DEADLINES_S[name]:
+            raise ValueError(f"{name} shard deadline does not match the proof plan")
         paths = []
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
@@ -808,10 +841,12 @@ def run_shard(
     checkpoint_out: Path,
     artifact_root: Path | None = None,
     artifact_out: Path | None = None,
-    timeout: float = 3600,
+    timeout: float | None = None,
     command: Sequence[str] | None = None,
-) -> None:
+) -> dict[str, Any]:
     validate_plan(plan, root)
+    if timeout is None:
+        timeout = float(plan["programs"][program]["shard_deadline_s"])
     if timeout <= 0:
         raise ValueError("nightly shard timeout must be positive")
     entries = shard_entries(plan, program, shard_id)
@@ -968,6 +1003,25 @@ def run_shard(
         if staged_artifact is not None and artifact_out is not None:
             publications.insert(0, (staged_artifact, artifact_out))
         publish_validated_outputs(publications)
+    return raw
+
+
+def shard_report(raw: Mapping[str, Any], *, tail_lines: int = 40) -> list[str]:
+    """The lines a shard job prints: its verdict, then why it failed."""
+    fields = ("program", "shard", "returncode", "selected", "passed", "failed")
+    fields += ("errors", "skipped")
+    lines = [
+        "nightly-shard: "
+        + " ".join(f"{field}={raw.get(field)}" for field in fields)
+        + f" duration_s={float(raw.get('duration_s') or 0):.0f}"
+    ]
+    if raw.get("summary_error"):
+        lines.append(f"  summary_error: {raw['summary_error']}")
+    if raw.get("returncode") != 0 or raw.get("summary_error"):
+        for stream in ("stderr_tail", "stdout_tail"):
+            tail = str(raw.get(stream) or "").splitlines()[-tail_lines:]
+            lines.extend(f"  {stream}: {line}" for line in tail)
+    return lines
 
 
 def aggregate(
@@ -1186,62 +1240,178 @@ def aggregate(
     }
 
 
-def validate_aggregate(plan: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+def _hex_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _positive_seconds(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and float(value) > 0
+    )
+
+
+def aggregate_contract_problems(
+    plan: Mapping[str, Any], payload: Mapping[str, Any]
+) -> list[str]:
+    """Name every way an aggregate payload breaks its contract.
+
+    An incomplete aggregate (a shard that published no evidence or a child that
+    reported no items) is a valid payload only as a recorded failure: ``ok`` is
+    false and its integrity errors say so. That keeps the evidence that a red
+    Nightly needs instead of replacing it with one opaque refusal.
+    """
     program = payload.get("program")
     if program not in SHARD_COUNTS:
-        raise ValueError("nightly aggregate program is invalid")
+        return ["program is not a sharded Nightly program"]
     expected = plan["programs"][program]
     expected_paths = {str(entry["path"]) for entry in expected["entries"]}
     durations = payload.get("item_durations_s")
     statuses = payload.get("status_by_path")
-    if (
-        payload.get("schema") != AGGREGATE_SCHEMA
-        or payload.get("kind") != "aggregate"
-        or payload.get("plan_sha256") != plan.get("plan_sha256")
-        or payload.get("source_commit") != plan.get("source_commit")
-        or payload.get("authority_sha256") != plan.get("authority_sha256")
-        or payload.get("expected_selected") != expected.get("selected")
-        or payload.get("selected") != expected.get("selected")
-        or not isinstance(payload.get("shards"), list)
-        or len(payload["shards"]) != SHARD_COUNTS[program]
-        or not isinstance(durations, dict)
-        or set(durations) != expected_paths
-        or not isinstance(statuses, dict)
-        or set(statuses) != expected_paths
+    shards = payload.get("shards")
+    integrity_errors = payload.get("integrity_errors")
+    recorded_failure = (
+        payload.get("ok") is False
+        and isinstance(integrity_errors, list)
+        and bool(integrity_errors)
+    )
+    problems = [
+        f"{field} does not match the plan"
+        for field, holds in (
+            ("schema", payload.get("schema") == AGGREGATE_SCHEMA),
+            ("kind", payload.get("kind") == "aggregate"),
+            ("plan_sha256", payload.get("plan_sha256") == plan.get("plan_sha256")),
+            (
+                "source_commit",
+                payload.get("source_commit") == plan.get("source_commit"),
+            ),
+            (
+                "authority_sha256",
+                payload.get("authority_sha256") == plan.get("authority_sha256"),
+            ),
+            (
+                "expected_selected",
+                payload.get("expected_selected") == expected.get("selected"),
+            ),
+        )
+        if not holds
+    ]
+    if not isinstance(integrity_errors, list):
+        problems.append("integrity_errors is not a list")
+    if not isinstance(durations, dict) or not isinstance(statuses, dict):
+        problems.append("item telemetry is not a mapping")
+        return problems
+    if set(statuses) != set(durations):
+        problems.append("item statuses and durations name different items")
+    unknown = sorted(set(durations) - expected_paths)
+    if unknown:
+        problems.append(f"item telemetry names items outside the plan: {unknown[:3]}")
+    complete = set(durations) == expected_paths
+    if not complete and not recorded_failure:
+        problems.append("partial item telemetry is not recorded as a failure")
+    if complete and payload.get("selected") != expected.get("selected"):
+        problems.append("selected does not match the plan")
+    for path in sorted(durations):
+        if not _positive_seconds(durations[path]) or statuses.get(path) not in {
+            "passed",
+            "failed",
+            "errors",
+            "skipped",
+        }:
+            problems.append(f"item telemetry is invalid: {path}")
+    if not isinstance(shards, list) or (
+        len(shards) != SHARD_COUNTS[program] and not recorded_failure
     ):
-        raise ValueError("nightly aggregate contract is invalid")
-    for path in expected_paths:
-        duration = durations[path]
+        problems.append("shard records do not cover every shard")
+    else:
+        planned = expected["shards"]
+        valid_ids = [
+            shard["id"]
+            for shard in shards
+            if isinstance(shard, dict)
+            and isinstance(shard.get("id"), int)
+            and not isinstance(shard.get("id"), bool)
+            and 0 <= shard["id"] < len(planned)
+        ]
         if (
-            isinstance(duration, bool)
-            or not isinstance(duration, (int, float))
-            or not math.isfinite(float(duration))
-            or float(duration) <= 0
-            or statuses[path] not in {"passed", "failed", "errors", "skipped"}
+            len(valid_ids) != len(shards)
+            or valid_ids != sorted(set(valid_ids))
+            or any(
+                not _hex_digest(shard.get("raw_sha256"))
+                or not _positive_seconds(shard.get("duration_s"))
+                or shard.get("planned_weight") != planned[shard["id"]]["weight"]
+                for shard in shards
+            )
         ):
-            raise ValueError(f"nightly aggregate item telemetry is invalid: {path}")
-    if payload.get("ok") is not True:
+            problems.append("shard telemetry is invalid")
+    return problems
+
+
+def validate_aggregate(
+    plan: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    require_complete: bool = False,
+) -> None:
+    """Refuse a malformed aggregate, then refuse a failed Nightly program.
+
+    ``require_complete`` is for consumers of item telemetry, such as the cost
+    model fit, which must see every planned item.
+    """
+    problems = aggregate_contract_problems(plan, payload)
+    program = payload.get("program")
+    if not problems and require_complete:
+        expected_paths = {
+            str(entry["path"]) for entry in plan["programs"][program]["entries"]
+        }
+        if set(payload["item_durations_s"]) != expected_paths:
+            problems.append("item telemetry is incomplete")
+    if problems:
+        raise ValueError(
+            "nightly aggregate contract is invalid: " + "; ".join(problems)
+        )
+    if payload.get("ok") is not True or any(
+        shard.get("returncode") != 0 for shard in payload["shards"]
+    ):
         raise RuntimeError(
             f"nightly {program} failed: failures={payload.get('failed')} "
             f"errors={payload.get('errors')} integrity={payload.get('integrity_errors')}"
         )
-    for expected_id, shard in enumerate(payload["shards"]):
-        if (
-            not isinstance(shard, dict)
-            or shard.get("id") != expected_id
-            or shard.get("returncode") != 0
-            or not isinstance(shard.get("raw_sha256"), str)
-            or len(shard["raw_sha256"]) != 64
-            or any(
-                character not in "0123456789abcdef" for character in shard["raw_sha256"]
+
+
+def aggregate_report(payload: Mapping[str, Any], *, limit: int = 200) -> list[str]:
+    """Human-readable lines naming a program's verdict and every failing item."""
+    lines = [
+        "nightly-aggregate: "
+        + " ".join(
+            f"{field}={payload.get(field)}"
+            for field in (
+                "program",
+                "ok",
+                "selected",
+                "passed",
+                "failed",
+                "errors",
+                "skipped",
             )
-            or shard.get("planned_weight") != expected["shards"][expected_id]["weight"]
-            or isinstance(shard.get("duration_s"), bool)
-            or not isinstance(shard.get("duration_s"), (int, float))
-            or not math.isfinite(float(shard["duration_s"]))
-            or float(shard["duration_s"]) <= 0
-        ):
-            raise ValueError("nightly aggregate shard telemetry is invalid")
+        )
+    ]
+    errors = payload.get("integrity_errors") or []
+    lines.extend(f"  integrity: {error}" for error in list(errors)[:limit])
+    statuses = payload.get("status_by_path") or {}
+    failing = sorted(
+        (status, path) for path, status in statuses.items() if status != "passed"
+    )
+    lines.extend(f"  {status}: {path}" for status, path in failing[:limit])
+    if len(failing) > limit:
+        lines.append(f"  ... {len(failing) - limit} more non-passing items")
+    return lines
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1258,7 +1428,6 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--checkpoint-out", type=Path, required=True)
     run.add_argument("--artifact-root", type=Path)
     run.add_argument("--artifact-out", type=Path)
-    run.add_argument("--timeout", type=float, default=3600)
     run.add_argument("argv", nargs=argparse.REMAINDER)
     collect = commands.add_parser("aggregate")
     collect.add_argument("--plan", type=Path, required=True)
@@ -1283,7 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
             command = list(args.argv)
             if command and command[0] == "--":
                 command = command[1:]
-            run_shard(
+            raw = run_shard(
                 _load_plan(args.plan),
                 root=ROOT,
                 program=args.program,
@@ -1292,9 +1461,9 @@ def main(argv: list[str] | None = None) -> int:
                 checkpoint_out=args.checkpoint_out,
                 artifact_root=args.artifact_root,
                 artifact_out=args.artifact_out,
-                timeout=args.timeout,
                 command=command or None,
             )
+            print("\n".join(shard_report(raw)), flush=True)
         elif args.command == "aggregate":
             plan_payload = _load_plan(args.plan)
             payload = aggregate(
@@ -1304,6 +1473,7 @@ def main(argv: list[str] | None = None) -> int:
                 evidence_root=args.evidence_root,
             )
             atomic_write_json(args.out, payload, sort_keys=True)
+            print("\n".join(aggregate_report(payload)), flush=True)
             validate_aggregate(plan_payload, payload)
         else:
             plan = _load_plan(args.plan)
