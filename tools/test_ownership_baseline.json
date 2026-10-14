@@ -90,7 +90,6 @@
   "tests/test_native_shift_lowering_regression.py",
   "tests/test_native_string_split_scalarization.py",
   "tests/test_ord_at_native.py",
-  "tests/test_runtime_abi_width_authority.py",
   "tests/test_tinygrad_import_shim.py",
   "tests/test_tinygrad_scaled_dot_product_attention.py",
   "tests/test_tkinter_ttk_compile.py",
@@ -102,7 +101,6 @@
   "tests/test_wasm_optimization.py",
   "tests/test_wasm_performance.py",
   "tests/test_wasm_pipeline_e2e.py",
-  "tests/test_wasm_socket_sendmsg_recvmsg.py",
   "tests/test_wasm_split_runtime.py",
   "tests/test_wasm_split_runtime_imported_module.py",
   "tests/test_wasm_threading_gate.py"
