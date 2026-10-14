@@ -877,9 +877,9 @@ def test_refused_shared_lowering_does_not_refresh_recency(
         source, module_name="m", is_package=False, context_digest=digest
     )
     assert slot is not None
-    payload = json.loads(slot.read_text())
+    payload = json.loads(slot.read_text(encoding="utf-8"))
     payload["context_digest"] = "cd" * 32
-    slot.write_text(json.dumps(payload))
+    slot.write_text(json.dumps(payload), encoding="utf-8")
     old = time.time() - 86400
     os.utime(slot, (old, old))
     before = slot.stat().st_mtime_ns

@@ -2916,7 +2916,9 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
         "from nativepkg import doccer\n\ndocfiller = doccer.filldoc({})\n",
         encoding="utf-8",
     )
-    (external_root / "never_needed_artifact_dependency.py").write_text("VALUE = 1\n")
+    (external_root / "never_needed_artifact_dependency.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     doc_sha = hashlib.sha256(doc_path.read_bytes()).hexdigest()
     _write_external_native_artifact(

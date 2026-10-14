@@ -165,7 +165,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "mod.py"
-    source.write_text("def f(value=0x100):\n    return value\n")
+    source.write_text("def f(value=0x100):\n    return value\n", encoding="utf-8")
     source_metadata = {
         "size": source.stat().st_size,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -253,7 +253,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         f"class __dict__:\n    mapping = {ordered}\n    named = {named}\n"
     )
     source = tmp_path / "mod.py"
-    source.write_text(text)
+    source.write_text(text, encoding="utf-8")
     source_metadata = {
         "size": source.stat().st_size,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),

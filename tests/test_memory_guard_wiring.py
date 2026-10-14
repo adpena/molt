@@ -183,7 +183,7 @@ def test_tkinter_compile_helper_uses_admitted_proof_scratch(monkeypatch, tmp_pat
         output = Path(argv[argv.index("--output") + 1])
         assert source.parent.parent == proof_root
         assert output.parent == source.parent
-        assert "import tkinter.ttk as ttk" in source.read_text()
+        assert "import tkinter.ttk as ttk" in source.read_text(encoding="utf-8")
         raise CompilerDispatchReached
 
     monkeypatch.setattr(consumer, "run_native_test_process", inspect_dispatch)

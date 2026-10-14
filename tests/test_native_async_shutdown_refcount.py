@@ -484,7 +484,7 @@ def _cleanup_owner(
 ):
     """Load real cleanup methods, including their real base cleanup protocol."""
     path = Path(__file__).resolve().parents[1] / "src/molt/stdlib" / relative_path
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     source = next(
         n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name
     )
@@ -960,7 +960,7 @@ def test_native_cleanup_family_has_behavioral_coverage_and_no_live_global_intrin
     rows = []
     violations = []
     for p in root.rglob("*.py"):
-        tree = ast.parse(p.read_text())
+        tree = ast.parse(p.read_text(encoding="utf-8"))
         nodes = list(ast.walk(tree))
         bindings = set()
         aliases = {}
