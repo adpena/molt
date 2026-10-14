@@ -1,10 +1,7 @@
 use crate::tir::function::TirFunction;
 
 fn drop_inner_stage_audit_enabled(func: &TirFunction) -> bool {
-    let enabled = std::env::var("MOLT_DROP_STAGE_AUDIT").as_deref() == Ok("1")
-        || std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
-        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1");
-    if !enabled {
+    if !molt_ir::stage_audit::stage_audit_enabled(molt_ir::stage_audit::AuditStage::Drop) {
         return false;
     }
     match std::env::var("MOLT_DROP_STAGE_AUDIT_FUNC") {

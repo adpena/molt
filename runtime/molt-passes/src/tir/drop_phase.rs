@@ -63,9 +63,7 @@ use super::target_info::TargetInfo;
 use std::time::Instant;
 
 fn drop_stage_audit_enabled() -> bool {
-    std::env::var("MOLT_DROP_STAGE_AUDIT").as_deref() == Ok("1")
-        || std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
-        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+    molt_ir::stage_audit::stage_audit_enabled(molt_ir::stage_audit::AuditStage::Drop)
 }
 
 fn emit_drop_function_audit(

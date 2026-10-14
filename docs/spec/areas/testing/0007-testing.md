@@ -461,7 +461,7 @@ request worker, or post-exit ancestry lookup is introduced.
 
 ## WASM stage audit boundaries
 
-`MOLT_WASM_STAGE_AUDIT=1` enables the existing stage stream. Module emission
+`MOLT_STAGE_AUDIT=wasm` enables the existing stage stream (with the module and drop stages it contains). Module emission
 begins before the module emitter and closes with `after-module-emission`,
 including final byte size. `before-module-finalization` follows the function
 loop and precedes resolver, trampoline, table, registry, section, and diagnostic
