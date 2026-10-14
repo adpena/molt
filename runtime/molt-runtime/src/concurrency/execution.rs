@@ -572,6 +572,8 @@ impl RuntimeExecutionGuard {
                 && initialize_runtime
                 && !crate::state::runtime_state::runtime_is_ready()
             {
+                #[cfg(test)]
+                crate::test_support::require_custody_to_start_runtime();
                 assert_ne!(
                     crate::state::runtime_state::molt_runtime_init(),
                     0,
