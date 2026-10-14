@@ -190,7 +190,7 @@ but vacuous with respect to actual backend behavior (see Scope Disclaimer above)
   table.insert/remove, nil propagation), string semantics, type coercion rules,
   Python-Luau correspondence theorems.
 
-- **RustCorrect.lean** -- Full semantic correctness (`emitRustExpr_correct`), parallel to
+- **RustCorrect.lean** -- (Not built since the TIR syntax grew; outside the Lake roots, HF-63.) Full semantic correctness (`emitRustExpr_correct`), parallel to
   Luau. Environment correspondence with injectivity. Type mapping totality and
   faithfulness. SSA ownership safety. Note: operator approximations (floordiv → div,
   pow → mul).
@@ -288,10 +288,11 @@ but vacuous with respect to actual backend behavior (see Scope Disclaimer above)
 ### Runtime (sorry-free)
 
 - **NanBoxCorrect.lean** -- NaN-boxing encode/decode correctness.
-- **NanBoxBV.lean** -- BitVec-based NaN-boxing proofs (drafted for bv_decide). Contains
-  sorrys awaiting Lean 4.17+ `bv_decide` tactic.
+- **NanBoxBV.lean** -- BitVec-based NaN-boxing proofs. Builds with no `sorry` on Lean 4.34.1, but stays outside
+  the Lake roots: its `native_decide` facts reach values at or above 2^63, the pattern that crashes Lean on CI's
+  x86_64 runners (HF-66).
 - **IntrinsicContracts.lean** -- 61 trust axioms for Python builtin behavior.
-- **MemorySafety.lean / MemorySafetyCorrect.lean** -- Memory safety model and proofs.
+- **MemorySafety.lean / MemorySafetyCorrect.lean** -- Memory safety model and proofs (not built: outside the Lake roots and 14 errors on Lean 4.34.1, HF-63).
 - **Refcount.lean / RCElisionCorrect.lean** -- Reference counting elision proofs.
 - **OwnershipModel.lean** -- Ownership and lifetime model.
 - **CapabilityGate.lean** -- Capability-based security gate.
