@@ -120,7 +120,6 @@ class CodegenSelection:
     backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
     portable: bool = False
     wasm_profile: str | None = None
-    type_gate: bool = False
 
     def __post_init__(self) -> None:
         if self.backend not in CODEGEN_BACKENDS:
@@ -144,6 +143,4 @@ class CodegenSelection:
             env["MOLT_PORTABLE"] = "1"
         if self.wasm_profile is not None:
             env["MOLT_WASM_PROFILE"] = self.wasm_profile
-        if self.type_gate:
-            env["MOLT_TYPE_GATE"] = "1"
         return env

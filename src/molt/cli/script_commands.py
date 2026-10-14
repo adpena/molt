@@ -207,7 +207,6 @@ def _run_script_cross(
     build_profile: BuildProfile | None = None,
     audit_log: str | None = None,
     io_mode: str | None = None,
-    type_gate: bool = False,
 ) -> int:
     """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
     if file_path and module:
@@ -265,9 +264,6 @@ def _run_script_cross(
     )
     if capability_error is not None:
         return _fail(capability_error, json_output, command="run")
-
-    # --type-gate flag
-    env.update(_build_inputs._parse_type_gate_flag(type_gate))
 
     wasm_host_command: list[str] | None = None
     if target == "wasm":
@@ -627,7 +623,6 @@ def run_script(
     build_profile: BuildProfile | None = None,
     audit_log: str | None = None,
     io_mode: str | None = None,
-    type_gate: bool = False,
     environment_overrides: Mapping[str, str] | None = None,
 ) -> int:
     """Build and run a native program.
@@ -686,9 +681,6 @@ def run_script(
     )
     if capability_error is not None:
         return _fail(capability_error, json_output, command="run")
-
-    # --type-gate flag
-    env.update(_build_inputs._parse_type_gate_flag(type_gate))
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):

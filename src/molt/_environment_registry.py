@@ -309,6 +309,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_TYPE_GATE",
+      "note": "molt build/run --type-gate was removed: no compiler or runtime path enforced it",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_USE_EXTERNAL_ARTIFACTS",
       "note": "",
       "rejected_by": [],
@@ -6953,15 +6960,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TV_TIMEOUT",
       "owner": "tools/translation_validate.py",
       "summary": "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TYPE_GATE",
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "molt build --type-gate sets it to 1 in the backend environment; the runtime's exported molt_runtime_init_type_gate reads exactly 1 and records a flag that nothing enforces, and no code in the tree calls that initializer.",
       "values": []
     },
     {

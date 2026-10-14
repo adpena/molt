@@ -25433,7 +25433,6 @@ def test_build_scopes_pipeline_env_updates(
         "MOLT_AUDIT_OUTPUT",
         "MOLT_IO_MODE",
         "MOLT_PORTABLE",
-        "MOLT_TYPE_GATE",
     }
     for key in cleared_keys:
         monkeypatch.delenv(key, raising=False)
@@ -25450,7 +25449,6 @@ def test_build_scopes_pipeline_env_updates(
         stdlib_profile="full",
         audit_log="jsonl:stderr",
         io_mode="virtual",
-        type_gate=True,
         json_output=True,
     )
 

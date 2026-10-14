@@ -5443,14 +5443,6 @@ owner = "tools/translation_validate.py"
 summary = "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60."
 
 [[variable]]
-name = "MOLT_TYPE_GATE"
-audience = "internal"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "molt build --type-gate sets it to 1 in the backend environment; the runtime's exported molt_runtime_init_type_gate reads exactly 1 and records a flag that nothing enforces, and no code in the tree calls that initializer."
-
-[[variable]]
 name = "MOLT_TY_TIMEOUT"
 audience = "user"
 kind = "float"
@@ -6946,6 +6938,12 @@ retired = 2026-10-09
 name = "MOLT_SUBPROCESS_KEEPALIVE_SECS"
 replacement = "MOLT_SUBPROCESS_KEEPALIVE_SEC"
 retired = 2026-10-06
+
+[[retired]]
+name = "MOLT_TYPE_GATE"
+replacement = ""
+retired = 2026-10-14
+note = "molt build/run --type-gate was removed: no compiler or runtime path enforced it"
 
 [[retired]]
 name = "MOLT_USE_EXTERNAL_ARTIFACTS"

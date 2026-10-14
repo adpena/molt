@@ -361,12 +361,6 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
     )
     build_parser.add_argument(
-        "--type-gate",
-        action="store_true",
-        default=False,
-        help="Reject compilation if capability-touching code paths contain untyped variables",
-    )
-    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1209,12 +1203,6 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         choices=["real", "virtual", "callback"],
         default=None,
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
-    )
-    run_parser.add_argument(
-        "--type-gate",
-        action="store_true",
-        default=False,
-        help="Reject compilation if capability-touching code paths contain untyped variables",
     )
     run_parser.add_argument(
         "--trusted",
