@@ -663,9 +663,13 @@ fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
                     .is_null()
             );
             assert!(
-                !call_method(list.as_ptr(), c"insert", &mut [zero.as_ptr(), seven.as_ptr()])
-                    .as_ptr()
-                    .is_null()
+                !call_method(
+                    list.as_ptr(),
+                    c"insert",
+                    &mut [zero.as_ptr(), seven.as_ptr()]
+                )
+                .as_ptr()
+                .is_null()
             );
             assert_values(list.as_ptr(), &[7, 3, 1, 2, 7]);
             let count = call_method(list.as_ptr(), c"count", &mut [seven.as_ptr()]);
@@ -695,7 +699,11 @@ fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
                     .is_null()
             );
             assert_values(list.as_ptr(), &[8, 9, 2, 1, 3]);
-            assert!(!call_method(list.as_ptr(), c"sort", &mut []).as_ptr().is_null());
+            assert!(
+                !call_method(list.as_ptr(), c"sort", &mut [])
+                    .as_ptr()
+                    .is_null()
+            );
             assert_values(list.as_ptr(), &[1, 2, 3, 8, 9]);
             let repr = call_method(list.as_ptr(), c"__repr__", &mut []);
             assert_text(repr.as_ptr(), "[1, 2, 3, 8, 9]");
@@ -733,7 +741,11 @@ fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
                     .is_null()
             );
             assert_values(list.as_ptr(), &[9, 8]);
-            assert!(!call_method(list.as_ptr(), c"clear", &mut []).as_ptr().is_null());
+            assert!(
+                !call_method(list.as_ptr(), c"clear", &mut [])
+                    .as_ptr()
+                    .is_null()
+            );
             assert_values(list.as_ptr(), &[]);
             if matches!(route, ListRoute::Native) {
                 assert!(

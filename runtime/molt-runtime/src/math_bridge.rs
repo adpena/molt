@@ -1292,7 +1292,10 @@ mod numeric_protocol_tests {
                 assert!(crate::obj_from_bits(result.bits()).is_none());
                 let error = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!error.as_ptr().is_null());
-                assert_eq!(object::Py_TYPE(error.as_ptr()), &raw mut PyExc_OverflowError);
+                assert_eq!(
+                    object::Py_TYPE(error.as_ptr()),
+                    &raw mut PyExc_OverflowError
+                );
                 assert!(!crate::exception_pending(py));
             }
             INDEX_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
@@ -1504,10 +1507,18 @@ mod numeric_protocol_tests {
                             Some(prior_bits.bits())
                         );
                     }
-                    let selected = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
-                    assert_eq!(selected.as_ptr(), retired, "retirement preserves exact identity");
+                    let selected =
+                        NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
+                    assert_eq!(
+                        selected.as_ptr(),
+                        retired,
+                        "retirement preserves exact identity"
+                    );
                     if warning_error {
-                        assert_eq!((*selected.as_ptr()).ob_type, &raw mut PyExc_DeprecationWarning);
+                        assert_eq!(
+                            (*selected.as_ptr()).ob_type,
+                            &raw mut PyExc_DeprecationWarning
+                        );
                     }
                     assert!(!crate::exception_pending(py));
                     assert!(!errors::raised_error_pending());

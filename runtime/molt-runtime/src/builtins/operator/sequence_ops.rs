@@ -72,7 +72,11 @@ fn length_hint_integer_value(py: &crate::PyToken<'_>, bits: u64) -> Result<Optio
         }
     };
     value.map(Some).ok_or_else(|| {
-        raise_exception::<()>(py, "OverflowError", "Python int too large to convert to C ssize_t");
+        raise_exception::<()>(
+            py,
+            "OverflowError",
+            "Python int too large to convert to C ssize_t",
+        );
     })
 }
 
@@ -90,7 +94,11 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
             Ok(Some(value)) => value,
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {
-                return raise_exception::<_>(_py, "SystemError", "validated index has no integer storage");
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "validated index has no integer storage",
+                );
             }
         };
         // The default's converted owner retires before any target lookup, and

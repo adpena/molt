@@ -628,7 +628,10 @@ fn type_traverse_visits_exact_heap_type_ownership_family() {
         .map(|reference| reference as *mut PyObject as usize)
         .collect();
     expected.push((&raw mut references[0]) as usize);
-    assert_eq!(visited, expected, "owned edge multiplicity must survive aliasing");
+    assert_eq!(
+        visited, expected,
+        "owned edge multiplicity must survive aliasing"
+    );
 }
 
 #[test]
@@ -692,7 +695,6 @@ fn type_clear_breaks_heap_type_mro_and_module_cycles() {
     assert_eq!(heap.ht_type.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
     assert_eq!(mro.ob_refcnt, 1);
     assert_eq!(module.ob_refcnt, 1);
-
 }
 
 static WATCH_CALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

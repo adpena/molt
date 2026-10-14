@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "fd73d950dc05b01b24bd799b2607daf68ecd918e972f3f8d0231f65df403195d",
+  "authority_sha256": "a0ad9bb31e44e21a591ed0f8b8f6624c702917500c769882850c5d98f727940b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2066,6 +2066,32 @@
       "toolchains": [
         "python",
         "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_rustfmt.py",
+        "--all"
+      ],
+      "cache_domain": "none",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.rustfmt",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc"
       ]
     },
     {
@@ -7528,12 +7554,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1800,
-        "headroom_seconds": 960,
+        "headroom_seconds": 900,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2520,
-        "required_job_seconds": 2640,
+        "projected_makespan_seconds": 2580,
+        "required_job_seconds": 2700,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2145
+          "repository-policy": 2175
         }
       },
       "rust": {

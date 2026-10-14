@@ -276,22 +276,29 @@ fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
         assert_eq!((*start).ob_refcnt, 1);
         assert_eq!((*stop).ob_refcnt, 1);
         let first = refcount::OwnedPyObject::from_owned(slice::PySlice_New(
-            start, stop, std::ptr::null_mut(),
+            start,
+            stop,
+            std::ptr::null_mut(),
         ));
         assert!(!first.as_ptr().is_null());
-        let fields = [start, stop].map(|pointer| {
-            GLOBAL_BRIDGE.molt_handle_for_pyobj(pointer).unwrap().bits()
-        });
+        let fields = [start, stop]
+            .map(|pointer| GLOBAL_BRIDGE.molt_handle_for_pyobj(pointer).unwrap().bits());
         let check = |slice_count: usize| {
             for (pointer, bits, expected) in [(start, fields[0], 1002), (stop, fields[1], 1005)] {
-                assert_eq!(molt_cpython_abi::api::numbers::PyLong_AsLongLong(pointer), expected);
+                assert_eq!(
+                    molt_cpython_abi::api::numbers::PyLong_AsLongLong(pointer),
+                    expected
+                );
                 let object = MoltObject::from_bits(bits).as_ptr().unwrap();
                 assert_eq!(
                     (*crate::header_from_obj_ptr(object)).ref_count_snapshot() as usize,
                     1 + slice_count,
                     "one stable bridge hold plus one runtime edge per slice",
                 );
-                assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(pointer.addr()), slice_count);
+                assert_eq!(
+                    GLOBAL_BRIDGE.mirrored_c_refcount(pointer.addr()),
+                    slice_count
+                );
                 assert_eq!(
                     (*pointer).ob_refcnt,
                     1 + slice_count as isize + isize::from(slice_count != 0),
@@ -302,7 +309,9 @@ fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
         };
         check(1);
         let second = refcount::OwnedPyObject::from_owned(slice::PySlice_New(
-            start, stop, std::ptr::null_mut(),
+            start,
+            stop,
+            std::ptr::null_mut(),
         ));
         assert!(!second.as_ptr().is_null());
         for pointer in [first.as_ptr(), second.as_ptr()] {

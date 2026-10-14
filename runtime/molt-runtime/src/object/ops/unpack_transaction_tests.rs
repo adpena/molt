@@ -151,7 +151,10 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
             assert_eq!(crate::exception_last_bits_noinc(_py), Some(runtime_error));
             let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             assert!(!raised.as_ptr().is_null());
-            assert_eq!((*raised.as_ptr()).ob_type, &raw mut abi_types::PyExc_MemoryError);
+            assert_eq!(
+                (*raised.as_ptr()).ob_type,
+                &raw mut abi_types::PyExc_MemoryError
+            );
             assert!(!exception_pending(_py));
             let args =
                 refcount::OwnedPyObject::from_owned(errors::PyException_GetArgs(raised.as_ptr()));
@@ -159,7 +162,10 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
             assert_eq!(sequences::PyTuple_Size(args.as_ptr()), 0);
             let identity = raised.as_ptr();
             errors::PyErr_SetRaisedException(raised.into_ptr());
-            assert!(!exception_pending(_py), "SetRaisedException selects the C channel");
+            assert!(
+                !exception_pending(_py),
+                "SetRaisedException selects the C channel"
+            );
             let mut class = std::ptr::null_mut();
             let mut value = std::ptr::null_mut();
             let mut traceback = std::ptr::null_mut();

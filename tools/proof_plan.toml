@@ -1874,6 +1874,20 @@ dependencies = []
 argv = ["uv", "run", "python3", "tools/check_commit_attribution.py", "--introduced"]
 toolchains = ["python", "uv"]
 
+# Rust formatting of the whole workspace. Local landing checks only the
+# changed files, so this row keeps main itself formatted (4.5 s).
+[[command]]
+id = "repository.rustfmt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_rustfmt.py", "--all"]
+toolchains = ["python", "uv", "rustc"]
+
 [[command]]
 id = "repository.benchmark-docs.generated"
 family = "repository_policy"

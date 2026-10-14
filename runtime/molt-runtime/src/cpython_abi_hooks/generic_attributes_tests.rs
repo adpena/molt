@@ -1022,9 +1022,8 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
                     }
                 }
             }
-            let result = refcount::OwnedPyObject::from_owned(
-                object::PyObject_GenericGetAttr(view, data),
-            );
+            let result =
+                refcount::OwnedPyObject::from_owned(object::PyObject_GenericGetAttr(view, data));
             assert!(result.as_ptr().is_null());
             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
             assert_eq!(object::PyObject_GenericSetAttr(view, data, value), -1);
