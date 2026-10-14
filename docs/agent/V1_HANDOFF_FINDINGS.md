@@ -132,10 +132,18 @@ shared-pass/cache/native/exporter controls pass at `c1365355e`.
 The retained locale batch now completes preparation and eleven native functions,
 then exceeds the three-minute `dev-fast` window in setup for the 9,441-operation
 literal-heavy function. No completed batch or comparative speedup is claimed.
-V1-07 retains that blocker and source-proven repeated range/carrier analyses and
-undemanded secondary optimization in final representation planning. One shared
-correction must preserve optimized loop/storage proofs and exact emitted names;
-phase evidence must identify the remaining setup cost before changing algorithms.
+Shared representation planning now computes each demanded view's range/carrier
+facts once, skips the secondary optimizer when cold functions have no consumer,
+and avoids empty container closures and unused fact-category allocations. All
+229 affected representation/range/SSA/native/LLVM/WASM/exporter controls pass
+at `30b39f76d` from one 79.1-second developer Cargo compilation. Existing loop,
+checked-overflow, storage-alias and emitted-identity proofs remain required.
+A bounded phase replay on that exact image locates the remaining large-function
+stall in first-lift SSA liveness, after dominance/frontier construction. The
+string-set fixed point remains under V1-07; shared compact liveness must replace
+its repeated set/string materialization while preserving the augmented execution
+graph, handler/resume definitions and deterministic pruned argument order.
+No completed locale batch, allocation delta or release speedup is claimed.
 Numeric-policy generation and frontend target admission now derive from the
 existing supported-target catalog. Twenty generator checks and 73 affected
 Python consumer checks pass; all three numeric Rust projections are unchanged.
