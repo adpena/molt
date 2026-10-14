@@ -390,6 +390,9 @@ def _materialize_cached_backend_artifact(
         candidate_identity = _validate_backend_cache_artifact(
             candidate, artifact_contract=artifact_contract, identity=candidate_identity
         )
+    except _native_symbols.NativeSymbolInspectionError:
+        # Reader failures are operational failures, never soft cache misses.
+        raise
     except (OSError, BackendArtifactValidationError) as exc:
         warnings.append(f"Cache candidate admission failed: {exc}")
         return False
