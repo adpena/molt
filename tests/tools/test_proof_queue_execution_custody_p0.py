@@ -1273,6 +1273,8 @@ def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
     assert not spec.owns(staged)
     watched.unlink()
     assert spec.owns(watched), "a removed watched file must remain an input event"
+    # Windows may report a deleted entry by its 8.3 short name; stay owned.
+    assert spec.owns(tmp_path / "PYPROJ~1.TOM")
 
 
 def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
