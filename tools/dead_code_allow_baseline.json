@@ -1,5 +1,5 @@
 {
-  "baseline_total": 133,
+  "baseline_total": 132,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -97,6 +97,16 @@
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
     {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-test-support",
+      "waiver": "shared test-support source under runtime/test_support/, compiled into each molt-cpython-abi integration-test binary; each binary uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::mod:captured_runtime_children",
+      "owner": "runtime-test-support",
+      "waiver": "shared test-support source under runtime/test_support/, compiled into each molt-cpython-abi integration-test binary; each binary uses a subset"
+    },
+    {
       "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::mod:fake_complex",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
@@ -188,11 +198,6 @@
     },
     {
       "id": "runtime/molt-ir/src/tir/op_kinds_generated.rs::allow_dead_code::impl:OperandOwnership",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-ir/src/tir/ssa.rs::allow_dead_code::field:uses",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -292,11 +297,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime/src/builtins/platform_tests.rs::allow_dead_code::mod:cargo_test_artifacts",
-      "owner": "runtime-test-support",
-      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs; resolver admission tests use the artifact directory subset"
-    },
-    {
       "id": "runtime/molt-runtime/src/builtins/select.rs::allow_dead_code::field:kind",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -323,11 +323,6 @@
     },
     {
       "id": "runtime/molt-runtime/src/builtins/subprocess_ext.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/tempfile_mod.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
