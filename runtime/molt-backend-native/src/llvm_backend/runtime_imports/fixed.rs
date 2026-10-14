@@ -148,6 +148,14 @@ const I64_PTR_I64_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
 ];
 #[cfg(feature = "llvm")]
+const I64_PTR_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
+    FixedRuntimeParamAbi::I64,
+    FixedRuntimeParamAbi::Ptr,
+    FixedRuntimeParamAbi::I64,
+    FixedRuntimeParamAbi::I64,
+    FixedRuntimeParamAbi::I64,
+];
+#[cfg(feature = "llvm")]
 const I64_I64_PTR_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
@@ -308,6 +316,12 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
         ATTR_NONE,
     ),
     i64_ret("molt_set_attr_name", 3, ATTR_NONE),
+    custom(
+        "molt_set_attr_object_ic",
+        I64_PTR_I64_I64_I64,
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
     i64_ret("molt_del_attr_name", 2, ATTR_NONE),
     i64_ret("molt_getitem_method", 2, ATTR_NONE),
     i64_ret("molt_getitem_unchecked", 2, ATTR_NONE),

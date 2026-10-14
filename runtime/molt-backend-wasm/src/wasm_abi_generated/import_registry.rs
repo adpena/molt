@@ -1670,9 +1670,9 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::SetAttrObject,
-        name: "set_attr_object",
-        type_idx: 25,
+        import: WasmRuntimeImport::SetAttrObjectIc,
+        name: "set_attr_object_ic",
+        type_idx: 49,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetAttrPtr,
@@ -14701,8 +14701,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_set_attr_generic" => Some(WasmRuntimeImport::SetAttrGeneric),
         "set_attr_name" => Some(WasmRuntimeImport::SetAttrName),
         "molt_set_attr_name" => Some(WasmRuntimeImport::SetAttrName),
-        "set_attr_object" => Some(WasmRuntimeImport::SetAttrObject),
-        "molt_set_attr_object" => Some(WasmRuntimeImport::SetAttrObject),
+        "set_attr_object_ic" => Some(WasmRuntimeImport::SetAttrObjectIc),
+        "molt_set_attr_object_ic" => Some(WasmRuntimeImport::SetAttrObjectIc),
         "set_attr_ptr" => Some(WasmRuntimeImport::SetAttrPtr),
         "molt_set_attr_ptr" => Some(WasmRuntimeImport::SetAttrPtr),
         "contains" => Some(WasmRuntimeImport::Contains),

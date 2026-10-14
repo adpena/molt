@@ -11,20 +11,6 @@ fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
             vec!["get_attr_special"],
         ),
         (
-            "set_attr_generic_ptr",
-            OpCode::StoreAttr,
-            2,
-            false,
-            vec!["set_attr_object"],
-        ),
-        (
-            "set_attr_generic_obj",
-            OpCode::StoreAttr,
-            2,
-            false,
-            vec!["set_attr_object"],
-        ),
-        (
             "del_attr_generic_ptr",
             OpCode::DelAttr,
             1,

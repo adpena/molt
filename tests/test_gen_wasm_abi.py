@@ -1248,10 +1248,18 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     static_types = data["static_type"]
     static_type_count = len(static_types)
 
-    assert static_type_count == 49
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert {"params": [], "results": ["i32"]} in static_types
+    # A generic write site passes receiver, name pointer and length, value
+    # and its site id.
+    write_site = next(
+        entry for entry in data["import"] if entry["name"] == "set_attr_object_ic"
+    )
+    assert static_types[write_site["type"]] == {
+        "params": ["i64", "i32", "i64", "i64", "i64"],
+        "results": ["i64"],
+    }
     assert not any(
         entry["name"].startswith("list_builder_") for entry in data["import"]
     )

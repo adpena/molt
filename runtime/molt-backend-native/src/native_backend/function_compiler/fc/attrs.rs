@@ -382,7 +382,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "set_attr_generic_ptr" => {
+        "set_attr" | "set_attr_generic_ptr" | "set_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -424,89 +424,44 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            // Pass the NaN-boxed receiver (NOT a pre-unboxed pointer) and call the
-            // bits-validating `molt_set_attr_object`. SETATTR's `_generic_ptr`
-            // SimpleIR form is emitted whenever the attr is not a statically-known
-            // field offset — which includes polymorphic receivers whose runtime
-            // value can be a TAGGED non-pointer (a tagged int/bool/None/float,
-            // e.g. `typing.final(42)` → `f.__final__ = True`). `unbox_ptr_value`
-            // on a tagged value yields a garbage address (the tag bits, e.g.
-            // 0x12), and the old `molt_set_attr_ptr` then dereferenced the object
-            // header at `addr-16` → SIGSEGV. `molt_set_attr_object` resolves the
-            // pointer via `maybe_ptr_from_bits`, raising a clean catchable
-            // AttributeError/TypeError for a tagged receiver and taking the exact
-            // same `molt_set_attr_generic` path for a real heap object — so there
-            // is no behavior change for writable receivers, only the missing
-            // tagged-receiver guard the `_ptr` variant unsoundly skipped.
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_attr_object",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder
-                .ins()
-                .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = simple_ir_out_result(op) {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "set_attr" | "set_attr_generic_obj" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let obj = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
-            let val = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Attr value not found");
-            let Some(attr_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
+            // The receiver stays NaN-boxed: a polymorphic receiver can be a
+            // tagged non-pointer (`typing.final(42)` then `f.__final__ = True`),
+            // and both entries resolve it with `maybe_ptr_from_bits`, raising a
+            // catchable AttributeError instead of reading a header at a tag.
+            let call = if op.kind == "set_attr" {
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_set_attr_object",
+                    &[types::I64, types::I64, types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                builder
+                    .ins()
+                    .call(local_callee, &[*obj, attr_ptr, attr_len, *val])
+            } else {
+                let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_set_attr_object_ic",
+                    &[types::I64, types::I64, types::I64, types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                let site_bits = builder.ins().iconst(
+                    types::I64,
+                    box_int(stable_ic_site_id(
+                        func_name,
+                        source_op_idx,
+                        op.kind.as_str(),
+                    )),
+                );
+                builder
+                    .ins()
+                    .call(local_callee, &[*obj, attr_ptr, attr_len, *val, site_bits])
             };
-            let data_id = module
-                .declare_data(
-                    &format!("attr_{}_{}", func_name, op_idx),
-                    Linkage::Local,
-                    false,
-                    false,
-                )
-                .unwrap();
-            let mut data_ctx = DataDescription::new();
-            data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
-            module.define_data(data_id, &data_ctx).unwrap();
-
-            let global_ptr = module.declare_data_in_func(data_id, builder.func);
-            let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-            let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_attr_object",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder
-                .ins()
-                .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
             if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
                 def_var_named(&mut *builder, vars, out_name, res);

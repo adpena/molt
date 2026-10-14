@@ -293,6 +293,80 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
 }
 
 #[test]
+fn lower_generic_attribute_sites_carry_source_identity() {
+    for (kind, opcode, operand_count, runtime_name) in [
+        (
+            "get_attr_generic_obj",
+            OpCode::LoadAttr,
+            1,
+            "molt_get_attr_object_ic",
+        ),
+        (
+            "get_attr_generic_ptr",
+            OpCode::LoadAttr,
+            1,
+            "molt_get_attr_object_ic",
+        ),
+        (
+            "set_attr_generic_obj",
+            OpCode::StoreAttr,
+            2,
+            "molt_set_attr_object_ic",
+        ),
+        (
+            "set_attr_generic_ptr",
+            OpCode::StoreAttr,
+            2,
+            "molt_set_attr_object_ic",
+        ),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func_name = "generic_attribute_site";
+        let mut func = TirFunction::new(
+            func_name.into(),
+            vec![TirType::DynBox; operand_count],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        let mut access = TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                attrs.insert("name".into(), AttrValue::Str("field".into()));
+                attrs
+            },
+            source_span: None,
+        };
+        access.set_source_op_index(17);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(access);
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        let site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
+            func_name, 17, kind,
+        ));
+        assert!(ir.contains(&format!("@{runtime_name}(")), "{kind}: {ir}");
+        assert!(
+            ir.contains(&format!("i64 {site_bits})")),
+            "{kind} must pass its source site id last: {ir}"
+        );
+        // A site call takes the literal name bytes; no per-call name string.
+        assert!(!ir.contains("molt_set_attr_name"), "{kind}: {ir}");
+        assert!(!ir.contains("molt_get_attr_name"), "{kind}: {ir}");
+    }
+}
+
+#[test]
 fn lower_dynamic_set_attr_name_uses_operand_name() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

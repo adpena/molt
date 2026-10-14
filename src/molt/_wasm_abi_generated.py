@@ -53,6 +53,7 @@ WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i32"), ("i32",)),
     ((), ("i32",)),
+    (("i64", "i32", "i64", "i64", "i64"), ("i64",)),
 )
 
 WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
@@ -132,7 +133,7 @@ WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
     "molt_contextvars_missing_repr": "unpack_args",
 }
 
-WASM_STATIC_TYPE_COUNT: int = 49
+WASM_STATIC_TYPE_COUNT: int = 50
 
 WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({
     "molt_async_work_poll_and_exception_pending",
@@ -502,7 +503,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "has_attr_name",
     "set_attr_generic",
     "set_attr_name",
-    "set_attr_object",
+    "set_attr_object_ic",
     "set_attr_ptr",
     "contains",
     "del_index",
@@ -5842,7 +5843,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("has_attr_name", ("i64", "i64"), ("i64",)),
     ("set_attr_generic", ("i32", "i32", "i64", "i64"), ("i64",)),
     ("set_attr_name", ("i64", "i64", "i64"), ("i64",)),
-    ("set_attr_object", ("i64", "i32", "i64", "i64"), ("i64",)),
+    ("set_attr_object_ic", ("i64", "i32", "i64", "i64", "i64"), ("i64",)),
     ("set_attr_ptr", ("i32", "i32", "i64", "i64"), ("i64",)),
     ("contains", ("i64", "i64"), ("i64",)),
     ("del_index", ("i64", "i64"), ("i64",)),
@@ -11193,7 +11194,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("has_attr_name", "molt_has_attr_name"),
     ("set_attr_generic", "molt_set_attr_generic"),
     ("set_attr_name", "molt_set_attr_name"),
-    ("set_attr_object", "molt_set_attr_object"),
+    ("set_attr_object_ic", "molt_set_attr_object_ic"),
     ("set_attr_ptr", "molt_set_attr_ptr"),
     ("contains", "molt_contains"),
     ("del_index", "molt_del_index"),
@@ -21386,7 +21387,7 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES: dict[str, tuple[str, str]] = {
     "set_app_callable_resolver": ("env", "function"),
     "set_attr_generic": ("env", "function"),
     "set_attr_name": ("env", "function"),
-    "set_attr_object": ("env", "function"),
+    "set_attr_object_ic": ("env", "function"),
     "set_attr_ptr": ("env", "function"),
     "set_contains": ("env", "function"),
     "set_difference_update": ("env", "function"),
@@ -25731,7 +25732,7 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: dict[tuple[str, str], dict[st
     ("env", "set_app_callable_resolver"): {"params": ['i64'], "result": 'i64'},
     ("env", "set_attr_generic"): {"params": ['i32', 'i32', 'i64', 'i64'], "result": 'i64'},
     ("env", "set_attr_name"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "set_attr_object"): {"params": ['i64', 'i32', 'i64', 'i64'], "result": 'i64'},
+    ("env", "set_attr_object_ic"): {"params": ['i64', 'i32', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "set_attr_ptr"): {"params": ['i32', 'i32', 'i64', 'i64'], "result": 'i64'},
     ("env", "set_contains"): {"params": ['i64', 'i64'], "result": 'i64'},
     ("env", "set_difference_update"): {"params": ['i64', 'i64'], "result": 'i64'},

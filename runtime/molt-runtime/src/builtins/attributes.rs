@@ -23,6 +23,9 @@ use crate::*;
 
 pub(crate) mod callable_metadata;
 mod class_lookup;
+mod field_sites;
+#[cfg(test)]
+mod field_sites_tests;
 mod mutation;
 #[cfg(test)]
 mod native_dictionary_tests;
@@ -49,7 +52,8 @@ pub(crate) use mutation::{
 };
 pub use mutation::{
     molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
-    molt_set_attr_generic, molt_set_attr_name, molt_set_attr_object, molt_set_attr_ptr,
+    molt_set_attr_generic, molt_set_attr_name, molt_set_attr_object, molt_set_attr_object_ic,
+    molt_set_attr_ptr,
 };
 pub(crate) use scalar_attrs::{
     is_numeric_scalar_attr_receiver, numeric_publish_members, resolve_scalar_attr,
@@ -1332,11 +1336,26 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
             };
+            if let Some(bits) = field_sites::read_cached_field(_py, site_id, obj_bits) {
+                return bits;
+            }
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
-
             let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
                 return MoltObject::none().bits();
             };
+            if field_sites::remember_field_site(
+                _py,
+                field_sites::FieldAccess::Read,
+                site_id,
+                obj_bits,
+                name_bits,
+                slice,
+            )
+            .is_err()
+            {
+                dec_ref_bits(_py, name_bits);
+                return MoltObject::none().bits();
+            }
             let out = molt_get_attr_name(obj_bits, name_bits);
             dec_ref_bits(_py, name_bits);
             out

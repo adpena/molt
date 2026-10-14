@@ -274,12 +274,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or("<unknown>");
         let mut custody = self.begin_borrowed_operands(&op.operands[..1], "get_attr");
         let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
-        let runtime_name = if matches!(original_kind, Some("get_attr_generic_obj")) {
-            "molt_get_attr_object_ic"
-        } else {
-            "molt_get_attr_name"
-        };
-        let val = if runtime_name == "molt_get_attr_object_ic" {
+        let site_kind = original_kind
+            .filter(|kind| matches!(*kind, "get_attr_generic_obj" | "get_attr_generic_ptr"));
+        let val = if let Some(site_kind) = site_kind {
+            let runtime_name = "molt_get_attr_object_ic";
             let i64_ty = self.backend.context.i64_type();
             let ptr_ty = self
                 .backend
@@ -297,7 +295,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
             let get_fn = require_llvm_function_type(runtime_name, get_fn, fn_ty);
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
-            let site_bits = self.source_call_site_bits(op, "get_attr_generic_obj");
+            let site_bits = self.source_call_site_bits(op, site_kind);
             let call_args_generic = [
                 obj_bits.into(),
                 attr_ptr.into(),
@@ -312,6 +310,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_basic()
                 .into_int_value()
         } else {
+            let runtime_name = "molt_get_attr_name";
             let get_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
             self.with_owned_name(attr_name, |this, name_bits| {
                 this.backend
@@ -526,9 +525,56 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut custody = self.begin_borrowed_operands(&op.operands[..2], "set_attr");
         let obj_i64 = self.borrowed_operand(&mut custody, op.operands[0]);
         let val_i64 = self.borrowed_operand(&mut custody, op.operands[1]);
-        let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
-        let result = self
-            .with_owned_name(attr_name, |this, name_i64| {
+        let site_kind = original_kind
+            .filter(|kind| matches!(*kind, "set_attr_generic_obj" | "set_attr_generic_ptr"));
+        let result = if let Some(site_kind) = site_kind {
+            // A generic write site carries its id, so a warm site writes the
+            // inferred field without building the name string.
+            let runtime_name = "molt_set_attr_object_ic";
+            let i64_ty = self.backend.context.i64_type();
+            let ptr_ty = self
+                .backend
+                .context
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = i64_ty.fn_type(
+                &[
+                    i64_ty.into(),
+                    ptr_ty.into(),
+                    i64_ty.into(),
+                    i64_ty.into(),
+                    i64_ty.into(),
+                ],
+                false,
+            );
+            let set_fn = declare_fixed_runtime_function(
+                self.backend.context,
+                &self.backend.module,
+                runtime_name,
+            )
+            .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
+            let set_fn = require_llvm_function_type(runtime_name, set_fn, fn_ty);
+            let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
+            let site_bits = self.source_call_site_bits(op, site_kind);
+            self.backend
+                .builder
+                .build_call(
+                    set_fn,
+                    &[
+                        obj_i64.into(),
+                        attr_ptr.into(),
+                        attr_len_bits.into(),
+                        val_i64.into(),
+                        site_bits.into(),
+                    ],
+                    runtime_name,
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value()
+        } else {
+            let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
+            self.with_owned_name(attr_name, |this, name_i64| {
                 this.backend
                     .builder
                     .build_call(
@@ -540,7 +586,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic()
             })
-            .into_int_value();
+            .into_int_value()
+        };
         let result = self.finish_borrowed_operands(custody, result, "set_attr_result", |_| {});
         if !op.results.is_empty() {
             self.values.insert(op.results[0], result.into());

@@ -5497,7 +5497,7 @@
     "set_app_callable_resolver": "molt_set_app_callable_resolver",
     "set_attr_generic": "molt_set_attr_generic",
     "set_attr_name": "molt_set_attr_name",
-    "set_attr_object": "molt_set_attr_object",
+    "set_attr_object_ic": "molt_set_attr_object_ic",
     "set_attr_ptr": "molt_set_attr_ptr",
     "set_contains": "molt_set_contains",
     "set_difference_update": "molt_set_difference_update",

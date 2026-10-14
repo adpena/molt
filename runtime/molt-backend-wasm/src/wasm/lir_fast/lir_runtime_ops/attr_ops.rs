@@ -64,15 +64,22 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
             let value = required_operand(op, 1, kind);
             let name = required_name_bytes(op, kind);
             let name_len = name.len() as i64;
+            let source_op_idx = required_source_op_index(op, kind);
+            let site_bits = box_int_bits(stable_ic_site_id(
+                ctx.func.name.as_str(),
+                source_op_idx,
+                kind,
+            ));
             emit_lir_runtime_call_with_args_and_result(
                 ctx,
                 op,
-                LirRuntimeCall::SetAttrObject,
+                LirRuntimeCall::SetAttrObjectIc,
                 &[
                     LirRuntimeArg::BoxedOperand(obj),
                     LirRuntimeArg::DataPtrI32(name),
                     LirRuntimeArg::I64Const(name_len),
                     LirRuntimeArg::BoxedOperand(value),
+                    LirRuntimeArg::I64Const(site_bits),
                 ],
             );
         }
