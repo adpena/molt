@@ -1544,18 +1544,32 @@ pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
     }
 }
 
-pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
-    let _ = _py;
-    touch_tls_guard();
-    if let Some(state) = runtime_state_for_gil() {
+pub(crate) fn runtime_state(py: &PyToken<'_>) -> &'static RuntimeState {
+    // While the runtime is ready, the full resolution below returns this
+    // thread's own state when it has one (an isolate, which a thread may
+    // switch to under a live token) and otherwise the published ready state.
+    // A token reuses its earlier answer only while that is still the result;
+    // lifecycle edges, where no ready state is published, resolve in full.
+    if let Some(state) = py.resolved_runtime_state()
+        && let Some(ready) = runtime_ready_ptr()
+        && std::ptr::eq(
+            runtime_state_tls().map_or(ready.cast_const(), std::ptr::from_ref),
+            state,
+        )
+    {
         return state;
     }
-    let _ = molt_runtime_init();
-    if let Some(state) = runtime_state_for_gil() {
-        state
-    } else {
-        panic!("runtime state requested after permanent shutdown")
-    }
+    touch_tls_guard();
+    let state = match runtime_state_for_gil() {
+        Some(state) => state,
+        None => {
+            let _ = molt_runtime_init();
+            runtime_state_for_gil()
+                .unwrap_or_else(|| panic!("runtime state requested after permanent shutdown"))
+        }
+    };
+    py.remember_runtime_state(state);
+    state
 }
 
 // ---------------------------------------------------------------------------
