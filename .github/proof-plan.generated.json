@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "9c08b897b8d9ecbf44ec73f231b6419053bf36ab99983fe31a37325cd966aa12",
+  "authority_sha256": "ce0307bcc6adf6d54962b9e269142bae898fb04716864567b07be6812dfacb4d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -7410,6 +7410,40 @@
       "argv": [
         "uv",
         "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "tests/test_memory_guard_tool.py",
+        "tests/test_memory_guard_wiring.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "windows-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.guard.windows",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "--frozen",
         "python",
         "tools/run_candidate_runtime_costs.py"
@@ -7588,12 +7622,12 @@
         "windows-x86_64-py312-queue-portability": {
           "budget_seconds": 10920,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 8460,
+          "headroom_seconds": 7800,
           "job_reserve_seconds": 120,
-          "projected_makespan_seconds": 2340,
-          "required_job_seconds": 2460,
+          "projected_makespan_seconds": 3000,
+          "required_job_seconds": 3120,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2220
+            "python-tests": 2670
           }
         }
       },

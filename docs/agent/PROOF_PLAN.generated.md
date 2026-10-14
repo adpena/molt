@@ -304,6 +304,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.headers.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 300 s | `python-tests` | 0 |
+| `portability.guard.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 900 s | `python-tests` | 0 |
 | `runtime.cost.candidate` | `runtime_candidate_costs` | `linux-x86_64-rust-native-release` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 
 ## Local integration families

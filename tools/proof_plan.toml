@@ -4663,6 +4663,20 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"]
 toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl"]
 
+[[command]]
+id = "portability.guard.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+# The guard's Windows process model (job objects, snapshots) is the code under
+# test here; Linux and macOS run the same files in python.unit.harness (HF-49).
+timeout_seconds = 900
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "-n", "auto", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py"]
+toolchains = ["python", "uv"]
+
 
 [[matrix_cell]]
 id = "linux-x86_64-rust-native-release"

@@ -2445,6 +2445,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.ir.windows",
             "portability.cargo-custody.windows",
             "portability.headers.windows",
+            "portability.guard.windows",
         ],
     }
     for entry in matrix:
