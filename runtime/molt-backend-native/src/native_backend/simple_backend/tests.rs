@@ -281,9 +281,8 @@ fn compile_function_to_clif_with_imports(
     }
 }
 
-/// Fresh direct fixtures enter the real final projection owner. Their authored
-/// legacy/full RC is deliberate test input; no optimizer or second drop phase
-/// may rewrite that independent ownership oracle.
+/// Fixtures for the final typed boundary exercise its real source projection.
+/// Direct codegen controls below instead retain their authored final body.
 fn final_functions_for_test(functions: &[FunctionIR]) -> NativeFinalFunctions {
     let target = crate::tir::target_info::TargetInfo::native_release_fast();
     let typed = functions
@@ -305,10 +304,93 @@ fn final_functions_for_test(functions: &[FunctionIR]) -> NativeFinalFunctions {
 }
 
 fn final_function_for_test(function: FunctionIR) -> super::NativeFinalFunction {
-    final_functions_for_test(&[function])
-        .into_local_functions()
-        .next()
-        .expect("local fixture")
+    NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
+        functions: vec![function],
+        profile: None,
+    })
+    .into_local_functions()
+    .next()
+    .expect("local fixture")
+}
+
+#[test]
+fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
+    let pure = FunctionIR {
+        name: "direct_fixture_pure".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["borrowed".into()],
+        param_types: Some(vec!["dyn".into()]),
+        source_file: Some("fixture.py".into()),
+        ops: vec![
+            OpIR {
+                kind: "drop_inserted".into(),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "const_int".into(),
+                out: Some("limb".into()),
+                value: Some(1_i64 << 31),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "checked_mul".into(),
+                args: Some(vec!["limb".into(), "limb".into()]),
+                var: Some("wide".into()),
+                out: Some("overflow".into()),
+                source_line: Some(17),
+                source_op_idx: Some(91),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "tuple_new".into(),
+                args: Some(vec!["borrowed".into()]),
+                out: Some("pair".into()),
+                stack_eligible: Some(true),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["pair".into()]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut unfinalized = pure.clone();
+    unfinalized.name = "direct_fixture_unfinalized".into();
+    unfinalized.ops.remove(0);
+    let mut callback = pure.clone();
+    callback.name = "direct_fixture_callback".into();
+    callback.ops.insert(
+        1,
+        OpIR {
+            kind: "call_func".into(),
+            args: Some(vec!["borrowed".into()]),
+            ..Default::default()
+        },
+    );
+    let ir = SimpleIR {
+        functions: vec![pure, unfinalized, callback],
+        profile: None,
+    };
+    let expected = serde_json::to_vec(&ir).unwrap();
+    let fixtures = NativeFinalFunctions::from_codegen_fixtures(ir);
+    assert_eq!(
+        serde_json::to_vec(fixtures.ir()).unwrap(),
+        expected,
+        "the direct-codegen aperture must not rewrite source, CFG, metadata or RC"
+    );
+    assert_eq!(
+        analyze_native_backend_ir(&fixtures, Default::default()).leaf_functions,
+        BTreeSet::from(["direct_fixture_pure".into()]),
+        "eligibility requires the actual full-drop marker and absence of callbacks"
+    );
+    for function in fixtures.into_local_functions() {
+        let (_, plan) = function.into_parts();
+        assert!(plan.is_full_deopt_int_name("wide"));
+        assert!(!plan.is_full_deopt_int_name("overflow"));
+        assert!(!plan.is_full_deopt_int_name("borrowed"));
+    }
 }
 
 /// Independent former whole-module oracle, retained only in tests. It observes
@@ -340,11 +422,11 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
     functions: Vec<FunctionIR>,
     target_names: &[&str],
 ) -> SimpleBackend {
-    let ir = SimpleIR {
+    let finalized = NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
         functions,
         profile: None,
-    };
-    let finalized = final_functions_for_test(&ir.functions);
+    });
+    let ir = finalized.ir();
     let analysis = analyze_native_backend_ir(
         &finalized,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),

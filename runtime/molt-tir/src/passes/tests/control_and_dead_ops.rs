@@ -176,7 +176,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         execution_context: Default::default(),
         ops: vec![
             OpIR {
-                kind: "exception_new_builtin".to_string(),
+                kind: "exception_new_builtin_empty".to_string(),
                 out: Some("exc".to_string()),
                 value: Some(5),
                 ..Default::default()

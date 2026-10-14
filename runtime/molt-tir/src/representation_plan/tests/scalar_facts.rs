@@ -45,13 +45,15 @@ fn const_float(out: &str, value: f64) -> OpIR {
 fn canonical_block_arg_names_have_bounded_table_comparisons() {
     use std::cell::Cell;
     use std::hash::{Hash, Hasher};
-    use std::rc::Rc;
 
     use crate::tir::blocks::BlockId;
 
+    thread_local! {
+        static COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    }
+
     struct CountedName {
         name: String,
-        comparisons: Rc<Cell<usize>>,
     }
 
     impl Hash for CountedName {
@@ -62,7 +64,7 @@ fn canonical_block_arg_names_have_bounded_table_comparisons() {
 
     impl PartialEq for CountedName {
         fn eq(&self, other: &Self) -> bool {
-            self.comparisons.set(self.comparisons.get() + 1);
+            COMPARISONS.with(|count| count.set(count.get() + 1));
             self.name == other.name
         }
     }
@@ -70,7 +72,7 @@ fn canonical_block_arg_names_have_bounded_table_comparisons() {
     impl Eq for CountedName {}
 
     const COUNT: usize = 4096;
-    let comparisons = Rc::new(Cell::new(0));
+    COMPARISONS.set(0);
     let plan = ScalarRepresentationPlan::default();
     // Exercise the actual production name-table hash policy, counting key
     // comparisons instead of relying on clocks or a particular hash output.
@@ -80,7 +82,6 @@ fn canonical_block_arg_names_have_bounded_table_comparisons() {
     );
     let name = |block| CountedName {
         name: SimpleValueNames::canonical_block_arg_slot(BlockId(block), 0),
-        comparisons: Rc::clone(&comparisons),
     };
     for block in 1000..1000 + COUNT as u32 {
         assert!(names.insert(name(block)));
@@ -89,10 +90,11 @@ fn canonical_block_arg_names_have_bounded_table_comparisons() {
         assert!(names.contains(&name(block)));
     }
     assert_eq!(names.len(), COUNT);
+    let comparisons = COMPARISONS.get();
     assert!(
-        comparisons.get() < 8 * COUNT,
+        comparisons < 8 * COUNT,
         "canonical names caused {} key comparisons for {COUNT} inserts and lookups",
-        comparisons.get(),
+        comparisons,
     );
 }
 

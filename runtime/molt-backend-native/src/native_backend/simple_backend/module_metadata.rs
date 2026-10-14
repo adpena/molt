@@ -60,7 +60,55 @@ enum NativeLeafEligibility {
 }
 
 #[cfg(feature = "native-backend")]
+impl NativeLeafEligibility {
+    fn for_tir(function: &crate::tir::TirFunction) -> Self {
+        if !matches!(
+            function
+                .attrs
+                .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+            Some(crate::tir::ops::AttrValue::Bool(true))
+        ) {
+            Self::Unfinalized
+        } else if crate::tir::call_sites::FunctionCallSites::for_function(function)
+            .may_call_python()
+        {
+            Self::Callback
+        } else {
+            Self::Leaf
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
 impl NativeFinalFunctions {
+    /// Direct codegen fixtures deliberately author their final CFG, lifetime
+    /// operations and backend metadata. Analyze that exact source without
+    /// replacing it with a TIR projection or materializing executable polls.
+    /// This fresh-input aperture is unavailable to production compilation.
+    #[cfg(test)]
+    pub(in crate::native_backend::simple_backend) fn from_codegen_fixtures(ir: SimpleIR) -> Self {
+        let target = crate::tir::TargetInfo::native_release_fast();
+        let facts = ir
+            .functions
+            .iter()
+            .map(|function| {
+                if function.is_extern {
+                    return None;
+                }
+                let representation =
+                    crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
+                        function, &target,
+                    );
+                let typed = crate::tir::lower_from_simple::lower_to_tir(function);
+                Some(NativeFunctionFacts {
+                    representation,
+                    eligibility: NativeLeafEligibility::for_tir(&typed),
+                })
+            })
+            .collect();
+        Self { ir, facts }
+    }
+
     pub(in crate::native_backend::simple_backend) fn from_final_tir(
         mut ir: SimpleIR,
         typed: Vec<(bool, crate::tir::TirFunction)>,
@@ -105,21 +153,7 @@ impl NativeFinalFunctions {
                 crate::representation_plan::ScalarRepresentationPlan::project_final_tir(
                     function, &typed,
                 );
-            let finalized = matches!(
-                typed
-                    .attrs
-                    .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-                Some(crate::tir::ops::AttrValue::Bool(true))
-            );
-            let eligibility = if !finalized {
-                NativeLeafEligibility::Unfinalized
-            } else if crate::tir::call_sites::FunctionCallSites::for_function(&typed)
-                .may_call_python()
-            {
-                NativeLeafEligibility::Callback
-            } else {
-                NativeLeafEligibility::Leaf
-            };
+            let eligibility = NativeLeafEligibility::for_tir(&typed);
             facts.push(Some(NativeFunctionFacts {
                 representation,
                 eligibility,
