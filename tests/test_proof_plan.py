@@ -1399,6 +1399,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
     }
     assert {"pr", "main"} <= set(startup.data["tiers"])
     assert "node" in PLAN.required_toolchains(startup)
