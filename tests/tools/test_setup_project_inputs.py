@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import shlex
 import sys
+import sysconfig
 import tomllib
 
 import pytest
@@ -178,12 +179,45 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
         "validate:python",
         "validate:python3",
         "stdlib:selected",
-        "compileall:selected:-q -j 0 -o 0 -o 1 -o 2:True",
+        "compileall:selected:-q -j 0 -o 0 -o 1 -o 2 --invalidation-mode checked-hash:True",
     ]
     assert "UV_PYTHON_DOWNLOADS=never\n" in exports["GITHUB_ENV"]
     assert "UV_MANAGED_PYTHON=true\n" in exports["GITHUB_ENV"]
     assert "python-version=3.12.15\n" in exports["GITHUB_OUTPUT"]
     assert exports["GITHUB_PATH"].rstrip().endswith("/custody/python-bin")
+
+
+def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
+    tmp_path: Path,
+) -> None:
+    """Every job installs the interpreter afresh; uv stamps the files with the
+    install time. The bootstrap's own compile options must still produce the
+    same bytecode, or jobs disagree on the runtime build identity."""
+    result, events, _exports = _python_bootstrap(tmp_path)
+    assert result.returncode == 0, result.stderr
+    (compile_event,) = [event for event in events if event.startswith("compileall:")]
+    options = compile_event.split(":")[2].split()
+    source_root = Path(sysconfig.get_path("stdlib"))
+    module = tmp_path / "stdlib" / "_strptime.py"
+    module.parent.mkdir()
+    module.write_bytes((source_root / "_strptime.py").read_bytes())
+    compiled: list[dict[str, bytes]] = []
+    for install_time in (1_700_000_000, 1_800_000_000):
+        os.utime(module, (install_time, install_time))
+        cache = module.parent / "__pycache__"
+        if cache.exists():
+            cache.rename(tmp_path / f"cache-{install_time}")
+        completed = run_guarded_test_process(
+            [sys.executable, "-I", "-m", "compileall", *options, str(module.parent)],
+            prefix="MOLT_SETUP_PYTHON_BYTECODE_TEST",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        compiled.append({path.name: path.read_bytes() for path in cache.iterdir()})
+    assert len(compiled[0]) == 3
+    assert compiled[0] == compiled[1]
 
 
 @pytest.mark.parametrize(
@@ -198,7 +232,10 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
         ("version", "validate:selected"),
         ("implementation", "validate:selected"),
         ("alias", "validate:python3"),
-        ("compile", "compileall:selected:-q -j 0 -o 0 -o 1 -o 2:True"),
+        (
+            "compile",
+            "compileall:selected:-q -j 0 -o 0 -o 1 -o 2 --invalidation-mode checked-hash:True",
+        ),
         ("injected-root", None),
     ],
 )
