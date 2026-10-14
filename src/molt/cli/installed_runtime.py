@@ -64,6 +64,7 @@ from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
     hydrate_runtime_wasm_generation,
     read_runtime_wasm_generation,
+    runtime_wasm_generation_identities,
     runtime_wasm_generation_path,
     _generation_record_descriptors,
     _validate_generation_payload,
@@ -80,7 +81,7 @@ from molt.compiler_distribution import (
     installed_compiler,
     verify_runtime_member,
 )
-from molt.exact_json import loads_exact, string_keyed_mapping
+from molt.exact_json import loads_exact
 from molt.file_publication import (
     is_link_like,
     resolve_owned_path,
@@ -760,18 +761,12 @@ def _require_wasm_semantics(
 def _shipped_wasm_identities(
     cell: InstalledRuntimeCell, value: object
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
-    payload = string_keyed_mapping(value)
-    receipts = string_keyed_mapping(payload.get("receipts")) if payload else None
-    if receipts is None or set(receipts) != {"shared", "reloc"}:
+    try:
+        shared, reloc = runtime_wasm_generation_identities(value)
+    except ValueError as exc:
         raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} WASM generation receipts are invalid"
-        )
-    shared = RuntimeBuildIdentity.from_dict(
-        cast(Mapping[str, object], receipts["shared"])["identity"]
-    )
-    reloc = RuntimeBuildIdentity.from_dict(
-        cast(Mapping[str, object], receipts["reloc"])["identity"]
-    )
+        ) from exc
     if (
         shared.payload.get("member_kind") != "shared"
         or reloc.payload.get("member_kind") != "reloc"
