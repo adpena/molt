@@ -17,6 +17,7 @@ from tools.memory_guard_core import process_model
 
 import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 from tests.process_guard_common import (
+    ModuleView,
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
@@ -685,32 +686,21 @@ def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) ->
     }
 
 
-def test_process_spawn_is_single_windows_hidden_group_authority(monkeypatch) -> None:
+def test_process_spawn_is_single_windows_hidden_group_authority() -> None:
     import molt.process_spawn as process_spawn
 
-    # These two stay process-wide: the helpers' default ``subprocess_module``
-    # bound the real module when Python defined them, so a module view in
-    # ``process_spawn`` never reaches the default. The fakes are the Windows
-    # values, which only Windows-path callers read.
-    monkeypatch.setattr(
-        process_spawn.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        process_spawn.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    # The helpers' default ``subprocess_module`` bound the real module when
+    # Python defined them, so the Windows flags go in through that parameter.
+    windows_subprocess = ModuleView(
+        subprocess, CREATE_NEW_PROCESS_GROUP=0x00000200, CREATE_NO_WINDOW=0x08000000
     )
 
-    assert process_spawn.hidden_windows_process_group_kwargs(windows=True) == {
-        "creationflags": 0x08000200
-    }
-    assert process_spawn.detached_process_group_kwargs(windows=True) == {
-        "creationflags": 0x08000200
-    }
+    assert process_spawn.hidden_windows_process_group_kwargs(
+        windows=True, subprocess_module=windows_subprocess
+    ) == {"creationflags": 0x08000200}
+    assert process_spawn.detached_process_group_kwargs(
+        windows=True, subprocess_module=windows_subprocess
+    ) == {"creationflags": 0x08000200}
     assert process_spawn.detached_process_group_kwargs(windows=False) == {
         "start_new_session": True
     }
