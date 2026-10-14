@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "8f2913b47833e269824fe0bc23b8153d22070efe670564ab525d3a2cf423db89",
+  "authority_sha256": "6f5bc1d0758ab5c909ad30f180ad8c9c10726e7fa8153d3fc6ffe0cc11f64bcc",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -7420,8 +7420,6 @@
         "-m",
         "pytest",
         "-q",
-        "-n",
-        "auto",
         "tests/test_memory_guard_tool.py",
         "tests/test_memory_guard_wiring.py"
       ],
