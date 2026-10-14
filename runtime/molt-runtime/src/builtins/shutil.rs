@@ -731,16 +731,10 @@ pub extern "C" fn molt_shutil_make_archive(
             None => return raise_exception::<_>(_py, "TypeError", "format must be str"),
         };
         let (ext, operation) = match format.as_str() {
+            // CPython registers zip only when its compression support exists;
+            // without it, as unpack_archive here, zip is an unknown format.
             #[cfg(feature = "stdlib_archive")]
             "zip" => (".zip", OperationId::ShutilMakeArchive),
-            #[cfg(not(feature = "stdlib_archive"))]
-            "zip" => {
-                return raise_exception::<u64>(
-                    _py,
-                    "NotImplementedError",
-                    "ZIP archive support is unavailable in this build",
-                );
-            }
             "tar" => (".tar", OperationId::ShutilMakeArchiveExternal),
             "gztar" => (".tar.gz", OperationId::ShutilMakeArchiveExternal),
             "bztar" => (".tar.bz2", OperationId::ShutilMakeArchiveExternal),
@@ -1216,7 +1210,10 @@ mod capability_tests {
 
     #[cfg(not(feature = "stdlib_archive"))]
     #[test]
-    fn unavailable_zip_creation_raises_instead_of_panicking() {
+    fn unavailable_zip_creation_is_an_unknown_format() {
+        // CPython without zlib leaves zip unregistered:
+        // shutil.make_archive(..., "zip") raises
+        // ValueError: unknown archive format 'zip'.
         RuntimeTestTransaction::with_explicit_capabilities("fs.read,fs.write", |py| {
             let base_bits = str_bits_local(py, "unused-archive");
             let format_bits = str_bits_local(py, "zip");
@@ -1224,8 +1221,8 @@ mod capability_tests {
             assert_eq!(
                 take_error(py),
                 (
-                    "NotImplementedError".to_string(),
-                    "ZIP archive support is unavailable in this build".to_string(),
+                    "ValueError".to_string(),
+                    "unknown archive format 'zip'".to_string(),
                 )
             );
             dec_ref_bits(py, base_bits);
