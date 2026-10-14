@@ -6205,7 +6205,15 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
         ]
     )
 
-    assert rc == 0
+    if rc != 0:
+        # Name the cause: the follow-up's run log stays on the runner.
+        followup = [row for row in _rows(db) if row["run_id"] != rows[0]["run_id"]]
+        detail = (
+            Path(followup[-1]["log_path"]).read_text(encoding="utf-8", errors="replace")
+            if followup
+            else "the follow-up recorded no queue row"
+        )
+        pytest.fail(f"follow-up exec returned {rc}:\n{detail}")
     assert followup_marker.read_text(encoding="utf-8") == "ran"
 
 
