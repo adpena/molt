@@ -288,9 +288,16 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
         complex_in = "complex" in {left.type_hint, right.type_hint}
         # The op.kind is registry data (BINOP_OP_KIND, generated from op_kinds.toml's
         # [[binary_op]] table — EXHAUSTIVE over ast.operator). The isinstance chain
-        # below now selects ONLY the static result-type hint; a node.op outside the
-        # 13 ast.operator subclasses keeps the "UNKNOWN" kind / "Unknown" hint.
-        op_kind = BINOP_OP_KIND.get(type(node.op).__name__, "UNKNOWN")
+        # below selects ONLY the static result-type hint. An operator the
+        # registry lacks is a new CPython ast.operator: reject it, never emit an
+        # unregistered kind.
+        try:
+            op_kind = BINOP_OP_KIND[type(node.op).__name__]
+        except KeyError:
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                f"Unsupported binary operator: {type(node.op).__name__}",
+            ) from None
         if isinstance(node.op, ast.Add):
             if left.type_hint == right.type_hint and left.type_hint in {
                 "int",

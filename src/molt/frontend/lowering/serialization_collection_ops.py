@@ -484,22 +484,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_UPDATE_MISSING":
-            ctx.json_ops.append(
-                {
-                    "kind": "dict_update_missing",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "DICT_UPDATE_KWSTAR":
-            ctx.json_ops.append(
-                {
-                    "kind": "dict_update_kwstar",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "DICT_CLEAR":
             ctx.json_ops.append(
                 {
@@ -651,14 +635,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                     "type_hint": "iter",
-                }
-            )
-        elif op.kind == "ENUMERATE":
-            ctx.json_ops.append(
-                {
-                    "kind": "enumerate",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
                 }
             )
         elif op.kind == "AITER":

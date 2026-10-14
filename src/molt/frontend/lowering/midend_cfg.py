@@ -21,7 +21,7 @@ from molt.frontend.lowering.midend_dataflow import current_unique_result_definit
 
 class MidendCFGMixin(GeneratorMixinBase):
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
-        if op.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
+        if op.kind not in {"GUARD_TAG", "GUARD_DICT_SHAPE"}:
             return None
         if op.result.name != "none":
             return None
@@ -161,7 +161,6 @@ class MidendCFGMixin(GeneratorMixinBase):
             "LOOP_BREAK",
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
-            "LOOP_BREAK_IF_EXCEPTION",
             "LOOP_CONTINUE",
             "TRY_START",
             "TRY_END",
@@ -169,8 +168,6 @@ class MidendCFGMixin(GeneratorMixinBase):
             "ret",
             "ret_void",
             "RAISE",
-            "RAISE_CAUSE",
-            "RERAISE",
             "LABEL",
             "STATE_LABEL",
         }:
@@ -462,7 +459,6 @@ class MidendCFGMixin(GeneratorMixinBase):
                     "LOOP_BREAK",
                     "LOOP_BREAK_IF_TRUE",
                     "LOOP_BREAK_IF_FALSE",
-                    "LOOP_BREAK_IF_EXCEPTION",
                     "LOOP_CONTINUE",
                 }
                 for idx in range(loop_start + 1, loop_end)

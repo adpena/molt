@@ -29,7 +29,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 )
 
 _PRIMITIVE_CONST_KINDS: frozenset[str] = frozenset(
-    {"CONST", "CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_INT"}
+    {"CONST", "CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT"}
 )
 
 _SCCP_PROVEN_NOTHROW_CURATED: frozenset[str] = frozenset(
@@ -150,8 +150,6 @@ def primitive_const_values(definitions: dict[str, MoltOp]) -> dict[str, Any]:
         try:
             if op.kind == "CONST_BIGINT":
                 value = integer_literal_value(value)
-            elif op.kind == "CONST_INT":
-                value = int(value)
             elif op.kind == "CONST_BOOL":
                 value = bool(value)
             elif op.kind == "CONST_FLOAT":
@@ -354,7 +352,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 # arg is MISSING-tainted through a PHI collapse (not a direct
                 # MISSING def), that means an uninitialized variable leaked
                 # into a call site after branch pruning.
-                if op.kind in {"CALL", "CALL_INDIRECT", "CALL_INTERNAL"}:
+                if op.kind in {"CALL", "CALL_INDIRECT"}:
                     for arg in op.args:
                         if isinstance(arg, MoltValue) and (
                             arg.name in missing_tainted
@@ -648,7 +646,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 return NotImplemented
             if op.kind == "CONST_ELLIPSIS":
                 return Ellipsis
-            if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
+            if op.kind == "GUARD_TAG" and len(op.args) == 2:
                 # Runtime guards return the source unchanged, even on mismatch.
                 # They observe profiling and reject invalid tags; neither fact
                 # establishes the source's type or traps this block on mismatch.

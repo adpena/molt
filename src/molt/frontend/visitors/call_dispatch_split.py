@@ -24,6 +24,11 @@ _SPLIT_OPS = {
     "bytes": "BYTES_SPLIT",
     "bytearray": "BYTEARRAY_SPLIT",
 }
+_SPLIT_MAX_OPS = {
+    "str": "STRING_SPLIT_MAX",
+    "bytes": "BYTES_SPLIT_MAX",
+    "bytearray": "BYTEARRAY_SPLIT_MAX",
+}
 _SPLIT_KINDS = tuple(_SPLIT_OPS)
 
 
@@ -137,10 +142,12 @@ class CallSplitDispatchMixin(GeneratorMixinBase):
         maxsplit: MoltValue | None,
     ) -> MoltValue:
         arguments = [receiver, separator]
-        opcode = _SPLIT_OPS[_SPLIT_KINDS[index]]
-        if maxsplit is not None:
+        receiver_kind = _SPLIT_KINDS[index]
+        if maxsplit is None:
+            opcode = _SPLIT_OPS[receiver_kind]
+        else:
             arguments.append(maxsplit)
-            opcode += "_MAX"
+            opcode = _SPLIT_MAX_OPS[receiver_kind]
         result = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind=opcode, args=arguments, result=result))
         self._record_container_elem_hint(result, _SPLIT_KINDS[index])

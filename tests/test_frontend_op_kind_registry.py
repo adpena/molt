@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import ast
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from tools.audit_op_kinds import (
     extract_match_arms,
 )
 from tools.gen_op_kinds import load_table
+from tools.op_kinds.census import FrontendCensus, frontend_census
 from tools.op_kinds.errors import OpKindTableError
 from tools.op_kinds.registration import validate_registration
 
@@ -27,61 +28,183 @@ from tools.op_kinds.registration import validate_registration
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _literal_molt_op_kinds(source: str) -> list[tuple[str, int]]:
-    kinds: list[tuple[str, int]] = []
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        if not (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "MoltOp"
-            or isinstance(node.func, ast.Attribute)
-            and node.func.attr == "MoltOp"
-        ):
-            continue
-        arguments = [
-            keyword.value for keyword in node.keywords if keyword.arg == "kind"
-        ]
-        if node.args:
-            arguments.append(node.args[0])
-        for argument in arguments:
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                kinds.append((argument.value, node.lineno))
-    return kinds
+@pytest.fixture(scope="module")
+def census() -> FrontendCensus:
+    return frontend_census(ROOT)
 
 
-def test_every_frontend_literal_molt_op_kind_is_registered() -> None:
-    unregistered: list[str] = []
-    discovered: set[str] = set()
-    for path in sorted((ROOT / "src/molt/frontend").rglob("*.py")):
-        for kind, line in _literal_molt_op_kinds(path.read_text(encoding="utf-8")):
-            discovered.add(kind)
-            if kind not in FRONTEND_REGISTERED_KINDS:
-                unregistered.append(f"{path.relative_to(ROOT)}:{line}: {kind}")
-    assert discovered, "frontend scan must discover MoltOp emission sites"
+def test_every_frontend_kind_expression_resolves(census: FrontendCensus) -> None:
+    assert len(census.produced) > 100, "census must discover MoltOp emission sites"
+    assert not census.unresolved_producers, "unresolved MoltOp kinds:\n" + "\n".join(
+        str(site) for site in census.unresolved_producers
+    )
+
+
+def test_every_frontend_produced_kind_is_registered(census: FrontendCensus) -> None:
+    unregistered = [
+        f"{site}: {kind}"
+        for kind, sites in sorted(census.produced.items())
+        if kind not in FRONTEND_REGISTERED_KINDS
+        for site in sites
+    ]
     assert not unregistered, "unregistered frontend op kinds:\n" + "\n".join(
         unregistered
     )
 
 
-def test_literal_scan_detects_unknown_multiline_and_qualified_constructors() -> None:
-    source = """
-MoltOp(kind="CONST_MISSING", args=[])
-frontend.MoltOp(
-    kind="NEW_UNREGISTERED_OP",
-    args=[],
-)
-MoltOp("POSITIONAL_UNREGISTERED_OP", [])
-MoltOp(kind=dynamic_kind, args=[])
-OtherOp(kind="NOT_A_MOLT_OP")
-"""
-    found = {kind for kind, _ in _literal_molt_op_kinds(source)}
-    assert found == {
-        "CONST_MISSING",
-        "NEW_UNREGISTERED_OP",
-        "POSITIONAL_UNREGISTERED_OP",
+def test_every_frontend_kind_test_names_a_produced_kind(
+    census: FrontendCensus,
+) -> None:
+    # A test for a kind that nothing builds is dead code: the producer was
+    # removed and this consumer was left behind (HF-197). Delete it with the
+    # producer, or restore the producer.
+    stale = [
+        f"{site}: {kind}"
+        for kind, sites in sorted(census.consumed.items())
+        if kind in FRONTEND_REGISTERED_KINDS and kind not in census.produced
+        for site in sites
+    ]
+    assert not stale, "frontend tests for kinds nothing produces:\n" + "\n".join(stale)
+
+
+def _census_of(tmp_path: Path, source: str) -> FrontendCensus:
+    package = tmp_path / "src/molt/frontend"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text(textwrap.dedent(source), encoding="utf-8")
+    return frontend_census(tmp_path)
+
+
+def test_census_resolves_literal_conditional_and_qualified_constructors(
+    tmp_path: Path,
+) -> None:
+    census = _census_of(
+        tmp_path,
+        """
+        def emit(frontend, flag):
+            MoltOp(kind="ALPHA", args=[])
+            frontend.MoltOp(
+                kind="BETA" if flag else "GAMMA",
+                args=[],
+            )
+            MoltOp("DELTA", [])
+            MoltOp(kind=op.kind, args=[])
+        """,
+    )
+    assert set(census.produced) == {"ALPHA", "BETA", "GAMMA", "DELTA"}
+    assert not census.unresolved_producers
+
+
+def test_census_resolves_parameters_through_calls_partials_and_tables(
+    tmp_path: Path,
+) -> None:
+    census = _census_of(
+        tmp_path,
+        """
+        from functools import partial
+
+        SPLIT = {"str": "SPLIT_STR", "bytes": "SPLIT_BYTES"}
+
+
+        class Emitter:
+            HOMES = {"cell": "HOME_CELL"}
+
+            def _emit(self, kind, value):
+                return MoltOp(kind=kind, args=[value])
+
+            def _choose(self, name):
+                return SPLIT[name]
+
+            def visit(self, value, name):
+                self._emit("RETURN", value)
+                self._emit(self._choose(name), value)
+                restore = partial(self._emit, kind=self.HOMES["cell"])
+                kinds = {key: "COMPREHENDED" for key in value}
+                self._emit(kinds[name], value)
+                self._emit(SPLIT.get(name, "SPLIT_OTHER"), value)
+                return restore
+        """,
+    )
+    assert set(census.produced) == {
+        "RETURN",
+        "SPLIT_STR",
+        "SPLIT_BYTES",
+        "HOME_CELL",
+        "COMPREHENDED",
+        "SPLIT_OTHER",
     }
-    assert found.isdisjoint(FRONTEND_REGISTERED_KINDS)
+    assert not census.unresolved_producers
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ('MoltOp(kind=f"{name.upper()}_NEW")', "JoinedStr"),
+        (
+            """
+            def emit(name):
+                kind = "SPLIT"
+                kind += "_MAX"
+                MoltOp(kind=kind)
+            """,
+            "AugAssign",
+        ),
+        (
+            """
+            def _emit(kind):
+                MoltOp(kind=kind)
+
+            handlers = [_emit]
+            """,
+            "referenced as a value",
+        ),
+        (
+            """
+            def _emit(kind):
+                MoltOp(kind=kind)
+            """,
+            "no direct caller",
+        ),
+        (
+            """
+            from functools import partial
+
+            def _emit(value, kind):
+                MoltOp(kind=kind)
+
+            later = partial(_emit, 1)
+            """,
+            "leaves kind unbound",
+        ),
+    ],
+)
+def test_census_rejects_kinds_it_cannot_prove(
+    tmp_path: Path, source: str, reason: str
+) -> None:
+    census = _census_of(tmp_path, source)
+    assert not census.produced
+    (site,) = census.unresolved_producers
+    assert reason in str(site)
+
+
+def test_census_records_kind_tests_in_comparisons_and_named_tables(
+    tmp_path: Path,
+) -> None:
+    census = _census_of(
+        tmp_path,
+        """
+        _CONSTANTS = frozenset({"CONST", "CONST_FLOAT"})
+
+        def visit(op):
+            if op.kind == "ADD":
+                pass
+            elif op.kind in {"SUB", "MUL"}:
+                pass
+            elif op.kind not in _CONSTANTS:
+                pass
+        """,
+    )
+    assert set(census.consumed) == {"ADD", "SUB", "MUL", "CONST", "CONST_FLOAT"}
+    assert not census.produced
 
 
 def test_every_resolved_serialized_kind_is_registered() -> None:

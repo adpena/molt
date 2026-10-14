@@ -307,30 +307,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "POW_MOD":
-            ctx.json_ops.append(
-                {
-                    "kind": "pow_mod",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "ROUND":
-            ctx.json_ops.append(
-                {
-                    "kind": "round",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "TRUNC":
-            ctx.json_ops.append(
-                {
-                    "kind": "trunc",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "LT":
             lt_entry: dict[str, Any] = {
                 "kind": "lt",
@@ -609,22 +585,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if target in self.module_chunk_symbols:
                 entry["passes_execution_context"] = True
             ctx.json_ops.append(entry)
-        elif op.kind == "CALL_INTERNAL":
-            target = op.args[0]
-            entry = {
-                "kind": "call_internal",
-                "s_value": target,
-                "args": [arg.name for arg in op.args[1:]],
-                "out": op.result.name,
-            }
-            custody = self._call_argument_custody(
-                op, "call_internal", target, len(op.args) - 1
-            )
-            if custody is not None:
-                entry["argument_custody"] = custody
-            if target in self.module_chunk_symbols:
-                entry["passes_execution_context"] = True
-            ctx.json_ops.append(entry)
         elif op.kind == "CALL_INDIRECT":
             indirect_entry: dict[str, Any] = {
                 "kind": "call_indirect",
@@ -668,42 +628,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "INVOKE_FFI":
-            lane = ""
-            native_callable_export = ""
-            native_callable_binding = ""
-            native_callable_symbol = ""
-            native_callable_abi = ""
-            if op.metadata is not None:
-                raw_lane = op.metadata.get("ffi_lane")
-                if isinstance(raw_lane, str):
-                    lane = raw_lane
-                raw_export = op.metadata.get("native_callable_export")
-                if isinstance(raw_export, str):
-                    native_callable_export = raw_export
-                raw_binding = op.metadata.get("native_callable_binding")
-                if isinstance(raw_binding, str):
-                    native_callable_binding = raw_binding
-                raw_symbol = op.metadata.get("native_callable_symbol")
-                if isinstance(raw_symbol, str):
-                    native_callable_symbol = raw_symbol
-                raw_abi = op.metadata.get("native_callable_abi")
-                if isinstance(raw_abi, str):
-                    native_callable_abi = raw_abi
-            invoke_op = {
-                "kind": "invoke_ffi",
-                "args": [arg.name for arg in op.args],
-                "out": op.result.name,
-            }
-            if lane:
-                invoke_op["s_value"] = lane
-            if native_callable_export:
-                invoke_op["native_callable_export"] = native_callable_export
-                invoke_op["native_callable_binding"] = native_callable_binding
-                invoke_op["native_callable_abi"] = native_callable_abi
-                if native_callable_symbol:
-                    invoke_op["native_callable_symbol"] = native_callable_symbol
-            ctx.json_ops.append(invoke_op)
         elif op.kind == "CALL_BIND":
             entry: dict[str, Any] = {
                 "kind": "call_bind",
