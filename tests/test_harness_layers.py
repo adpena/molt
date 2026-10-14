@@ -437,5 +437,5 @@ def test_conformance_layer_passes_molt_cmd_and_uses_extended_timeout(monkeypatch
         harness_layers.HarnessConfig(project_root=Path("."), molt_cmd="custom-molt")
     )
 
-    assert captured["env"] == {"MOLT_BIN": "custom-molt"}
+    assert captured["env"] == {"MOLT_CONFORMANCE_MOLT_CMD": "custom-molt"}
     assert captured["timeout_s"] == harness_layers.CONFORMANCE_LAYER_TIMEOUT_S

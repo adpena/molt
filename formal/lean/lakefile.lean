@@ -62,6 +62,13 @@ lean_lib MoltTIR where
              `MoltTIR.Validation.DCEValid,
              `MoltTIR.EndToEndProperties,
              `MoltTIR.EndToEnd,
+             `MoltTIR.Backend.LuauTargetSemantics,
+             `MoltTIR.Backend.RustSyntax, `MoltTIR.Backend.WasmSyntax,
+             `MoltTIR.Passes.BCE, `MoltTIR.Passes.StrengthReduction, `MoltTIR.Passes.Unboxing,
+             `MoltTIR.Runtime.CapabilityGate, `MoltTIR.Runtime.IntrinsicContracts,
+             `MoltTIR.Semantics.ExceptionModel,
+             `MoltTIR.Passes.BCECorrect, `MoltTIR.Passes.TypeRefine,
+             `MoltTIR.Termination.PassTermination,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where

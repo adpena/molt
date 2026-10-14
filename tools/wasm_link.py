@@ -39,6 +39,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
     read_source_extension_link_plan,
 )
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli.runtime_paths import _runtime_wasm_artifact_path  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 import wasm_link_command as _link_command  # noqa: E402
@@ -52,13 +53,7 @@ import wasm_link_runtime_data as _runtime_data  # noqa: E402
 
 
 def _default_runtime_path() -> Path:
-    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
-    if env_root:
-        return Path(env_root).expanduser() / "molt_runtime.wasm"
-    external_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
-    if external_root is not None and external_root.is_dir():
-        return external_root / "wasm" / "molt_runtime.wasm"
-    return Path("wasm/molt_runtime.wasm")
+    return _runtime_wasm_artifact_path(TOOLS_ROOT.parent, "molt_runtime.wasm")
 
 
 def _default_dist_artifact_path(name: str) -> Path:

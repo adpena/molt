@@ -1,6 +1,7 @@
 use super::*;
 use molt_artifact_publish::write_bytes_atomically;
 
+#[cfg(molt_backend_daemon)]
 #[test]
 fn write_cached_output_can_skip_disk_write_when_synced() {
     let nonce = SystemTime::now()
@@ -16,6 +17,7 @@ fn write_cached_output_can_skip_disk_write_when_synced() {
     assert!(!output.exists());
 }
 
+#[cfg(molt_backend_daemon)]
 #[test]
 fn write_cached_output_publishes_through_atomic_output_authority() {
     let nonce = SystemTime::now()
@@ -75,35 +77,29 @@ fn atomic_backend_output_recreates_missing_parent() {
 
 #[test]
 fn default_backend_output_paths_use_dist_root() {
+    #[cfg(feature = "native-backend")]
+    for (output_kind, path) in [
+        (NativeArtifactKind::Object, "dist/output.o"),
+        (NativeArtifactKind::Archive, "dist/output.a"),
+    ] {
+        let target = BackendTarget::Native(NativeTargetOptions {
+            target_triple: None,
+            output_kind,
+        });
+        assert_eq!(target.default_output_path(), path);
+    }
+    #[cfg(feature = "wasm-backend")]
     assert_eq!(
-        default_backend_output_path(BackendOutputKind::Luau),
+        BackendTarget::Wasm(WasmTargetOptions::default()).default_output_path(),
+        "dist/output.wasm"
+    );
+    #[cfg(feature = "luau-backend")]
+    assert_eq!(
+        BackendTarget::Luau.default_output_path(),
         "dist/output.luau"
     );
-    assert_eq!(
-        default_backend_output_path(BackendOutputKind::Rust),
-        "dist/output.rs"
-    );
-    assert_eq!(
-        default_backend_output_path(BackendOutputKind::Wasm),
-        "dist/output.wasm"
-    );
-    assert_eq!(
-        default_backend_output_path(BackendOutputKind::Native),
-        "dist/output.o"
-    );
-}
-
-#[test]
-fn resolve_backend_output_path_prefers_explicit_output() {
-    let explicit = "/tmp/custom/output.wasm";
-    assert_eq!(
-        resolve_backend_output_path(Some(explicit), BackendOutputKind::Wasm),
-        explicit
-    );
-    assert_eq!(
-        resolve_backend_output_path(None, BackendOutputKind::Wasm),
-        "dist/output.wasm"
-    );
+    #[cfg(feature = "rust-backend")]
+    assert_eq!(BackendTarget::Rust.default_output_path(), "dist/output.rs");
 }
 
 #[test]

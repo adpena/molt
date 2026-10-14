@@ -365,7 +365,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         argv = command.argv
         return {argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-p"}
 
-    assert test_packages(core) == {"molt-passes", "molt-backend-wasm", "molt-runtime"}
+    assert test_packages(core) == {
+        "molt-passes",
+        "molt-backend-wasm",
+        "molt-runtime",
+        "molt-gpu-runtime",
+    }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
@@ -388,6 +393,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "ir_contract_validation",
         "generated_object_abi_link",
         "native_artifact_facts",
+        "native_batch_worker_spawn",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -445,6 +451,8 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-runtime/stdlib_micro",
         "molt-runtime/builtin_complex",
         "molt-runtime/builtin_set",
+        "molt-runtime/molt_gpu_primitives",
+        "molt-runtime/molt_gpu_webgpu",
     ]
     assert "test_builtins" in [
         cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
@@ -1264,7 +1272,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.integration.host-exports.tinygrad-tensor",
         "wasm.integration.host-exports.tensor-row-ops",
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.finally-pending-observer-parity.wasm",
     }
     assert {
         name for name, row in rows.items() if "pytest" in row.argv
@@ -1279,6 +1288,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         )
     for name in (
         "wasm.build.backend",
+        "wasm.build.native-backend",
         "wasm.build.shared-runtime",
         "wasm.build.split-runtime-release",
     ):
@@ -1389,6 +1399,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
     }
     assert {"pr", "main"} <= set(startup.data["tiers"])
     assert "node" in PLAN.required_toolchains(startup)
@@ -1435,6 +1446,93 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     }
 
 
+def test_native_backend_prewarm_precedes_every_native_consumer() -> None:
+    by_id = {command.id: command for command in PLAN.commands}
+    prewarm = by_id["wasm.build.native-backend"]
+    wasm_prewarm = by_id["wasm.build.backend"]
+    # The CLI admission entry point builds and admits the exact compiler a
+    # native `molt build` selects, as the WASM prewarm does for WASM output.
+    assert prewarm.argv[:5] == wasm_prewarm.argv[:5]
+    assert prewarm.argv[5:] == (
+        "internal-backend-build",
+        "--target",
+        "native",
+        "--json",
+    )
+    assert prewarm.data["env"] == {"MOLT_BACKEND_DAEMON": "0"}
+    assert (prewarm.data["timeout_budget"], prewarm.data["timeout_seconds"]) == (
+        "cold",
+        1200,
+    )
+    assert not prewarm.dependencies
+    for consumer_id in (
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.import-from-codec-parity",
+    ):
+        order = [
+            command.id
+            for command in proof_plan._topological_commands(
+                PLAN, command_id=consumer_id
+            )
+        ]
+        assert order.index(prewarm.id) < order.index(consumer_id)
+    # The WASM leg compiles no native program, so it waits on no native build.
+    assert prewarm.id not in {
+        command.id
+        for command in proof_plan._topological_commands(
+            PLAN, command_id="wasm.test.finally-pending-observer-parity.wasm"
+        )
+    }
+
+
+def test_finally_pending_parity_runs_each_target_in_its_own_budget() -> None:
+    from tests import test_finally_pending_observer_parity as parity
+
+    by_id = {command.id: command for command in PLAN.commands}
+    (mark,) = [
+        mark
+        for mark in parity.test_finally_pending_observer_parity.pytestmark
+        if mark.name == "parametrize"
+    ]
+    assert mark.args[0] == "target"
+    expected_closure = {
+        "native": {"wasm.build.native-backend"},
+        "wasm": {"wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"},
+    }
+    assert set(mark.args[1]) == set(expected_closure)
+    assert [name for name in vars(parity) if name.startswith("test_")] == [
+        "test_finally_pending_observer_parity"
+    ]
+    # `-k` matches substrings of the module, function and parameter names, so
+    # each row's keyword must name its own case and no other.
+    for keyword in expected_closure:
+        assert [
+            case
+            for case in expected_closure
+            if keyword in f"{parity.__name__}::test_finally_pending_observer_parity"
+            or keyword in case
+        ] == [keyword]
+    for target, prebuilds in expected_closure.items():
+        row = by_id[f"wasm.test.finally-pending-observer-parity.{target}"]
+        # One parametrized case per row: a sibling target's cold build can
+        # never spend this row's budget. The file has no other test, so the
+        # two `-k` selections partition it exactly.
+        assert row.argv[6:] == (
+            "tests/test_finally_pending_observer_parity.py",
+            "-k",
+            target,
+        )
+        assert (row.data["timeout_budget"], row.data["timeout_seconds"]) == (
+            "integration",
+            600,
+        )
+        assert {
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=row.id)
+        } == {row.id, *prebuilds}
+    assert "wasm.test.finally-pending-observer-parity" not in by_id
+
+
 def test_import_from_codec_receivers_execute_both_targets() -> None:
     from tools.compat import test_policy
 
@@ -1465,7 +1563,11 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
         assert row.argv[row.argv.index(option) + 1] == value
     assert "--no-retry-oom" in row.argv
     assert "--warm-cache" not in row.argv
-    assert set(row.dependencies) == {"wasm.build.backend", "wasm.build.shared-runtime"}
+    assert set(row.dependencies) == {
+        "wasm.build.backend",
+        "wasm.build.native-backend",
+        "wasm.build.shared-runtime",
+    }
     assert {"node", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"} <= set(
         PLAN.required_toolchains(row)
     )
@@ -1499,15 +1601,22 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     by_id = {command.id: command for command in PLAN.commands}
     freestanding = by_id["wasm.test.freestanding-e2e"]
-    parity = by_id["wasm.test.finally-pending-observer-parity"]
+    native = by_id["wasm.test.finally-pending-observer-parity.native"]
+    wasm = by_id["wasm.test.finally-pending-observer-parity.wasm"]
 
     assert freestanding.argv[-1] == "tests/test_wasm_freestanding.py"
     assert {"python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(freestanding)
     )
-    assert parity.argv[-1] == "tests/test_finally_pending_observer_parity.py"
+    for row, target in ((native, "native"), (wasm, "wasm")):
+        assert row.argv[-3:] == (
+            "tests/test_finally_pending_observer_parity.py",
+            "-k",
+            target,
+        )
+    assert {"clang", "lld-link"}.issubset(PLAN.required_toolchains(native))
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
-        PLAN.required_toolchains(parity)
+        PLAN.required_toolchains(wasm)
     )
     harness = by_id["python.unit.harness"]
     assert "tests/test_finally_pending_observer_harness.py" in harness.argv
@@ -2337,6 +2446,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.ir.windows",
             "portability.cargo-custody.windows",
             "portability.headers.windows",
+            "portability.guard.windows",
         ],
     }
     for entry in matrix:
@@ -2865,6 +2975,12 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     assert overlap_detected is False
 
 
+# Deadline for executor tests that launch a real guarded child but do not test
+# the deadline. A guarded `python -c` takes about 0.5 s on an idle Mac and about
+# 8x longer on Windows (HF-08); a loaded Windows host passed the old 10 s.
+_REAL_CHILD_DEADLINE_SECONDS = 300
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
@@ -2887,7 +3003,7 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
             "cell": cell.id,
             "tiers": ["test"],
             "resource_class": "python-static",
-            "timeout_seconds": 10,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "cache_domain": "none",
             "dependencies": [],
             "timeout_env": ["MOLT_INNER_TIMEOUT"],
@@ -2895,7 +3011,8 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
             "argv": [
                 sys.executable,
                 "-c",
-                "import os; assert os.environ['MOLT_INNER_TIMEOUT'] == '10'; "
+                "import os; assert os.environ['MOLT_INNER_TIMEOUT'] == "
+                f"'{_REAL_CHILD_DEADLINE_SECONDS}'; "
                 "assert os.environ['MOLT_EXECUTOR_MARKER'] == 'canonical'",
             ],
             "toolchains": ["python"],
@@ -3051,13 +3168,19 @@ def _successful_synthetic_record(
 def test_executor_hashes_declared_evidence_and_rejects_zero_work(
     tmp_path: Path, monkeypatch
 ) -> None:
-    relative = f"proof-results/tests/{tmp_path.name}/result.json"
-    output = proof_plan.ROOT / relative
+    # Declared evidence is checkout-relative. Resolve it in the test's own
+    # directory, so concurrent sessions never see the checkout change.
+    monkeypatch.setattr(
+        proof_plan, "_evidence_path", lambda relative: tmp_path / relative
+    )
+    relative = "proof-results/tests/result.json"
+    output = tmp_path / relative
     producer = _synthetic_executor_command("synthetic.evidence")
     producer = replace(
         producer,
         data={
             **producer.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "evidence_outputs": [relative],
             "argv": [
                 sys.executable,
@@ -3075,45 +3198,30 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         "toolchain_fingerprints",
         lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
     )
-    try:
-        receipt_path = tmp_path / "receipt.json"
-        assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
-        record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
-        assert record["declared_evidence_outputs"] == [relative]
-        assert record["evidence_outputs"][0]["path"] == relative
-        assert record["evidence_outputs"][0]["total_size_bytes"] > 0
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
+    record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
+    assert record["declared_evidence_outputs"] == [relative]
+    assert record["evidence_outputs"][0]["path"] == relative
+    assert record["evidence_outputs"][0]["total_size_bytes"] > 0
 
-        missing = replace(
-            producer,
-            id="synthetic.missing-evidence",
-            data={
-                **producer.data,
-                "id": "synthetic.missing-evidence",
-                "argv": [sys.executable, "-c", "pass"],
-            },
-        )
-        missing_plan = _synthetic_executor_plan((missing,), limits={"resource-a": 1})
-        missing_receipt = tmp_path / "missing.json"
-        assert (
-            proof_plan.execute_commands(missing_plan, (missing,), missing_receipt) == 2
-        )
-        missing_record = json.loads(missing_receipt.read_text(encoding="utf-8"))[
-            "commands"
-        ][0]
-        assert missing_record["status"] == "failure"
-        assert "evidence output is missing" in missing_record["evidence_error"]
-    finally:
-        proof_plan._clear_evidence_outputs(producer)
-        # Declared evidence is checkout-relative by design; leave the checkout
-        # as the session found it (HF-135). rmdir refuses a non-empty parent,
-        # so a parallel test's evidence stays.
-        for directory in (output.parent, *output.parent.parents):
-            if directory == proof_plan.ROOT:
-                break
-            try:
-                directory.rmdir()
-            except OSError:
-                break
+    missing = replace(
+        producer,
+        id="synthetic.missing-evidence",
+        data={
+            **producer.data,
+            "id": "synthetic.missing-evidence",
+            "argv": [sys.executable, "-c", "pass"],
+        },
+    )
+    missing_plan = _synthetic_executor_plan((missing,), limits={"resource-a": 1})
+    missing_receipt = tmp_path / "missing.json"
+    assert proof_plan.execute_commands(missing_plan, (missing,), missing_receipt) == 2
+    missing_record = json.loads(missing_receipt.read_text(encoding="utf-8"))[
+        "commands"
+    ][0]
+    assert missing_record["status"] == "failure"
+    assert "evidence output is missing" in missing_record["evidence_error"]
 
 
 def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(
@@ -3291,7 +3399,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
                     command.id,
                 ],
                 "toolchains": ["python"],
-                "timeout_seconds": 30,
+                "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
                 # These finite scheduler children emit the fixture marker, not
                 # Cargo receipts. Never clear or claim real repository evidence.
                 "evidence_outputs": [],
@@ -3372,16 +3480,20 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     child_pid_path.parent.mkdir(parents=True)
     fail = _synthetic_executor_command("synthetic.fail")
     live = _synthetic_executor_command("synthetic.live", resource_class="resource-b")
+    # The live command sleeps longer than any loaded host needs to start it,
+    # so a run that ends sooner proves the global stop cancelled it.
+    live_sleep_seconds = 60
     fail = replace(
         fail,
         data={
             **fail.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "argv": [
                 sys.executable,
                 "-c",
                 "import pathlib, sys, time\n"
                 f"marker = pathlib.Path({str(child_pid_path)!r})\n"
-                "deadline = time.monotonic() + 5.0\n"
+                "deadline = time.monotonic() + 30.0\n"
                 "while True:\n"
                 "    try:\n"
                 "        ready = marker.read_text().strip().isdecimal()\n"
@@ -3397,14 +3509,21 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
             ],
         },
     )
-    child_code = "import time; time.sleep(60)"
+    child_code = f"import time; time.sleep({live_sleep_seconds})"
     live_code = (
         "import pathlib, subprocess, sys, time; "
         f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
         f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
-        "time.sleep(60)"
+        f"time.sleep({live_sleep_seconds})"
     )
-    live = replace(live, data={**live.data, "argv": [sys.executable, "-c", live_code]})
+    live = replace(
+        live,
+        data={
+            **live.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+            "argv": [sys.executable, "-c", live_code],
+        },
+    )
     commands = (fail, live)
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
@@ -3417,7 +3536,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     started = time.monotonic()
     receipt_path = tmp_path / "receipt.json"
     assert proof_plan.execute_commands(plan, commands, receipt_path) == 130
-    assert time.monotonic() - started < 20.0
+    assert time.monotonic() - started < live_sleep_seconds
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert [record["status"] for record in receipt["commands"]] == [
         "failure",
@@ -3425,7 +3544,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     ]
     assert child_pid_path.is_file()
     child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 30.0
     while proof_queue_custody._pid_alive(child_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not proof_queue_custody._pid_alive(child_pid)
@@ -4994,7 +5113,7 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.run.comprehension",
         "wasm.run.sieve",
         "wasm.test.control-flow",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.wasm",
     ):
         assert "wasm.build.host" in commands[name].dependencies
     for name in (
@@ -5003,7 +5122,7 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.compile.sieve",
         "wasm.test.control-flow",
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.wasm",
         "wasm.integration.split-runtime",
     ):
         assert "wasm.build.backend" in commands[name].dependencies
@@ -5057,7 +5176,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "linker.test.generated-object-admission",
         "llvm.clippy.backend",
         "rust.test.compiler-authorities",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
         "rust.test.ir-wasm-runtime-authorities",
         "portability.rust.macos.runtime-gate",
         "rust.test.runtime-cold-lifecycle",
@@ -5100,7 +5219,11 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             delegated = command_admission.envelope_for_command(wrapped)
             assert delegated["cargo_native_units"] == required
             assert delegated["delegated"]["cargo_native_units"] == required
-    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+    for name in (
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release",
+        "wasm.test.finally-pending-observer-parity.wasm",
+    ):
         row = next(row for row in plan.commands if row.id == name)
         assert proof_plan.cargo_native_units(row.data) == {}
 

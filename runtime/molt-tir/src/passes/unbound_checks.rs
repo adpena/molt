@@ -37,10 +37,6 @@ use std::collections::HashSet;
 ///
 /// This pass removes the entire sequence and any preceding nop,
 /// leaving only the final continuation label intact.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_UNBOUND_ELIM").is_ok() {
         return;

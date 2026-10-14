@@ -593,11 +593,6 @@ SHELL_WRAPPER_CONTRACTS: tuple[TokenContract, ...] = (
         "deployment shell wrapper must enter guarded_exec",
     ),
     TokenContract(
-        "tools/scripts/compile-bench-wasm.sh",
-        ("tools/guarded_exec.py", "MOLT_BENCH"),
-        "WASM benchmark shell wrapper must enter guarded_exec",
-    ),
-    TokenContract(
         "tools/scripts/molt-compile-check.sh",
         (
             "tools/guarded_exec.py",
@@ -630,7 +625,6 @@ DIRECT_TEST_SCRIPT_EXCLUDED_PARTS = frozenset(
         "benchmarks",
         "differential",
         "fixtures",
-        "molt_only",
     }
 )
 

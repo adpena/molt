@@ -1,16 +1,8 @@
 use std::io;
 use std::path::Path;
 
-#[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
+#[cfg(any(feature = "native-backend", molt_backend_daemon))]
 use molt_artifact_publish::write_bytes_atomically;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BackendOutputKind {
-    Luau,
-    Rust,
-    Wasm,
-    Native,
-}
 
 pub(crate) fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     let path = Path::new(output_file);
@@ -22,26 +14,7 @@ pub(crate) fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn default_backend_output_path(kind: BackendOutputKind) -> &'static str {
-    match kind {
-        BackendOutputKind::Luau => "dist/output.luau",
-        BackendOutputKind::Rust => "dist/output.rs",
-        BackendOutputKind::Wasm => "dist/output.wasm",
-        BackendOutputKind::Native => "dist/output.o",
-    }
-}
-
-pub(crate) fn resolve_backend_output_path(
-    output_path: Option<&str>,
-    kind: BackendOutputKind,
-) -> &str {
-    output_path.unwrap_or(default_backend_output_path(kind))
-}
-
-#[cfg(any(
-    all(unix, any(feature = "native-backend", feature = "wasm-backend")),
-    test
-))]
+#[cfg(molt_backend_daemon)]
 pub(crate) fn write_cached_output(
     path: &str,
     bytes: &[u8],
@@ -54,15 +27,12 @@ pub(crate) fn write_cached_output(
     Ok(true)
 }
 
-#[cfg(any(
-    all(unix, any(feature = "native-backend", feature = "wasm-backend")),
-    test
-))]
+#[cfg(molt_backend_daemon)]
 pub(crate) fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     write_output_path(Path::new(path), bytes)
 }
 
-#[cfg(any(feature = "native-backend", all(unix, feature = "wasm-backend"), test))]
+#[cfg(any(feature = "native-backend", molt_backend_daemon))]
 pub(crate) fn write_output_path(output_path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_bytes_atomically(output_path, bytes)
 }

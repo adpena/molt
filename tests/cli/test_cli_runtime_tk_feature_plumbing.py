@@ -48,6 +48,7 @@ from tests.cli.native_link_test_support import (
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
 )
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -402,8 +403,15 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     monkeypatch.setenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", "1")
     monkeypatch.setenv("MOLT_SESSION_ID", "agent-one")
 
+    # A shared artifact root keys Cargo intermediates by checkout, then session.
+    checkout_target = (
+        external_root.resolve()
+        / "target"
+        / "checkouts"
+        / molt_dx.checkout_component(project_root.resolve())
+    )
     assert cli._cargo_target_root(project_root) == (
-        external_root.resolve() / "target" / "sessions" / "agent-one"
+        checkout_target / "sessions" / "agent-one"
     )
     # Every consumer of the default target reads the same rule: build
     # control and the backend daemon find the state the build leaves.
@@ -415,7 +423,7 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     # A generated session never scopes it, as in `molt dx run`, and the
     # target stays outside the project.
     monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
-    assert cli._cargo_target_root(project_root) == external_root.resolve() / "target"
+    assert cli._cargo_target_root(project_root) == checkout_target
     monkeypatch.setenv("CARGO_TARGET_DIR", str(project_root / "target"))
     with pytest.raises(molt_dx.DxConfigError, match="CARGO_TARGET_DIR"):
         cli._cargo_target_root(project_root)
@@ -764,6 +772,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         stdlib_profile="full",
         resolved_modules={"molt_msgpack"},
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None
@@ -859,6 +868,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         resolved_modules={"molt_msgpack"},
         stage_timings_ms=stage_timings_ms,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None
@@ -975,6 +985,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         native_artifact_plan=native_plan,
         resolved_modules={"nativepkg"},
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None

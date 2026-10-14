@@ -1,10 +1,12 @@
 // Boxed-handle Py* helpers serve internal runtime callers and their tests.
 // The C linker symbols are owned by the molt-cpython-abi crate.
-#![allow(dead_code, non_snake_case, unused_imports)]
+#![allow(non_snake_case)]
 
 #[cfg(target_arch = "wasm32")]
 mod cpython_abi_wasm_exports;
 mod cpython_compat;
+#[cfg(test)]
+mod cpython_compat_test_support;
 mod molt_api;
 
 // Re-export Rust-callable helpers inside the runtime crate on every target.
@@ -12,6 +14,8 @@ mod molt_api;
 // and the split molt-cpython-abi archive; these helpers are not no_mangle ABI
 // definitions.
 pub use cpython_compat::*;
+#[cfg(test)]
+pub use cpython_compat_test_support::*;
 pub use molt_api::*;
 
 use self::molt_api::molt_capi_method_dispatch;
@@ -99,6 +103,18 @@ fn c_api_module_state(_py: &PyToken<'_>) -> MutexGuard<'static, CApiModuleRuntim
         .c_api_module
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether C-API module metadata or a PyState root remains for this exact
+/// module object or definition. Tests attribute retirement with it: the
+/// runtime-wide clear also retires other modules' legitimate runtime roots.
+#[cfg(test)]
+pub(crate) fn c_api_module_registered(py: &PyToken<'_>, module_ptr: *mut u8, def: usize) -> bool {
+    let state = c_api_module_state(py);
+    let module = module_ptr_key(module_ptr);
+    state.metadata.contains_key(&module)
+        || state.state_registry.by_module.contains_key(&module)
+        || state.state_registry.by_def.contains_key(&def)
 }
 
 pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {

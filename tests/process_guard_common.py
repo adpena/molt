@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import json
 import subprocess
@@ -93,15 +94,18 @@ def install_module_os_view(
 def current_thread_only(
     replacement: Callable[..., Any], original: Callable[..., Any]
 ) -> Callable[..., Any]:
-    """Apply a test double only on the installing thread.
+    """Apply a test double or probe only on the installing thread.
 
     Shared primitives such as file-lock acquire/release are also used by the
     in-process session sentinel thread. A double that records or injects
-    failures must not count, fail or release that thread's handles.
+    failures must not count, fail or release that thread's handles. A probe
+    observes only work on the installing thread: an operation that dispatches
+    workers must own and instrument those workers itself.
     """
 
     owner = threading.get_ident()
 
+    @functools.wraps(original)
     def dispatch(*args: Any, **kwargs: Any) -> Any:
         if threading.get_ident() == owner:
             return replacement(*args, **kwargs)

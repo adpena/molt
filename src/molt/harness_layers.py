@@ -764,7 +764,7 @@ def run_layer_conformance(config: HarnessConfig) -> LayerResult:
             ],
             cwd=config.project_root,
             timeout_s=CONFORMANCE_LAYER_TIMEOUT_S,
-            env={"MOLT_BIN": config.molt_cmd},
+            env={"MOLT_CONFORMANCE_MOLT_CMD": config.molt_cmd},
         )
         metrics = _load_molt_conformance_summary(summary_path)
     dur = time.monotonic() - start

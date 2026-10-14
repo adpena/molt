@@ -220,7 +220,7 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     if rc < 0 {
         return None;
     }
-    Some(unsafe { std::fs::File::from_raw_fd(fd as i32) })
+    Some(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 #[cfg(windows)]
@@ -1162,12 +1162,11 @@ fn alloc_stdio_handle(
             dec_ref_bits(_py, name_bits);
             return MoltObject::none().bits();
         }
-        if trace_stdio {
-            if let Some((kind, _message)) =
+        if trace_stdio
+            && let Some((kind, _message)) =
                 crate::builtins::exceptions::pending_exception_diagnostic(_py)
-            {
-                eprintln!("stdio build pending after buffer alloc fd={fd}: {kind}");
-            }
+        {
+            eprintln!("stdio build pending after buffer alloc fd={fd}: {kind}");
         }
         MoltObject::from_ptr(buffer_ptr).bits()
     } else {
@@ -1197,12 +1196,11 @@ fn alloc_stdio_handle(
     if buffer_bits != 0 {
         dec_ref_bits(_py, buffer_bits);
     }
-    if trace_stdio {
-        if let Some((kind, _message)) =
+    if trace_stdio
+        && let Some((kind, _message)) =
             crate::builtins::exceptions::pending_exception_diagnostic(_py)
-        {
-            eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
-        }
+    {
+        eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
     }
     dec_ref_bits(_py, name_bits);
     if ptr.is_null() {
@@ -1228,12 +1226,11 @@ fn cached_stdio_handle(
     if obj_from_bits(handle_bits).is_none() {
         return handle_bits;
     }
-    if trace_stdio {
-        if let Some((kind, _message)) =
+    if trace_stdio
+        && let Some((kind, _message)) =
             crate::builtins::exceptions::pending_exception_diagnostic(_py)
-        {
-            eprintln!("stdio build pending after make_handle: {kind}");
-        }
+    {
+        eprintln!("stdio build pending after make_handle: {kind}");
     }
 
     // Keep one pinned reference so repeated sys stdio lookups share the same

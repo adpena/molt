@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import functools
 import os
 from pathlib import Path
 import sysconfig
@@ -39,12 +40,15 @@ def compiler_source_root_override() -> Path | None:
 PACKAGED_DISTRIBUTION_PATH = ("share", "molt", "distribution")
 
 
+@functools.cache
 def packaged_distribution_root() -> Path | None:
     """Return the release bundle a platform wheel installed beside this package.
 
     Only the install scheme that owns this executing package is consulted, so a
     nearby checkout or another environment is never adopted. The bundle is
     admitted by content in ``compiler_distribution``, never trusted by path.
+    The executing package and the interpreter's install schemes are fixed for
+    the process, so the scheme walk runs once; ``MOLT_SOURCE_ROOT`` stays live.
     """
     package_parent = os.path.normcase(str(Path(__file__).resolve().parent.parent))
     for scheme in sysconfig.get_scheme_names():

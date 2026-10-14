@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! fcntl — file descriptor control intrinsics for non-blocking I/O.
 //!
 //! Provides `fcntl(fd, cmd[, arg])` and the associated constants needed by

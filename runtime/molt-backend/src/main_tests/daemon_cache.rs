@@ -1,4 +1,12 @@
 use super::*;
+use std::sync::Arc;
+
+const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
+    "MOLT_STDLIB_OBJ",
+    "MOLT_STDLIB_CACHE_ENTRY",
+    "MOLT_STDLIB_CACHE_KEY",
+    "MOLT_STDLIB_CACHE_MANIFEST",
+];
 
 #[test]
 #[cfg(all(feature = "native-backend", any(unix, windows)))]
@@ -56,21 +64,25 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
             }
         }
     }
-    let mut cache = DaemonCache::new(None);
-    cache.insert(
-        "artifact-v1:wasm:same".into(),
-        Arc::from(b"wasm".as_slice()),
-    );
-    let output = root.join("wasm-output");
-    let value = serde_json::json!({
-        "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
-        "cache_key":"same", "probe_cache_only":true
-    });
-    let result = compile_single_job(
-        DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm"),
-        &mut cache,
-    );
-    assert!(result.ok && result.cached && result.output_written);
+    // The native stdlib request does not reach a WASM job.
+    #[cfg(feature = "wasm-backend")]
+    {
+        let mut cache = DaemonCache::new(None);
+        cache.insert(
+            "artifact-v1:wasm:same".into(),
+            Arc::from(b"wasm".as_slice()),
+        );
+        let output = root.join("wasm-output");
+        let value = serde_json::json!({
+            "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
+            "cache_key":"same", "probe_cache_only":true
+        });
+        let result = compile_single_job(
+            DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm"),
+            &mut cache,
+        );
+        assert!(result.ok && result.cached && result.output_written);
+    }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 
@@ -139,25 +151,28 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         }
     }
     // Native-only extraction state must not restrict a WASM cache request.
-    let mut cache = DaemonCache::new(None);
-    cache.insert(
-        "artifact-v1:wasm:same".into(),
-        Arc::from(b"wasm cache".as_slice()),
-    );
-    let output = root.join("wasm-output.wasm");
-    let value = serde_json::json!({
-        "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
-        "cache_key": "same", "probe_cache_only": true
-    });
-    let result = compile_single_job(
-        DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm job"),
-        &mut cache,
-    );
-    assert!(result.ok && result.cached && result.output_written);
-    assert_eq!(
-        std::fs::read(output).expect("wasm cache replay"),
-        b"wasm cache"
-    );
+    #[cfg(feature = "wasm-backend")]
+    {
+        let mut cache = DaemonCache::new(None);
+        cache.insert(
+            "artifact-v1:wasm:same".into(),
+            Arc::from(b"wasm cache".as_slice()),
+        );
+        let output = root.join("wasm-output.wasm");
+        let value = serde_json::json!({
+            "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
+            "cache_key": "same", "probe_cache_only": true
+        });
+        let result = compile_single_job(
+            DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm job"),
+            &mut cache,
+        );
+        assert!(result.ok && result.cached && result.output_written);
+        assert_eq!(
+            std::fs::read(output).expect("wasm cache replay"),
+            b"wasm cache"
+        );
+    }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 
@@ -236,6 +251,20 @@ fn daemon_default_cache_limit_scales_with_host_memory() {
     );
 }
 
+/// A job target this build's daemon serves, and the label its cache keys carry.
+#[cfg(feature = "wasm-backend")]
+fn served_target() -> (DaemonJobTarget, &'static str) {
+    (DaemonJobTarget::Wasm(WasmTargetOptions::default()), "wasm")
+}
+
+#[cfg(not(feature = "wasm-backend"))]
+fn served_target() -> (DaemonJobTarget, &'static str) {
+    (
+        DaemonJobTarget::Native(NativeTargetOptions::default()),
+        "object",
+    )
+}
+
 #[test]
 fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
@@ -243,13 +272,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            is_wasm: true,
-            target_triple: None,
-            native_output_kind: NativeArtifactKind::Object,
-            wasm_link: false,
-            wasm_data_base: None,
-            wasm_table_base: None,
-            wasm_split_runtime_app_table_base: None,
+            target: served_target().0,
             output: "/tmp/unused.o".to_string(),
             cache_key: "module".to_string(),
             function_cache_key: Some("function".to_string()),
@@ -273,7 +296,7 @@ fn daemon_probe_cache_only_hits_without_ir() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
     let mut cache = DaemonCache::new(None);
     cache.insert(
-        "artifact-v1:wasm:module".to_string(),
+        format!("artifact-v1:{}:module", served_target().1),
         Arc::from(vec![1_u8, 2, 3]),
     );
     let nonce = SystemTime::now()
@@ -285,13 +308,7 @@ fn daemon_probe_cache_only_hits_without_ir() {
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            is_wasm: true,
-            target_triple: None,
-            native_output_kind: NativeArtifactKind::Object,
-            wasm_link: false,
-            wasm_data_base: None,
-            wasm_table_base: None,
-            wasm_split_runtime_app_table_base: None,
+            target: served_target().0,
             output: output.to_string_lossy().into_owned(),
             cache_key: "module".to_string(),
             function_cache_key: Some("function".to_string()),
@@ -338,13 +355,10 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
     let result = compile_single_job(
         DaemonJobRequest {
             id: "job0".to_string(),
-            is_wasm: false,
-            target_triple: None,
-            native_output_kind: NativeArtifactKind::Archive,
-            wasm_link: false,
-            wasm_data_base: None,
-            wasm_table_base: None,
-            wasm_split_runtime_app_table_base: None,
+            target: DaemonJobTarget::Native(NativeTargetOptions {
+                target_triple: None,
+                output_kind: NativeArtifactKind::Archive,
+            }),
             output: output.to_string_lossy().into_owned(),
             cache_key: "module".to_string(),
             function_cache_key: Some("function".to_string()),
@@ -365,7 +379,6 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
 }
 
 #[test]
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
     let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let root = std::env::temp_dir().join(format!(
@@ -377,10 +390,16 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("create fixture");
-    for (kind, is_wasm) in [("wasm", true), ("object", false), ("archive", false)] {
-        if !is_wasm && !cfg!(feature = "native-backend") {
-            continue;
-        }
+    // The artifact kinds this build's backends serve.
+    let served: &[(&str, bool)] = &[
+        #[cfg(feature = "wasm-backend")]
+        ("wasm", true),
+        #[cfg(feature = "native-backend")]
+        ("object", false),
+        #[cfg(feature = "native-backend")]
+        ("archive", false),
+    ];
+    for &(kind, is_wasm) in served {
         for tier in ["module", "function"] {
             let mut cache = DaemonCache::new(None);
             cache.insert(

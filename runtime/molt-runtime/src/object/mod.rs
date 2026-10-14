@@ -87,10 +87,8 @@ pub(crate) mod payload_refs;
 pub(crate) mod refcount_opt;
 pub(crate) mod seq_access;
 pub(crate) mod sequence_index;
-#[allow(dead_code)]
 pub mod string_intern;
 pub(crate) mod tuple_storage;
-#[allow(dead_code)]
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weak_container;
@@ -1021,14 +1019,12 @@ pub(crate) struct MoltFileHandle {
     pub(crate) readable: bool,
     pub(crate) writable: bool,
     pub(crate) text: bool,
-    #[allow(dead_code)]
     pub(crate) closefd: bool,
     pub(crate) owns_fd: bool,
     pub(crate) closed: bool,
     pub(crate) detached: bool,
     pub(crate) line_buffering: bool,
     pub(crate) write_through: bool,
-    #[allow(dead_code)]
     pub(crate) buffer_size: i64,
     pub(crate) name_bits: u64,
     pub(crate) mode: String,
@@ -2043,6 +2039,27 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
             sidecar_from_snapshot(snapshot)
                 .state
                 .store(state as u64, AtomicOrdering::Release);
+        },
+        _ => panic!("published object state requires preselected state or sidecar aux storage"),
+    }
+}
+
+/// Atomically OR `bits` into the state lane without changing the published
+/// aux kind/address, and return the previous state. A word of monotone flags
+/// uses this, not a load and a store: under free-threaded execution two
+/// writers that each load and then store can lose one writer's bit.
+pub(crate) fn object_state_fetch_or(data_ptr: *mut u8, bits: i64) -> i64 {
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_STATE_INLINE => unsafe {
+            (*header_from_obj_ptr(data_ptr))
+                .aux
+                .fetch_or(bits as u64, AtomicOrdering::AcqRel) as i64
+        },
+        HEADER_AUX_KIND_SIDECAR => unsafe {
+            sidecar_from_snapshot(snapshot)
+                .state
+                .fetch_or(bits as u64, AtomicOrdering::AcqRel) as i64
         },
         _ => panic!("published object state requires preselected state or sidecar aux storage"),
     }

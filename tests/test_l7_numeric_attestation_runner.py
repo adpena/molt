@@ -794,6 +794,7 @@ def test_candidate_storage_capture_requires_actual_exact_completion(
 def test_candidate_storage_reads_complete_bound_capture(tmp_path, mutation):
     import hashlib
     from tools import run_candidate_runtime_costs as candidate
+    from tools import runtime_descendant_receipts
     from tools.libtest_results import ACCOUNTING_SCHEMA, BINARY_RECEIPT_SCHEMA
 
     image = (tmp_path / "image").resolve()
@@ -821,6 +822,7 @@ def test_candidate_storage_reads_complete_bound_capture(tmp_path, mutation):
         "executable_resolved": str(image),
         "executable_size": image.stat().st_size,
         "executable_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "receipt_custody_root": str(directory),
         "status": "success",
         "returncode": 0,
         "test_results": [{"identity": argv[1], "status": "pass"}],
@@ -844,6 +846,8 @@ def test_candidate_storage_reads_complete_bound_capture(tmp_path, mutation):
             }
         ],
     }
+    # The real producer retains the executed image and binds it to the receipt.
+    runtime_descendant_receipts.retain_receipt_files(receipt, root=directory)
     path = directory / "receipt.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert candidate.storage_capture(directory, "run", identity, argv) == content

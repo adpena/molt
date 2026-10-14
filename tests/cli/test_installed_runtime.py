@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,6 +43,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
 )
 from molt.verified_subset import current_host_coordinate
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     write_test_native_link_manifest,
     write_test_static_archive,
@@ -347,6 +349,7 @@ def test_installed_native_build_never_plans_cargo(bundle, tmp_path, monkeypatch)
         None,
         stdlib_profile="full",
         runtime_state=state,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     failure = state.native_runtime_build_failure
     assert failure is not None and failure.stage == "installed-runtime-selection"
@@ -372,6 +375,32 @@ def test_installed_wasm_build_never_plans_cargo(bundle, monkeypatch):
     assert state.runtime_wasm_codegen_binding is None
 
 
+def test_installed_native_runtime_rejects_the_native_cpu_policy(tmp_path, monkeypatch):
+    shipped = tmp_path / "shipped" / "libmolt_runtime.a"
+    monkeypatch.setattr(
+        runtime_build,
+        "select_installed_native_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(runtime_lib=shipped),
+    )
+
+    def initialize(rust_cpu: RustCpuPolicy):
+        return runtime_build._initialize_runtime_artifact_state(
+            is_rust_transpile=False,
+            is_wasm=False,
+            emit_mode="bin",
+            molt_root=tmp_path,
+            runtime_cargo_profile="release-output",
+            target_triple=None,
+            stdlib_profile="micro",
+            rust_cpu=rust_cpu,
+        )
+
+    # A shipped cell is a baseline-CPU build; native-arch needs its own build.
+    assert initialize(RustCpuPolicy.BASELINE).runtime_lib == shipped
+    with pytest.raises(InstalledRuntimeError, match="native-arch"):
+        initialize(RustCpuPolicy.NATIVE)
+
+
 def test_installed_state_has_no_ambient_wasm_coordinates(bundle, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "wasm").mkdir()
@@ -383,6 +412,7 @@ def test_installed_state_has_no_ambient_wasm_coordinates(bundle, tmp_path, monke
         runtime_cargo_profile="release-output",
         target_triple=None,
         stdlib_profile="micro",
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert state.runtime_wasm is None and state.runtime_reloc_wasm is None
 

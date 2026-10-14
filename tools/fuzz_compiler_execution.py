@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from molt.cli.output import build_output_path, json_command_failure, read_json_payload
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,20 +31,6 @@ def fuzz_build_env() -> dict[str, str]:
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_DETERMINISTIC"] = "1"
     return env
-
-
-def _extract_binary(build_json: dict) -> str | None:
-    data = build_json
-    if "data" in build_json and isinstance(build_json["data"], dict):
-        data = build_json["data"]
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in data:
-            return str(data[key])
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                return str(data["build"][key])
-    return None
 
 
 def run_cpython(source_path: str, timeout: float) -> tuple[str, str, int | None]:
@@ -99,45 +86,15 @@ def compile_molt(
         return None, "Molt build timed out"
 
     if result.returncode != 0:
-        stderr_snippet = result.stderr[:800] if result.stderr else "(no stderr)"
-        stdout_snippet = result.stdout[:400] if result.stdout else "(no stdout)"
         return (
             None,
-            f"Molt build failed (rc={result.returncode}):\n"
-            f"stderr: {stderr_snippet}\nstdout: {stdout_snippet}",
+            f"Molt build failed (rc={result.returncode}): "
+            f"{json_command_failure(result.stdout, result.stderr)}",
         )
-
-    stdout = result.stdout.strip()
-    if not stdout:
-        return None, "Molt build produced no JSON output"
-
-    json_str = None
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            json_str = line
-            break
-
-    if json_str is None:
-        return None, f"No JSON object in Molt build output: {stdout[:300]}"
-
     try:
-        build_info = json.loads(json_str)
-    except json.JSONDecodeError as exc:
-        return None, f"Invalid build JSON: {exc}\n{json_str[:300]}"
-
-    binary = _extract_binary(build_info)
-    if binary is None:
-        data_keys = (
-            list(build_info.get("data", {}).keys())
-            if isinstance(build_info.get("data"), dict)
-            else "N/A"
-        )
-        return (
-            None,
-            f"Cannot find binary in build output. "
-            f"Keys: {list(build_info.keys())}, data keys: {data_keys}",
-        )
+        binary = build_output_path(read_json_payload(result.stdout))
+    except ValueError as exc:
+        return None, f"Molt build output: {exc}"
 
     if not Path(binary).exists():
         return None, f"Binary not found at {binary}"

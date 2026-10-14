@@ -411,6 +411,12 @@ Key controls:
   partitioning while retaining per-function splitting and optimization. The backend
   `--native-output-kind object|archive` and daemon `native_output_kind` field carry
   the same explicit contract; filenames do not decide output semantics.
+- `molt-backend` parses its command line once (`backend_process/cli_args`). Each
+  option may appear once. An unknown option, a missing value, or an option that
+  belongs to another `--target` fails before any IR is read, and a binary built
+  without the selected backend names the `cargo build --features` that adds it.
+  `--daemon` exists only in Unix builds with `native-backend` or `wasm-backend`,
+  the builds the CLI starts a daemon from.
 - Use `molt dx run -- <command>` for bounded development checks. At a shared
   artifact root, the default Cargo target is
   `target/checkouts/<checkout-component>`; pinned sessions live beneath that

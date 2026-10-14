@@ -13,6 +13,7 @@ from molt.backend_environment import CodegenSelection
 from molt.cli import backend_binary, backend_compile, backend_execution
 from molt.cli import cache_fingerprints, cargo_source_closure, compiler_identity
 from molt.cli import wrapper_build
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from tests.compiler_identity_helper import compiler_build_admission, write_compiler_lock
 
@@ -169,6 +170,7 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
         backend_compiler_fingerprint="admitted",
         native_runtime_codegen_binding=object(),
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert prepared is None and error is not None
     assert "compiler inputs changed" in capsys.readouterr().out
@@ -200,7 +202,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
 
     admission.verify = verify
     monkeypatch.setattr(
-        backend_binary, "backend_build_admission", lambda *args: admission
+        backend_binary, "backend_build_admission", lambda *args, **kw: admission
     )
     monkeypatch.setattr(
         backend_binary, "_backend_source_paths", lambda *args: [source.parent]
@@ -262,6 +264,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
         cargo_profile="release",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert built and not result.ok and result.phase == "backend_source_identity"
 
@@ -311,15 +314,26 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
     configuration.write_text('[build]\nrustflags=["-Copt-level=2"]\n', encoding="utf-8")
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
 
-    def resolve(root, *, env, cargo_command, requested_target, environment_transform):
+    def resolve(
+        root,
+        *,
+        env,
+        cargo_command,
+        requested_target,
+        environment_transform,
+        rustflags_transform,
+    ):
         env = environment_transform(env)
         seen.append(dict(env))
         config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
+        # Cargo selects the configured build flags; the plan pins the policy's
+        # result exactly as the real resolver does.
+        rustflags = rustflags_transform(("-Copt-level=2",))
         return SimpleNamespace(
-            environment=env,
+            environment={**env, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(rustflags)},
             configuration=(),
             cli_configuration={},
-            rustflags=(env.get("CARGO_BUILD_RUSTFLAGS", ""),),
+            rustflags=rustflags,
             c_environment={},
             partition_command=lambda: (tuple(cargo_command), ()),
             link_resources=SimpleNamespace(content_identity=lambda: {}),
@@ -334,22 +348,27 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         )
 
     monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", resolve)
-    baseline_env = {
-        "CARGO_TARGET_DIR": str(tmp_path / "target"),
-        "MOLT_NATIVE_CPU": "1",
-    }
+    baseline_env = {"CARGO_TARGET_DIR": str(tmp_path / "target")}
 
-    def admission(env):
+    def admission(env, rust_cpu=RustCpuPolicy.BASELINE):
         return compiler_identity.backend_build_admission(
-            tmp_path, ("native-backend",), "release", env
+            tmp_path, ("native-backend",), "release", env, rust_cpu=rust_cpu
         )
 
     with cache_fingerprints._source_tree_fingerprint_transaction():
         baseline = admission(baseline_env)
         assert admission(baseline_env) is baseline
-        assert (
-            len(seen) == 1 and "target-cpu=native" in seen[0]["CARGO_BUILD_RUSTFLAGS"]
-        )
+        # The same environment under the native policy is another compiler:
+        # one operation must never reuse the baseline admission for it.
+        native = admission(baseline_env, RustCpuPolicy.NATIVE)
+        assert native is not baseline
+        assert len(seen) == 2
+    assert baseline.plan.rustflags == ("-Copt-level=2",)
+    assert native.plan.rustflags == ("-Copt-level=2", "-C", "target-cpu=native")
+    assert native.fingerprint != baseline.fingerprint
+    # The policy reaches the plan as a value; the Cargo environment the plan
+    # starts from carries no Rust CPU flag of its own.
+    assert all("target-cpu" not in "".join(env.values()) for env in seen)
     profile = admission({**baseline_env, "CARGO_PROFILE_RELEASE_LTO": "true"})
     assert profile.fingerprint != baseline.fingerprint
     # Public Luau builds choose guest chunking after a prewarm. Neither this
@@ -457,7 +476,11 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
 
     def fingerprint():
         return compiler_identity.backend_build_admission(
-            tmp_path, ("llvm", "native-backend"), "release", env
+            tmp_path,
+            ("llvm", "native-backend"),
+            "release",
+            env,
+            rust_cpu=RustCpuPolicy.BASELINE,
         ).fingerprint
 
     def rewrite(path, content):
@@ -524,6 +547,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
             ("native-backend",),
             "release",
             {"CARGO_TARGET_DIR": str(tmp_path / "target"), "MOLT_BUILD_PYTHON": python},
+            rust_cpu=RustCpuPolicy.BASELINE,
         ).fingerprint
 
     assert key("missing-runtime-python-a") == key("missing-runtime-python-b")

@@ -221,6 +221,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_DROP_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
       "note": "",
       "rejected_by": [],
@@ -274,11 +281,25 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_MODULE_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_NATIVE_ARCH_PERF",
       "note": "",
       "rejected_by": [],
       "replacement": "MOLT_PERF_PROFILE",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_NATIVE_CPU",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_PERF_PROFILE",
+      "retired": "2026-10-13"
     },
     {
       "name": "MOLT_PRESERVE_TARGET_ROOT",
@@ -300,6 +321,13 @@ _REGISTRY_JSON = r"""{
       "rejected_by": [],
       "replacement": "MOLT_SUBPROCESS_KEEPALIVE_SEC",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_TYPE_GATE",
+      "note": "molt build/run --type-gate was removed: no compiler or runtime path enforced it",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
     },
     {
       "name": "MOLT_USE_EXTERNAL_ARTIFACTS",
@@ -330,6 +358,27 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_WASM_LOCALE_DECIMAL",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
+      "name": "MOLT_WASM_LOCALE_GROUPING",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
+      "name": "MOLT_WASM_LOCALE_THOUSANDS",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
       "note": "",
       "rejected_by": [],
@@ -346,6 +395,13 @@ _REGISTRY_JSON = r"""{
       ],
       "replacement": "",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_WASM_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
     },
     {
       "name": "MOLT_WIRE",
@@ -1217,7 +1273,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_BIN",
       "owner": "src/molt/default_paths.py",
-      "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin, while the conformance harness (tests/harness/run_molt_conformance.py, fed by src/molt/harness_layers.py) reads it as the shell command that invokes the Molt CLI.",
+      "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin.",
       "values": []
     },
     {
@@ -1684,6 +1740,15 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_COMPILE_GUARD_WAIT_SEC",
       "owner": "tools/compile_governor.py",
       "summary": "Seconds the compile governor waits for a free slot before it gives up; negative values clamp to 0 and non-numeric values fall back to 180.",
+      "values": []
+    },
+    {
+      "audience": "developer",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_CONFORMANCE_MOLT_CMD",
+      "owner": "src/molt/harness_layers.py",
+      "summary": "Shell-like command tests/harness/run_molt_conformance.py uses to invoke the Molt CLI; the conformance layer of src/molt/harness_layers.py sets it from its configured CLI command; unset means the checkout's `python -m molt.cli`, else a molt on PATH.",
       "values": []
     },
     {
@@ -3469,15 +3534,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_DROP_STAGE_AUDIT",
-      "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
-      "summary": "Emits per-function drop-stage audit lines from the TIR drop phase and the drop-insertion pass when set to exactly 1; MOLT_MODULE_STAGE_AUDIT=1 or MOLT_WASM_STAGE_AUDIT=1 also enable it, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "string",
       "name": "MOLT_DROP_STAGE_AUDIT_FUNC",
@@ -4554,15 +4610,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_MODULE_STAGE_AUDIT",
-      "owner": "runtime/molt-passes/src/tir/module_phase.rs",
-      "summary": "Set to 1 to print a [molt-module-stage-audit] line to stderr after each module-level TIR phase (function count, block and op totals, largest function, changed functions, elapsed ms, peak RSS) and to enable the drop-phase audit lines as well; only the exact value 1 enables it, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_MP_DEBUG",
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Set to 1 to print multiprocessing spawn, worker, and entry-resolution diagnostics to stderr; the parent copies the value into every spawned child's environment; only the exact value 1 enables it, default off.",
@@ -4615,15 +4662,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_NATIVE_CPU",
-      "owner": "src/molt/cli/cargo_execution.py",
-      "summary": "Set to 1, true, or yes to add -C target-cpu=native to CARGO_BUILD_RUSTFLAGS for the Cargo build when no target-cpu flag is already present; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "path",
       "name": "MOLT_NODE_BIN",
@@ -4663,12 +4701,10 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_PERF_PROFILE",
-      "owner": "src/molt/cli/build_inputs.py",
-      "summary": "Perf profile for native builds; native-arch (also spelled native_arch or native) appends -C target-cpu=native to RUSTFLAGS, any other value leaves the target baseline and defers to MOLT_NATIVE_ARCH_PERF; default unset.",
+      "owner": "src/molt/cli/rust_cpu_policy.py",
+      "summary": "Rust CPU policy of a build; native-arch compiles the runtime and backend compiler of a --target native build with -C target-cpu=native and binds the flag into their identities; other targets keep the baseline and warn; installed Molt and toolchain transfer reject it; any other value is an error; default unset (baseline).",
       "values": [
-        "native-arch",
-        "native_arch",
-        "native"
+        "native-arch"
       ]
     },
     {
@@ -5478,8 +5514,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SESSION_PREFIX",
-      "owner": "tools/scripts/compile-bench-wasm.sh",
-      "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (demo-stack, parity, compile-bench-wasm, throughput).",
+      "owner": "tools/throughput_env.sh",
+      "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (bench, demo-stack, parity, throughput).",
       "values": []
     },
     {
@@ -5582,6 +5618,19 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "user",
+      "default": "",
+      "kind": "enum",
+      "name": "MOLT_STAGE_AUDIT",
+      "owner": "runtime/molt-ir/src/stage_audit.rs",
+      "summary": "Outermost compiler stage whose stage-audit stream the backend prints to stderr; each stage also audits the stages it contains: wasm audits WASM planning and emission, the TIR module pipeline and drop insertion, module audits the last two, drop audits drop insertion alone; unset audits nothing, and an unknown value audits nothing and warns once.",
+      "values": [
+        "drop",
+        "module",
+        "wasm"
+      ]
+    },
+    {
       "audience": "developer",
       "default": "",
       "kind": "path",
@@ -5604,7 +5653,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_STDLIB_CACHE_ENTRY",
-      "owner": "runtime/molt-backend/src/backend_process/shared_stdlib_cache/prepare/request.rs",
+      "owner": "runtime/molt-backend/src/backend_process/native_artifact.rs",
       "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry for constituent reuse and cache publication, and per-request environment reset prevents daemon state leakage.",
       "values": []
     },
@@ -5613,7 +5662,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_KEY",
-      "owner": "runtime/molt-backend/src/backend_process/daemon/cache/job/policy.rs",
+      "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected cache key of the shared stdlib archive named by MOLT_STDLIB_OBJ; src/molt/cli/backend_compile.py sets it for the backend child, which admits the cached archive only when the sidecar key and MOLT_STDLIB_CACHE_MANIFEST both match; a person never sets it.",
       "values": []
     },
@@ -5622,7 +5671,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_MANIFEST",
-      "owner": "runtime/molt-backend/src/backend_process/daemon/cache/job/policy.rs",
+      "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected manifest text (cache variant, target triple and compiler fingerprint) of the shared stdlib archive; src/molt/cli/backend_compile.py sets it for the backend child beside MOLT_STDLIB_CACHE_KEY, and a mismatch with the archive sidecar is a cache miss; a person never sets it.",
       "values": []
     },
@@ -5784,15 +5833,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD",
       "owner": "runtime/molt-runtime/src/wasm_abi_exports.rs",
       "summary": "A cargo unit test in wasm_abi_exports.rs sets it to 1 when it re-executes its own test binary, and the child reads its presence (any value) to run the cold resource-denial scratch allocation path; a person never sets it.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_TEST_PID_FILE",
-      "owner": "runtime/molt-runtime/src/async_rt/process.rs",
-      "summary": "A cargo unit test in process.rs sets it to a temp path for the sh child it spawns, and the shell command writes its background sleep pid there so the test can check process-group teardown; a person never sets it.",
       "values": []
     },
     {
@@ -6380,7 +6420,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_INIT_SUBCLASS",
-      "owner": "runtime/molt-runtime/src/builtins/attr.rs",
+      "owner": "runtime/molt-runtime/src/builtins/attributes/class_lookup.rs",
       "summary": "Set to 1 to print molt init_subclass lines on stderr that describe each lookup of the __init_subclass__ attribute (found value, allow_missing result, class and builtin status); read on every lookup, and unset or any other value prints nothing.",
       "values": []
     },
@@ -6669,15 +6709,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_SET_ATTR",
-      "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 to print module_set_attr: mod=<bits> attr=<bits> val=<bits> on stderr for every module attribute store; read on every store before the GIL is entered, and unset or any other value prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_SET_NAME",
       "owner": "runtime/molt-runtime/src/builtins/types/class_model/hierarchy.rs",
       "summary": "Set to 1 to print the class name, attribute key and descriptor on stderr for every __set_name__ applied while a class is created; read once per class creation, and unset or any other value prints nothing.",
@@ -6954,15 +6985,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TV_TIMEOUT",
       "owner": "tools/translation_validate.py",
       "summary": "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TYPE_GATE",
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "molt build --type-gate sets it to 1 in the backend environment; the runtime's exported molt_runtime_init_type_gate reads exactly 1 and records a flag that nothing enforces, and no code in the tree calls that initializer.",
       "values": []
     },
     {
@@ -7475,33 +7497,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_WASM_LOCALE_DECIMAL",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Decimal separator string that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; when none of MOLT_WASM_LOCALE_DECIMAL, MOLT_WASM_LOCALE_THOUSANDS, or MOLT_WASM_LOCALE_GROUPING is set the host fills it from the system locale (Intl.NumberFormat under Node), and setting any one of the three keeps the host from filling the others.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_WASM_LOCALE_GROUPING",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Digit-group size (for example 3) that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; the host fills it from the system locale only when that locale has a thousands separator and none of the three MOLT_WASM_LOCALE_* names is already set.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_WASM_LOCALE_THOUSANDS",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Thousands separator string that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; the host fills it from the system locale only when that locale has a non-empty separator and none of the three MOLT_WASM_LOCALE_* names is already set.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "path",
@@ -7667,7 +7662,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_WASM_RUNTIME_DIR",
       "owner": "src/molt/cli/build_output_layout.py",
-      "summary": "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm if that directory exists, else <project root>/wasm, and an installed Molt rejects the variable because it ships its own runtime cells.",
+      "summary": "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm (a relative MOLT_EXT_ROOT is anchored at the project root), else molt-runtime-wasm inside the project's Cargo target beside the native runtime libraries, never the working directory or the source tree; an installed Molt rejects the variable because it ships its own runtime cells.",
       "values": []
     },
     {
@@ -7714,15 +7709,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
       "owner": "src/molt/cli/backend_compile.py",
       "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_STAGE_AUDIT",
-      "owner": "runtime/molt-backend-wasm/src/wasm_plan/stage_audit.rs",
-      "summary": "Set to 1 to stream wasm backend stage audits to stderr (module emission and finalization stages with byte sizes) and to enable the TIR module-phase and drop-phase audits as well; any other value is off.",
       "values": []
     },
     {

@@ -4,24 +4,38 @@
 //! `#[path]`. Those files depend on a `crate::bridge` access layer; this facade
 //! preserves that API while routing helper families to focused submodules.
 
-#![allow(dead_code)]
-
+#[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_itertools")))]
 mod attrs;
+#[cfg(any(
+    not(feature = "stdlib_http"),
+    not(feature = "stdlib_itertools"),
+    not(feature = "stdlib_path")
+))]
 mod core;
+#[cfg(not(feature = "stdlib_itertools"))]
 mod ext_state;
+#[cfg(not(feature = "stdlib_itertools"))]
 mod iteration;
+#[cfg(not(feature = "stdlib_itertools"))]
 mod itertools;
+#[cfg(any(test, not(feature = "stdlib_path")))]
 mod path;
 
-// Satellite source selection determines which facade families have consumers.
-// Keep these exports available without duplicating the profile gates here.
-#[allow(unused_imports)]
+// Each family compiles only for the satellite sources (and differential
+// tests) that call it, so every exported item has a consumer.
+#[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_itertools")))]
 pub use attrs::*;
+#[cfg(any(
+    not(feature = "stdlib_http"),
+    not(feature = "stdlib_itertools"),
+    not(feature = "stdlib_path")
+))]
 pub use core::*;
-#[allow(unused_imports)]
+#[cfg(not(feature = "stdlib_itertools"))]
 pub use ext_state::*;
-#[allow(unused_imports)]
+#[cfg(not(feature = "stdlib_itertools"))]
 pub use iteration::*;
-#[allow(unused_imports)]
+#[cfg(not(feature = "stdlib_itertools"))]
 pub use itertools::*;
+#[cfg(any(test, not(feature = "stdlib_path")))]
 pub use path::*;

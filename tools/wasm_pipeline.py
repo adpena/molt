@@ -43,23 +43,12 @@ if str(MOLT_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.wasm_optimize import optimize as optimize_wasm  # noqa: E402
 
 
-def _wasm_runtime_root() -> Path:
-    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
-    if env_root:
-        return Path(env_root).expanduser()
-    from molt.dx import configured_artifact_root
-
-    artifact_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
-    if artifact_root is not None:
-        return artifact_root / "wasm"
-    return MOLT_ROOT / "wasm"
-
-
-RUNTIME_DIR = _wasm_runtime_root()
+RUNTIME_DIR = _wasm_runtime_root(MOLT_ROOT)
 RUNTIME_WASM = RUNTIME_DIR / "molt_runtime.wasm"
 RUNTIME_RELOC = RUNTIME_DIR / "molt_runtime_reloc.wasm"
 

@@ -1,7 +1,8 @@
 mod model;
 mod parse;
-mod validation;
 
-pub(crate) use model::{BackendCliArgs, WasmCliOptions};
-#[cfg(test)]
-pub(crate) use validation::validate_fact_graph_cli_contract;
+#[cfg(feature = "native-backend")]
+pub(crate) use model::NativeTargetOptions;
+#[cfg(feature = "wasm-backend")]
+pub(crate) use model::WasmTargetOptions;
+pub(crate) use model::{BackendCommand, BackendCompileArgs, BackendTarget};

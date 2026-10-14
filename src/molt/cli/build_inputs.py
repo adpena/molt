@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
-import functools
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -73,6 +72,7 @@ from molt.cli.module_resolution import (
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
+from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 from molt.cli.project_roots import (
     _find_project_root,
     _has_project_markers,
@@ -737,7 +737,12 @@ def _prepare_build_preamble(
         phase_starts["resolve_entry"] = diagnostics_start
     stdlib_root = _stdlib_root_path()
     warnings: list[str] = []
-    native_arch_perf_enabled = _apply_native_arch_perf_policy(target, warnings)
+    try:
+        rust_cpu, rust_cpu_warning = resolve_rust_cpu_policy(target, os.environ)
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    if rust_cpu_warning is not None:
+        warnings.append(rust_cpu_warning)
     return _PreparedBuildPreamble(
         diagnostics_path_spec=diagnostics_path_spec,
         diagnostics_enabled=diagnostics_enabled,
@@ -759,7 +764,7 @@ def _prepare_build_preamble(
         module_reasons=module_reasons,
         stdlib_root=stdlib_root,
         warnings=warnings,
-        native_arch_perf_enabled=native_arch_perf_enabled,
+        rust_cpu=rust_cpu,
     ), None
 
 
@@ -1192,13 +1197,6 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
     return env
 
 
-def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
-    """Project --type-gate into a child process environment."""
-    if enabled:
-        return {"MOLT_TYPE_GATE": "1"}
-    return {}
-
-
 def _runtime_policy_flag_environment(
     base: Mapping[str, str],
     *,
@@ -1222,44 +1220,3 @@ def _target_sys_platform(target: Target) -> str | None:
     if normalized in {"wasm", "wasm-freestanding"} or normalized.startswith("wasm32"):
         return "wasm"
     return None
-
-
-@functools.lru_cache(maxsize=32)
-def _native_arch_perf_requested_cached(profile_raw: str) -> bool:
-    return profile_raw.strip().lower() in {"native-arch", "native_arch", "native"}
-
-
-def _native_arch_perf_requested() -> bool:
-    return _native_arch_perf_requested_cached(os.environ.get("MOLT_PERF_PROFILE", ""))
-
-
-def _apply_native_arch_perf_policy(target: Target, warnings: list[str]) -> bool:
-    """Apply the native-arch perf profile's RUSTFLAGS for native targets.
-
-    RUSTFLAGS reach every Cargo build and the backend compiler fingerprint, so
-    ``molt build`` and the backend prewarm apply the same policy.
-    """
-    if not _native_arch_perf_requested():
-        return False
-    if target != "native":
-        warnings.append(
-            "Native-arch perf profile requested, but non-native target selected; ignoring."
-        )
-        return False
-    _enable_native_arch_rustflags()
-    return True
-
-
-def _enable_native_arch_rustflags() -> bool:
-    flag = "-C target-cpu=native"
-    existing = os.environ.get("RUSTFLAGS", "")
-    if flag in existing:
-        return False
-    _append_rustflags(os.environ, flag)
-    return True
-
-
-def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:
-    existing = env.get("RUSTFLAGS", "")
-    joined = f"{existing} {flags}".strip()
-    env["RUSTFLAGS"] = joined

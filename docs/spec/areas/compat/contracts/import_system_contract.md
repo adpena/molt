@@ -228,9 +228,15 @@ Module namespace summaries are may-provenance across initialization, not an
 initialization-order proof. Cyclic importers can observe earlier publications or
 invoke a hook before a later export exists. A proven static member selection
 binds its argument to the existing parameter facts and branch-liveness evaluator;
-unknown or escaped hook use widens. No standard-library helper-name list governs
-availability. Class-family and reflection escape remain conservative, so this
-contract does not promise a minimal module set.
+unknown or escaped hook use widens. A star import copies names and exposes
+nothing by itself: each module-namespace read, and each member selection on the
+importing module, selects its name from the star-imported modules, and only an
+escaped importing namespace exposes those modules whole. A static
+`importlib.import_module` or `__import__` call result is an import binding: its
+member reads select from the modules the call imports, and passing the result to
+unknown code exposes them. No standard-library
+helper-name list governs availability. Class-family and reflection escape remain
+conservative, so this contract does not promise a minimal module set.
 
 Selected owner and argument facts travel together through scan authority,
 source-request caches, runtime-support detection and binary-image diagnostics.

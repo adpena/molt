@@ -7,62 +7,45 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# Bind types eagerly following CPython's types.py pattern.
-# The runtime intrinsic system exports these as module attributes,
-# but annotations alone don't create bindings.  Use require_intrinsic
-# for types backed by runtime objects, and direct Python construction
-# for types derivable from existing objects.
-import sys as _sys
-
-
-def _f():
-    yield  # helper to get GeneratorType
-
-
-_g = _f()
-
-ModuleType = type(_sys)
-NoneType = type(None)
-FunctionType = type(lambda: None)
-LambdaType = FunctionType
-GeneratorType = type(_g)
-CodeType = type(_f.__code__) if hasattr(_f, "__code__") else type
-BuiltinFunctionType = type(len)
-BuiltinMethodType = type([].append)
-MethodType = type  # placeholder — bound methods don't have a stable type() in Molt
-
-# Types bound by the runtime intrinsic system.  If not yet available,
-# fall back to `type` so the module can still be imported.
-MappingProxyType = type(
-    type.__dict__
-)  # CPython: MappingProxyType = type(type.__dict__)
-SimpleNamespace = type  # placeholder until intrinsic wires it
-GenericAlias = type  # placeholder until intrinsic wires it
-
-# Types that may not be available yet — fallback to `type` sentinel.
-AsyncGeneratorType = type
-CapsuleType = type
-CellType = type
-ClassMethodDescriptorType = type
-CoroutineType = type
-EllipsisType = type(...)
-FrameType = type
-GetSetDescriptorType = type
-MemberDescriptorType = type
-MethodDescriptorType = type
-MethodWrapperType = type
-NotImplementedType = type(NotImplemented)
-TracebackType = type
-UnionType = type
-WrapperDescriptorType = type
-DynamicClassAttribute = type
-
-del _f, _g
-
-get_original_bases: object
-new_class: object
-prepare_class: object
-resolve_bases: object
+# The runtime owns every type and class helper; a missing payload is a hard
+# error. Each name binds once, so the module namespace stays statically known.
+_PAYLOAD = _require_intrinsic("molt_types_bootstrap")()
+if not isinstance(_PAYLOAD, dict):
+    raise RuntimeError("types intrinsics unavailable")
+AsyncGeneratorType = _PAYLOAD["AsyncGeneratorType"]
+BuiltinFunctionType = _PAYLOAD["BuiltinFunctionType"]
+BuiltinMethodType = _PAYLOAD["BuiltinMethodType"]
+CapsuleType = _PAYLOAD["CapsuleType"]
+CellType = _PAYLOAD["CellType"]
+ClassMethodDescriptorType = _PAYLOAD["ClassMethodDescriptorType"]
+CodeType = _PAYLOAD["CodeType"]
+CoroutineType = _PAYLOAD["CoroutineType"]
+DynamicClassAttribute = _PAYLOAD["DynamicClassAttribute"]
+EllipsisType = _PAYLOAD["EllipsisType"]
+FrameType = _PAYLOAD["FrameType"]
+FunctionType = _PAYLOAD["FunctionType"]
+GeneratorType = _PAYLOAD["GeneratorType"]
+GenericAlias = _PAYLOAD["GenericAlias"]
+GetSetDescriptorType = _PAYLOAD["GetSetDescriptorType"]
+LambdaType = _PAYLOAD["LambdaType"]
+MappingProxyType = _PAYLOAD["MappingProxyType"]
+MemberDescriptorType = _PAYLOAD["MemberDescriptorType"]
+MethodDescriptorType = _PAYLOAD["MethodDescriptorType"]
+MethodType = _PAYLOAD["MethodType"]
+MethodWrapperType = _PAYLOAD["MethodWrapperType"]
+ModuleType = _PAYLOAD["ModuleType"]
+NoneType = _PAYLOAD["NoneType"]
+NotImplementedType = _PAYLOAD["NotImplementedType"]
+SimpleNamespace = _PAYLOAD["SimpleNamespace"]
+TracebackType = _PAYLOAD["TracebackType"]
+UnionType = _PAYLOAD["UnionType"]
+WrapperDescriptorType = _PAYLOAD["WrapperDescriptorType"]
+get_original_bases = _PAYLOAD["get_original_bases"]
+new_class = _PAYLOAD["new_class"]
+prepare_class = _PAYLOAD["prepare_class"]
+resolve_bases = _PAYLOAD["resolve_bases"]
+_coroutine_intrinsic = _PAYLOAD["coroutine"]
+del _PAYLOAD, _require_intrinsic
 
 __all__ = [
     "AsyncGeneratorType",
@@ -106,26 +89,6 @@ __all__ = [
 # - `DynamicClassAttribute` descriptor behavior (clone/getter/setter/deleter and
 #   argument validation/error mapping) is implemented in the runtime descriptor path.
 # Remaining stdlib `types` gaps are tracked in STATUS/ROADMAP.
-
-
-def _bootstrap() -> dict:
-    intrinsic = _require_intrinsic("molt_types_bootstrap")
-    data = intrinsic()
-    if not isinstance(data, dict):
-        raise RuntimeError("types intrinsics unavailable")
-    # Use module-level assignment instead of globals().update() to avoid
-    # the compiled dict lookup bug. Each assignment goes through MODULE_SET_ATTR.
-    import sys
-
-    mod = sys.modules[__name__]
-    for key, val in data.items():
-        if key == "coroutine":
-            continue
-        setattr(mod, key, val)
-    return data
-
-
-_coroutine_intrinsic = _bootstrap()["coroutine"]
 
 
 class _GeneratorWrapper:

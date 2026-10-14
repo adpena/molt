@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import tomllib
 
 import pytest
@@ -35,6 +36,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def bootstrap_uses_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``os`` patch in this file stays inside the pytest bootstrap."""
     install_module_os_view(monkeypatch, pytest_memory_guard_bootstrap)
+
+
+@pytest.fixture(autouse=True)
+def pytest_tmpdir_patches_stay_in_their_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore pytest's temp-dir functions after each test.
+
+    Under the Windows process model ``install_pytest_custody_roots`` replaces
+    them for the whole process, as a real Windows session needs; a test that
+    selects that model must not leave the replacement to later tests.
+    """
+    import _pytest.pathlib as pytest_pathlib
+    import _pytest.tmpdir as pytest_tmpdir
+
+    monkeypatch.setattr(
+        pytest_pathlib, "make_numbered_dir", pytest_pathlib.make_numbered_dir
+    )
+    monkeypatch.setattr(
+        pytest_tmpdir, "make_numbered_dir", pytest_tmpdir.make_numbered_dir
+    )
+    monkeypatch.setattr(pytest_tmpdir, "Path", pytest_tmpdir.Path)
 
 
 def _own_host_records(root: Path) -> set[str]:
@@ -124,7 +145,8 @@ def test_session_children_recognize_the_outer_guard_by_its_marker(
 
 
 def test_tests_consume_the_outer_guard_lease_under_the_session_root(
-    test_guard_custody_roots, monkeypatch,
+    test_guard_custody_roots,
+    monkeypatch,
 ) -> None:
     """The CI failure of HF-163: a test allocates helper scratch in process.
 
@@ -162,7 +184,7 @@ def test_tkinter_compile_helper_uses_admitted_proof_scratch(monkeypatch, tmp_pat
         output = Path(argv[argv.index("--output") + 1])
         assert source.parent.parent == proof_root
         assert output.parent == source.parent
-        assert "import tkinter.ttk as ttk" in source.read_text()
+        assert "import tkinter.ttk as ttk" in source.read_text(encoding="utf-8")
         raise CompilerDispatchReached
 
     monkeypatch.setattr(consumer, "run_native_test_process", inspect_dispatch)
@@ -275,7 +297,14 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
     source = str(REPO_ROOT / "src")
     paths = [path for path in sys.path if path not in {root, test_root}]
     monkeypatch.setattr(sys, "path", paths.copy())
-    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-I", "-c", "pass"])
+    # Every startup surface reads the interpreter argv through the bootstrap.
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        orig_argv=[sys.executable, "-I", "-c", "pass"],
+    )
     monkeypatch.setattr(sys, "argv", ["-c"])
     monkeypatch.setattr(builtins, "__import__", no_repository_tooling)
     surface = REPO_ROOT / relative
@@ -938,12 +967,14 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             == summary.parent
         )
     # The guard and every test process start inside the run context (HF-114):
-    # Cargo builds go to the artifact root's stable target, not the CLI's
-    # `<checkout>/target` default.
+    # Cargo builds go to the artifact root's target, under this checkout's
+    # stable component when the root is shared (HF-45).
     child_env = captured["env"]
     assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
-    assert Path(child_env["CARGO_TARGET_DIR"]) == (
-        Path(child_env["MOLT_EXT_ROOT"]) / "target"
+    child_target = Path(child_env["CARGO_TARGET_DIR"])
+    assert child_target.is_relative_to(Path(child_env["MOLT_EXT_ROOT"]) / "target")
+    assert child_target == dx.cargo_target_dir_for_artifact_root(
+        Path(child_env["MOLT_EXT_ROOT"]), None, source_root=REPO_ROOT
     )
     assert "MOLT_EXT_ROOT" not in env
 
@@ -966,7 +997,11 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
     artifact_root = dx.configured_artifact_root(relative_to=REPO_ROOT)
     # A pytest session id never scopes a target, least of all in the checkout.
     assert artifact_root is not None
-    assert target == artifact_root / "target"
+    assert target == dx.cargo_target_dir_for_artifact_root(
+        artifact_root, None, source_root=REPO_ROOT
+    )
+    assert artifact_root / "target" in target.parents
+    assert "sessions" not in target.relative_to(artifact_root).parts
     assert REPO_ROOT / "target" / "sessions" not in target.parents
 
 
@@ -1974,7 +2009,9 @@ def test_pytest_current_test_writer_retries_windows_atomic_replace(
         "_is_windows_process_model",
         lambda: True,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.time, "sleep", lambda _s: None)
+    install_module_view(
+        monkeypatch, "time", time, pytest_memory_guard_bootstrap, sleep=lambda _s: None
+    )
 
     calls = 0
     original_replace = pytest_memory_guard_bootstrap._ATOMIC_REPLACE

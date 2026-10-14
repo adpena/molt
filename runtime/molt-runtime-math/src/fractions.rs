@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // Fraction arithmetic intrinsics using BigInt numerator/denominator.
 // Always stores in lowest terms with denominator > 0.
 
@@ -296,12 +295,6 @@ fn limit_denominator(f: &FractionHandle, max_den: &BigInt) -> FractionHandle {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-fn fraction_handle_from_bits(bits: u64) -> Option<&'static mut FractionHandle> {
-    let ptr = opaque_handle_ptr_from_bits(bits)?;
-    // SAFETY: pointer originates from Box::into_raw for a FractionHandle.
-    Some(unsafe { &mut *(ptr as *mut FractionHandle) })
-}
 
 fn fraction_bits(handle: FractionHandle) -> u64 {
     opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)

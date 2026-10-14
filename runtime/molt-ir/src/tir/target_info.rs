@@ -207,6 +207,20 @@ pub struct ProfileData {
 /// Cost fields document the legacy constants they subsume; the
 /// [`TargetInfo::native_release_fast`] constructor preserves those literals as
 /// a behavioral firewall while also carrying the target's semantic contract.
+/// SimpleIR shapes a target's backend lowers beyond the generated op contract.
+///
+/// The generated runtime requirements say which semantics a target supports;
+/// they cannot say whether a backend implements an optimization shape that a
+/// pass produces. These are answered per target, as LLVM's
+/// `TargetTransformInfo` answers target queries, so no backend chooses passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimpleIrLoweringFeatures {
+    /// Lowers `call_method_ic` and `call_super_method_ic` inline-cache calls.
+    pub method_inline_caches: bool,
+    /// Scalarizes the small tuples escape analysis marks `stack_eligible`.
+    pub non_escaping_tuple_scalarization: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetInfo {
     /// Backend this cost model targets.
@@ -220,6 +234,8 @@ pub struct TargetInfo {
     pub supported_numeric_semantics: NumericTargetCapabilities,
     /// Generated runtime/object-model requirement bits the target proves exact.
     pub supported_runtime_semantics: crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements,
+    /// SimpleIR optimization shapes the target's backend lowers.
+    pub lowering: SimpleIrLoweringFeatures,
 
     // -- Latency / overhead model (abstract cost units) --------------------
     /// Cost of an integer binary op (add/sub/and/…). The unit baseline `1`.
@@ -289,6 +305,24 @@ pub struct TargetInfo {
 }
 
 impl TargetInfo {
+    /// One exhaustive answer per target: a new target must decide each shape.
+    const fn lowering_for(target: TargetKind) -> SimpleIrLoweringFeatures {
+        match target {
+            TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
+                method_inline_caches: true,
+                non_escaping_tuple_scalarization: true,
+            },
+            TargetKind::Wasm | TargetKind::Llvm => SimpleIrLoweringFeatures {
+                method_inline_caches: true,
+                non_escaping_tuple_scalarization: false,
+            },
+            TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => SimpleIrLoweringFeatures {
+                method_inline_caches: false,
+                non_escaping_tuple_scalarization: false,
+            },
+        }
+    }
+
     fn runtime_semantics_for(
         target: TargetKind,
     ) -> crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements {
@@ -311,6 +345,7 @@ impl TargetInfo {
             extern_function_linkage: true,
             supported_numeric_semantics: NumericTargetCapabilities::CPYTHON_EXACT,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::NativeCranelift),
+            lowering: Self::lowering_for(TargetKind::NativeCranelift),
 
             // Latency model. The branch-mispredict penalty being positive
             // makes `is_profitable_branchless_rewrite` return `true`, exactly
@@ -369,6 +404,7 @@ impl TargetInfo {
         TargetInfo {
             target: TargetKind::Wasm,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Wasm),
+            lowering: Self::lowering_for(TargetKind::Wasm),
             branch_mispredict_cost: 6,
             optimize_for_size: true,
             ..TargetInfo::native_release_fast()
@@ -382,6 +418,7 @@ impl TargetInfo {
         TargetInfo {
             target: TargetKind::Llvm,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Llvm),
+            lowering: Self::lowering_for(TargetKind::Llvm),
             ..TargetInfo::native_release_fast()
         }
     }
@@ -396,6 +433,7 @@ impl TargetInfo {
             extern_function_linkage: false,
             supported_numeric_semantics: NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Luau),
+            lowering: Self::lowering_for(TargetKind::Luau),
             optimize_for_size: true,
             ..TargetInfo::native_release_fast()
         }
@@ -409,6 +447,7 @@ impl TargetInfo {
             extern_function_linkage: false,
             supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Rust),
+            lowering: Self::lowering_for(TargetKind::Rust),
             optimize_for_size: true,
             ..TargetInfo::native_release_fast()
         }
@@ -422,6 +461,7 @@ impl TargetInfo {
             extern_function_linkage: false,
             supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Mlir),
+            lowering: Self::lowering_for(TargetKind::Mlir),
             optimize_for_size: false,
             ..TargetInfo::native_release_fast()
         }
@@ -443,6 +483,7 @@ impl TargetInfo {
         TargetInfo {
             target: TargetKind::Llvm,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Llvm),
+            lowering: Self::lowering_for(TargetKind::Llvm),
             vector_width_i64: width,
             vector_width_f64: width,
             ..TargetInfo::native_release_fast()

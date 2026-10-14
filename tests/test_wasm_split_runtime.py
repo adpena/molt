@@ -11,6 +11,7 @@ Exercises the full --split-runtime pipeline:
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -30,9 +31,13 @@ from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
+from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
+
+# Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
+RUNTIME_GZIP_BUDGET_MIB = 3.25
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -558,6 +563,30 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# The evidence directory `wasm.integration.split-runtime` declares; every
+# complete run records the runtime size there, and a failure retains products.
+SPLIT_RUNTIME_EVIDENCE_ROOT = ROOT / "proof-receipts/evidence/split-runtime"
+
+
+def _record_split_runtime_size(
+    raw_bytes: int, gzip9_bytes: int, *, evidence_root: Path | None = None
+) -> dict[str, object]:
+    """Record the measured shared-runtime size against its budgets (HF-132)."""
+    from tools.proof_queue_pkg import custody_cas
+
+    return custody_cas.put_json(
+        evidence_root or SPLIT_RUNTIME_EVIDENCE_ROOT,
+        {
+            "schema": custody_cas.ARTIFACT_SCHEMA,
+            "kind": "split-runtime-size",
+            "raw_bytes": raw_bytes,
+            "gzip9_bytes": gzip9_bytes,
+            "gzip9_budget_bytes": int(RUNTIME_GZIP_BUDGET_MIB * 1024 * 1024),
+            "raw_ceiling_bytes": int(DEFAULT_TOTAL_BUDGET_MB * 1024 * 1024),
+        },
+    ).as_dict()
+
+
 def _retain_split_failure(
     reason: str, builds: dict[str, Path], *, evidence_root: Path | None = None
 ) -> dict[str, object]:
@@ -565,7 +594,7 @@ def _retain_split_failure(
     from molt.artifact_publication import publication_receipt_path
     from tools.proof_queue_pkg import custody_cas
 
-    root = evidence_root or ROOT / "proof-receipts/evidence/split-runtime"
+    root = evidence_root or SPLIT_RUNTIME_EVIDENCE_ROOT
     retained = {}
     for label, output in builds.items():
         paths = [
@@ -587,6 +616,20 @@ def _retain_split_failure(
             "builds": retained,
         },
     ).as_dict()
+
+
+def test_split_runtime_size_record_is_content_addressed_evidence(tmp_path):
+    from tools.proof_queue_pkg import custody_cas
+
+    root = tmp_path / "evidence"
+    reference = _record_split_runtime_size(10_000_000, 3_000_000, evidence_root=root)
+    assert _record_split_runtime_size(10_000_000, 3_000_000, evidence_root=root) == (
+        reference
+    )
+    record = custody_cas.read_ref(reference, expected_root=root)
+    assert record["kind"] == "split-runtime-size"
+    assert (record["raw_bytes"], record["gzip9_bytes"]) == (10_000_000, 3_000_000)
+    assert record["gzip9_budget_bytes"] == int(RUNTIME_GZIP_BUDGET_MIB * 1024 * 1024)
 
 
 def test_split_failure_retains_distinct_bytes_and_publication(tmp_path):
@@ -790,11 +833,27 @@ class TestSplitRuntimeArtifacts:
         )
 
     def test_runtime_wasm_size(self, split_build_a):
+        """The shared runtime's budget is its transfer size, with a raw ceiling.
+
+        Every exported intrinsic is a dead-code root, so the raw size follows the
+        exported surface (HF-132). What a deployment ships is the compressed
+        module: gzip -9 measured 2.97 MiB at 10.47 MiB raw on 2026-10-14. Lower
+        the ratchet as the intrinsic surface shrinks. The raw ceiling is the
+        V8 compile-memory budget that tools/wasm_size_audit.py enforces.
+        """
         out_dir, _ = split_build_a
         rt_wasm = _require_split_artifact(out_dir, "molt_runtime.wasm")
-        size_mb = rt_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 5, (
-            f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB; retained: "
+        data = rt_wasm.read_bytes()
+        gzip9_bytes = len(gzip.compress(data, compresslevel=9, mtime=0))
+        _record_split_runtime_size(len(data), gzip9_bytes)
+        raw_mib = len(data) / (1024 * 1024)
+        gzip_mib = gzip9_bytes / (1024 * 1024)
+        assert gzip_mib <= RUNTIME_GZIP_BUDGET_MIB and raw_mib <= (
+            DEFAULT_TOTAL_BUDGET_MB
+        ), (
+            f"molt_runtime.wasm is {gzip_mib:.2f} MiB gzip -9 (budget "
+            f"{RUNTIME_GZIP_BUDGET_MIB} MiB) and {raw_mib:.2f} MiB raw (ceiling "
+            f"{DEFAULT_TOTAL_BUDGET_MB} MiB); retained: "
             f"{_retain_split_failure('runtime_size', {'A': out_dir})}"
         )
 

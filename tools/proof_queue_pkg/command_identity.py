@@ -1548,7 +1548,11 @@ def _tool_identity(
         llvm_sdk_selection = llvm_verification_selection(
             root=proof_plan.ROOT, cwd=probe_cwd, env=env
         )
-        if llvm_sdk_selection["tools"]["llvm-config"] != str(path):
+        # One spelling authority: the selection reports the OS spelling, and
+        # custody lowercases a Windows drive anchor.
+        if process_image_capture.custody_path(
+            Path(llvm_sdk_selection["tools"]["llvm-config"])
+        ) != process_image_capture.custody_path(path):
             raise ValueError(
                 "LLVM SDK verifier launcher differs from selected configuration authority"
             )

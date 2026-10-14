@@ -496,28 +496,66 @@ def _is_xdist_worker() -> bool:
     return bool(os.environ.get("PYTEST_XDIST_WORKER"))
 
 
+def _describe_checkout_leaks(leaks: tuple[str, ...]) -> list[str]:
+    """Each leaked entry with up to five of its children, which name its producer."""
+    described = []
+    for entry in leaks:
+        path = ROOT / entry
+        try:
+            children = sorted(os.listdir(path))[:5] if path.is_dir() else []
+        except OSError:
+            children = []
+        suffix = f" [{', '.join(children)}]" if children else ""
+        described.append(entry + suffix)
+    return described
+
+
+def _cargo_target_in_checkout() -> bool:
+    from molt.path_custody import host_path_is_within
+
+    cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    return bool(cargo_target) and host_path_is_within(Path(cargo_target), ROOT)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):  # type: ignore[no-untyped-def]
+    """Name the test that was running when build state entered the checkout."""
+    before = checkout_target_entries()
+    yield
+    leaks = checkout_target_leaks(
+        before,
+        checkout_target_entries(),
+        cargo_target_in_checkout=_cargo_target_in_checkout(),
+    )
+    if leaks:
+        item.warn(
+            pytest.PytestWarning(
+                "build state appeared in the checkout while this test ran "
+                f"(a parallel worker may share the window): "
+                f"{'; '.join(_describe_checkout_leaks(leaks))}"
+            )
+        )
+
+
 def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-def]
     before = getattr(session.config, _CHECKOUT_TARGET_SNAPSHOT_ATTR, None)
     if before is None:
         return
-    from molt.path_custody import host_path_is_within
-
-    cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
     leaks = checkout_target_leaks(
         before,
         checkout_target_entries(),
-        cargo_target_in_checkout=bool(cargo_target)
-        and host_path_is_within(Path(cargo_target), ROOT),
+        cargo_target_in_checkout=_cargo_target_in_checkout(),
     )
     if not leaks:
         return
     session.exitstatus = pytest.ExitCode.TESTS_FAILED
     lines = [
         f"Build or test state appeared in the checkout during this session: {ROOT}",
-        *(f"  {entry}" for entry in leaks),
+        *(f"  {entry}" for entry in _describe_checkout_leaks(leaks)),
         "Tests build and keep state where a developer run does "
-        "(molt.dx.RunContext.root_env, molt.dx.scratch_dir); find the test that "
-        "cleared or bypassed the run context (HF-114, HF-135).",
+        "(molt.dx.RunContext.root_env, molt.dx.scratch_dir). The warnings "
+        "summary names each test that was running when an entry appeared "
+        "(HF-114, HF-135).",
         "Every session that shares the checkout reports the same entries: a "
         "proof-plan family runs its commands in parallel.",
     ]

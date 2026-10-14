@@ -25,7 +25,7 @@ pub(super) fn execute_match(
     match mode {
         "match" => {
             // Anchored at start (pos), match from pos.
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
+            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
             if pos > state.chars.len() || end > state.chars.len() {
                 return None;
             }
@@ -38,7 +38,7 @@ pub(super) fn execute_match(
         }
         "fullmatch" => {
             // Must match the entire text[pos..end].
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
+            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
             if pos > state.chars.len() || end > state.chars.len() {
                 return None;
             }
@@ -60,8 +60,7 @@ pub(super) fn execute_match(
                 return None;
             }
             for start in pos..=end {
-                let mut state =
-                    MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
+                let mut state = MatchState::new(text, compiled.flags, compiled.group_count, end);
                 if let Some(end_pos) = try_match(&compiled.root, start, &[], &mut state) {
                     return Some(MatchResult {
                         start,

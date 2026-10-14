@@ -212,7 +212,8 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
         // class edge exists, ordinary dictionary access and lifecycle traversal
         // deliberately reject this classless allocation's trailing word.
         let dictionary = if type_id == TYPE_ID_MODULE {
-            let dictionary = alloc_dict_with_pairs(_py, &[]);
+            // Module namespaces record builtin binding guard bits (HF-79).
+            let dictionary = crate::builtins::binding_guards::alloc_namespace_dict(_py);
             if dictionary.is_null() {
                 dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
                 return MoltObject::none().bits();
@@ -349,6 +350,24 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
 
 pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8 {
     alloc_dict_with_capacity_and_pairs(_py, pairs.len() / 2, pairs)
+}
+
+/// An empty exact dict whose inline aux state word starts at `state`. Plain
+/// dicts carry no state word; a namespace dict uses it for binding guards.
+pub(crate) fn alloc_dict_with_state(_py: &PyToken<'_>, state: i64) -> *mut u8 {
+    let ptr = alloc_hash_aggregate_unpublished(_py, 0, TYPE_ID_DICT);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        if !crate::object::object_init_state_unpublished(ptr, state) {
+            record_memory_error_without_allocation(_py);
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        }
+        crate::object::gc::gc_publish_initialized(_py, ptr);
+    }
+    ptr
 }
 
 pub(crate) fn alloc_set_like_with_entries(

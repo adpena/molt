@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/pathlib.rs ===
 //
 // pathlib intrinsics: PurePath / Path operations delegated to Rust std::path.

@@ -3,15 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
-from contextlib import ExitStack
-from dataclasses import dataclass, replace
+import time
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field, replace
 from functools import cached_property
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from molt.cli.atomic_io import _atomic_write_json
+from molt.file_deletion import unlink_file
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.file_publication import atomic_write_bytes, durable_replace, staged_file_path
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.exact_json import (
@@ -24,6 +28,7 @@ from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
     _frozen_json_projection,
+    runtime_family_digest,
 )
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -38,12 +43,137 @@ if TYPE_CHECKING:
     from molt.wasm_artifact import WasmRuntimeFacts
 
 
-_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v3"
+_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v4"
 _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v2"
 _RUNTIME_WASM_GENERATION_NAME = "molt_runtime.generation.json"
 _MEMBER_SUFFIX = ".runtime-wasm-member"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
 _RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
+
+# One runtime WASM directory is a working set of immutable generations: every
+# build that publishes or binds a generation marks its files in the store
+# ledger, under the store lock, and each publication evicts the files that no
+# build used for RUNTIME_WASM_STORE_IDLE_SECONDS. The selected pair is never
+# evicted. Recency lives in the ledger, not in file times: a member's stat
+# identity includes its mtime and ctime, so touching one would invalidate every
+# holder's admission.
+_STORE_LOCK_NAME = ".runtime-wasm-store.lock"
+_STORE_LEDGER_NAME = ".runtime-wasm-store.json"
+_STORE_LEDGER_SCHEMA = "molt.runtime-wasm-store.v1"
+_STORE_LOCK_TIMEOUT_SECONDS = 300.0
+_STORE_FILE_RE = re.compile(
+    r"^molt_runtime(?:"
+    r"\.[0-9a-f]{64}\.generation\.json"
+    r"|(?:_reloc)?\.wasm\.[0-9a-f]{64}" + re.escape(_MEMBER_SUFFIX) + r")$"
+)
+# A build finishes well inside this window, and the shared generation cache
+# under MOLT_CACHE, or a rebuild, restores an evicted generation on demand.
+RUNTIME_WASM_STORE_IDLE_SECONDS = 24 * 60 * 60
+
+
+@dataclass
+class _RuntimeWasmStore:
+    """The usage ledger of one runtime WASM directory, held under its lock."""
+
+    root: Path
+    now: float
+    selected: tuple[str, ...] = ()
+    last_used: dict[str, float] = field(default_factory=dict)
+
+    def use(self, *names: str) -> None:
+        for name in names:
+            self.last_used[name] = self.now
+
+    def select(self, shared_member: str, reloc_member: str) -> None:
+        # A reader may hold the pair this replaces; give it a full window.
+        self.use(*self.selected)
+        self.selected = (shared_member, reloc_member)
+        self.use(*self.selected)
+
+    def evict_idle(self, idle_seconds: float) -> tuple[str, ...]:
+        """Remove generation files no build used for ``idle_seconds``.
+
+        A file the ledger does not know starts its window now, so the first
+        pass over a directory written before this ledger evicts nothing. A
+        member that is open elsewhere (Windows refuses to delete it) stays
+        until a later publication.
+        """
+        evicted: list[str] = []
+        present: set[str] = set()
+        for path in sorted(self.root.iterdir()):
+            name = path.name
+            if not _STORE_FILE_RE.match(name):
+                continue
+            present.add(name)
+            last_used = self.last_used.setdefault(name, self.now)
+            if name in self.selected or self.now - last_used <= idle_seconds:
+                continue
+            try:
+                unlink_file(path)
+            except OSError:
+                continue
+            present.discard(name)
+            evicted.append(name)
+        self.last_used = {
+            name: used for name, used in self.last_used.items() if name in present
+        }
+        return tuple(evicted)
+
+    def ledger(self) -> dict[str, object]:
+        return {
+            "schema": _STORE_LEDGER_SCHEMA,
+            "selected": list(self.selected),
+            "last_used": dict(sorted(self.last_used.items())),
+        }
+
+
+def _read_store_ledger(root: Path, now: float) -> _RuntimeWasmStore:
+    """Load the ledger; an unreadable one restarts every file's window."""
+
+    store = _RuntimeWasmStore(root=root, now=now)
+    try:
+        payload = json.loads((root / _STORE_LEDGER_NAME).read_bytes())
+    except (OSError, ValueError):
+        return store
+    if not isinstance(payload, dict) or payload.get("schema") != _STORE_LEDGER_SCHEMA:
+        return store
+    selected = payload.get("selected")
+    last_used = payload.get("last_used")
+    if (
+        isinstance(selected, list)
+        and all(isinstance(name, str) for name in selected)
+        and isinstance(last_used, dict)
+        and all(
+            isinstance(name, str)
+            and isinstance(used, (int, float))
+            and not isinstance(used, bool)
+            for name, used in last_used.items()
+        )
+    ):
+        store.selected = tuple(selected)
+        store.last_used = {name: float(used) for name, used in last_used.items()}
+    return store
+
+
+@contextmanager
+def _runtime_wasm_store(root: Path) -> Generator[_RuntimeWasmStore]:
+    """Hold one runtime WASM directory's store lock and persist its ledger."""
+
+    lock_path = root / _STORE_LOCK_NAME
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=_STORE_LOCK_TIMEOUT_SECONDS,
+        timeout_message=(
+            f"Timed out waiting for runtime WASM store lock {lock_path} after "
+            f"{_STORE_LOCK_TIMEOUT_SECONDS:.0f}s."
+        ),
+    )
+    try:
+        store = _read_store_ledger(root, time.time())
+        yield store
+        _atomic_write_json(root / _STORE_LEDGER_NAME, store.ledger(), sort_keys=True)
+    finally:
+        _release_file_lock(handle)
 
 
 @dataclass(frozen=True)
@@ -253,10 +383,12 @@ def bind_runtime_wasm_codegen(
         manifest = generation.manifest.with_name(
             f"molt_runtime.{digest}.generation.json"
         )
-        try:
-            atomic_write_bytes(manifest, data, exclusive=True)
-        except FileExistsError:
-            pass
+        with _runtime_wasm_store(manifest.parent) as store:
+            try:
+                atomic_write_bytes(manifest, data, exclusive=True)
+            except FileExistsError:
+                pass
+            store.use(manifest.name, generation.shared.name, generation.reloc.name)
         receipt_handle = owned.enter_context(
             open_stable_regular_file(manifest, label="pinned runtime WASM receipt")
         )
@@ -395,7 +527,7 @@ def _stage_artifact(
         "member": member_name,
         "sha256": digest,
         "size": size,
-        "identity": identity.to_dict(),
+        "identity": identity.member_reference(),
     }
 
 
@@ -439,8 +571,9 @@ def publish_runtime_wasm_generation(
     reloc_identity = expected_pair.reloc
     if shared.name != _SHARED_RUNTIME_NAME or reloc.name != _RELOC_RUNTIME_NAME:
         raise ValueError("runtime generation coordinates use non-canonical names")
+    if shared.parent != reloc.parent:
+        raise ValueError("runtime generation members share one directory")
     shared.parent.mkdir(parents=True, exist_ok=True)
-    reloc.parent.mkdir(parents=True, exist_ok=True)
     staged_shared = staged_file_path(shared, purpose="generation")
     staged_reloc = staged_file_path(reloc, purpose="generation")
     actual_source_shared = source_shared or shared
@@ -464,34 +597,42 @@ def publish_runtime_wasm_generation(
         )
         shared_member = shared.parent / str(shared_record["member"])
         reloc_member = reloc.parent / str(reloc_record["member"])
-        _publish_immutable_member(staged_shared, shared_member, actual_source_shared)
-        _publish_immutable_member(staged_reloc, reloc_member, actual_source_reloc)
-
+        # Both members share one family; the receipt stores it once.
         payload = {
             "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
             "family_digest": shared_identity.family_digest,
+            "family": shared_identity.family_payload(),
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
         manifest = runtime_wasm_generation_path(shared)
-        # Self-validation is transaction-local: it proves the members THIS
-        # publication committed against the identities it was given, through
-        # the same validation the reader applies to a manifest payload. It
-        # never re-reads the shared manifest: a concurrent publisher may
-        # already have replaced it (last writer wins by contract), and that
-        # replacement is not a defect of this publication.
-        with ExitStack() as owned:
-            generation = _validate_generation_payload(
-                manifest,
-                payload,
-                expected_shared_identity=shared_identity,
-                expected_reloc_identity=reloc_identity,
-                _owned=owned,
+        # The store lock covers member reuse through selection, so eviction
+        # never removes a member this publication found and selects.
+        with _runtime_wasm_store(shared.parent) as store:
+            _publish_immutable_member(
+                staged_shared, shared_member, actual_source_shared
             )
-            if generation is None:
-                raise ValueError(
-                    "published runtime generation has a corrupt member or record"
+            _publish_immutable_member(staged_reloc, reloc_member, actual_source_reloc)
+            # Self-validation is transaction-local: it proves the members THIS
+            # publication committed against the identities it was given, through
+            # the same validation the reader applies to a manifest payload. It
+            # never re-reads the shared manifest: a concurrent publisher may
+            # already have replaced it (last writer wins by contract), and that
+            # replacement is not a defect of this publication.
+            with ExitStack() as owned:
+                generation = _validate_generation_payload(
+                    manifest,
+                    payload,
+                    expected_shared_identity=shared_identity,
+                    expected_reloc_identity=reloc_identity,
+                    _owned=owned,
                 )
-            _atomic_write_json(manifest, payload, sort_keys=True)
+                if generation is None:
+                    raise ValueError(
+                        "published runtime generation has a corrupt member or record"
+                    )
+                _atomic_write_json(manifest, payload, sort_keys=True)
+            store.select(shared_member.name, reloc_member.name)
+            store.evict_idle(RUNTIME_WASM_STORE_IDLE_SECONDS)
         return generation
     finally:
         staged_shared.unlink(missing_ok=True)
@@ -524,13 +665,7 @@ def _artifact_record_descriptor(
     ):
         return None
     member = _member_path(manifest, record)
-    if member is None:
-        return None
-    try:
-        RuntimeBuildIdentity.from_dict(
-            record.get("identity"), expected=expected_identity
-        )
-    except ValueError:
+    if member is None or record.get("identity") != expected_identity.member_reference():
         return None
     digest, size = record.get("sha256"), record.get("size")
     if (
@@ -595,6 +730,33 @@ def _generation_receipts(
     return typed
 
 
+def runtime_wasm_generation_identities(
+    payload: object,
+) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
+    """Rebuild a receipt's shared and reloc identities from its one family.
+
+    For readers that hold no trusted identity, such as an installed runtime
+    bundle; each member is validated in full, digests included.
+    """
+    value = string_keyed_mapping(payload)
+    receipts = None if value is None else _generation_receipts(value.get("receipts"))
+    if (
+        value is None
+        or receipts is None
+        or value.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
+    ):
+        raise ValueError("runtime WASM generation receipt is invalid")
+    shared, reloc = (
+        RuntimeBuildIdentity.from_member_reference(
+            receipts[kind].get("identity"),
+            family=value.get("family"),
+            family_digest=value.get("family_digest"),
+        )
+        for kind in ("shared", "reloc")
+    )
+    return shared, reloc
+
+
 def read_runtime_wasm_generation(
     manifest: Path,
     *,
@@ -640,10 +802,15 @@ def _generation_record_descriptors(
     if (
         expected_shared_identity.family_digest != expected_reloc_identity.family_digest
         or not isinstance(payload, Mapping)
-        or set(payload) != {"schema", "family_digest", "receipts"}
+        or set(payload) != {"schema", "family_digest", "family", "receipts"}
         or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
         or payload.get("family_digest") != expected_shared_identity.family_digest
     ):
+        return None
+    try:
+        if runtime_family_digest(payload.get("family")) != payload["family_digest"]:
+            return None
+    except (TypeError, ValueError):
         return None
     receipts = _generation_receipts(payload.get("receipts"))
     if receipts is None:

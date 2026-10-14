@@ -54,6 +54,7 @@ from molt.cli.backend_daemon_paths import (
 )
 from molt.cli.backend_daemon_startup import _backend_daemon_spawn_probe_timeout
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.compiler_identity import (
     CompilerIdentityError,
     installed_compiler_admission,
@@ -316,10 +317,14 @@ def _backend_daemon_config_digest(
             else source.get("MOLT_BACKEND_COMPILER_FINGERPRINT", "")
         )
         if not compiler:
+            # A build always passes its admitted compiler fingerprint, which
+            # binds its Rust CPU policy. Without one there is no build
+            # request, so the identity names the baseline compiler.
             compiler = _cache_fingerprint(
                 backend_features=backend_features,
                 env=source,
                 cargo_profile=cargo_profile,
+                rust_cpu=RustCpuPolicy.BASELINE,
             )
         payload = {
             "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,

@@ -2,7 +2,6 @@ use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
 #[cfg(test)]
 use molt_wasm_host::sha256_hex;
-use num_format::{Grouping, SystemLocale};
 use rmpv::Value as MsgpackValue;
 use rmpv::encode::write_value;
 use serde::Deserialize;

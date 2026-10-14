@@ -266,7 +266,6 @@ from molt.cli.runtime_paths import (
     _runtime_cargo_scratch_lib_path,
     _runtime_staticlib_target_is_windows,
     _runtime_wasm_artifact_path,
-    _runtime_wasm_artifact_path_cached,
 )
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
@@ -511,7 +510,6 @@ def build(
     require_signed_manifest: bool = False,
     audit_log: str | None = None,
     io_mode: str | None = None,
-    type_gate: bool = False,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
     bolt: bool = False,
@@ -569,7 +567,6 @@ def build(
             if target in {"wasm", "wasm-freestanding"} and wasm_profile
             else None
         ),
-        type_gate=type_gate,
     )
     with _source_tree_fingerprint_transaction():
         if file_path and module:

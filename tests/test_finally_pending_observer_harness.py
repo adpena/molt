@@ -126,8 +126,9 @@ def test_extension_command_forwards_exact_oracle_version(
         )
 
 
+@pytest.mark.parametrize("backend", ["native", "wasm"])
 def test_unverified_interpreter_is_rejected_before_toolchain_or_build(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: str
 ) -> None:
     def reject(target: TargetPythonVersion) -> TargetPythonVersion:
         assert target.feature_version == parity.sys.version_info[:2]
@@ -139,20 +140,27 @@ def test_unverified_interpreter_is_rejected_before_toolchain_or_build(
     monkeypatch.setattr(parity, "require_verified_subset_target", reject)
     monkeypatch.setattr(parity, "require_wasm_toolchain", unexpected)
     with pytest.raises(ValueError, match="unverified interpreter tuple"):
-        parity.test_finally_pending_observer_native_wasm_parity(tmp_path, monkeypatch)
+        parity.test_finally_pending_observer_parity(tmp_path, monkeypatch, backend)
 
 
 @pytest.mark.parametrize("short", SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
-@pytest.mark.parametrize("divergence", ["none", "native", "wasm", "both"])
-def test_parity_forwards_version_and_rejects_shared_backend_divergence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, short: str, divergence: str
+@pytest.mark.parametrize("backend", ["native", "wasm"])
+@pytest.mark.parametrize("diverges", [False, True])
+def test_parity_forwards_version_and_rejects_backend_divergence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    short: str,
+    backend: str,
+    diverges: bool,
 ) -> None:
     target = _version(short)
     extension_targets: list[tuple[str, TargetPythonVersion]] = []
-    actual_native = "wrong\n" if divergence in {"native", "both"} else "oracle\n"
-    actual_wasm = "wrong\n" if divergence in {"wasm", "both"} else "oracle\n"
+    wasm_toolchain_checks: list[None] = []
+    actual = "wrong\n" if diverges else "oracle\n"
     monkeypatch.setattr(parity, "require_verified_subset_target", lambda _: target)
-    monkeypatch.setattr(parity, "require_wasm_toolchain", lambda: None)
+    monkeypatch.setattr(
+        parity, "require_wasm_toolchain", lambda: wasm_toolchain_checks.append(None)
+    )
     monkeypatch.setattr(
         parity,
         "development_artifact_env",
@@ -173,15 +181,17 @@ def test_parity_forwards_version_and_rejects_shared_backend_divergence(
         extension_targets.append((target, target_python))
 
     def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert backend == "native", "the WASM case must not build a native program"
         if "--output" in argv:
             assert argv[argv.index("--python-version") + 1] == short
             return subprocess.CompletedProcess(argv, 0, "build log", "compiler log")
         assert len(argv) == 1, "native comparison must execute the artifact"
-        return subprocess.CompletedProcess(argv, 0, actual_native, "")
+        return subprocess.CompletedProcess(argv, 0, actual, "")
 
     def wasm_build(
         root: Path, program: Path, output: Path, *, extra_args: list[str]
     ) -> Path:
+        assert backend == "wasm", "the native case must not build a WASM program"
         assert program == parity.PROGRAM
         assert extra_args == ["--python-version", short]
         return output / "observer.wasm"
@@ -192,18 +202,19 @@ def test_parity_forwards_version_and_rejects_shared_backend_divergence(
     monkeypatch.setattr(
         parity,
         "run_wasm_linked",
-        lambda *args: subprocess.CompletedProcess([], 0, actual_wasm, ""),
+        lambda *args: subprocess.CompletedProcess([], 0, actual, ""),
     )
-    if divergence == "none":
-        parity.test_finally_pending_observer_native_wasm_parity(tmp_path, monkeypatch)
-    else:
+    if diverges:
         with pytest.raises(
-            AssertionError, match=f"vs CPython {short}: stdout mismatch"
+            AssertionError, match=f"{backend} vs CPython {short}: stdout mismatch"
         ):
-            parity.test_finally_pending_observer_native_wasm_parity(
-                tmp_path, monkeypatch
-            )
-    assert extension_targets == [("native", target), ("wasm", target)]
+            parity.test_finally_pending_observer_parity(tmp_path, monkeypatch, backend)
+    else:
+        parity.test_finally_pending_observer_parity(tmp_path, monkeypatch, backend)
+    # Each case builds only its own target's extension, and only the WASM
+    # case requires the WASM toolchain.
+    assert extension_targets == [(backend, target)]
+    assert len(wasm_toolchain_checks) == (1 if backend == "wasm" else 0)
 
 
 def _builder() -> ModuleType:

@@ -442,7 +442,7 @@ root = Path(__file__).resolve().parents[1]
 if "--run-id" in sys.argv:
     port = int(sys.argv[sys.argv.index("--run-id") + 1])
     with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
-        connection.sendall(f"{os.getpid()}\n".encode())
+        connection.sendall(f"{os.getpid()} {os.getppid()}\n".encode())
         (root / "runner-connected").write_text(str(os.getpid()), encoding="utf-8")
         token = connection.recv(1)
         if token:
@@ -580,10 +580,18 @@ def test_molt_queue_real_cli_leaves_detached_runner_with_queue_owner(
             connection, _ = listener.accept()
             with connection, connection.makefile("rb") as stream:
                 connection.settimeout(30)
-                worker_pid = int(stream.readline())
+                worker_pid, worker_parent = map(int, stream.readline().split())
                 stdout, stderr = process.communicate(timeout=30)
                 assert process.returncode == 0, stderr
-                assert json.loads(stdout)["pid"] == worker_pid
+                # The queue owns the process it launched. A Windows venv's
+                # python.exe is a redirector that runs the interpreter as its
+                # child, so there the owned process is the worker's parent.
+                redirected = os.name == "nt" and os.path.normcase(
+                    sys.executable
+                ) != os.path.normcase(sys._base_executable)
+                assert json.loads(stdout)["pid"] == (
+                    worker_parent if redirected else worker_pid
+                )
                 # This message is first sent after the public CLI has exited.
                 # Echo then EOF proves the detached runner remained alive and
                 # completed its bounded operation under the queue's ownership.

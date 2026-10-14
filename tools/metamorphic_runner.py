@@ -12,7 +12,6 @@ Usage as library:
     assert result.equivalent
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -25,6 +24,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
+from molt.cli.output import (  # noqa: E402
+    build_output_path,
+    json_command_failure,
+    read_json_payload,
+)
 from tools import harness_memory_guard  # noqa: E402
 
 
@@ -40,21 +44,6 @@ class CompareResult:
     error: str | None = None
     original_rc: int | None = None
     transformed_rc: int | None = None
-
-
-def _extract_binary(build_json: dict) -> str | None:
-    """Extract the binary path from build JSON, unwrapping data envelope."""
-    data = build_json
-    if "data" in build_json and isinstance(build_json["data"], dict):
-        data = build_json["data"]
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in data:
-            return data[key]
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                return data["build"][key]
-    return None
 
 
 class MetamorphicRunner:
@@ -134,52 +123,17 @@ class MetamorphicRunner:
                     f"Build timeout ({self.build_timeout:g}s) for {label}",
                 )
             if build_result.returncode != 0:
+                failure = json_command_failure(build_result.stdout, build_result.stderr)
                 return (
                     "",
                     "",
                     build_result.returncode,
-                    f"Build failed for {label}: {build_result.stderr[:500]}",
+                    f"Build failed for {label}: {failure}",
                 )
-
-            # Parse build output — handle non-JSON lines before the JSON
-            stdout = build_result.stdout.strip()
-            json_str = None
-            for line in reversed(stdout.splitlines()):
-                line = line.strip()
-                if line.startswith("{"):
-                    json_str = line
-                    break
-
-            if json_str is None:
-                try:
-                    build_info = json.loads(stdout)
-                except json.JSONDecodeError:
-                    return (
-                        "",
-                        "",
-                        None,
-                        f"Invalid build JSON for {label}: {stdout[:200]}",
-                    )
-            else:
-                try:
-                    build_info = json.loads(json_str)
-                except json.JSONDecodeError:
-                    return (
-                        "",
-                        "",
-                        None,
-                        f"Invalid build JSON for {label}: {json_str[:200]}",
-                    )
-
-            binary_path = _extract_binary(build_info)
-            if binary_path is None:
-                return (
-                    "",
-                    "",
-                    None,
-                    f"Cannot find binary in build output for {label}. "
-                    f"Keys: {list(build_info.keys())}",
-                )
+            try:
+                binary_path = build_output_path(read_json_payload(build_result.stdout))
+            except ValueError as exc:
+                return "", "", None, f"Build output for {label}: {exc}"
 
             if not Path(binary_path).exists():
                 return "", "", None, f"Binary not found at {binary_path} for {label}"

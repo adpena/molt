@@ -9,6 +9,7 @@ from molt.frontend import MoltValue
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 _CACHE_KEY_SCHEMA_VERSION = "v6"
@@ -187,7 +188,8 @@ def _cache_key_for_payload_digest(
     if variant:
         suffix = f"{suffix}:{variant}"
     if compiler_fingerprint is None:
-        compiler_fingerprint = _cache_fingerprint()
+        # No admitted compiler means no build request: the baseline compiler.
+        compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
     if tooling_fingerprint is None:
         tooling_fingerprint = _cache_tooling_fingerprint()
     digest = hashlib.sha256()
@@ -219,7 +221,8 @@ def _cache_key_for_json_payload_bytes(
     if variant:
         suffix = f"{suffix}:{variant}"
     if compiler_fingerprint is None:
-        compiler_fingerprint = _cache_fingerprint()
+        # No admitted compiler means no build request: the baseline compiler.
+        compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
     if tooling_fingerprint is None:
         tooling_fingerprint = _cache_tooling_fingerprint()
     payload_hasher = hashlib.sha256()

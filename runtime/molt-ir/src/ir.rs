@@ -1197,10 +1197,6 @@ impl SimpleIR {
         self.functions
             .retain(|func| reachable.contains(func.name.as_str()));
     }
-
-    pub fn tree_shake_luau(&mut self) {
-        self.tree_shake_source_emission();
-    }
 }
 
 impl<'de> Deserialize<'de> for SimpleIR {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from tests.process_guard_common import (
     check_output_custody_subject_process,
+    install_module_view,
     run_custody_subject_process,
     run_guarded_test_process,
 )
@@ -1094,7 +1095,8 @@ def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -
     "command_id",
     [
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.finally-pending-observer-parity.wasm",
     ],
 )
 def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
@@ -1221,7 +1223,9 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority(
 def test_cargo_configured_target_reaches_identity_authority(tmp_path, source):
     target = "x86_64-pc-windows-msvc"
     (tmp_path / ".cargo").mkdir()
-    (tmp_path / ".cargo/config.toml").write_text('[build]\ntarget="wasm32-wasip1"\n')
+    (tmp_path / ".cargo/config.toml").write_text(
+        '[build]\ntarget="wasm32-wasip1"\n', encoding="utf-8"
+    )
     command = ["cargo", "check"]
     env = {}
     if source == "config":
@@ -2910,11 +2914,11 @@ def _real_case_tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
     )
 
 
-def _real_cargo_output_root() -> str | None:
+def _real_cargo_output_root(*, host_platform: str | None = None) -> str | None:
     """Use an explicitly provisioned test boundary; never choose another root."""
     configured = os.environ.get("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT")
     if configured is None:
-        if sys.platform == "win32":
+        if (sys.platform if host_platform is None else host_platform) == "win32":
             raise ValueError(
                 "Windows real queue tests require an existing short "
                 "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT supplied by the test owner"
@@ -2939,9 +2943,8 @@ def _real_queue_output_toml() -> list[str]:
 
 def test_real_queue_windows_output_root_requires_owner_selection(monkeypatch):
     monkeypatch.delenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(ValueError, match="supplied by the test owner"):
-        _real_cargo_output_root()
+        _real_cargo_output_root(host_platform="win32")
 
 
 def test_real_queue_output_root_is_declared_not_created(tmp_path, monkeypatch):
@@ -3734,7 +3737,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
     cache = tmp_path / "cache"
     (cache / "module_lowering").mkdir(parents=True)
     entry = cache / "module_lowering/entry.json"
-    entry.write_text("immutable cache payload")
+    entry.write_text("immutable cache payload", encoding="utf-8")
     marker = tmp_path / "payload-finished"
     for name, value in {
         "MOLT_CACHE": str(cache),
@@ -3763,7 +3766,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
 
     def sweep(root, **kwargs):
         assert events[-1] == "payload-closed"
-        assert marker.read_text() == "done"
+        assert marker.read_text(encoding="utf-8") == "done"
         assert root == cache
         assert kwargs["automatic"] is True
         events.append("prune")
@@ -5173,7 +5176,7 @@ def test_passed_windows_declared_tree_requires_platform_process_custody(
         "SELECT * FROM proof_runs WHERE run_id = ?", ("platform-custody-run",)
     ).fetchone()
     assert row is not None
-    monkeypatch.setattr(evidence_module.sys, "platform", "win32")
+    install_module_view(monkeypatch, "sys", sys, evidence_module, platform="win32")
 
     with pytest.raises(ValueError, match="stable platform process-image custody"):
         evidence_module._queue_proof_receipt(row)
@@ -6202,7 +6205,15 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
         ]
     )
 
-    assert rc == 0
+    if rc != 0:
+        # Name the cause: the follow-up's run log stays on the runner.
+        followup = [row for row in _rows(db) if row["run_id"] != rows[0]["run_id"]]
+        detail = (
+            Path(followup[-1]["log_path"]).read_text(encoding="utf-8", errors="replace")
+            if followup
+            else "the follow-up recorded no queue row"
+        )
+        pytest.fail(f"follow-up exec returned {rc}:\n{detail}")
     assert followup_marker.read_text(encoding="utf-8") == "ran"
 
 
@@ -9395,7 +9406,9 @@ def test_proof_queue_named_lane_can_detach_runner(
     )
     prepared_python.parent.mkdir(parents=True)
     prepared_python.write_bytes(b"prepared fixture image")
-    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+        "{}", encoding="utf-8"
+    )
     monkeypatch.setattr(
         environment_authority,
         "_source_build_custody_root",
@@ -9625,17 +9638,14 @@ def test_proof_queue_windows_launchers_hide_console(
             captured.append(kwargs)
 
     monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: True)
-    monkeypatch.setattr(
-        custody.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        custody.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
+    # Custody hands its own subprocess module to the process-spawn helpers.
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        custody,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        CREATE_NO_WINDOW=0x08000000,
     )
     monkeypatch.setattr(custody, "Popen", FakePopen)
 
@@ -18159,7 +18169,7 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
     value = (
         f'env.{key} = {{ value = "external-selection", force = {str(forced).lower()} }}'
     )
-    config.write_text(value)
+    config.write_text(value, encoding="utf-8")
     command = ["cargo", "--config", value if inline else str(config), "clippy"]
     envelope = command_admission.envelope_for_command(command)
     kwargs = dict(

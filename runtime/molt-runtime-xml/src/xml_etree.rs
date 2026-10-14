@@ -4,9 +4,10 @@
 //! iterparse, indent, Comment, ProcessingInstruction, register_namespace.
 
 use crate::bridge::{
-    alloc_list, alloc_string, alloc_tuple, inc_ref_bits, int_bits_from_i64, is_truthy,
-    raise_exception, string_obj_to_owned, to_i64,
+    alloc_list, alloc_string, alloc_tuple, int_bits_from_i64, raise_exception, string_obj_to_owned,
+    to_i64,
 };
+use crate::entities::unescape_xml;
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
@@ -155,29 +156,6 @@ fn parse_attr_value(data: &[u8], mut pos: usize) -> Result<(String, usize), Stri
     Ok((val, pos))
 }
 
-fn unescape_xml(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&apos;", "'")
-        .replace("&quot;", "\"")
-}
-
-fn escape_xml(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
 fn parse_element(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
     pos = skip_ws(data, pos);
     // skip XML declaration / processing instructions
@@ -295,91 +273,6 @@ fn parse_element(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
 
     let handle = store_element(elem);
     Ok((handle, pos))
-}
-
-fn serialize_element(handle: i64, short_empty: bool) -> String {
-    let (tag, text, tail, attrib, children) = match with_element(handle, |e| {
-        (
-            e.tag.clone(),
-            e.text.clone(),
-            e.tail.clone(),
-            e.attrib.clone(),
-            e.children.clone(),
-        )
-    }) {
-        Some(v) => v,
-        None => return String::new(),
-    };
-
-    let mut out = String::new();
-    out.push('<');
-    out.push_str(&tag);
-    let mut sorted_attrs: Vec<_> = attrib.iter().collect();
-    sorted_attrs.sort_by_key(|(k, _)| (*k).clone());
-    for (k, v) in &sorted_attrs {
-        out.push(' ');
-        out.push_str(k);
-        out.push_str("=\"");
-        out.push_str(&escape_xml(v));
-        out.push('"');
-    }
-
-    if children.is_empty() && text.is_none() && short_empty {
-        out.push_str(" />");
-    } else {
-        out.push('>');
-        if let Some(t) = &text {
-            out.push_str(&escape_xml(t));
-        }
-        for &child_h in &children {
-            out.push_str(&serialize_element(child_h, short_empty));
-        }
-        out.push_str("</");
-        out.push_str(&tag);
-        out.push('>');
-    }
-
-    if let Some(t) = &tail {
-        out.push_str(&escape_xml(t));
-    }
-
-    out
-}
-
-fn indent_element(handle: i64, space: &str, level: usize) {
-    let children = match with_element(handle, |e| e.children.clone()) {
-        Some(c) => c,
-        None => return,
-    };
-    if children.is_empty() {
-        return;
-    }
-    let indent = format!("\n{}", space.repeat(level + 1));
-    let child_indent = format!("\n{}", space.repeat(level));
-
-    with_element_mut(handle, |e| {
-        if e.text.is_none() || e.text.as_deref() == Some("") {
-            e.text = Some(indent.clone());
-        }
-    });
-
-    let last_idx = children.len() - 1;
-    for (i, &child_h) in children.iter().enumerate() {
-        indent_element(child_h, space, level + 1);
-        if i < last_idx {
-            with_element_mut(child_h, |e| {
-                if e.tail.is_none() || e.tail.as_deref() == Some("") {
-                    e.tail = Some(indent.clone());
-                }
-            });
-        } else {
-            with_element_mut(child_h, |e| {
-                if e.tail.is_none() || e.tail.as_deref() == Some("") {
-                    e.tail = Some(child_indent.clone());
-                }
-            });
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

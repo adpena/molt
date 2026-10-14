@@ -41,7 +41,7 @@ import io
 import json
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict, field as dataclass_field
 from functools import wraps
@@ -2627,7 +2627,7 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     return findings
 
 
-# --- process-wide stdlib patches in tests (HF-43) -------------------------
+# --- process-wide stdlib patches in tests (HF-F181) -------------------------
 
 # Shared stdlib modules whose attributes every caller in a pytest process reads,
 # the suite-lease and sentinel threads among them.
@@ -2994,6 +2994,10 @@ _SCRATCH_AUTHORITY_OWNER = "src/molt/dx.py"
 _ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 _ARTIFACT_ROOT_CONSTANT = "ARTIFACT_ROOT_ENV"
 _TMP_SEGMENT_RE = re.compile(r"tmp(?:[/\\\\]|$)")
+# A str literal whose value starts with "tmp" puts a quote, after at most one
+# str prefix, directly before it. Escapes and implicit concatenation can hide
+# it, as they already hide it from a plain "tmp" substring test.
+_PY_TMP_LITERAL_RE = re.compile(r"""(?<![\w])[rRuU]?["']tmp""")
 # Rust cannot import molt.dx. The backend takes the one directory the CLI
 # passes (MOLT_DEBUG_ARTIFACT_DIR, HF-111), so Rust that names the artifact
 # root or joins "tmp" onto a base derives a root itself.
@@ -3060,11 +3064,13 @@ def _is_checkout_root_expr(node: ast.expr) -> bool:
     return False
 
 
-def _dx_bindings(tree: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+def _dx_bindings(
+    imports: Iterable[ast.Import | ast.ImportFrom],
+) -> tuple[frozenset[str], frozenset[str]]:
     """Names bound to ``molt.dx.ARTIFACT_ROOT_ENV`` and to ``molt.dx`` itself."""
     constants: set[str] = set()
     modules: set[str] = set()
-    for node in ast.walk(tree):
+    for node in imports:
         if isinstance(node, ast.ImportFrom) and node.module == "molt.dx":
             constants.update(
                 alias.asname or alias.name
@@ -3168,15 +3174,25 @@ def _scratch_authority_sites(
     join onto a checkout constant or an ambient ``os.environ`` read counts.
     """
     sites: list[tuple[int, str, str]] = []
-    dx_bindings = _dx_bindings(tree)
+    # One walk: an artifact-root read depends on the module's molt.dx imports,
+    # wherever they occur, so reads are judged after every import is seen.
+    imports: list[ast.Import | ast.ImportFrom] = []
+    reads: list[ast.Call | ast.Subscript] = []
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+            continue
         base = _tmp_join_base(node)
         if base is not None and (not test_module or _is_checkout_root_expr(base)):
             sites.append((node.lineno, "tmp-join", ast.unparse(base)))
-        elif _artifact_root_read(
-            node, ambient_only=test_module, dx_bindings=dx_bindings
-        ):
-            sites.append((node.lineno, "artifact-root-read", _ARTIFACT_ROOT_ENV))
+        elif isinstance(node, (ast.Call, ast.Subscript)):
+            reads.append(node)
+    dx_bindings = _dx_bindings(imports)
+    sites.extend(
+        (node.lineno, "artifact-root-read", _ARTIFACT_ROOT_ENV)
+        for node in reads
+        if _artifact_root_read(node, ambient_only=test_module, dx_bindings=dx_bindings)
+    )
     return sorted(sites)
 
 
@@ -3246,9 +3262,13 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
         except OSError:
             continue
         if (
-            "tmp" not in text
-            and _ARTIFACT_ROOT_ENV not in text
-            and (_ARTIFACT_ROOT_CONSTANT not in text)
+            _ARTIFACT_ROOT_ENV not in text
+            and _ARTIFACT_ROOT_CONSTANT not in text
+            and (
+                "tmp" not in text
+                if path.suffix == ".rs"
+                else _PY_TMP_LITERAL_RE.search(text) is None
+            )
         ):
             continue
         if path.suffix == ".rs":

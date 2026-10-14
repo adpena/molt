@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 # The waiver registry, relative to the scanned checkout.
 REGISTRY_RELPATH = Path("tools") / "dead_code_allow_baseline.json"
 SCAN_ROOTS = ("runtime", "src")
-ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]")
+# Plain and conditional (`cfg_attr(cond, allow(...))`) allow attributes.
+ALLOW_RE = re.compile(
+    r"#!?\[\s*(?:allow|cfg_attr\s*\([^\]]*?\ballow)\s*\(([^)]*)\)[^\]]*\]"
+)
+# `unused` is the lint group that contains `dead_code`.
+DEAD_CODE_LINTS = frozenset({"dead_code", "unused"})
 CFG_CORPSE_RE = re.compile(
     r"#\[\s*cfg\s*\(\s*(?:any\s*\(\s*\)|not\s*\(\s*all\s*\(\s*\)\s*\))\s*\)\s*\]"
 )
@@ -225,7 +230,7 @@ def scan(root: Path = ROOT) -> list[Site]:
             matches: list[tuple[int, str]] = []
             for match in ALLOW_RE.finditer(text):
                 lints = {lint.strip() for lint in match.group(1).split(",")}
-                if "dead_code" in lints:
+                if lints & DEAD_CODE_LINTS:
                     matches.append((match.start(), "allow_dead_code"))
             matches.extend(
                 (match.start(), "cfg_corpse") for match in CFG_CORPSE_RE.finditer(text)

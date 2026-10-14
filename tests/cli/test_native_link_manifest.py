@@ -36,6 +36,7 @@ from molt.cli.native_link_manifest import (
     write_native_link_dependency_manifest,
 )
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.cli.process_guard import run_cli_test_process
 from tests.llvm_sdk_test_support import verified_llvm_tools
@@ -1173,6 +1174,7 @@ def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
         cargo_timeout=30.0,
         stdlib_profile="micro",
         runtime_state=state,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert state.native_runtime_build_failure is not None
     assert "error[E0425]" in state.native_runtime_build_failure.summary

@@ -40,6 +40,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
+from molt.cli.output import (  # noqa: E402
+    build_output_path,
+    json_command_failure,
+    read_json_payload,
+)
 from tools import harness_memory_guard  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
@@ -174,55 +179,6 @@ def find_first_diff(path1: str, path2: str) -> tuple[int, int, int] | None:
     return None
 
 
-def extract_artifact_path(build_json: object, prefer_object: bool = False) -> str:
-    """Extract the artifact path from build JSON output.
-
-    When *prefer_object* is True, prefer the ``.o`` file over the linked binary
-    because the linker (especially on macOS) injects nondeterministic UUIDs.
-    """
-    if not isinstance(build_json, dict):
-        raise ValueError("build JSON must be an object")
-    data = build_json
-    # Unwrap "data" envelope (molt.cli build --json wraps output in data)
-    if "data" in build_json:
-        if not isinstance(build_json["data"], dict):
-            raise ValueError("build data must be an object")
-        data = build_json["data"]
-
-    # Check status field — bail early if build failed
-    status = build_json.get("status") or data.get("status")
-    if status and status != "ok":
-        raise KeyError(f"Build reported non-ok status: {status}")
-
-    # If prefer_object, try to find the object file first
-    if prefer_object:
-        artifacts = data.get("artifacts", {})
-        if isinstance(artifacts, dict) and "object" in artifacts:
-            artifact = artifacts["object"]
-            if not isinstance(artifact, str) or not artifact:
-                raise ValueError("artifact path must be a non-empty string")
-            return artifact
-
-    # Try standard keys
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in data:
-            artifact = data[key]
-            if not isinstance(artifact, str) or not artifact:
-                raise ValueError("artifact path must be a non-empty string")
-            return artifact
-    # Try nested under "build"
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                artifact = data["build"][key]
-                if not isinstance(artifact, str) or not artifact:
-                    raise ValueError("artifact path must be a non-empty string")
-                return artifact
-    raise KeyError(
-        f"Cannot find artifact path in build JSON. Available keys: {list(data.keys())}"
-    )
-
-
 def _build_once(
     source: str,
     cache_dir: str,
@@ -285,28 +241,18 @@ def _build_once(
     if result.returncode != 0:
         return (
             None,
-            f"build failed (exit {result.returncode}): {result.stderr[:500]}",
+            f"build failed (exit {result.returncode}): "
+            f"{json_command_failure(result.stdout, result.stderr)}",
             launch,
         )
-
-    stdout = result.stdout.strip()
-    json_str = None
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            json_str = line
-            break
-
     try:
-        build_info = json.loads(stdout if json_str is None else json_str)
-    except json.JSONDecodeError as e:
-        return None, f"invalid build JSON: {e}", launch
-
+        artifact = build_output_path(read_json_payload(result.stdout))
+    except ValueError as exc:
+        return None, f"build output: {exc}", launch
     try:
-        artifact = extract_artifact_path(build_info, prefer_object=prefer_object)
         if not Path(artifact).exists():
             return None, f"artifact not found: {artifact}", launch
-    except (KeyError, ValueError, OSError) as exc:
+    except OSError as exc:
         return None, f"build artifact error: {str(exc) or type(exc).__name__}", launch
 
     return artifact, "", launch
@@ -546,7 +492,11 @@ def main() -> int:
     parser.add_argument(
         "--object",
         action="store_true",
-        help="Compare .o files instead of linked binaries (avoids linker UUID nondeterminism)",
+        help=(
+            "With --build/--batch, build with --emit obj and compare the objects "
+            "(avoids linker UUID nondeterminism); saved payloads already name "
+            "their own artifact"
+        ),
     )
     parser.add_argument(
         "--build",
@@ -730,12 +680,12 @@ def main() -> int:
     phase = "build-json"
     try:
         with open(args.build_jsons[0], encoding="utf-8") as f:
-            build1 = json.load(f)
+            build1 = read_json_payload(f.read())
         with open(args.build_jsons[1], encoding="utf-8") as f:
-            build2 = json.load(f)
+            build2 = read_json_payload(f.read())
         phase = "artifact-path"
-        artifact1 = extract_artifact_path(build1, prefer_object=args.object)
-        artifact2 = extract_artifact_path(build2, prefer_object=args.object)
+        artifact1 = build_output_path(build1)
+        artifact2 = build_output_path(build2)
         phase = "artifact-read"
         match, details = compare_artifacts(artifact1, artifact2)
     except (OSError, ValueError, KeyError) as exc:

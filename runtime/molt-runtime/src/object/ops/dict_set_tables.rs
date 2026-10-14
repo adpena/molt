@@ -17,6 +17,21 @@ pub(crate) unsafe fn dict_commit_structure(ptr: *mut u8) {
     }
 }
 
+/// The one commit for a dictionary whose whole contents were cleared or
+/// replaced: `clear()` and the C-API `PyDict_Clear`, staged publication, and
+/// lifecycle and cycle clearing. It bumps the structural epoch and resets the
+/// namespace binding guard state, so no path that empties or swaps a
+/// namespace can leave its guard bits stale (HF-79). Lifecycle clearing can
+/// reach a dictionary whose order vector was never allocated; it has no epoch.
+pub(crate) unsafe fn dict_commit_reset(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        if !dict_entries_ptr(ptr).is_null() {
+            dict_commit_structure(ptr);
+        }
+        crate::builtins::binding_guards::note_namespace_reset(py, ptr);
+    }
+}
+
 /// Publish a fully prepared dictionary without changing the live dictionary's
 /// identity or releasing any displaced Python value. The staged dictionary
 /// receives the old contents; its caller releases that owner only after all
@@ -76,7 +91,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
                 (*header_from_obj_ptr(object))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
-            dict_commit_structure(object);
+            dict_commit_reset(py, object);
             if tracked {
                 crate::object::gc::gc_track_dict(py, object);
             }
@@ -201,6 +216,11 @@ unsafe fn dict_replace_value(
         }
         // Publish the slot and tracking state before releasing the old edge.
         dict_entries(ptr)[value_index].value = new_bits;
+        crate::builtins::binding_guards::note_namespace_rebind(
+            _py,
+            ptr,
+            dict_entries(ptr)[value_index].key,
+        );
         crate::object::gc::gc_track_dict_references(_py, ptr, &[new_bits]);
         crate::object::field_storage::debug::replacement(
             _py,
@@ -539,7 +559,7 @@ pub(crate) enum ExactStringLookup {
 /// Borrow the bytes of an exact `str`; any other object is `None`. Hashing and
 /// comparing exact `str` bytes cannot call Python.
 #[inline]
-unsafe fn exact_string_bytes<'s>(py: &PyToken<'_>, bits: u64) -> Option<&'s [u8]> {
+pub(crate) unsafe fn exact_string_bytes<'s>(py: &PyToken<'_>, bits: u64) -> Option<&'s [u8]> {
     unsafe {
         let ptr = obj_from_bits(bits).as_ptr()?;
         let class = object_class_bits(ptr);
@@ -1777,6 +1797,7 @@ unsafe fn dict_append_reserved_entry(
         }
         dict_storage(ptr).live += 1;
         dict_commit_insertion(py, ptr, key, value);
+        crate::builtins::binding_guards::note_namespace_insert(py, ptr, key);
         crate::object::field_storage::debug::dictionary(
             py,
             "dict_insert",
@@ -2311,6 +2332,7 @@ unsafe fn dict_remove_row<'a, 'py>(
         dict_table(ptr)[probe.slot] = TABLE_TOMBSTONE;
         dict_storage(ptr).live -= 1;
         dict_commit_structure(ptr);
+        crate::builtins::binding_guards::note_namespace_rebind(py, ptr, row.key);
         if dict_len(ptr) == 0 {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -2372,7 +2394,7 @@ unsafe fn dict_detach_contents(
         dict_storage(ptr).live = 0;
         dict_storage(ptr).fill = 0;
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
-        dict_commit_structure(ptr);
+        dict_commit_reset(_py, ptr);
         removed
     }
 }

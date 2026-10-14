@@ -87,6 +87,7 @@ from molt.cli.runtime_native_codegen import (
 )
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.wasm_codegen_layout import (
     WasmCodegenLayout,
     prepare_wasm_codegen_layout,
@@ -124,11 +125,16 @@ def _record_pipeline_stage_ms(
 
 @dataclass(frozen=True)
 class _BackendSelection:
-    """The backend compiler one build lane dispatches."""
+    """The backend compiler one build lane dispatches.
+
+    ``rust_cpu`` is the build's Rust CPU policy. It does not rename the binary,
+    but it is part of the compiler identity that admission fingerprints.
+    """
 
     cargo_profile: str
     features: tuple[str, ...]
     binary: Path
+    rust_cpu: RustCpuPolicy
 
 
 def _select_backend_binary(
@@ -139,6 +145,7 @@ def _select_backend_binary(
     is_luau_transpile: bool,
     is_rust_transpile: bool,
     codegen_backend: CodegenBackend,
+    rust_cpu: RustCpuPolicy,
 ) -> _BackendSelection:
     """Select the backend compiler for a build lane.
 
@@ -157,6 +164,7 @@ def _select_backend_binary(
         cargo_profile=backend_cargo_profile,
         features=backend_features,
         binary=_backend_bin_path(molt_root, backend_cargo_profile, backend_features),
+        rust_cpu=rust_cpu,
     )
 
 
@@ -175,6 +183,7 @@ def _ensure_selected_backend_binary(
         cargo_profile=selection.cargo_profile,
         project_root=molt_root,
         backend_features=selection.features,
+        rust_cpu=selection.rust_cpu,
         stage_timings_ms=stage_timings_ms,
     )
 
@@ -211,6 +220,7 @@ def _prepare_backend_setup(
     ),
     resolved_modules: set[str] | frozenset[str] | None = None,
     codegen: CodegenSelection,
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
@@ -235,6 +245,7 @@ def _prepare_backend_setup(
             target_triple=target_triple,
             stdlib_profile=stdlib_profile,
             extra_runtime_features=extra_runtime_features,
+            rust_cpu=rust_cpu,
         )
     except InstalledRuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -269,6 +280,7 @@ def _prepare_backend_setup(
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen.backend,
+        rust_cpu=rust_cpu,
     )
     backend_bin = backend_selection.binary
     backend_binary_start = time.perf_counter()
@@ -344,6 +356,7 @@ def _prepare_backend_setup(
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
             codegen=codegen,
+            rust_cpu=rust_cpu,
             stage_timings_ms=stage_timings_ms,
         )
     except (NativeSymbolInspectionError, OSError, ValueError) as error:
@@ -540,6 +553,7 @@ def _prepare_backend_dispatch(
     backend_daemon_config_digest: str | None,
     warnings: list[str],
     codegen: CodegenSelection,
+    rust_cpu: RustCpuPolicy,
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
@@ -602,6 +616,7 @@ def _prepare_backend_dispatch(
             is_luau_transpile=is_luau_transpile,
             is_rust_transpile=is_rust_transpile,
             codegen_backend=codegen.backend,
+            rust_cpu=rust_cpu,
         )
         backend_bin = backend_selection.binary
         backend_ensure_result = _ensure_selected_backend_binary(
@@ -1197,6 +1212,7 @@ def _prepare_backend_compile(
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
     codegen: CodegenSelection,
+    rust_cpu: RustCpuPolicy,
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
@@ -1281,6 +1297,7 @@ def _prepare_backend_compile(
                     backend_bin=backend_bin,
                     backend_compiler_fingerprint=backend_compiler_fingerprint,
                     codegen=codegen,
+                    rust_cpu=rust_cpu,
                 )
             )
             if prepared_backend_dispatch_error is not None:

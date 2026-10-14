@@ -92,14 +92,6 @@ impl LuauBackend {
         self.emit_source(ir)
     }
 
-    /// Compile via the IR pipeline with validation and performance review.
-    ///
-    /// This path is intentionally fail-closed: preview/IR-pipeline builds must
-    /// not emit unchecked Luau when validation discovers unsupported semantics.
-    pub fn compile_via_ir(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        self.compile_checked(ir)
-    }
-
     /// Compile the given IR and reject preview-blocker markers that would
     /// otherwise silently emit syntactically valid but semantically incomplete
     /// Luau.

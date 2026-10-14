@@ -405,7 +405,6 @@ def _dispatch_entrypoint_command(
             require_signed_manifest=getattr(args, "require_signed_manifest", False),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
-            type_gate=getattr(args, "type_gate", False),
             python_version=getattr(args, "python_version", None),
             build_config=build_cfg,
             bolt=bolt_requested,
@@ -733,7 +732,6 @@ def _dispatch_entrypoint_command(
                 cast(BuildProfile | None, run_profile),
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
-                type_gate=getattr(args, "type_gate", False),
             )
         if run_target == "mlir":
             # MLIR target: build to get MLIR text (no JIT in run mode yet).
@@ -755,7 +753,6 @@ def _dispatch_entrypoint_command(
                 cast(BuildProfile | None, run_profile),
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
-                type_gate=getattr(args, "type_gate", False),
             )
         return run_script(
             args.file,
@@ -772,7 +769,6 @@ def _dispatch_entrypoint_command(
             cast(BuildProfile | None, run_profile),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
-            type_gate=getattr(args, "type_gate", False),
         )
     if args.command == "repl":
         from molt.repl import run_repl

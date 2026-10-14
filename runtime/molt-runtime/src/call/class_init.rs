@@ -45,14 +45,16 @@ pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
     // Default type construction and explicit object.__new__ converge here.
-    // A plain class allocation cannot supply the wrapper's native poll payload.
+    // A plain class allocation cannot supply an adapter's native poll payload.
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
     if crate::builtins::classes::builtin_classes_if_initialized(_py)
-        .is_some_and(|classes| MoltObject::from_ptr(class_ptr).bits() == classes.coroutine_wrapper)
+        .is_some_and(|classes| classes.is_poll_adapter_class(class_bits))
     {
+        let name = class_name_for_error(class_bits);
         return raise_exception::<_>(
             _py,
             "TypeError",
-            "cannot create 'coroutine_wrapper' instances",
+            &format!("cannot create '{name}' instances"),
         );
     }
     unsafe {

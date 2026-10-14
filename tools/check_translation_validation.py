@@ -33,7 +33,6 @@ Exit codes:
 
 import argparse
 import difflib
-import json
 import os
 import subprocess
 import sys
@@ -51,6 +50,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.cli.output import (  # noqa: E402
+    build_output_path,
+    json_command_failure,
+    read_json_payload,
+)
 from molt.dx import scratch_dir  # noqa: E402
 
 
@@ -72,27 +76,6 @@ def _make_env() -> dict[str, str]:
         env["PYTHONPATH"] = src_dir
     env["PYTHONHASHSEED"] = "0"
     return env
-
-
-def _extract_binary(build_json: dict) -> str | None:
-    """Extract the binary path from Molt build JSON output.
-
-    Handles the ``data`` envelope: ``d.get("data", d)`` then looks for
-    the ``output`` key (or fallback keys used by various build versions).
-    """
-    data = build_json.get("data", build_json)
-    if isinstance(data, dict):
-        pass
-    else:
-        data = build_json
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in data:
-            return data[key]
-    if "build" in data and isinstance(data["build"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in data["build"]:
-                return data["build"][key]
-    return None
 
 
 def run_cpython(
@@ -163,33 +146,14 @@ def build_molt(
         return None, f"Molt build timed out after {timeout}s"
 
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        return None, f"Molt build failed (exit {result.returncode}): {detail[:500]}"
-
-    # Parse JSON from stdout -- the build may emit non-JSON lines before the
-    # JSON payload, so try each line from the end.
-    stdout = result.stdout.strip()
-    build_info = None
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                build_info = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
-    if build_info is None:
-        # Try the entire stdout as a single JSON blob
-        try:
-            build_info = json.loads(stdout)
-        except json.JSONDecodeError:
-            return None, f"Build produced no valid JSON. stdout: {stdout[:500]}"
-
-    binary = _extract_binary(build_info)
-    if binary is None:
         return None, (
-            f"Cannot find binary in build JSON. Keys: {list(build_info.keys())}"
+            f"Molt build failed (exit {result.returncode}): "
+            f"{json_command_failure(result.stdout, result.stderr)}"
         )
+    try:
+        binary = build_output_path(read_json_payload(result.stdout))
+    except ValueError as exc:
+        return None, f"Molt build output: {exc}"
     if not Path(binary).exists():
         return None, f"Binary path does not exist: {binary}"
     return binary, ""

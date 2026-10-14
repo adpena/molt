@@ -12,11 +12,11 @@ import pytest
 
 @pytest.fixture
 def molt_types(monkeypatch):
+    # The runtime payload carries the whole public surface plus the private
+    # coroutine implementation; CPython 3.12 lacks only CapsuleType.
     bootstrap = {
-        name: getattr(types, name)
-        for name in ("FunctionType", "CodeType", "GeneratorType", "CoroutineType")
+        name: getattr(types, name, type) for name in (*types.__all__, "CapsuleType")
     }
-    bootstrap["coroutine"] = types.coroutine
     intrinsic = types.ModuleType("_intrinsics")
     intrinsic.require_intrinsic = lambda name: lambda: bootstrap
     monkeypatch.setitem(sys.modules, "_intrinsics", intrinsic)

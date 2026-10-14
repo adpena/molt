@@ -5,10 +5,6 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::{IntRange, OpCode};
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_EXC_ELIDE").is_ok() {
         return;

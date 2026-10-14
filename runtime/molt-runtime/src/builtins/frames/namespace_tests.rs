@@ -91,7 +91,8 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 } else {
                     // An optimized activation's bindings are its compiled
                     // homes, not a dictionary injected as module locals.
-                    let homes = molt_frame_homes(1) as usize as *mut u64;
+                    let homes = crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes(1))
+                        .expect("frame homes address fits the target");
                     assert!(!homes.is_null());
                     unsafe {
                         *homes = molt_codegen_abi::FRAME_HOME_PLAIN as u64;

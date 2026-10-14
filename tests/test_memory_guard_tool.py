@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
 import subprocess
@@ -34,6 +35,7 @@ import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    current_thread_only,
     guard_custody_env,
     install_module_os_view,
     install_module_view,
@@ -3369,22 +3371,74 @@ def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
 def test_actual_darwin_vm_pages_match_vm_stat() -> None:
     """vm_stat formats the same Mach counters through its own code path."""
-    text = str(
-        check_output_guarded_test_process(
-            ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+
+    def vm_stat() -> tuple[str, dict[str, int]]:
+        text = str(
+            check_output_guarded_test_process(
+                ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+            )
         )
-    )
-    page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
-    header = text.splitlines()[0]
+        reported: dict[str, int] = {}
+        for line in text.splitlines()[1:]:
+            name, _, value = line.partition(":")
+            if value.strip().rstrip(".").isdigit():
+                reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
+        return text.splitlines()[0], reported
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def fresh_read() -> tuple[int, dict[str, int]]:
+        # macOS rate-limits host_statistics64 for non-platform binaries and
+        # answers a process's excess calls in one window with cached counters:
+        # in CI this process read "Pages free" as 41,711 in three rounds while
+        # vm_stat moved from 55,942 to 54,811. vm_stat is a platform binary and
+        # exempt, and a new process's first call is never rate-limited.
+        text = check_output_guarded_test_process(
+            [
+                sys.executable,
+                "-c",
+                "import json, tools.memory_guard as m; "
+                "print(json.dumps(m.darwin_vm_pages()))",
+            ],
+            cwd=repo_root,
+            env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
+            timeout=60.0,
+        )
+        page_size, pages = json.loads(str(text))
+        return int(page_size), {str(k): int(v) for k, v in pages.items()}
+
+    # Counters move while a busy host runs other tests, so bracket each read
+    # between two vm_stat samples. Pages move between buckets in bursts, so
+    # the slack is 1% of all pages; a wrong counter mapping is a fixed offset
+    # that escapes every bracket.
+    header, sample = vm_stat()
+    rounds = []
+    for _ in range(3):
+        page_size, pages = fresh_read()
+        _header, after = vm_stat()
+        rounds.append((sample, pages, after))
+        sample = after
     assert f"page size of {page_size} bytes" in header
-    reported: dict[str, int] = {}
-    for line in text.splitlines()[1:]:
-        name, _, value = line.partition(":")
-        if value.strip().rstrip(".").isdigit():
-            reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
-    for name, count in pages.items():
-        # The two reads are microseconds apart; a busy host moves a few pages.
-        assert abs(reported[name] - count) <= max(4096, reported[name] // 50), name
+    buckets = (
+        "Pages free",
+        "Pages active",
+        "Pages inactive",
+        "Pages speculative",
+        "Pages throttled",
+        "Pages wired down",
+        "Pages occupied by compressor",
+    )
+    slack = max(1024, sum(rounds[0][0][name] for name in buckets) // 100)
+
+    def bracketed(name: str, before: dict, count: int, after: dict) -> bool:
+        low, high = sorted((before[name], after[name]))
+        return low - slack <= count <= high + slack
+
+    for name in rounds[0][1]:
+        assert any(
+            bracketed(name, before, pages[name], after)
+            for before, pages, after in rounds
+        ), (name, slack, [(b[name], p[name], a[name]) for b, p, a in rounds])
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
@@ -7100,7 +7154,13 @@ def test_repro_context_platform_detail_does_not_spawn_subprocess(
     def forbidden_platform_detail() -> str:
         raise AssertionError("platform.platform must not run in summary emission")
 
-    monkeypatch.setattr(memory_guard.platform, "platform", forbidden_platform_detail)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(
+        platform,
+        "platform",
+        current_thread_only(forbidden_platform_detail, platform.platform),
+    )
 
     repro = memory_guard.repro_context_payload(
         command=[sys.executable, "-c", "pass"],

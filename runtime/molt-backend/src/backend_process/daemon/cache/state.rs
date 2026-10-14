@@ -2,10 +2,6 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub(crate) struct DaemonCache {
     pub(crate) entries: HashMap<Arc<str>, CacheEntry>,
     pub(crate) order: BinaryHeap<Reverse<(u64, Arc<str>)>>,
@@ -14,19 +10,11 @@ pub(crate) struct DaemonCache {
     pub(crate) max_bytes: Option<usize>,
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub(crate) struct CacheEntry {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) stamp: u64,
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 impl DaemonCache {
     pub(crate) fn new(max_bytes: Option<usize>) -> Self {
         Self {

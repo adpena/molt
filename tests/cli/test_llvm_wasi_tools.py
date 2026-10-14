@@ -13,7 +13,6 @@ from tests.runtime_build_identity_helper import (
     provisioned_wasi_sdk_fixture,
     runtime_wasi_c_abi_plan,
 )
-from tests.operation_probe import same_thread_probe
 from molt import llvm_wasi_tools
 from molt.cli import (
     native_symbol_inspection,
@@ -27,7 +26,7 @@ from tests.cli.native_link_test_support import (
     single_member_archive_symbol_facts,
     static_archive_bytes,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 
 _TOOL_FILE_NAMES = {
     "cc": "clang",
@@ -755,8 +754,8 @@ def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(
         layout_probes.append(path)
         return is_dir(path)
 
-    monkeypatch.setattr(Path, "resolve", same_thread_probe(resolve, observed_resolve))
-    monkeypatch.setattr(Path, "is_dir", same_thread_probe(is_dir, observed_is_dir))
+    monkeypatch.setattr(Path, "resolve", current_thread_only(observed_resolve, resolve))
+    monkeypatch.setattr(Path, "is_dir", current_thread_only(observed_is_dir, is_dir))
     assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
         native["cc"],
     )

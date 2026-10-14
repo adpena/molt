@@ -1,24 +1,5 @@
 use super::*;
 
-#[test]
-fn fact_graph_cli_contract_requires_output_and_function_pair() {
-    let err = validate_fact_graph_cli_contract(Some("graph.json"), None, false)
-        .expect_err("unpaired fact graph flags must fail closed");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert!(
-        err.to_string()
-            .contains("--fact-graph-output and --fact-graph-function")
-    );
-}
-
-#[test]
-fn fact_graph_cli_contract_rejects_rust_target() {
-    let err = validate_fact_graph_cli_contract(Some("graph.json"), Some("molt_main"), true)
-        .expect_err("rust target fact graph request must fail closed");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    assert!(err.to_string().contains("rust target"));
-}
-
 fn luau_local_call_ir(kind: &str) -> SimpleIR {
     let callee = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -159,7 +140,7 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
         profile: None,
     };
 
-    let err = rust_source_for_ir(&ir, Default::default(), None)
+    let err = rust_source_for_ir(&ir, Default::default())
         .expect_err("Rust target must reject unknown operations");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(
@@ -209,7 +190,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
         profile: None,
     };
 
-    let source = rust_source_for_ir(&ir, Default::default(), None)
+    let source = rust_source_for_ir(&ir, Default::default())
         .expect("dead stubs must be pruned before Rust emit");
     assert!(source.contains("fn molt_main("));
     assert!(!source.contains("dead_stdlib_helper"));

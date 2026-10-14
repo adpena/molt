@@ -4,6 +4,7 @@ mod class_attrs;
 mod core;
 mod exceptions;
 mod numeric_async;
+mod pipeline;
 mod repr_collections;
 mod singleton_values;
 

@@ -1906,18 +1906,27 @@ def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path,
     assert bench_tool.measure_runtime(["probe"]) is None
 
 
-@pytest.mark.usefixtures("scratch_bench_checkout")
 def test_bench_env_shares_the_warm_target_unless_a_session_is_pinned(
-    tmp_path: Path,
+    tmp_path: Path, scratch_bench_checkout: Path
 ) -> None:
-    """A bench run must not build cold into a per-process target (HF-144)."""
+    """A bench run must not build cold into a per-process target (HF-144).
+
+    Unpinned runs reuse their checkout's stable target, which no other
+    checkout shares (HF-45); a pinned session gets its own target inside it.
+    """
     ext_root = tmp_path / "ext-root"
+    checkout_target = (
+        ext_root.resolve()
+        / "target"
+        / "checkouts"
+        / molt_dx.checkout_component(scratch_bench_checkout)
+    )
     shared = bench_tool._canonical_bench_env({"MOLT_EXT_ROOT": str(ext_root)})
-    assert Path(shared["CARGO_TARGET_DIR"]) == ext_root.resolve() / "target"
+    assert Path(shared["CARGO_TARGET_DIR"]) == checkout_target
+    repeated = bench_tool._canonical_bench_env({"MOLT_EXT_ROOT": str(ext_root)})
+    assert repeated["CARGO_TARGET_DIR"] == shared["CARGO_TARGET_DIR"]
 
     pinned = bench_tool._canonical_bench_env(
         {"MOLT_EXT_ROOT": str(ext_root), "MOLT_SESSION_ID": "lane-a"}
     )
-    assert Path(pinned["CARGO_TARGET_DIR"]) == (
-        ext_root.resolve() / "target" / "sessions" / "lane-a"
-    )
+    assert Path(pinned["CARGO_TARGET_DIR"]) == checkout_target / "sessions" / "lane-a"

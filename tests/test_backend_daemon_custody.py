@@ -10,7 +10,10 @@ import pytest
 from molt import backend_daemon_custody as custody
 from tools import memory_guard
 from tools.memory_guard_core import process_custody, process_model
-from tests.process_guard_common import install_thread_module_view
+from tests.process_guard_common import (
+    current_thread_only,
+    install_thread_module_view,
+)
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -339,10 +342,15 @@ def test_backend_daemon_legacy_pid_cleanup_unlinks_without_signaling(
     sidecar = tmp_path / "molt-backend.identity.json"
     pid_file.write_text("101\n", encoding="utf-8")
     sidecar.write_text("{}\n", encoding="utf-8")
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
     monkeypatch.setattr(
-        custody.os,
+        os,
         "kill",
-        lambda pid, sig: (_ for _ in ()).throw(AssertionError("unexpected signal")),
+        current_thread_only(
+            lambda pid, sig: (_ for _ in ()).throw(AssertionError("unexpected signal")),
+            os.kill,
+        ),
     )
 
     assert custody.remove_legacy_pid_files(tmp_path) == 1

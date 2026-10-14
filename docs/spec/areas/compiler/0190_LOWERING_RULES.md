@@ -517,6 +517,47 @@ callable. Any future namespace-specialized body needs an explicit activation
 guard; guarding a constructor alone cannot certify its downstream result facts,
 branch pruning, receiver methods or loop fusion.
 
+### Guarded builtin reads in activations (HF-79)
+
+A builtin read in a function, lambda or eager comprehension is a live lookup,
+so binding flow proves no identity for it. The binding analysis gives a read a
+guard bit (`PythonExpressionFact.builtin_guard_bit`) when its name is in
+`runtime/builtin_binding_guards.toml` and no module statement, `global`
+declaration or literal reflective write binds the name. The bit authorizes a
+guarded specialization only:
+
+- The frontend (`frontend/lowering/builtin_guards.py`) emits
+  `molt_guard_builtin_bindings(mask)` where Python loads the name, before any
+  argument runs, and branches on it. The fast arm lowers the same source with
+  the covered reads trusted as the runtime's builtins; the slow arm is the
+  dynamic lookup and call, with no guard inside. Facts that the fast arm
+  derives (a counted loop's int index, a `LEN` result) hold only inside it;
+  the merged result is unknown.
+- One guard covers the callee and each later builtin read that Python performs
+  before any code that may run Python, suspend or write a namespace (the
+  `no_python_callbacks` capability plus those effects). `range(len(xs))` and
+  `isinstance(x, int)` need one guard; `isinstance(obj.attr, int)` guards only
+  `isinstance`, because the attribute load may rebind `int`.
+- `for ... in range(...)` duplicates the loop into both arms, so the fast arm
+  is a counted loop. Other builtin calls duplicate only the call expression.
+  A region that defines a scope (lambda, comprehension, nested def or class),
+  suspends, or exceeds 600 AST nodes stays dynamic.
+- The guard holds when the active frame's globals are a tracked module
+  namespace that never bound any covered name and its builtins are the sealed
+  builtins namespace with each covered name unchanged since the runtime
+  published it. The runtime records both in the dictionaries' inline state
+  words from its dictionary commits: insertion, value replacement, row
+  removal, and `dict_commit_reset`, the one commit for a whole-contents
+  change (`clear()`, the C-API `PyDict_Clear`, staged publication, and
+  lifecycle and cycle clearing). No other code empties or swaps dictionary
+  storage. Writers add bits with an atomic fetch-or, so concurrent binders
+  cannot lose one; only the builtins seal clears bits, once, before the
+  builtins module is published. Bits are sticky. A key that is not an exact
+  `str` marks every name, since its `__eq__` may match any of them. A
+  user dictionary installed as globals is untracked and never satisfies a
+  guard. A module's `__dict__` is read-only, so a namespace is never
+  replaced. Luau namespaces track nothing, so the Luau guard is always false.
+
 Exact user-class layout follows the actual lowered result, never a constructor
 name recovered from the AST. Only a constructionally exact result may carry
 that identity through local aliases; a live call, guarded target hint, type
