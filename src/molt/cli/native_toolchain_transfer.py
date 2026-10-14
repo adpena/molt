@@ -12,6 +12,7 @@ checkout, so a transport never derives or trusts a layout of its own.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ from molt.cli.runtime_native_generation import (
     read_native_runtime_generation,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
+from molt.cli.rust_cpu_policy import RustCpuPolicy, resolve_rust_cpu_policy
 
 STDLIB_PROFILE = "full"
 _ADMISSION_ERRORS = (
@@ -89,6 +91,17 @@ class NativeToolchainSelection:
         )
         if runtime_error or backend_error:
             raise NativeToolchainTransferError(str(runtime_error or backend_error))
+        try:
+            rust_cpu, _warning = resolve_rust_cpu_policy("native", os.environ)
+        except ValueError as exc:
+            raise NativeToolchainTransferError(str(exc)) from exc
+        if rust_cpu is not RustCpuPolicy.BASELINE:
+            # The flag names no CPU, so the identity cannot tell two hosts
+            # apart. A native-arch product stays on the host that built it.
+            raise NativeToolchainTransferError(
+                "MOLT_PERF_PROFILE=native-arch products are specific to the "
+                "build host and never transfer; unset MOLT_PERF_PROFILE"
+            )
         return cls(
             project_root=project_root,
             runtime_lib=_runtime_lib_path(
@@ -105,6 +118,7 @@ class NativeToolchainSelection:
                 is_luau_transpile=False,
                 is_rust_transpile=False,
                 codegen_backend=DEFAULT_CODEGEN_BACKEND,
+                rust_cpu=rust_cpu,
             ),
         )
 
@@ -122,6 +136,7 @@ class NativeToolchainSelection:
                     target_triple=None,
                     cargo_profile=self.runtime_cargo_profile,
                     stdlib_profile=STDLIB_PROFILE,
+                    rust_cpu=self.backend.rust_cpu,
                     build_python_admission=build_python_admission,
                 )
         except (OSError, ValueError) as exc:
@@ -182,6 +197,7 @@ def export_native_toolchain(
             binary=selection.backend.binary,
             cargo_profile=selection.backend.cargo_profile,
             backend_features=selection.backend.features,
+            rust_cpu=selection.backend.rust_cpu,
         )
     except (OSError, ValueError) as exc:
         raise NativeToolchainTransferError(str(exc)) from exc
@@ -229,6 +245,7 @@ def import_native_toolchain(
             binary=selection.backend.binary,
             cargo_profile=selection.backend.cargo_profile,
             backend_features=selection.backend.features,
+            rust_cpu=selection.backend.rust_cpu,
             executable=files[BACKEND_EXECUTABLE_ROLE],
             receipt=files[BACKEND_RECEIPT_ROLE],
         )

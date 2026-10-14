@@ -15,6 +15,7 @@ from molt.cli import runtime_native_generation as generations
 from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import native_link_dependency_manifest_path
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
@@ -160,6 +161,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
             env=kwargs["env"],
             cargo_command=kwargs["cargo_command"],
             requested_target=kwargs["requested_target"],
+            rustflags_transform=kwargs["rustflags_transform"],
         )
         plans.append(plan)
         return plan
@@ -205,11 +207,18 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
     monkeypatch.setattr(runtime, "_runtime_build_identity_for_plan", identity)
     monkeypatch.setattr(runtime, "_run_resolved_cargo_plan", cargo)
 
-    def run(*, profile="micro", features=(), modules=(), coordinate=None):
+    def run(
+        *,
+        profile="micro",
+        features=(),
+        modules=(),
+        coordinate=None,
+        rust_cpu=RustCpuPolicy.BASELINE,
+    ):
         current.coordinate = (
             coordinate or tmp_path / "cargo" / "dev-fast" / f"runtime.{profile}.a"
         )
-        state = _RuntimeArtifactState(runtime_lib=current.coordinate)
+        state = _RuntimeArtifactState(runtime_lib=current.coordinate, rust_cpu=rust_cpu)
         timings = {}
         ok = runtime._ensure_runtime_lib(
             current.coordinate,
@@ -221,6 +230,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
             stdlib_profile=profile,
             extra_runtime_features=features,
             resolved_modules=modules,
+            rust_cpu=state.rust_cpu,
             runtime_state=state,
             stage_timings_ms=timings,
         )
@@ -237,6 +247,23 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
         root=tmp_path,
         current=current,
     )
+
+
+def test_native_runtime_cargo_plan_carries_the_build_rust_cpu_policy(native_build):
+    ok, _state, _timings = native_build.run(rust_cpu=RustCpuPolicy.NATIVE)
+    assert ok
+    native = native_build.cargo_runs[-1]
+    ok, _state, _timings = native_build.run(
+        rust_cpu=RustCpuPolicy.BASELINE, profile="standard"
+    )
+    assert ok
+    baseline = native_build.plans[-1]
+
+    # Cargo executes the flags the plan pins, never a process RUSTFLAGS.
+    assert native.rustflags[-2:] == ("-C", "target-cpu=native")
+    assert native.environment["CARGO_ENCODED_RUSTFLAGS"].endswith("target-cpu=native")
+    assert "target-cpu=native" not in baseline.rustflags
+    assert "target-cpu=native" not in baseline.environment["CARGO_ENCODED_RUSTFLAGS"]
 
 
 def test_native_build_captures_twice_and_retained_admission_once(native_build):

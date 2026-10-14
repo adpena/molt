@@ -324,6 +324,7 @@ def _run_backend_pipeline(
                 native_artifact_plan=native_artifact_plan,
                 resolved_modules=resolved_modules,
                 codegen=prepared_build_config.codegen,
+                rust_cpu=prepared_build_preamble.rust_cpu,
                 stage_timings_ms=pipeline_stage_ms,
             )
         )
@@ -431,6 +432,7 @@ def _run_backend_pipeline(
                         prepared_backend_runtime_context.backend_compiler_fingerprint
                     ),
                     codegen=prepared_build_config.codegen,
+                    rust_cpu=prepared_build_preamble.rust_cpu,
                 )
             )
             if pipeline_stage_ms is not None:

@@ -10,6 +10,7 @@ from molt.cli import backend_execution, backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.models import _ModuleGraphMetadata
 from molt.target_python import TargetPythonVersion
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 TARGET = "x86_64-unknown-linux-gnu"
@@ -142,6 +143,7 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
             target_python=TargetPythonVersion(3, 12, 0),
             backend_compiler_fingerprint="compiler-source",
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
 
     baseline = setup()

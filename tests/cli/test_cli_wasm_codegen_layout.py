@@ -25,6 +25,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
 )
 from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.runtime_build_identity_helper import runtime_build_identity
 from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
 
@@ -174,6 +175,7 @@ def _compile(
         backend_daemon_health=None,
         backend_bin=backend,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
 

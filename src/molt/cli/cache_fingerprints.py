@@ -34,6 +34,7 @@ from molt.cli.python_source_closure import (
 
 if TYPE_CHECKING:
     from molt.cli.module_source import PythonSourceSnapshot
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -546,6 +547,7 @@ def _cache_fingerprint(
     include_runtime_sources: bool = True,
     env: Mapping[str, str] | None = None,
     cargo_profile: str | None = None,
+    rust_cpu: RustCpuPolicy,
 ) -> str:
     from molt.cli.compiler_identity import (
         CompilerIdentityError,
@@ -567,7 +569,9 @@ def _cache_fingerprint(
         installed = installed_compiler_admission(root, selected_features, profile)
         if installed is not None:
             return installed.fingerprint
-        admission = backend_build_admission(root, selected_features, profile, source)
+        admission = backend_build_admission(
+            root, selected_features, profile, source, rust_cpu=rust_cpu
+        )
         source_paths, lock_digest = _backend_source_identity_inputs(
             root, _backend_source_paths(root, selected_features)
         )

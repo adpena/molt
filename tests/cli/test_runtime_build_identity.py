@@ -37,6 +37,7 @@ from molt.llvm_toolchain import (
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import runtime_identity_schema as schema
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.python_runtime_identity import validate_python_runtime_identity
 from tests.python_environment_test_support import runtime_identity_manifest
 from tests.executable_test_support import (
@@ -658,6 +659,28 @@ def test_runtime_tooling_source_projection_is_independent_of_install_layout(
     assert source / "src/molt/python_environment_identity.py" in expected
     assert source / "src/sitecustomize.py" in expected
     assert source / "pyproject.toml" in expected
+
+
+def test_native_cpu_policy_splits_the_native_runtime_identity(
+    identity_root: Path,
+) -> None:
+    def resolve(policy: RustCpuPolicy) -> schema.RuntimeBuildIdentity:
+        flags = policy.rustflags(("-C", "panic=abort"))
+        return _resolve(
+            identity_root,
+            kind="native",
+            publication="tree-observation",
+            base_rustflags=" ".join(flags),
+        )
+
+    baseline = resolve(RustCpuPolicy.BASELINE)
+    native = resolve(RustCpuPolicy.NATIVE)
+
+    # A native-arch staticlib runs only on CPUs like the build host, so it must
+    # never satisfy a baseline build's admission, or the other way around.
+    assert baseline.compile_digest != native.compile_digest
+    assert baseline.digest != native.digest
+    assert resolve(RustCpuPolicy.NATIVE).digest == native.digest
 
 
 def test_ambient_c_and_cxx_flags_are_family_identity_inputs(

@@ -313,6 +313,7 @@ def emit_pipeline_fact_graph(
             ),
             start_daemon=False,
             codegen=build_config.codegen,
+            rust_cpu=build_preamble.rust_cpu,
         )
         if dispatch_error is not None:
             return dispatch_error

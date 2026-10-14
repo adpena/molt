@@ -375,7 +375,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_cache",
         "_materialize_cached_backend_artifact",
     ),
-    "_maybe_enable_native_cpu": ("cargo_execution", "_maybe_enable_native_cpu"),
     "_merge_debug_manifest": ("debug_helpers", "_merge_debug_manifest"),
     "_mlir_backend_executable_name": ("mlir_backend", "_mlir_backend_executable_name"),
     "_module_symbol_name": ("backend_cache", "_module_symbol_name"),

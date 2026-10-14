@@ -31,6 +31,7 @@ from molt.cli.models import (
 )
 from molt.cli.output import JSON_SCHEMA_VERSION
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     LLVM_BITCODE_STAND_IN,
     static_archive_bytes,
@@ -218,6 +219,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     config = SimpleNamespace(
         pgo_hot_function_names=set(),
