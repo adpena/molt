@@ -330,9 +330,11 @@ impl ScalarRepresentationPlan {
         } else {
             HashMap::new()
         };
-        let carriers = needs_carriers
-            .then(|| native_projectable_scalar_reprs_for(&tir_func, &repr))
-            .unwrap_or_default();
+        let carriers = if needs_carriers {
+            native_projectable_scalar_reprs_for(&tir_func, &repr)
+        } else {
+            Default::default()
+        };
         let optimized_carriers =
             optimized_tir_func
                 .as_ref()
